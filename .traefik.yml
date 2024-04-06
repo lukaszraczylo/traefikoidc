@@ -1,0 +1,5 @@
+displayName: TraefikOIDC
+type: middleware
+
+summary: |
+  Middleware adding OIDC authentication to traefik.
