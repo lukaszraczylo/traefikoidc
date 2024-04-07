@@ -1,11 +1,13 @@
-displayName: Traefik OIDC
-type: middleware
+## Traefik OIDC middleware
 
-import: github.com/lukaszraczylo/traefikoidc
+WIP warning!
+This middleware is under active development.
 
-summary: |
-  WIP [do not use, yet] Middleware adding OIDC authentication to traefik.
+This middleware is supposed to replace the need for the forward-auth and oauth2-proxy when using traefik as a reverse proxy.
 
+### Configuration options
+
+```
 testData:
   providerURL: https://accounts.google.com
   clientID: 1234567890.apps.googleusercontent.com
@@ -16,3 +18,4 @@ testData:
     - email
     - profile
   sessionEncryptionKey: potato-secret
+```

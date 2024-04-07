@@ -1,5 +1,12 @@
 package traefikoidc
 
+import "os"
+
+// constants
+const (
+	cookie_name = "_raczylo_oidc"
+)
+
 type Config struct {
 	ProviderURL          string   `json:"providerURL"`
 	CallbackURL          string   `json:"callbackURL"`
@@ -11,5 +18,6 @@ type Config struct {
 }
 
 func CreateConfig() *Config {
+	infoLogger.SetOutput(os.Stdout)
 	return &Config{}
 }
