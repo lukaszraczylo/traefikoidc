@@ -3,10 +3,7 @@ package traefikoidc
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,14 +14,10 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var (
-	infoLogger = log.New(io.Discard, "INFO: traefikoidc: ", log.Ldate|log.Ltime)
-)
-
 type TraefikOidc struct {
 	next           http.Handler
 	name           string
-	store          *sessions.CookieStore
+	store          sessions.Store
 	redirURLPath   string
 	issuerURL      string
 	jwkCache       *JWKCache
@@ -39,6 +32,8 @@ type TraefikOidc struct {
 	forceHTTPS     bool
 	scheme         string
 	tokenCache     *TokenCache
+	httpClient     HTTPClient
+	logger         Logger
 }
 
 type ProviderMetadata struct {
@@ -58,10 +53,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		SameSite: http.SameSiteLaxMode,
 	}
 
-	metadata, err := discoverProviderMetadata(config.ProviderURL)
+	metadata, err := discoverProviderMetadata(config.ProviderURL, &http.Client{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover provider metadata: %v", err)
+		return nil, fmt.Errorf("failed to discover provider metadata: %w", err)
 	}
+	logger := NewLogger(config.LogLevel)
 
 	t := &TraefikOidc{
 		next:           next,
@@ -80,17 +76,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		scopes:         config.Scopes,
 		limiter:        rate.NewLimiter(rate.Every(time.Second), 100),
 		tokenCache:     NewTokenCache(),
+		httpClient:     &http.Client{},
+		logger:         logger,
 	}
 
 	t.startTokenCleanup()
 	return t, nil
 }
 
-func discoverProviderMetadata(providerURL string) (*ProviderMetadata, error) {
+func discoverProviderMetadata(providerURL string, httpClient HTTPClient) (*ProviderMetadata, error) {
 	wellKnownURL := strings.TrimSuffix(providerURL, "/") + "/.well-known/openid-configuration"
-	resp, err := http.Get(wellKnownURL)
+	resp, err := httpClient.Get(wellKnownURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch provider metadata: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -100,13 +98,47 @@ func discoverProviderMetadata(providerURL string) (*ProviderMetadata, error) {
 
 	var metadata ProviderMetadata
 	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode provider metadata: %w", err)
 	}
 
 	return &metadata, nil
 }
 
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	t.scheme = t.determineScheme(req)
+	host := t.determineHost(req)
+
+	redirectURL := buildFullURL(t.scheme, host, t.redirURLPath)
+	t.logger.Infof("Final redirect URL: %s", redirectURL)
+
+	session, err := t.store.Get(req, cookieName)
+	if err != nil {
+		t.logger.Errorf("Error getting session: %v", err)
+		http.Error(rw, "Session error", http.StatusInternalServerError)
+		return
+	}
+
+	if req.URL.Path == t.redirURLPath {
+		t.logger.Infof("Handling callback, URL: %s", req.URL.String())
+		authSuccess, originalPath := t.handleCallback(rw, req)
+		if authSuccess {
+			http.Redirect(rw, req, originalPath, http.StatusFound)
+			return
+		}
+		http.Error(rw, "Authentication failed", http.StatusUnauthorized)
+		return
+	}
+
+	if t.isUserAuthenticated(session) {
+		t.next.ServeHTTP(rw, req)
+		return
+	}
+
+	// User is not authenticated, start the auth process
+	t.initiateAuthentication(rw, req, session, redirectURL)
+}
+
+func (t *TraefikOidc) determineScheme(req *http.Request) string {
 	scheme := req.URL.Scheme
 	if scheme == "" {
 		scheme = req.Header.Get("X-Forwarded-Proto")
@@ -121,8 +153,10 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if t.forceHTTPS {
 		scheme = "https"
 	}
-	t.scheme = scheme
+	return scheme
+}
 
+func (t *TraefikOidc) determineHost(req *http.Request) string {
 	host := req.URL.Host
 	if host == "" {
 		host = req.Header.Get("X-Forwarded-Host")
@@ -130,74 +164,36 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if host == "" {
 		host = req.Host
 	}
+	return host
+}
 
-	// infoLogger.Printf("Scheme: %s, Host: %s, Path: %s", scheme, host, t.redirURLPath)
-	// infoLogger.Printf("X-Forwarded-Proto: %s", req.Header.Get("X-Forwarded-Proto"))
-	// infoLogger.Printf("X-Forwarded-Host: %s", req.Header.Get("X-Forwarded-Host"))
-	redirectURL := assembleRedirectURL(t.scheme, host, t.redirURLPath)
-	// infoLogger.Printf("Final redirect URL: %s", redirectURL)
-
-	session, err := t.store.Get(req, cookie_name)
-	if err != nil {
-		// infoLogger.Printf("Error getting session: %v", err)
-		http.Error(rw, "Session error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if req.URL.Path == t.redirURLPath {
-		// infoLogger.Printf("Handling callback, URL: %s", req.URL.String())
-		authSuccess, originalPath := t.handleCallback(rw, req)
-		if authSuccess {
-			http.Redirect(rw, req, originalPath, http.StatusFound)
-			return
-		}
-		// If auth was not successful, return an error instead of re-authenticating
-		http.Error(rw, "Authentication failed", http.StatusUnauthorized)
-		return
-	}
-
+func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) bool {
 	authenticated, _ := session.Values["authenticated"].(bool)
 	if authenticated {
 		idToken, ok := session.Values["id_token"].(string)
 		if !ok || idToken == "" {
-			http.Error(rw, "Invalid session", http.StatusUnauthorized)
-			return
+			return false
 		}
-
-		if err := t.verifyToken(idToken); err != nil {
-			http.Error(rw, "Invalid token", http.StatusUnauthorized)
-			return
-		}
-
-		// Proceed with the request
-		t.next.ServeHTTP(rw, req)
-		return
+		return t.verifyToken(idToken) == nil
 	}
+	return false
+}
 
-	// User is not authenticated, start the auth process
+func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
 	csrfToken := uuid.New().String()
 	session.Values["csrf"] = csrfToken
 	session.Values["incoming_path"] = req.URL.Path
-	// infoLogger.Printf("Setting CSRF token: %s", csrfToken)
-	err = session.Save(req, rw)
-	if err != nil {
-		// infoLogger.Printf("Failed to save session: %v", err)
-		http.Error(rw, "Failed to save session: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	t.logger.Infof("Setting CSRF token: %s", csrfToken)
 
-	// Verify the session was saved correctly
-	verifySession, _ := t.store.Get(req, cookie_name)
-	savedCSRF, ok := verifySession.Values["csrf"].(string)
-	if !ok || savedCSRF != csrfToken {
-		// infoLogger.Printf("Failed to save CSRF token. Saved: %s, Expected: %s", savedCSRF, csrfToken)
-		http.Error(rw, "Failed to save CSRF token", http.StatusInternalServerError)
+	if err := session.Save(req, rw); err != nil {
+		t.logger.Errorf("Failed to save session: %v", err)
+		http.Error(rw, "Failed to save session", http.StatusInternalServerError)
 		return
 	}
 
 	nonce, err := generateNonce()
 	if err != nil {
-		http.Error(rw, "Failed to generate nonce: "+err.Error(), http.StatusInternalServerError)
+		http.Error(rw, "Failed to generate nonce", http.StatusInternalServerError)
 		return
 	}
 
@@ -205,22 +201,9 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	http.Redirect(rw, req, authURL, http.StatusFound)
 }
 
-func (t *TraefikOidc) isUserAuthenticated(req *http.Request) bool {
-	session, err := t.store.Get(req, cookie_name)
-	if err != nil {
-		return false
-	}
-
-	if auth, ok := session.Values["authenticated"].(bool); !ok || !auth {
-		return false
-	}
-
-	return true
-}
-
 func (t *TraefikOidc) verifyToken(token string) error {
 	if !t.limiter.Allow() {
-		return errors.New("rate limit exceeded")
+		return fmt.Errorf("rate limit exceeded")
 	}
 
 	if _, exists := t.tokenCache.Get(token); exists {
@@ -229,17 +212,17 @@ func (t *TraefikOidc) verifyToken(token string) error {
 
 	jwt, err := parseJWT(token)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to parse JWT: %w", err)
 	}
 
-	jwks, err := t.jwkCache.GetJWKS(t.jwksURL)
+	jwks, err := t.jwkCache.GetJWKS(t.jwksURL, t.httpClient)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get JWKS: %w", err)
 	}
 
 	kid, ok := jwt.Header["kid"].(string)
 	if !ok {
-		return errors.New("missing key ID in token header")
+		return fmt.Errorf("missing key ID in token header")
 	}
 
 	var publicKeyPEM []byte
@@ -247,38 +230,22 @@ func (t *TraefikOidc) verifyToken(token string) error {
 		if key.Kid == kid {
 			publicKeyPEM, err = jwkToPEM(&key)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to convert JWK to PEM: %w", err)
 			}
 			break
 		}
 	}
 
 	if publicKeyPEM == nil {
-		return errors.New("unable to find matching public key")
+		return fmt.Errorf("unable to find matching public key")
 	}
 
 	if err := verifySignature(token, publicKeyPEM); err != nil {
-		return err
-	}
-
-	if err := verifyAudience(jwt.Claims["aud"].(string), t.clientID); err != nil {
-		return err
+		return fmt.Errorf("signature verification failed: %w", err)
 	}
 
 	if err := jwt.Verify(t.issuerURL, t.clientID); err != nil {
-		return err
-	}
-
-	if err := verifyTokenTimes(
-		int64(jwt.Claims["iat"].(float64)),
-		int64(jwt.Claims["exp"].(float64)),
-		5*time.Minute, // Allowed clock skew
-	); err != nil {
-		return err
-	}
-
-	if err := validateClaims(jwt.Claims); err != nil {
-		return err
+		return fmt.Errorf("JWT verification failed: %w", err)
 	}
 
 	expirationTime := time.Unix(int64(jwt.Claims["exp"].(float64)), 0)
@@ -288,17 +255,16 @@ func (t *TraefikOidc) verifyToken(token string) error {
 }
 
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
-	params := url.Values{}
-	params.Add("client_id", t.clientID)
-	params.Add("response_type", "code")
-	params.Add("redirect_uri", redirectURL)
-	params.Add("scope", strings.Join(t.scopes, " "))
-	params.Add("state", state)
-	params.Add("nonce", nonce)
+	params := url.Values{
+		"client_id":     {t.clientID},
+		"response_type": {"code"},
+		"redirect_uri":  {redirectURL},
+		"scope":         {strings.Join(t.scopes, " ")},
+		"state":         {state},
+		"nonce":         {nonce},
+	}
 
-	authURL := t.authURL + "?" + params.Encode()
-	// infoLogger.Printf("Built auth URL: %s", authURL)
-	return authURL
+	return fmt.Sprintf("%s?%s", t.authURL, params.Encode())
 }
 
 func (t *TraefikOidc) startTokenCleanup() {
@@ -306,6 +272,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 	go func() {
 		for range ticker.C {
 			t.tokenCache.Cleanup()
+			t.tokenBlacklist.Cleanup()
 		}
 	}()
 }
