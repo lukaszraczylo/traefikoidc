@@ -75,6 +75,7 @@ type Logger interface {
 	Errorf(format string, args ...interface{})
 }
 
-func handleError(w http.ResponseWriter, message string, code int) {
+func handleError(w http.ResponseWriter, message string, code int, logger Logger) {
+	logger.Errorf(message)
 	http.Error(w, message, code)
 }
