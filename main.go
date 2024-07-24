@@ -137,7 +137,18 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	authenticated, _ := session.Values["authenticated"].(bool)
 	if authenticated {
-		// infoLogger.Printf("User is authenticated, proceeding to next handler")
+		idToken, ok := session.Values["id_token"].(string)
+		if !ok || idToken == "" {
+			http.Error(rw, "Invalid session", http.StatusUnauthorized)
+			return
+		}
+
+		if err := t.verifyToken(idToken); err != nil {
+			http.Error(rw, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		// Proceed with the request
 		t.next.ServeHTTP(rw, req)
 		return
 	}
