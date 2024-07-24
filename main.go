@@ -36,6 +36,8 @@ type TraefikOidc struct {
 	tokenURL       string
 	scopes         []string
 	limiter        *rate.Limiter
+	forceHTTPS     bool
+	scheme         string
 }
 
 type ProviderMetadata struct {
@@ -71,6 +73,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		jwksURL:        metadata.JWKSURL,
 		clientID:       config.ClientID,
 		clientSecret:   config.ClientSecret,
+		forceHTTPS:     config.ForceHTTPS,
 		authURL:        metadata.AuthURL,
 		tokenURL:       metadata.TokenURL,
 		scopes:         config.Scopes,
@@ -104,8 +107,17 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		scheme = req.Header.Get("X-Forwarded-Proto")
 	}
 	if scheme == "" {
-		scheme = "http" // Default to http if not set
+		if req.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
 	}
+	if t.forceHTTPS {
+		scheme = "https"
+	}
+	t.scheme = scheme
+
 	host := req.URL.Host
 	if host == "" {
 		host = req.Header.Get("X-Forwarded-Host")
@@ -114,7 +126,11 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		host = req.Host
 	}
 
-	redirectURL := assembleRedirectURL(scheme, host, t.redirURLPath)
+	// infoLogger.Printf("Scheme: %s, Host: %s, Path: %s", scheme, host, t.redirURLPath)
+	// infoLogger.Printf("X-Forwarded-Proto: %s", req.Header.Get("X-Forwarded-Proto"))
+	// infoLogger.Printf("X-Forwarded-Host: %s", req.Header.Get("X-Forwarded-Host"))
+	redirectURL := assembleRedirectURL(t.scheme, host, t.redirURLPath)
+	// infoLogger.Printf("Final redirect URL: %s", redirectURL)
 
 	session, err := t.store.Get(req, cookie_name)
 	if err != nil {

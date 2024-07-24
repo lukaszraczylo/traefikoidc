@@ -15,6 +15,7 @@ type Config struct {
 	Scopes               []string `json:"scopes"`
 	LogLevel             string   `json:"logLevel"`
 	SessionEncryptionKey string   `json:"sessionEncryptionKey"`
+	ForceHTTPS           bool     `json:"forceHTTPS"`
 }
 
 func CreateConfig() *Config {

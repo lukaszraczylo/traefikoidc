@@ -25,7 +25,8 @@ func generateNonce() (string, error) {
 
 func assembleRedirectURL(scheme, host, path string) string {
 	if scheme == "" {
-		scheme = "http" // Default to http if scheme is empty
+		// infoLogger.Println("Scheme is empty, defaulting to http")
+		scheme = "http"
 	}
 	return scheme + "://" + host + path
 }
@@ -84,7 +85,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 	}
 
 	code := req.URL.Query().Get("code")
-	redirectURL := assembleRedirectURL(req.URL.Scheme, req.Host, t.redirURLPath)
+	redirectURL := assembleRedirectURL(t.scheme, req.Host, t.redirURLPath)
 	oauth2Token, err := t.exchangeCodeForToken(ctx, code, redirectURL)
 	if err != nil {
 		// infoLogger.Printf("Failed to exchange token: %v", err)
