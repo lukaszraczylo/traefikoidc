@@ -225,3 +225,46 @@ func (tb *TokenBlacklist) Cleanup() {
 		}
 	}
 }
+
+type TokenCache struct {
+	cache map[string]*TokenInfo
+	mutex sync.RWMutex
+}
+
+type TokenInfo struct {
+	Token     string
+	ExpiresAt time.Time
+}
+
+func NewTokenCache() *TokenCache {
+	return &TokenCache{
+		cache: make(map[string]*TokenInfo),
+	}
+}
+
+func (tc *TokenCache) Set(token string, expiresAt time.Time) {
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
+	tc.cache[token] = &TokenInfo{Token: token, ExpiresAt: expiresAt}
+}
+
+func (tc *TokenCache) Get(token string) (*TokenInfo, bool) {
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+	info, exists := tc.cache[token]
+	if exists && time.Now().Before(info.ExpiresAt) {
+		return info, true
+	}
+	return nil, false
+}
+
+func (tc *TokenCache) Cleanup() {
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
+	now := time.Now()
+	for token, info := range tc.cache {
+		if now.After(info.ExpiresAt) {
+			delete(tc.cache, token)
+		}
+	}
+}
