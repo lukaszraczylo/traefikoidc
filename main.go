@@ -202,56 +202,7 @@ func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.R
 }
 
 func (t *TraefikOidc) verifyToken(token string) error {
-	if !t.limiter.Allow() {
-		return fmt.Errorf("rate limit exceeded")
-	}
-
-	if _, exists := t.tokenCache.Get(token); exists {
-		return nil // Token is valid and cached
-	}
-
-	jwt, err := parseJWT(token)
-	if err != nil {
-		return fmt.Errorf("failed to parse JWT: %w", err)
-	}
-
-	jwks, err := t.jwkCache.GetJWKS(t.jwksURL, t.httpClient)
-	if err != nil {
-		return fmt.Errorf("failed to get JWKS: %w", err)
-	}
-
-	kid, ok := jwt.Header["kid"].(string)
-	if !ok {
-		return fmt.Errorf("missing key ID in token header")
-	}
-
-	var publicKeyPEM []byte
-	for _, key := range jwks.Keys {
-		if key.Kid == kid {
-			publicKeyPEM, err = jwkToPEM(&key)
-			if err != nil {
-				return fmt.Errorf("failed to convert JWK to PEM: %w", err)
-			}
-			break
-		}
-	}
-
-	if publicKeyPEM == nil {
-		return fmt.Errorf("unable to find matching public key")
-	}
-
-	if err := verifySignature(token, publicKeyPEM); err != nil {
-		return fmt.Errorf("signature verification failed: %w", err)
-	}
-
-	if err := jwt.Verify(t.issuerURL, t.clientID); err != nil {
-		return fmt.Errorf("JWT verification failed: %w", err)
-	}
-
-	expirationTime := time.Unix(int64(jwt.Claims["exp"].(float64)), 0)
-	t.tokenCache.Set(token, expirationTime)
-
-	return nil
+	return t.verifyAndCacheToken(token)
 }
 
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
