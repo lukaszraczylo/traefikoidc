@@ -58,6 +58,27 @@ func (t *TraefikOidc) exchangeCodeForToken(ctx context.Context, code, redirectUR
 	return result, nil
 }
 
+func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
+	session, err := t.store.Get(req, cookieName)
+	if err != nil {
+		handleError(rw, "Session error", http.StatusInternalServerError, t.logger)
+		return
+	}
+
+	if idToken, ok := session.Values["id_token"].(string); ok {
+		t.RevokeToken(idToken)
+	}
+
+	// Clear the session
+	session.Options.MaxAge = -1
+	session.Values = make(map[interface{}]interface{})
+	err = session.Save(req, rw)
+	if err != nil {
+		handleError(rw, "Failed to save session", http.StatusInternalServerError, t.logger)
+		return
+	}
+}
+
 func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) (bool, string) {
 	ctx := req.Context()
 	session, err := t.store.Get(req, cookieName)
@@ -206,6 +227,12 @@ func (tc *TokenCache) Get(token string) (*TokenInfo, bool) {
 		return info, true
 	}
 	return nil, false
+}
+
+func (tc *TokenCache) Delete(token string) {
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
+	delete(tc.cache, token)
 }
 
 func (tc *TokenCache) Cleanup() {

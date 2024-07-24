@@ -19,6 +19,7 @@ type TraefikOidc struct {
 	name           string
 	store          sessions.Store
 	redirURLPath   string
+	logoutURLPath  string
 	issuerURL      string
 	jwkCache       *JWKCache
 	tokenBlacklist *TokenBlacklist
@@ -57,13 +58,13 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover provider metadata: %w", err)
 	}
-	logger := NewLogger(config.LogLevel)
 
 	t := &TraefikOidc{
 		next:           next,
 		name:           name,
 		store:          store,
 		redirURLPath:   config.CallbackURL,
+		logoutURLPath:  config.LogoutURL,
 		issuerURL:      metadata.Issuer,
 		tokenBlacklist: NewTokenBlacklist(),
 		jwkCache:       &JWKCache{},
@@ -77,9 +78,8 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		limiter:        rate.NewLimiter(rate.Every(time.Second), 100),
 		tokenCache:     NewTokenCache(),
 		httpClient:     &http.Client{},
-		logger:         logger,
+		logger:         NewLogger(config.LogLevel),
 	}
-
 	t.startTokenCleanup()
 	return t, nil
 }
@@ -107,6 +107,12 @@ func discoverProviderMetadata(providerURL string, httpClient HTTPClient) (*Provi
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	t.scheme = t.determineScheme(req)
 	host := t.determineHost(req)
+
+	if req.URL.Path == t.logoutURLPath {
+		t.handleLogout(rw, req)
+		http.Error(rw, "Logged out", http.StatusOK)
+		return
+	}
 
 	redirectURL := buildFullURL(t.scheme, host, t.redirURLPath)
 	t.logger.Infof("Final redirect URL: %s", redirectURL)
@@ -226,4 +232,18 @@ func (t *TraefikOidc) startTokenCleanup() {
 			t.tokenBlacklist.Cleanup()
 		}
 	}()
+}
+
+func (t *TraefikOidc) RevokeToken(token string) {
+	// Remove from cache
+	t.tokenCache.Delete(token)
+
+	// Add to blacklist
+	claims, err := extractClaims(token)
+	if err == nil {
+		if exp, ok := claims["exp"].(float64); ok {
+			expTime := time.Unix(int64(exp), 0)
+			t.tokenBlacklist.Add(token, expTime)
+		}
+	}
 }

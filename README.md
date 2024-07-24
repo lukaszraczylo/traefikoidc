@@ -13,6 +13,7 @@ testData:
   clientID: 1234567890.apps.googleusercontent.com
   clientSecret: secret
   callbackURL: /oauth2/callback
+  logoutURL: /oauth2/logout
   scopes:
     - openid
     - email

@@ -13,6 +13,7 @@ const (
 type Config struct {
 	ProviderURL          string   `json:"providerURL"`
 	CallbackURL          string   `json:"callbackURL"`
+	LogoutURL            string   `json:"logoutURL"`
 	ClientID             string   `json:"clientID"`
 	ClientSecret         string   `json:"clientSecret"`
 	Scopes               []string `json:"scopes"`
@@ -55,10 +56,20 @@ func NewLogger(level string) Logger {
 	return &defaultLogger{level: level}
 }
 
+func (l *defaultLogger) Info(args ...interface{}) {
+	if l.level == "info" || l.level == "debug" {
+		fmt.Println(append([]interface{}{"INFO:"}, args...)...)
+	}
+}
+
 func (l *defaultLogger) Infof(format string, args ...interface{}) {
 	if l.level == "info" || l.level == "debug" {
 		fmt.Printf("INFO: "+format+"\n", args...)
 	}
+}
+
+func (l *defaultLogger) Error(args ...interface{}) {
+	fmt.Fprintln(os.Stderr, append([]interface{}{"ERROR:"}, args...)...)
 }
 
 func (l *defaultLogger) Errorf(format string, args ...interface{}) {
@@ -71,7 +82,9 @@ type HTTPClient interface {
 }
 
 type Logger interface {
+	Info(args ...interface{})
 	Infof(format string, args ...interface{})
+	Error(args ...interface{})
 	Errorf(format string, args ...interface{})
 }
 

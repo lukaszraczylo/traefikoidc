@@ -136,6 +136,10 @@ func (t *TraefikOidc) verifyAndCacheToken(token string) error {
 		return fmt.Errorf("rate limit exceeded")
 	}
 
+	if t.tokenBlacklist.IsBlacklisted(token) {
+		return fmt.Errorf("token is blacklisted")
+	}
+
 	if _, exists := t.tokenCache.Get(token); exists {
 		return nil // Token is valid and cached
 	}
