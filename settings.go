@@ -23,10 +23,15 @@ type Config struct {
 }
 
 func CreateConfig() *Config {
-	return &Config{
+	c := &Config{
 		Scopes:   []string{"openid", "profile", "email"},
 		LogLevel: "info",
 	}
+
+	if c.LogoutURL == "" {
+		c.LogoutURL = c.CallbackURL + "/logout"
+	}
+	return c
 }
 
 func (c *Config) Validate() error {
