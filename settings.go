@@ -2,6 +2,8 @@ package traefikoidc
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os"
 )
@@ -20,17 +22,28 @@ type Config struct {
 	LogLevel             string   `json:"logLevel"`
 	SessionEncryptionKey string   `json:"sessionEncryptionKey"`
 	ForceHTTPS           bool     `json:"forceHTTPS"`
+	RateLimit            int      `json:"rateLimit"`
 }
 
 func CreateConfig() *Config {
-	c := &Config{
-		Scopes:   []string{"openid", "profile", "email"},
-		LogLevel: "info",
+	c := &Config{}
+
+	if c.Scopes == nil {
+		c.Scopes = []string{"openid", "profile", "email"}
+	}
+
+	if c.LogLevel == "" {
+		c.LogLevel = "info"
 	}
 
 	if c.LogoutURL == "" {
 		c.LogoutURL = c.CallbackURL + "/logout"
 	}
+
+	if c.RateLimit == 0 {
+		c.RateLimit = 100
+	}
+
 	return c
 }
 
@@ -53,47 +66,56 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-type defaultLogger struct {
-	level string
+type Logger struct {
+	logError *log.Logger
+	logInfo  *log.Logger
+	logDebug *log.Logger
 }
 
-func NewLogger(level string) Logger {
-	return &defaultLogger{level: level}
-}
+func NewLogger(logLevel string) *Logger {
+	logError := log.New(io.Discard, "ERROR: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
+	logInfo := log.New(io.Discard, "INFO: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
+	logDebug := log.New(io.Discard, "DEBUG: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
 
-func (l *defaultLogger) Info(args ...interface{}) {
-	if l.level == "info" || l.level == "debug" {
-		fmt.Println(append([]interface{}{"INFO:"}, args...)...)
+	logError.SetOutput(os.Stderr)
+	logInfo.SetOutput(os.Stdout)
+
+	if logLevel == "debug" {
+		logDebug.SetOutput(os.Stdout)
+	}
+
+	return &Logger{
+		logError: logError,
+		logInfo:  logInfo,
+		logDebug: logDebug,
 	}
 }
 
-func (l *defaultLogger) Infof(format string, args ...interface{}) {
-	if l.level == "info" || l.level == "debug" {
-		fmt.Printf("INFO: "+format+"\n", args...)
-	}
+func (l *Logger) Info(format string, args ...interface{}) {
+	l.logInfo.Printf(format, args...)
 }
 
-func (l *defaultLogger) Error(args ...interface{}) {
-	fmt.Fprintln(os.Stderr, append([]interface{}{"ERROR:"}, args...)...)
+func (l *Logger) Debug(format string, args ...interface{}) {
+	l.logDebug.Printf(format, args...)
 }
 
-func (l *defaultLogger) Errorf(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, "ERROR: "+format+"\n", args...)
+func (l *Logger) Error(format string, args ...interface{}) {
+	l.logError.Printf(format, args...)
 }
 
-type HTTPClient interface {
-	Get(url string) (*http.Response, error)
-	Do(req *http.Request) (*http.Response, error)
+func (l *Logger) Infof(format string, args ...interface{}) {
+	l.logInfo.Printf(format, args...)
 }
 
-type Logger interface {
-	Info(args ...interface{})
-	Infof(format string, args ...interface{})
-	Error(args ...interface{})
-	Errorf(format string, args ...interface{})
+func (l *Logger) Debugf(format string, args ...interface{}) {
+	l.logDebug.Printf(format, args...)
 }
 
-func handleError(w http.ResponseWriter, message string, code int, logger Logger) {
+func (l *Logger) Errorf(format string, args ...interface{}) {
+	l.logError.Printf(format, args...)
+}
+
+func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
 	logger.Errorf(message)
 	http.Error(w, message, code)
 }

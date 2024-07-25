@@ -18,3 +18,5 @@ testData:
     - profile
   sessionEncryptionKey: potato-secret
   forceHTTPS: false
+  logLevel: debug
+  rateLimit: 100

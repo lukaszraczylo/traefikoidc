@@ -1,9 +1,7 @@
 ## Traefik OIDC middleware
 
-WIP warning!
-This middleware is under active development.
-
-This middleware is supposed to replace the need for the forward-auth and oauth2-proxy when using traefik as a reverse proxy.
+This middleware is under active development - things should NOT break, but they might.
+This middleware is supposed to replace the need for the forward-auth and oauth2-proxy when using traefik as a reverse proxy to support the OIDC authentication.
 
 ### Configuration options
 
@@ -98,4 +96,6 @@ http:
             - profile
           sessionEncryptionKey: potato-secret
           forceHTTPS: false
+          logLevel: info
+          rateLimit: 100  # 100 requests per minute
 ```
