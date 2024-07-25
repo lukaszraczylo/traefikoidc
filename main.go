@@ -140,7 +140,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// User is not authenticated, start the auth process
+	// User is not authenticated or session has expired, start the auth process
 	t.initiateAuthentication(rw, req, session, redirectURL)
 }
 
@@ -180,6 +180,25 @@ func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) bool {
 		if !ok || idToken == "" {
 			return false
 		}
+
+		// Check if the token has expired
+		claims, err := extractClaims(idToken)
+		if err != nil {
+			t.logger.Errorf("Failed to extract claims: %v", err)
+			return false
+		}
+
+		exp, ok := claims["exp"].(float64)
+		if !ok {
+			t.logger.Errorf("Failed to get expiration time from claims")
+			return false
+		}
+
+		if time.Now().Unix() > int64(exp) {
+			t.logger.Infof("Session has expired")
+			return false
+		}
+
 		return t.verifyToken(idToken) == nil
 	}
 	return false
