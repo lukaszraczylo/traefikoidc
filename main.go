@@ -216,32 +216,23 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 }
 
 func (t *TraefikOidc) determineScheme(req *http.Request) string {
-	scheme := req.URL.Scheme
-	if scheme == "" {
-		scheme = req.Header.Get("X-Forwarded-Proto")
-	}
-	if scheme == "" {
-		if req.TLS != nil {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
-	}
 	if t.forceHTTPS {
-		scheme = "https"
+		return "https"
 	}
-	return scheme
+	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
+		return scheme
+	}
+	if req.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func (t *TraefikOidc) determineHost(req *http.Request) string {
-	host := req.URL.Host
-	if host == "" {
-		host = req.Header.Get("X-Forwarded-Host")
+	if host := req.Header.Get("X-Forwarded-Host"); host != "" {
+		return host
 	}
-	if host == "" {
-		host = req.Host
-	}
-	return host
+	return req.Host
 }
 
 func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) bool {

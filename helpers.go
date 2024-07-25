@@ -78,6 +78,9 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		handleError(rw, "Failed to save session", http.StatusInternalServerError, t.logger)
 		return
 	}
+
+	rw.WriteHeader(http.StatusForbidden)
+	rw.Write([]byte("Logged out"))
 }
 
 func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) (bool, string) {

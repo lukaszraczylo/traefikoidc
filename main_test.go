@@ -3,6 +3,8 @@
 package traefikoidc
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -250,4 +252,147 @@ func (suite *TraefikOidcTestSuite) TestTokenCache() {
 
 func TestTraefikOidcSuite(t *testing.T) {
 	suite.Run(t, new(TraefikOidcTestSuite))
+}
+
+func (suite *TraefikOidcTestSuite) TestGenerateNonce() {
+	nonce, err := generateNonce()
+	suite.NoError(err)
+	suite.Len(nonce, 44) // Base64 encoded 32 bytes
+}
+
+func (suite *TraefikOidcTestSuite) TestBuildFullURL() {
+	url := buildFullURL("https", "example.com", "/path")
+	suite.Equal("https://example.com/path", url)
+
+	url = buildFullURL("", "example.com", "/path")
+	suite.Equal("http://example.com/path", url)
+}
+
+func (suite *TraefikOidcTestSuite) TestExchangeCodeForToken() {
+	ctx := context.Background()
+	code := "test_code"
+	redirectURL := "http://example.com/callback"
+
+	expectedToken := map[string]interface{}{
+		"access_token": "test_access_token",
+		"id_token":     "test_id_token",
+	}
+	tokenJSON, _ := json.Marshal(expectedToken)
+
+	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(&http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(tokenJSON)),
+	}, nil).Once()
+
+	token, err := suite.oidc.exchangeCodeForToken(ctx, code, redirectURL)
+	suite.NoError(err)
+	suite.Equal(expectedToken, token)
+}
+
+func (suite *TraefikOidcTestSuite) TestHandleLogout() {
+	req := httptest.NewRequest("GET", "http://example.com/logout", nil)
+	rw := httptest.NewRecorder()
+
+	session := sessions.NewSession(suite.mockStore, cookieName)
+	session.Values["id_token"] = "test_token"
+
+	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
+	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	suite.oidc.handleLogout(rw, req)
+
+	suite.Equal(http.StatusForbidden, rw.Code)
+	suite.Equal("Logged out", rw.Body.String())
+}
+
+func (suite *TraefikOidcTestSuite) TestExtractClaims() {
+	tokenString := "header.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.signature"
+	claims, err := extractClaims(tokenString)
+	suite.NoError(err)
+	suite.Equal("1234567890", claims["sub"])
+	suite.Equal("John Doe", claims["name"])
+	suite.Equal(float64(1516239022), claims["iat"])
+}
+
+func (suite *TraefikOidcTestSuite) TestDiscoverProviderMetadata() {
+	providerURL := "https://example.com"
+	expectedMetadata := &ProviderMetadata{
+		Issuer:   "https://example.com",
+		AuthURL:  "https://example.com/auth",
+		TokenURL: "https://example.com/token",
+		JWKSURL:  "https://example.com/.well-known/jwks.json",
+	}
+	metadataJSON, _ := json.Marshal(expectedMetadata)
+
+	httpClient := &http.Client{
+		Transport: suite.mockHTTPClient,
+	}
+
+	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(&http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(metadataJSON)),
+	}, nil)
+
+	metadata, err := discoverProviderMetadata(providerURL, *httpClient)
+	suite.NoError(err)
+	suite.Equal(expectedMetadata, metadata)
+}
+
+func (suite *TraefikOidcTestSuite) TestDetermineScheme() {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	scheme := suite.oidc.determineScheme(req)
+	suite.Equal("http", scheme)
+
+	req.Header.Set("X-Forwarded-Proto", "https")
+	scheme = suite.oidc.determineScheme(req)
+	suite.Equal("https", scheme)
+
+	suite.oidc.forceHTTPS = true
+	scheme = suite.oidc.determineScheme(req)
+	suite.Equal("https", scheme)
+}
+
+func (suite *TraefikOidcTestSuite) TestDetermineHost() {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	host := suite.oidc.determineHost(req)
+	suite.Equal("example.com", host)
+
+	req.Header.Set("X-Forwarded-Host", "forwarded.example.com")
+	host = suite.oidc.determineHost(req)
+	suite.Equal("forwarded.example.com", host)
+}
+
+func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
+	session := sessions.NewSession(suite.mockStore, cookieName)
+	session.Values["authenticated"] = true
+	session.Values["id_token"] = "valid.eyJleHAiOjk5OTk5OTk5OTl9.signature"
+
+	suite.mockTokenVerifier.On("VerifyToken", "valid.eyJleHAiOjk5OTk5OTk5OTl9.signature").Return(nil)
+
+	authenticated := suite.oidc.isUserAuthenticated(session)
+	suite.True(authenticated)
+}
+
+func (suite *TraefikOidcTestSuite) TestInitiateAuthentication() {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	rw := httptest.NewRecorder()
+	session := sessions.NewSession(suite.mockStore, cookieName)
+
+	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	suite.oidc.initiateAuthentication(rw, req, session, "http://example.com/callback")
+
+	suite.Equal(http.StatusFound, rw.Code)
+	location := rw.Header().Get("Location")
+	suite.Contains(location, suite.oidc.authURL)
+	suite.Contains(location, "redirect_uri=http%3A%2F%2Fexample.com%2Fcallback")
+}
+
+func (suite *TraefikOidcTestSuite) TestRevokeToken() {
+	token := "valid.eyJleHAiOjk5OTk5OTk5OTl9.signature"
+	suite.oidc.RevokeToken(token)
+
+	_, exists := suite.oidc.tokenCache.Get(token)
+	suite.False(exists)
+	suite.True(suite.oidc.tokenBlacklist.IsBlacklisted(token))
 }
