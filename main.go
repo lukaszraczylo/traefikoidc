@@ -14,6 +14,14 @@ import (
 	"golang.org/x/time/rate"
 )
 
+type TokenVerifier interface {
+	VerifyToken(token string) error
+}
+
+type JWTVerifier interface {
+	VerifyJWTSignatureAndClaims(jwt *JWT, token string) error
+}
+
 type TraefikOidc struct {
 	next           http.Handler
 	name           string
@@ -36,6 +44,8 @@ type TraefikOidc struct {
 	httpClient     *http.Client
 	logger         *Logger
 	redirectURL    string
+	tokenVerifier  TokenVerifier
+	jwtVerifier    JWTVerifier
 }
 
 type ProviderMetadata struct {
@@ -43,6 +53,59 @@ type ProviderMetadata struct {
 	AuthURL  string `json:"authorization_endpoint"`
 	TokenURL string `json:"token_endpoint"`
 	JWKSURL  string `json:"jwks_uri"`
+}
+
+func (t *TraefikOidc) VerifyToken(token string) error {
+	t.logger.Debugf("Verifying token")
+	if !t.limiter.Allow() {
+		return fmt.Errorf("rate limit exceeded")
+	}
+
+	if t.tokenBlacklist.IsBlacklisted(token) {
+		return fmt.Errorf("token is blacklisted")
+	}
+
+	if _, exists := t.tokenCache.Get(token); exists {
+		t.logger.Debugf("Token is valid and cached")
+		return nil // Token is valid and cached
+	}
+
+	jwt, err := parseJWT(token)
+	if err != nil {
+		return fmt.Errorf("failed to parse JWT: %w", err)
+	}
+
+	if err := t.VerifyJWTSignatureAndClaims(jwt, token); err != nil {
+		return err
+	}
+
+	expirationTime := time.Unix(int64(jwt.Claims["exp"].(float64)), 0)
+	t.tokenCache.Set(token, expirationTime)
+
+	return nil
+}
+
+func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error {
+	jwks, err := t.jwkCache.GetJWKS(t.jwksURL, t.httpClient)
+	if err != nil {
+		return fmt.Errorf("failed to get JWKS: %w", err)
+	}
+
+	kid, ok := jwt.Header["kid"].(string)
+	if !ok {
+		return fmt.Errorf("missing key ID in token header")
+	}
+
+	publicKeyPEM, err := getPublicKeyPEM(jwks, kid)
+	if err != nil {
+		return err
+	}
+
+	if err := verifySignature(token, publicKeyPEM); err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
+	}
+
+	return jwt.Verify(t.issuerURL, t.clientID)
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
@@ -82,6 +145,9 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		logger:         NewLogger(config.LogLevel),
 		redirectURL:    "",
 	}
+
+	t.tokenVerifier = t
+	t.jwtVerifier = t
 	t.startTokenCleanup()
 	return t, nil
 }
@@ -232,7 +298,7 @@ func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.R
 }
 
 func (t *TraefikOidc) verifyToken(token string) error {
-	return t.verifyAndCacheToken(token)
+	return t.tokenVerifier.VerifyToken(token)
 }
 
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {

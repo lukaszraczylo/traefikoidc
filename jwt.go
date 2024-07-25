@@ -132,57 +132,11 @@ func decodeSegment(seg string) (map[string]interface{}, error) {
 }
 
 func (t *TraefikOidc) verifyAndCacheToken(token string) error {
-	t.logger.Debugf("Verifying token")
-	if !t.limiter.Allow() {
-		return fmt.Errorf("rate limit exceeded")
-	}
-
-	if t.tokenBlacklist.IsBlacklisted(token) {
-		return fmt.Errorf("token is blacklisted")
-	}
-
-	if _, exists := t.tokenCache.Get(token); exists {
-		t.logger.Debugf("Token is valid and cached")
-		return nil // Token is valid and cached
-	}
-
-	jwt, err := parseJWT(token)
-	if err != nil {
-		return fmt.Errorf("failed to parse JWT: %w", err)
-	}
-
-	if err := t.verifyJWTSignatureAndClaims(jwt, token); err != nil {
-		return err
-	}
-
-	expirationTime := time.Unix(int64(jwt.Claims["exp"].(float64)), 0)
-	t.tokenCache.Set(token, expirationTime)
-
-	return nil
+	return t.tokenVerifier.VerifyToken(token)
 }
 
 func (t *TraefikOidc) verifyJWTSignatureAndClaims(jwt *JWT, token string) error {
-	t.logger.Debugf("Verifying JWT signature and claims")
-	jwks, err := t.jwkCache.GetJWKS(t.jwksURL, t.httpClient)
-	if err != nil {
-		return fmt.Errorf("failed to get JWKS: %w", err)
-	}
-
-	kid, ok := jwt.Header["kid"].(string)
-	if !ok {
-		return fmt.Errorf("missing key ID in token header")
-	}
-
-	publicKeyPEM, err := getPublicKeyPEM(jwks, kid)
-	if err != nil {
-		return err
-	}
-
-	if err := verifySignature(token, publicKeyPEM); err != nil {
-		return fmt.Errorf("signature verification failed: %w", err)
-	}
-
-	return jwt.Verify(t.issuerURL, t.clientID)
+	return t.jwtVerifier.VerifyJWTSignatureAndClaims(jwt, token)
 }
 
 func getPublicKeyPEM(jwks *JWKSet, kid string) ([]byte, error) {
