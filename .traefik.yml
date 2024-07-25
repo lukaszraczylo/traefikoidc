@@ -4,7 +4,7 @@ type: middleware
 import: github.com/lukaszraczylo/traefikoidc
 
 summary: |
-  WIP [do not use, yet] Middleware adding OIDC authentication to traefik.
+  Middleware adding OIDC authentication to traefik routes.
 
 testData:
   providerURL: https://accounts.google.com
@@ -18,3 +18,5 @@ testData:
     - profile
   sessionEncryptionKey: potato-secret
   forceHTTPS: false
+  logLevel: debug
+  rateLimit: 100

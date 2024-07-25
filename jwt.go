@@ -132,6 +132,7 @@ func decodeSegment(seg string) (map[string]interface{}, error) {
 }
 
 func (t *TraefikOidc) verifyAndCacheToken(token string) error {
+	t.logger.Debugf("Verifying token")
 	if !t.limiter.Allow() {
 		return fmt.Errorf("rate limit exceeded")
 	}
@@ -141,6 +142,7 @@ func (t *TraefikOidc) verifyAndCacheToken(token string) error {
 	}
 
 	if _, exists := t.tokenCache.Get(token); exists {
+		t.logger.Debugf("Token is valid and cached")
 		return nil // Token is valid and cached
 	}
 
@@ -160,6 +162,7 @@ func (t *TraefikOidc) verifyAndCacheToken(token string) error {
 }
 
 func (t *TraefikOidc) verifyJWTSignatureAndClaims(jwt *JWT, token string) error {
+	t.logger.Debugf("Verifying JWT signature and claims")
 	jwks, err := t.jwkCache.GetJWKS(t.jwksURL, t.httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to get JWKS: %w", err)

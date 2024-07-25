@@ -33,8 +33,9 @@ type TraefikOidc struct {
 	forceHTTPS     bool
 	scheme         string
 	tokenCache     *TokenCache
-	httpClient     HTTPClient
-	logger         Logger
+	httpClient     *http.Client
+	logger         *Logger
+	redirectURL    string
 }
 
 type ProviderMetadata struct {
@@ -54,7 +55,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		SameSite: http.SameSiteLaxMode,
 	}
 
-	metadata, err := discoverProviderMetadata(config.ProviderURL, &http.Client{})
+	metadata, err := discoverProviderMetadata(config.ProviderURL, http.Client{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover provider metadata: %w", err)
 	}
@@ -75,16 +76,17 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		authURL:        metadata.AuthURL,
 		tokenURL:       metadata.TokenURL,
 		scopes:         config.Scopes,
-		limiter:        rate.NewLimiter(rate.Every(time.Second), 100),
+		limiter:        rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:     NewTokenCache(),
 		httpClient:     &http.Client{},
 		logger:         NewLogger(config.LogLevel),
+		redirectURL:    "",
 	}
 	t.startTokenCleanup()
 	return t, nil
 }
 
-func discoverProviderMetadata(providerURL string, httpClient HTTPClient) (*ProviderMetadata, error) {
+func discoverProviderMetadata(providerURL string, httpClient http.Client) (*ProviderMetadata, error) {
 	wellKnownURL := strings.TrimSuffix(providerURL, "/") + "/.well-known/openid-configuration"
 	resp, err := httpClient.Get(wellKnownURL)
 	if err != nil {
@@ -110,12 +112,14 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if req.URL.Path == t.logoutURLPath {
 		t.handleLogout(rw, req)
-		http.Error(rw, "Logged out", http.StatusOK)
+		http.Error(rw, "Logged out", http.StatusForbidden)
 		return
 	}
 
-	redirectURL := buildFullURL(t.scheme, host, t.redirURLPath)
-	t.logger.Infof("Final redirect URL: %s", redirectURL)
+	if t.redirectURL == "" {
+		t.redirectURL = buildFullURL(t.scheme, host, t.redirURLPath)
+		t.logger.Debugf("Redirect URL updated to: %s", t.redirectURL)
+	}
 
 	session, err := t.store.Get(req, cookieName)
 	if err != nil {
@@ -125,7 +129,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if req.URL.Path == t.redirURLPath {
-		t.logger.Infof("Handling callback, URL: %s", req.URL.String())
+		t.logger.Debugf("Handling callback, URL: %s", req.URL.String())
 		authSuccess, originalPath := t.handleCallback(rw, req)
 		if authSuccess {
 			http.Redirect(rw, req, originalPath, http.StatusFound)
@@ -136,12 +140,13 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if t.isUserAuthenticated(session) {
+		t.logger.Debugf("User is authenticated, serving content")
 		t.next.ServeHTTP(rw, req)
 		return
 	}
 
 	// User is not authenticated or session has expired, start the auth process
-	t.initiateAuthentication(rw, req, session, redirectURL)
+	t.initiateAuthentication(rw, req, session, t.redirectURL)
 }
 
 func (t *TraefikOidc) determineScheme(req *http.Request) string {
@@ -195,7 +200,7 @@ func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) bool {
 		}
 
 		if time.Now().Unix() > int64(exp) {
-			t.logger.Infof("Session has expired")
+			t.logger.Debugf("Session has expired")
 			return false
 		}
 
@@ -208,7 +213,7 @@ func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.R
 	csrfToken := uuid.New().String()
 	session.Values["csrf"] = csrfToken
 	session.Values["incoming_path"] = req.URL.Path
-	t.logger.Infof("Setting CSRF token: %s", csrfToken)
+	t.logger.Debugf("Setting CSRF token: %s", csrfToken)
 
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("Failed to save session: %v", err)
@@ -247,6 +252,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
 	go func() {
 		for range ticker.C {
+			t.logger.Debug("Cleaning up token cache")
 			t.tokenCache.Cleanup()
 			t.tokenBlacklist.Cleanup()
 		}

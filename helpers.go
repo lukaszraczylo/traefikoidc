@@ -60,6 +60,7 @@ func (t *TraefikOidc) exchangeCodeForToken(ctx context.Context, code, redirectUR
 
 func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	session, err := t.store.Get(req, cookieName)
+	t.logger.Debugf("Logging out user")
 	if err != nil {
 		handleError(rw, "Session error", http.StatusInternalServerError, t.logger)
 		return
