@@ -100,15 +100,16 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 
 	code := req.URL.Query().Get("code")
 	redirectURL := buildFullURL(t.scheme, req.Host, t.redirURLPath)
+
 	oauth2Token, err := t.exchangeCodeForToken(ctx, code, redirectURL)
 	if err != nil {
-		handleError(rw, "Failed to exchange token", http.StatusInternalServerError, t.logger)
+		handleError(rw, "Failed to exchange token", http.StatusUnauthorized, t.logger)
 		return false, ""
 	}
 
 	rawIDToken, ok := oauth2Token["id_token"].(string)
 	if !ok {
-		handleError(rw, "No id_token field in oauth2 token", http.StatusInternalServerError, t.logger)
+		handleError(rw, "No id_token field in oauth2 token", http.StatusUnauthorized, t.logger)
 		return false, ""
 	}
 

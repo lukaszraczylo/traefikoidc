@@ -37,7 +37,10 @@ type MockSessionStore struct {
 
 func (m *MockSessionStore) Get(r *http.Request, name string) (*sessions.Session, error) {
 	args := m.Called(r, name)
-	return args.Get(0).(*sessions.Session), args.Error(1)
+	if session, ok := args.Get(0).(*sessions.Session); ok {
+		return session, args.Error(1)
+	}
+	return nil, args.Error(1)
 }
 
 func (m *MockSessionStore) New(r *http.Request, name string) (*sessions.Session, error) {
@@ -395,4 +398,120 @@ func (suite *TraefikOidcTestSuite) TestRevokeToken() {
 	_, exists := suite.oidc.tokenCache.Get(token)
 	suite.False(exists)
 	suite.True(suite.oidc.tokenBlacklist.IsBlacklisted(token))
+}
+
+func (suite *TraefikOidcTestSuite) TestServeHTTP_InvalidSession() {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	rw := httptest.NewRecorder()
+
+	suite.mockStore.On("Get", req, cookieName).Return((*sessions.Session)(nil), fmt.Errorf("invalid session"))
+
+	suite.oidc.ServeHTTP(rw, req)
+
+	suite.Equal(http.StatusInternalServerError, rw.Code)
+	suite.Contains(rw.Body.String(), "Session error")
+}
+
+func (suite *TraefikOidcTestSuite) TestServeHTTP_ExpiredToken() {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	rw := httptest.NewRecorder()
+
+	session := sessions.NewSession(suite.mockStore, cookieName)
+	session.Values["authenticated"] = true
+	session.Values["id_token"] = "expired.eyJleHAiOjF9.signature" // expired token
+
+	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
+	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	suite.oidc.ServeHTTP(rw, req)
+
+	suite.Equal(http.StatusFound, rw.Code) // Should redirect to authentication
+}
+
+func (suite *TraefikOidcTestSuite) TestHandleCallback_InvalidState() {
+	req := httptest.NewRequest("GET", "http://example.com"+suite.oidc.redirURLPath+"?code=test_code&state=invalid_state", nil)
+	rw := httptest.NewRecorder()
+
+	session := sessions.NewSession(suite.mockStore, cookieName)
+	session.Values["csrf"] = "valid_state"
+
+	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
+
+	suite.oidc.ServeHTTP(rw, req)
+
+	suite.Equal(http.StatusBadRequest, rw.Code)
+	suite.Contains(rw.Body.String(), "Invalid state parameter")
+}
+
+func (suite *TraefikOidcTestSuite) TestHandleCallback_TokenExchangeError() {
+	req := httptest.NewRequest("GET", "http://example.com"+suite.oidc.redirURLPath+"?code=invalid_code&state=test_state", nil)
+	rw := httptest.NewRecorder()
+
+	session := sessions.NewSession(suite.mockStore, cookieName)
+	session.Values["csrf"] = "test_state"
+
+	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
+	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(&http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"error": "invalid_grant"}`)),
+	}, nil)
+
+	suite.oidc.ServeHTTP(rw, req)
+
+	suite.Equal(http.StatusUnauthorized, rw.Code)
+	suite.Contains(rw.Body.String(), "Authentication failed")
+}
+
+func (suite *TraefikOidcTestSuite) TestVerifyToken_RateLimitExceeded() {
+	suite.oidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 1) // Set a very low limit
+
+	// Use up the only allowed request
+	suite.oidc.limiter.Allow()
+
+	err := suite.oidc.VerifyToken("some_token")
+	suite.Error(err)
+	suite.Contains(err.Error(), "rate limit exceeded")
+}
+
+func (suite *TraefikOidcTestSuite) TestVerifyToken_BlacklistedToken() {
+	token := "blacklisted_token"
+	suite.oidc.tokenBlacklist.Add(token, time.Now().Add(time.Hour))
+
+	err := suite.oidc.VerifyToken(token)
+	suite.Error(err)
+	suite.Contains(err.Error(), "token is blacklisted")
+}
+
+func (suite *TraefikOidcTestSuite) TestExtractClaims_InvalidToken() {
+	invalidToken := "invalid.token.format"
+	claims, err := extractClaims(invalidToken)
+	suite.Error(err)
+	suite.Nil(claims)
+}
+
+func (suite *TraefikOidcTestSuite) TestDiscoverProviderMetadata_HTTPError() {
+	providerURL := "https://example.com"
+	httpClient := &http.Client{
+		Transport: suite.mockHTTPClient,
+	}
+
+	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(&http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Body:       io.NopCloser(strings.NewReader("Internal Server Error")),
+	}, nil)
+
+	metadata, err := discoverProviderMetadata(providerURL, *httpClient)
+	suite.Error(err)
+	suite.Nil(metadata)
+	suite.Contains(err.Error(), "failed to fetch provider metadata: status code 500")
+}
+
+func (suite *TraefikOidcTestSuite) TestRevokeToken_InvalidToken() {
+	invalidToken := "invalid.token"
+	suite.oidc.RevokeToken(invalidToken)
+
+	// Check that the invalid token is not added to the blacklist
+	suite.False(suite.oidc.tokenBlacklist.IsBlacklisted(invalidToken))
 }

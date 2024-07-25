@@ -158,6 +158,9 @@ func discoverProviderMetadata(providerURL string, httpClient http.Client) (*Prov
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch provider metadata: %w", err)
 	}
+	if resp == nil {
+		return nil, fmt.Errorf("received nil response from provider")
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
