@@ -79,8 +79,7 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	rw.WriteHeader(http.StatusForbidden)
-	rw.Write([]byte("Logged out"))
+	http.Error(rw, "Logged out", http.StatusForbidden)
 }
 
 func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) (bool, string) {

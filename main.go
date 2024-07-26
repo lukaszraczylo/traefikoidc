@@ -181,8 +181,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if req.URL.Path == t.logoutURLPath {
 		t.handleLogout(rw, req)
-		http.Error(rw, "Logged out", http.StatusForbidden)
-		return
+		return // Remove the http.Error call here
 	}
 
 	if t.redirectURL == "" {
@@ -300,9 +299,12 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 		"client_id":     {t.clientID},
 		"response_type": {"code"},
 		"redirect_uri":  {redirectURL},
-		"scope":         {strings.Join(t.scopes, " ")},
 		"state":         {state},
 		"nonce":         {nonce},
+	}
+
+	if len(t.scopes) > 0 {
+		params.Set("scope", strings.Join(t.scopes, " "))
 	}
 
 	return fmt.Sprintf("%s?%s", t.authURL, params.Encode())

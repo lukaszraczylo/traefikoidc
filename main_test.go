@@ -28,6 +28,9 @@ type MockHTTPClient struct {
 
 func (m *MockHTTPClient) RoundTrip(req *http.Request) (*http.Response, error) {
 	args := m.Called(req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
 	return args.Get(0).(*http.Response), args.Error(1)
 }
 
@@ -305,7 +308,7 @@ func (suite *TraefikOidcTestSuite) TestHandleLogout() {
 	suite.oidc.handleLogout(rw, req)
 
 	suite.Equal(http.StatusForbidden, rw.Code)
-	suite.Equal("Logged out", rw.Body.String())
+	suite.Equal("Logged out\n", rw.Body.String())
 }
 
 func (suite *TraefikOidcTestSuite) TestExtractClaims() {
@@ -583,4 +586,69 @@ func TestTraefikOidc_ServeHTTP(t *testing.T) {
 			tr.ServeHTTP(tt.args.rw, tt.args.req)
 		})
 	}
+}
+
+func (suite *TraefikOidcTestSuite) TestBuildAuthURL_CustomScopes() {
+	suite.oidc.scopes = []string{"openid", "email", "custom_scope"}
+	authURL := suite.oidc.buildAuthURL("http://example.com/callback", "test_state", "test_nonce")
+	suite.Contains(authURL, "scope=openid+email+custom_scope")
+}
+
+func (suite *TraefikOidcTestSuite) TestBuildAuthURL_EmptyScopes() {
+	suite.oidc.scopes = []string{}
+	authURL := suite.oidc.buildAuthURL("http://example.com/callback", "test_state", "test_nonce")
+	suite.NotContains(authURL, "scope=")
+}
+
+func (suite *TraefikOidcTestSuite) TestDetermineScheme_ForceHTTPS() {
+	suite.oidc.forceHTTPS = true
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	scheme := suite.oidc.determineScheme(req)
+	suite.Equal("https", scheme)
+}
+
+func (suite *TraefikOidcTestSuite) TestHandleLogout_CustomLogoutURL() {
+	suite.oidc.logoutURLPath = "/custom-logout"
+	req := httptest.NewRequest("GET", "http://example.com/custom-logout", nil)
+	rw := httptest.NewRecorder()
+
+	session := sessions.NewSession(suite.mockStore, cookieName)
+	session.Values["id_token"] = "test_token"
+
+	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
+	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	suite.oidc.ServeHTTP(rw, req)
+
+	suite.Equal(http.StatusForbidden, rw.Code)
+	suite.Equal("Logged out\n", rw.Body.String())
+}
+
+func (suite *TraefikOidcTestSuite) TestVerifyToken_RateLimitReached() {
+	suite.oidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 1) // Set a very low limit
+	suite.oidc.limiter.Allow()                                     // Use up the only allowed request
+
+	err := suite.oidc.VerifyToken("some_token")
+	suite.Error(err)
+	suite.Contains(err.Error(), "rate limit exceeded")
+}
+
+func (suite *TraefikOidcTestSuite) TestVerifyToken_InvalidJWTFormat() {
+	invalidToken := "invalid.jwt.format"
+	err := suite.oidc.VerifyToken(invalidToken)
+	suite.Error(err)
+	suite.Contains(err.Error(), "failed to parse JWT")
+}
+
+func (suite *TraefikOidcTestSuite) TestDiscoverProviderMetadata_InvalidURL() {
+	invalidURL := "invalid-url"
+	httpClient := &http.Client{
+		Transport: suite.mockHTTPClient,
+	}
+
+	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(nil, fmt.Errorf("invalid URL"))
+
+	_, err := discoverProviderMetadata(invalidURL, *httpClient)
+	suite.Error(err)
+	suite.Contains(err.Error(), "failed to fetch provider metadata")
 }
