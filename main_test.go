@@ -515,3 +515,72 @@ func (suite *TraefikOidcTestSuite) TestRevokeToken_InvalidToken() {
 	// Check that the invalid token is not added to the blacklist
 	suite.False(suite.oidc.tokenBlacklist.IsBlacklisted(invalidToken))
 }
+
+func TestTraefikOidc_ServeHTTP(t *testing.T) {
+	type fields struct {
+		next           http.Handler
+		name           string
+		store          sessions.Store
+		redirURLPath   string
+		logoutURLPath  string
+		issuerURL      string
+		jwkCache       *JWKCache
+		tokenBlacklist *TokenBlacklist
+		jwksURL        string
+		clientID       string
+		clientSecret   string
+		authURL        string
+		tokenURL       string
+		scopes         []string
+		limiter        *rate.Limiter
+		forceHTTPS     bool
+		scheme         string
+		tokenCache     *TokenCache
+		httpClient     *http.Client
+		logger         *Logger
+		redirectURL    string
+		tokenVerifier  TokenVerifier
+		jwtVerifier    JWTVerifier
+	}
+	type args struct {
+		rw  http.ResponseWriter
+		req *http.Request
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+	}{
+		// TODO: Add test cases.
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := &TraefikOidc{
+				next:           tt.fields.next,
+				name:           tt.fields.name,
+				store:          tt.fields.store,
+				redirURLPath:   tt.fields.redirURLPath,
+				logoutURLPath:  tt.fields.logoutURLPath,
+				issuerURL:      tt.fields.issuerURL,
+				jwkCache:       tt.fields.jwkCache,
+				tokenBlacklist: tt.fields.tokenBlacklist,
+				jwksURL:        tt.fields.jwksURL,
+				clientID:       tt.fields.clientID,
+				clientSecret:   tt.fields.clientSecret,
+				authURL:        tt.fields.authURL,
+				tokenURL:       tt.fields.tokenURL,
+				scopes:         tt.fields.scopes,
+				limiter:        tt.fields.limiter,
+				forceHTTPS:     tt.fields.forceHTTPS,
+				scheme:         tt.fields.scheme,
+				tokenCache:     tt.fields.tokenCache,
+				httpClient:     tt.fields.httpClient,
+				logger:         tt.fields.logger,
+				redirectURL:    tt.fields.redirectURL,
+				tokenVerifier:  tt.fields.tokenVerifier,
+				jwtVerifier:    tt.fields.jwtVerifier,
+			}
+			tr.ServeHTTP(tt.args.rw, tt.args.req)
+		})
+	}
+}
