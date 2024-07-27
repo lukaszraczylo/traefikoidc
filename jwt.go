@@ -10,7 +10,10 @@ import (
 	"encoding/pem"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type JWT struct {
@@ -72,12 +75,47 @@ func verifyExpiration(expiration float64) error {
 	return nil
 }
 
-func verifySignature(token string, publicKeyPEM []byte) error {
+func (t *TraefikOidc) verifySignatureConcurrently(token string, publicKeys map[string][]byte) error {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return fmt.Errorf("invalid token format")
 	}
 
+	signedContent := parts[0] + "." + parts[1]
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	var eg errgroup.Group
+	var mu sync.Mutex
+	var verificationSuccess bool
+
+	for _, publicKeyPEM := range publicKeys {
+		publicKeyPEM := publicKeyPEM // Create a new variable for the goroutine
+		eg.Go(func() error {
+			err := verifySignature(signedContent, signature, publicKeyPEM)
+			if err == nil {
+				mu.Lock()
+				verificationSuccess = true
+				mu.Unlock()
+			}
+			return nil // Always return nil to continue checking other keys
+		})
+	}
+
+	if err := eg.Wait(); err != nil {
+		return err
+	}
+
+	if !verificationSuccess {
+		return fmt.Errorf("signature verification failed for all keys")
+	}
+
+	return nil
+}
+
+func verifySignature(signedContent string, signature []byte, publicKeyPEM []byte) error {
 	block, _ := pem.Decode(publicKeyPEM)
 	if block == nil {
 		return fmt.Errorf("failed to parse PEM block containing the public key")
@@ -91,12 +129,6 @@ func verifySignature(token string, publicKeyPEM []byte) error {
 	rsaPublicKey, ok := pub.(*rsa.PublicKey)
 	if !ok {
 		return fmt.Errorf("not an RSA public key")
-	}
-
-	signedContent := parts[0] + "." + parts[1]
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return fmt.Errorf("failed to decode signature: %w", err)
 	}
 
 	hash := sha256.Sum256([]byte(signedContent))
