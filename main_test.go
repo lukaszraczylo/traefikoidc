@@ -375,8 +375,9 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 
 	suite.mockTokenVerifier.On("VerifyToken", "valid.eyJleHAiOjk5OTk5OTk5OTl9.signature").Return(nil)
 
-	authenticated := suite.oidc.isUserAuthenticated(session)
+	authenticated, tokenExpired := suite.oidc.isUserAuthenticated(session)
 	suite.True(authenticated)
+	suite.False(tokenExpired)
 }
 
 func (suite *TraefikOidcTestSuite) TestInitiateAuthentication() {

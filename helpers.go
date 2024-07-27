@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/sessions"
 )
 
 func generateNonce() (string, error) {
@@ -80,6 +82,17 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	http.Error(rw, "Logged out", http.StatusForbidden)
+}
+
+func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Request, session *sessions.Session) {
+	// Clear the existing session
+	session.Options.MaxAge = -1
+	session.Values = make(map[interface{}]interface{})
+	err := session.Save(req, rw)
+	if err != nil {
+		t.logger.Errorf("Failed to clear session: %v", err)
+	}
+	t.initiateAuthentication(rw, req, session, t.redirectURL)
 }
 
 func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) (bool, string) {
