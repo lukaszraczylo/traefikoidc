@@ -214,7 +214,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if req.URL.Path == t.logoutURLPath {
 		t.handleLogout(rw, req)
-		return // Remove the http.Error call here
+		return
 	}
 
 	if t.redirectURL == "" {
@@ -240,13 +240,20 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if t.isUserAuthenticated(session) {
+	authenticated, tokenExpired := t.isUserAuthenticated(session)
+	if authenticated {
 		t.logger.Debugf("User is authenticated, serving content")
 		t.next.ServeHTTP(rw, req)
 		return
 	}
 
-	// User is not authenticated or session has expired, start the auth process
+	if tokenExpired {
+		t.logger.Debugf("Token has expired, initiating reauthentication")
+		t.handleExpiredToken(rw, req, session)
+		return
+	}
+
+	// User is not authenticated, start the auth process
 	t.initiateAuthentication(rw, req, session, t.redirectURL)
 }
 
@@ -270,35 +277,34 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 	return req.Host
 }
 
-func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) bool {
+func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool) {
 	authenticated, _ := session.Values["authenticated"].(bool)
 	if authenticated {
 		idToken, ok := session.Values["id_token"].(string)
 		if !ok || idToken == "" {
-			return false
+			return false, false
 		}
 
-		// Check if the token has expired
 		claims, err := extractClaims(idToken)
 		if err != nil {
 			t.logger.Errorf("Failed to extract claims: %v", err)
-			return false
+			return false, false
 		}
 
 		exp, ok := claims["exp"].(float64)
 		if !ok {
 			t.logger.Errorf("Failed to get expiration time from claims")
-			return false
+			return false, false
 		}
 
 		if time.Now().Unix() > int64(exp) {
 			t.logger.Debugf("Session has expired")
-			return false
+			return false, true // Token expired
 		}
 
-		return t.verifyToken(idToken) == nil
+		return t.verifyToken(idToken) == nil, false
 	}
-	return false
+	return false, false
 }
 
 func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
