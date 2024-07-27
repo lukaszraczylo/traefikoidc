@@ -327,20 +327,27 @@ func (t *TraefikOidc) verifyToken(token string) error {
 	return t.tokenVerifier.VerifyToken(token)
 }
 
+var authURLBuilder strings.Builder
+
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
-	params := url.Values{
-		"client_id":     {t.clientID},
-		"response_type": {"code"},
-		"redirect_uri":  {redirectURL},
-		"state":         {state},
-		"nonce":         {nonce},
-	}
+	authURLBuilder.Reset()
+	authURLBuilder.Grow(256) // Pre-allocate some space
+	authURLBuilder.WriteString(t.authURL)
+	authURLBuilder.WriteString("?client_id=")
+	authURLBuilder.WriteString(t.clientID)
+	authURLBuilder.WriteString("&response_type=code&redirect_uri=")
+	authURLBuilder.WriteString(url.QueryEscape(redirectURL))
+	authURLBuilder.WriteString("&state=")
+	authURLBuilder.WriteString(state)
+	authURLBuilder.WriteString("&nonce=")
+	authURLBuilder.WriteString(nonce)
 
 	if len(t.scopes) > 0 {
-		params.Set("scope", strings.Join(t.scopes, " "))
+		authURLBuilder.WriteString("&scope=")
+		authURLBuilder.WriteString(strings.Join(t.scopes, "+"))
 	}
 
-	return fmt.Sprintf("%s?%s", t.authURL, params.Encode())
+	return authURLBuilder.String()
 }
 
 func (t *TraefikOidc) startTokenCleanup() {
