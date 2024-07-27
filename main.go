@@ -311,7 +311,7 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 }
 
 func (t *TraefikOidc) startTokenCleanup() {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(1 * time.Minute)
 	go func() {
 		for range ticker.C {
 			t.logger.Debug("Cleaning up token cache")
