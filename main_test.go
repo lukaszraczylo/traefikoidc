@@ -109,7 +109,7 @@ func (suite *TraefikOidcTestSuite) SetupTest() {
 		jwkCache:       &JWKCache{},
 		tokenBlacklist: NewTokenBlacklist(),
 		tokenCache:     NewTokenCache(),
-		logger:         NewLogger("debug"),
+		logger:         NewLogger("info"),
 		limiter:        rate.NewLimiter(rate.Every(time.Second), 100),
 		authURL:        "https://example.com/auth",
 		tokenURL:       "https://example.com/token",
