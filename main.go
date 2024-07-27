@@ -15,6 +15,8 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const ConstSessionTimeout = 86400
+
 type TokenVerifier interface {
 	VerifyToken(token string) error
 }
@@ -123,7 +125,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	store := sessions.NewCookieStore([]byte(config.SessionEncryptionKey))
 	store.Options = &sessions.Options{
 		Path:     "/",
-		MaxAge:   3600,
+		MaxAge:   ConstSessionTimeout,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
@@ -242,6 +244,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	authenticated, tokenExpired := t.isUserAuthenticated(session)
 	if authenticated {
+		t.refreshSession(rw, req)
 		t.logger.Debugf("User is authenticated, serving content")
 		t.next.ServeHTTP(rw, req)
 		return
@@ -297,9 +300,10 @@ func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool
 			return false, false
 		}
 
-		if time.Now().Unix() > int64(exp) {
-			t.logger.Debugf("Session has expired")
-			return false, true // Token expired
+		gracePeriod := time.Minute * 1
+		if time.Now().Add(gracePeriod).Unix() > int64(exp) {
+			t.logger.Debugf("Session has expired or will expire soon")
+			return false, true // Token expired or will expire soon
 		}
 
 		return t.verifyToken(idToken) == nil, false
@@ -377,6 +381,23 @@ func (t *TraefikOidc) RevokeToken(token string) {
 		if exp, ok := claims["exp"].(float64); ok {
 			expTime := time.Unix(int64(exp), 0)
 			t.tokenBlacklist.Add(token, expTime)
+		}
+	}
+}
+
+func (t *TraefikOidc) refreshSession(w http.ResponseWriter, r *http.Request) {
+	session, err := t.store.Get(r, cookieName)
+	if err != nil {
+		t.logger.Errorf("Error getting session: %v", err)
+		return
+	}
+
+	if auth, ok := session.Values["authenticated"].(bool); ok && auth {
+		// Refresh the session
+		session.Options.MaxAge = ConstSessionTimeout
+		err = session.Save(r, w)
+		if err != nil {
+			t.logger.Errorf("Error saving session: %v", err)
 		}
 	}
 }
