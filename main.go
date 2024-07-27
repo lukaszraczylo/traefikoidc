@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -96,12 +97,22 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 		return fmt.Errorf("missing key ID in token header")
 	}
 
-	publicKeyPEM, err := getPublicKeyPEM(jwks, kid)
-	if err != nil {
-		return err
+	publicKeys := make(map[string][]byte)
+	for _, key := range jwks.Keys {
+		if key.Kid == kid {
+			publicKeyPEM, err := jwkToPEM(&key)
+			if err != nil {
+				return err
+			}
+			publicKeys[key.Kid] = publicKeyPEM
+		}
 	}
 
-	if err := verifySignature(token, publicKeyPEM); err != nil {
+	if len(publicKeys) == 0 {
+		return fmt.Errorf("no matching public keys found")
+	}
+
+	if err := t.verifySignatureConcurrently(token, publicKeys); err != nil {
 		return fmt.Errorf("signature verification failed: %w", err)
 	}
 
@@ -123,6 +134,28 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, fmt.Errorf("failed to discover provider metadata: %w", err)
 	}
 
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialer := &net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		MaxIdleConnsPerHost:   10,
+	}
+
+	httpClient := &http.Client{
+		Timeout:   time.Second * 30,
+		Transport: transport,
+	}
+
 	t := &TraefikOidc{
 		next:           next,
 		name:           name,
@@ -141,7 +174,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		scopes:         config.Scopes,
 		limiter:        rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:     NewTokenCache(),
-		httpClient:     &http.Client{},
+		httpClient:     httpClient,
 		logger:         NewLogger(config.LogLevel),
 		redirectURL:    "",
 	}
