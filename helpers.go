@@ -31,13 +31,18 @@ func buildFullURL(scheme, host, path string) string {
 	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }
 
-func (t *TraefikOidc) exchangeCodeForToken(ctx context.Context, code, redirectURL string) (map[string]interface{}, error) {
+func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType, codeOrToken, redirectURL string) (map[string]interface{}, error) {
 	data := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
+		"grant_type":    {grantType},
 		"client_id":     {t.clientID},
 		"client_secret": {t.clientSecret},
-		"redirect_uri":  {redirectURL},
+	}
+
+	if grantType == "authorization_code" {
+		data.Set("code", codeOrToken)
+		data.Set("redirect_uri", redirectURL)
+	} else if grantType == "refresh_token" {
+		data.Set("refresh_token", codeOrToken)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", t.tokenURL, strings.NewReader(data.Encode()))
@@ -48,7 +53,7 @@ func (t *TraefikOidc) exchangeCodeForToken(ctx context.Context, code, redirectUR
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to exchange code for token: %w", err)
+		return nil, fmt.Errorf("failed to exchange tokens: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -58,6 +63,38 @@ func (t *TraefikOidc) exchangeCodeForToken(ctx context.Context, code, redirectUR
 	}
 
 	return result, nil
+}
+
+type TokenResponse struct {
+	IDToken      string `json:"id_token"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+}
+
+func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error) {
+	ctx := context.Background()
+	result, err := t.exchangeTokens(ctx, "refresh_token", refreshToken, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh token: %w", err)
+	}
+
+	response := &TokenResponse{
+		IDToken:     result["id_token"].(string),
+		AccessToken: result["access_token"].(string),
+		ExpiresIn:   int(result["expires_in"].(float64)),
+		TokenType:   result["token_type"].(string),
+	}
+
+	// The refresh token might not be returned if it hasn't changed
+	if newRefreshToken, ok := result["refresh_token"].(string); ok {
+		response.RefreshToken = newRefreshToken
+	} else {
+		response.RefreshToken = refreshToken
+	}
+
+	return response, nil
 }
 
 func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
@@ -96,7 +133,6 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 }
 
 func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) (bool, string) {
-	ctx := req.Context()
 	session, err := t.store.Get(req, cookieName)
 	if err != nil {
 		handleError(rw, "Session error", http.StatusInternalServerError, t.logger)
@@ -113,7 +149,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 	code := req.URL.Query().Get("code")
 	redirectURL := buildFullURL(t.scheme, req.Host, t.redirURLPath)
 
-	oauth2Token, err := t.exchangeCodeForToken(ctx, code, redirectURL)
+	oauth2Token, err := t.exchangeTokens(req.Context(), "authorization_code", code, redirectURL)
 	if err != nil {
 		handleError(rw, "Failed to exchange token", http.StatusUnauthorized, t.logger)
 		return false, ""
@@ -140,6 +176,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 
 	session.Values["authenticated"] = true
 	session.Values["id_token"] = rawIDToken
+	session.Values["refresh_token"] = oauth2Token["refresh_token"]
 	session.Values["email"] = email
 	if err := session.Save(req, rw); err != nil {
 		handleError(rw, "Failed to save session", http.StatusInternalServerError, t.logger)

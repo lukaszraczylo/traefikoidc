@@ -242,17 +242,23 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	authenticated, tokenExpired := t.isUserAuthenticated(session)
+	authenticated, tokenExpired, needsRefresh := t.isUserAuthenticated(session)
 	if authenticated {
-		t.refreshSession(rw, req)
-		t.logger.Debugf("User is authenticated, serving content")
+		if needsRefresh {
+			// Attempt to refresh the token silently
+			if refreshed := t.refreshToken(rw, req, session); !refreshed {
+				// If refresh failed, re-authenticate
+				t.initiateAuthentication(rw, req, session, t.redirectURL)
+				return
+			}
+		}
 		t.next.ServeHTTP(rw, req)
 		return
 	}
 
 	if tokenExpired {
 		t.logger.Debugf("Token has expired, initiating reauthentication")
-		t.handleExpiredToken(rw, req, session)
+		t.initiateAuthentication(rw, req, session, t.redirectURL)
 		return
 	}
 
@@ -280,35 +286,41 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 	return req.Host
 }
 
-func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool) {
+func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool, bool) {
 	authenticated, _ := session.Values["authenticated"].(bool)
 	if authenticated {
 		idToken, ok := session.Values["id_token"].(string)
 		if !ok || idToken == "" {
-			return false, false
+			return false, false, false
 		}
 
 		claims, err := extractClaims(idToken)
 		if err != nil {
 			t.logger.Errorf("Failed to extract claims: %v", err)
-			return false, false
+			return false, false, false
 		}
 
 		exp, ok := claims["exp"].(float64)
 		if !ok {
 			t.logger.Errorf("Failed to get expiration time from claims")
-			return false, false
+			return false, false, false
 		}
 
-		gracePeriod := time.Minute * 1
-		if time.Now().Add(gracePeriod).Unix() > int64(exp) {
-			t.logger.Debugf("Session has expired or will expire soon")
-			return false, true // Token expired or will expire soon
+		now := time.Now().Unix()
+		expTime := int64(exp)
+
+		if now > expTime {
+			return false, true, false // Token has expired
 		}
 
-		return t.verifyToken(idToken) == nil, false
+		gracePeriod := time.Minute * 5
+		if time.Now().Add(gracePeriod).Unix() > expTime {
+			return true, false, true // Token will expire soon, needs refresh
+		}
+
+		return t.verifyToken(idToken) == nil, false, false
 	}
-	return false, false
+	return false, false, false
 }
 
 func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
@@ -400,4 +412,26 @@ func (t *TraefikOidc) refreshSession(w http.ResponseWriter, r *http.Request) {
 			t.logger.Errorf("Error saving session: %v", err)
 		}
 	}
+}
+
+func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, session *sessions.Session) bool {
+	refreshToken, ok := session.Values["refresh_token"].(string)
+	if !ok || refreshToken == "" {
+		return false
+	}
+
+	newToken, err := t.getNewTokenWithRefreshToken(refreshToken)
+	if err != nil {
+		t.logger.Errorf("Failed to refresh token: %v", err)
+		return false
+	}
+
+	session.Values["id_token"] = newToken.IDToken
+	session.Values["refresh_token"] = newToken.RefreshToken
+	if err := session.Save(req, rw); err != nil {
+		t.logger.Errorf("Failed to save refreshed session: %v", err)
+		return false
+	}
+
+	return true
 }
