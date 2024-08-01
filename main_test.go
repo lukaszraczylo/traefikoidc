@@ -274,25 +274,61 @@ func (suite *TraefikOidcTestSuite) TestBuildFullURL() {
 	suite.Equal("http://example.com/path", url)
 }
 
-func (suite *TraefikOidcTestSuite) TestExchangeCodeForToken() {
+func (suite *TraefikOidcTestSuite) TestExchangeTokens() {
 	ctx := context.Background()
-	code := "test_code"
-	redirectURL := "http://example.com/callback"
 
-	expectedToken := map[string]interface{}{
-		"access_token": "test_access_token",
-		"id_token":     "test_id_token",
+	testCases := []struct {
+		name          string
+		grantType     string
+		codeOrToken   string
+		redirectURL   string
+		expectedToken map[string]interface{}
+	}{
+		{
+			name:        "Authorization Code Exchange",
+			grantType:   "authorization_code",
+			codeOrToken: "test_code",
+			redirectURL: "http://example.com/callback",
+			expectedToken: map[string]interface{}{
+				"access_token":  "test_access_token",
+				"id_token":      "test_id_token",
+				"refresh_token": "test_refresh_token",
+				"expires_in":    float64(3600),
+				"token_type":    "Bearer",
+			},
+		},
+		{
+			name:        "Refresh Token Exchange",
+			grantType:   "refresh_token",
+			codeOrToken: "test_refresh_token",
+			redirectURL: "",
+			expectedToken: map[string]interface{}{
+				"access_token":  "new_access_token",
+				"id_token":      "new_id_token",
+				"refresh_token": "new_refresh_token",
+				"expires_in":    float64(3600),
+				"token_type":    "Bearer",
+			},
+		},
 	}
-	tokenJSON, _ := json.Marshal(expectedToken)
 
-	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(bytes.NewReader(tokenJSON)),
-	}, nil).Once()
+	for _, tc := range testCases {
+		suite.Run(tc.name, func() {
+			tokenJSON, _ := json.Marshal(tc.expectedToken)
 
-	token, err := suite.oidc.exchangeCodeForToken(ctx, code, redirectURL)
-	suite.NoError(err)
-	suite.Equal(expectedToken, token)
+			// Set up the mock HTTP client
+			suite.mockHTTPClient.On("RoundTrip", mock.AnythingOfType("*http.Request")).Return(&http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(tokenJSON)),
+			}, nil).Once()
+
+			token, err := suite.oidc.exchangeTokens(ctx, tc.grantType, tc.codeOrToken, tc.redirectURL)
+			suite.NoError(err)
+			suite.Equal(tc.expectedToken, token)
+
+			suite.mockHTTPClient.AssertExpectations(suite.T())
+		})
+	}
 }
 
 func (suite *TraefikOidcTestSuite) TestHandleLogout() {
@@ -369,15 +405,75 @@ func (suite *TraefikOidcTestSuite) TestDetermineHost() {
 }
 
 func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
-	session := sessions.NewSession(suite.mockStore, cookieName)
-	session.Values["authenticated"] = true
-	session.Values["id_token"] = "valid.eyJleHAiOjk5OTk5OTk5OTl9.signature"
+	testCases := []struct {
+		name            string
+		setupSession    func() *sessions.Session
+		expectedAuth    bool
+		expectedExpired bool
+		expectedRefresh bool
+	}{
+		{
+			name: "Valid Token",
+			setupSession: func() *sessions.Session {
+				session := sessions.NewSession(suite.mockStore, cookieName)
+				session.Values["authenticated"] = true
+				session.Values["id_token"] = "valid.eyJleHAiOjk5OTk5OTk5OTl9.signature"
+				return session
+			},
+			expectedAuth:    true,
+			expectedExpired: false,
+			expectedRefresh: false,
+		},
+		{
+			name: "Expired Token",
+			setupSession: func() *sessions.Session {
+				session := sessions.NewSession(suite.mockStore, cookieName)
+				session.Values["authenticated"] = true
+				session.Values["id_token"] = "expired.eyJleHAiOjE1OTM1NjE2MDB9.signature"
+				return session
+			},
+			expectedAuth:    false,
+			expectedExpired: true,
+			expectedRefresh: false,
+		},
+		{
+			name: "Token Needs Refresh",
+			setupSession: func() *sessions.Session {
+				session := sessions.NewSession(suite.mockStore, cookieName)
+				session.Values["authenticated"] = true
+				// Set expiration to 4 minutes from now
+				exp := time.Now().Add(4 * time.Minute).Unix()
+				token := fmt.Sprintf("needsrefresh.%s.signature", base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp))))
+				session.Values["id_token"] = token
+				return session
+			},
+			expectedAuth:    true,
+			expectedExpired: false,
+			expectedRefresh: true,
+		},
+		{
+			name: "Not Authenticated",
+			setupSession: func() *sessions.Session {
+				session := sessions.NewSession(suite.mockStore, cookieName)
+				session.Values["authenticated"] = false
+				return session
+			},
+			expectedAuth:    false,
+			expectedExpired: false,
+			expectedRefresh: false,
+		},
+	}
 
-	suite.mockTokenVerifier.On("VerifyToken", "valid.eyJleHAiOjk5OTk5OTk5OTl9.signature").Return(nil)
-
-	authenticated, tokenExpired := suite.oidc.isUserAuthenticated(session)
-	suite.True(authenticated)
-	suite.False(tokenExpired)
+	for _, tc := range testCases {
+		suite.Run(tc.name, func() {
+			session := tc.setupSession()
+			suite.mockTokenVerifier.On("VerifyToken", mock.AnythingOfType("string")).Return(nil).Maybe()
+			authenticated, tokenExpired, needsRefresh := suite.oidc.isUserAuthenticated(session)
+			suite.Equal(tc.expectedAuth, authenticated)
+			suite.Equal(tc.expectedExpired, tokenExpired)
+			suite.Equal(tc.expectedRefresh, needsRefresh)
+		})
+	}
 }
 
 func (suite *TraefikOidcTestSuite) TestInitiateAuthentication() {
