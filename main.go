@@ -282,6 +282,22 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				return
 			}
 		}
+
+		idToken, ok := session.Values["id_token"].(string)
+		if !ok || idToken == "" {
+			return
+		}
+
+		claims, err := extractClaims(idToken)
+		if err != nil {
+			t.logger.Errorf("Failed to extract claims: %v", err)
+			return
+		}
+
+		// Add authenticated user email to the header X-Forwarded-User
+		email, _ := claims["email"].(string)
+		req.Header.Set("X-Forwarded-User", email)
+
 		t.next.ServeHTTP(rw, req)
 		return
 	}
