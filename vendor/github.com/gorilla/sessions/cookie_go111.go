@@ -1,5 +1,5 @@
-//go:build !go1.11
-// +build !go1.11
+//go:build go1.11
+// +build go1.11
 
 package sessions
 
@@ -15,6 +15,7 @@ func newCookieFromOptions(name, value string, options *Options) *http.Cookie {
 		MaxAge:   options.MaxAge,
 		Secure:   options.Secure,
 		HttpOnly: options.HttpOnly,
+		SameSite: options.SameSite,
 	}
 
 }
