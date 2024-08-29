@@ -23,6 +23,7 @@ type Config struct {
 	SessionEncryptionKey string   `json:"sessionEncryptionKey"`
 	ForceHTTPS           bool     `json:"forceHTTPS"`
 	RateLimit            int      `json:"rateLimit"`
+	ExcludedURLs         []string `json:"excludedURLs"`
 }
 
 func CreateConfig() *Config {

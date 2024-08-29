@@ -49,6 +49,7 @@ type TraefikOidc struct {
 	redirectURL    string
 	tokenVerifier  TokenVerifier
 	jwtVerifier    JWTVerifier
+	excludedURLs   map[string]struct{}
 }
 
 type ProviderMetadata struct {
@@ -178,7 +179,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		tokenCache:     NewTokenCache(),
 		httpClient:     httpClient,
 		logger:         NewLogger(config.LogLevel),
-		redirectURL:    "",
+		excludedURLs: func() map[string]struct{} {
+			m := make(map[string]struct{})
+			for _, url := range config.ExcludedURLs {
+				m[url] = struct{}{}
+			}
+			return m
+		}(),
+		redirectURL: "",
 	}
 
 	t.tokenVerifier = t
@@ -211,6 +219,11 @@ func discoverProviderMetadata(providerURL string, httpClient http.Client) (*Prov
 }
 
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	if t.determineExcludedURL(req.URL.Path) {
+		t.next.ServeHTTP(rw, req)
+		return
+	}
+
 	t.scheme = t.determineScheme(req)
 	host := t.determineHost(req)
 
@@ -264,6 +277,15 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// User is not authenticated, start the auth process
 	t.initiateAuthentication(rw, req, session, t.redirectURL)
+}
+
+func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
+	for excludedURL := range t.excludedURLs {
+		if strings.HasPrefix(currentRequest, excludedURL) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *TraefikOidc) determineScheme(req *http.Request) string {

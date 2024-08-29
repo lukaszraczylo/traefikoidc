@@ -749,3 +749,65 @@ func (suite *TraefikOidcTestSuite) TestDiscoverProviderMetadata_InvalidURL() {
 	suite.Error(err)
 	suite.Contains(err.Error(), "failed to fetch provider metadata")
 }
+
+func (suite *TraefikOidcTestSuite) TestServeHTTP_ExcludedURLs() {
+	suite.oidc.excludedURLs = map[string]struct{}{
+		"/public":     {},
+		"/api/health": {},
+	}
+
+	testCases := []struct {
+		name           string
+		url            string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{
+			name:           "Excluded URL - public",
+			url:            "http://example.com/public",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Public content",
+		},
+		{
+			name:           "Excluded URL - api health",
+			url:            "http://example.com/api/health",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "API is healthy",
+		},
+		{
+			name:           "Non-excluded URL",
+			url:            "http://example.com/private",
+			expectedStatus: http.StatusFound, // Expect a redirect to auth
+		},
+	}
+
+	for _, tc := range testCases {
+		suite.Run(tc.name, func() {
+			req := httptest.NewRequest("GET", tc.url, nil)
+			rw := httptest.NewRecorder()
+
+			if !strings.HasPrefix(req.URL.Path, "/public") && !strings.HasPrefix(req.URL.Path, "/api/health") {
+				// For non-excluded URLs, set up session mock
+				session := sessions.NewSession(suite.mockStore, cookieName)
+				suite.mockStore.On("Get", req, cookieName).Return(session, nil).Once()
+				suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+			}
+
+			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(tc.expectedBody))
+			})
+
+			suite.oidc.next = nextHandler
+
+			suite.oidc.ServeHTTP(rw, req)
+
+			suite.Equal(tc.expectedStatus, rw.Code)
+			if tc.expectedStatus == http.StatusOK {
+				suite.Equal(tc.expectedBody, rw.Body.String())
+			}
+
+			suite.mockStore.AssertExpectations(suite.T())
+		})
+	}
+}

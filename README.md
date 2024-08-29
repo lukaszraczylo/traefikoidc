@@ -90,12 +90,15 @@ http:
           clientSecret: secret
           callbackURL: /oauth2/callback
           logoutURL: /oauth2/logout
-          scopes:
+          scopes: # If not provided, default scopes will be used (openid, email, profile)
             - openid
             - email
             - profile
           sessionEncryptionKey: potato-secret
           forceHTTPS: false
-          logLevel: info
-          rateLimit: 100  # 100 requests per minute
+          logLevel: debug # debug, info, warn, error
+          rateLimit: 100 # Simple rate limiter to prevent brute force attacks
+          excludedURLs: # Determines the list of URLs which are NOT a subject to authentication
+            - /login # covers /login, /login/me, /login/reminder etc.
+            - /my-public-data
 ```
