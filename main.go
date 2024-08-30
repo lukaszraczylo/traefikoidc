@@ -59,6 +59,10 @@ type ProviderMetadata struct {
 	JWKSURL  string `json:"jwks_uri"`
 }
 
+var defaultExcludedURLs = map[string]struct{}{
+	"/favicon": {},
+}
+
 func (t *TraefikOidc) VerifyToken(token string) error {
 	t.logger.Debugf("Verifying token")
 	if !t.limiter.Allow() {
@@ -188,6 +192,10 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		}(),
 		redirectURL: "",
 	}
+	// add defaultExcludedURLs to excludedURLs
+	for k, v := range defaultExcludedURLs {
+		t.excludedURLs[k] = v
+	}
 
 	t.tokenVerifier = t
 	t.jwtVerifier = t
@@ -219,6 +227,7 @@ func discoverProviderMetadata(providerURL string, httpClient http.Client) (*Prov
 }
 
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// Check if the URL is excluded first
 	if t.determineExcludedURL(req.URL.Path) {
 		t.next.ServeHTTP(rw, req)
 		return
@@ -237,6 +246,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		t.logger.Debugf("Redirect URL updated to: %s", t.redirectURL)
 	}
 
+	// Only get or create a session if the URL is not excluded
 	session, err := t.store.Get(req, cookieName)
 	if err != nil {
 		t.logger.Errorf("Error getting session: %v", err)
@@ -255,7 +265,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	authenticated, tokenExpired, needsRefresh := t.isUserAuthenticated(session)
+	authenticated, needsRefresh := t.isUserAuthenticated(session)
 	if authenticated {
 		if needsRefresh {
 			// Attempt to refresh the token silently
@@ -269,22 +279,18 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if tokenExpired {
-		t.logger.Debugf("Token has expired, initiating reauthentication")
-		t.initiateAuthentication(rw, req, session, t.redirectURL)
-		return
-	}
-
-	// User is not authenticated, start the auth process
+	// If the user is not authenticated, initiate authentication
 	t.initiateAuthentication(rw, req, session, t.redirectURL)
 }
 
 func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 	for excludedURL := range t.excludedURLs {
 		if strings.HasPrefix(currentRequest, excludedURL) {
+			t.logger.Debug("URL is excluded - got %s / excluded hit: %s", currentRequest, excludedURL)
 			return true
 		}
 	}
+	t.logger.Debug("URL is not excluded - got %s", currentRequest)
 	return false
 }
 
@@ -308,41 +314,48 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 	return req.Host
 }
 
-func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool, bool) {
+func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool) {
 	authenticated, _ := session.Values["authenticated"].(bool)
-	if authenticated {
-		idToken, ok := session.Values["id_token"].(string)
-		if !ok || idToken == "" {
-			return false, false, false
-		}
-
-		claims, err := extractClaims(idToken)
-		if err != nil {
-			t.logger.Errorf("Failed to extract claims: %v", err)
-			return false, false, false
-		}
-
-		exp, ok := claims["exp"].(float64)
-		if !ok {
-			t.logger.Errorf("Failed to get expiration time from claims")
-			return false, false, false
-		}
-
-		now := time.Now().Unix()
-		expTime := int64(exp)
-
-		if now > expTime {
-			return false, true, false // Token has expired
-		}
-
-		gracePeriod := time.Minute * 5
-		if time.Now().Add(gracePeriod).Unix() > expTime {
-			return true, false, true // Token will expire soon, needs refresh
-		}
-
-		return t.verifyToken(idToken) == nil, false, false
+	if !authenticated {
+		return false, false
 	}
-	return false, false, false
+
+	idToken, ok := session.Values["id_token"].(string)
+	if !ok || idToken == "" {
+		return false, false
+	}
+
+	// Verify the token
+	if err := t.verifyToken(idToken); err != nil {
+		t.logger.Errorf("Token verification failed: %v", err)
+		return false, false
+	}
+
+	claims, err := extractClaims(idToken)
+	if err != nil {
+		t.logger.Errorf("Failed to extract claims: %v", err)
+		return false, false
+	}
+
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		t.logger.Errorf("Failed to get expiration time from claims")
+		return false, false
+	}
+
+	now := time.Now().Unix()
+	expTime := int64(exp)
+
+	if now > expTime {
+		return false, false // Token has expired
+	}
+
+	gracePeriod := time.Minute * 5
+	if time.Now().Add(gracePeriod).Unix() > expTime {
+		return true, true // Token will expire soon, needs refresh
+	}
+
+	return true, false
 }
 
 func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {

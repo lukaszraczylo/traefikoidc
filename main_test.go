@@ -409,7 +409,6 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 		name            string
 		setupSession    func() *sessions.Session
 		expectedAuth    bool
-		expectedExpired bool
 		expectedRefresh bool
 	}{
 		{
@@ -421,7 +420,6 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 				return session
 			},
 			expectedAuth:    true,
-			expectedExpired: false,
 			expectedRefresh: false,
 		},
 		{
@@ -433,7 +431,6 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 				return session
 			},
 			expectedAuth:    false,
-			expectedExpired: true,
 			expectedRefresh: false,
 		},
 		{
@@ -448,7 +445,6 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 				return session
 			},
 			expectedAuth:    true,
-			expectedExpired: false,
 			expectedRefresh: true,
 		},
 		{
@@ -459,7 +455,6 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 				return session
 			},
 			expectedAuth:    false,
-			expectedExpired: false,
 			expectedRefresh: false,
 		},
 	}
@@ -468,14 +463,12 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 		suite.Run(tc.name, func() {
 			session := tc.setupSession()
 			suite.mockTokenVerifier.On("VerifyToken", mock.AnythingOfType("string")).Return(nil).Maybe()
-			authenticated, tokenExpired, needsRefresh := suite.oidc.isUserAuthenticated(session)
+			authenticated, needsRefresh := suite.oidc.isUserAuthenticated(session)
 			suite.Equal(tc.expectedAuth, authenticated)
-			suite.Equal(tc.expectedExpired, tokenExpired)
 			suite.Equal(tc.expectedRefresh, needsRefresh)
 		})
 	}
 }
-
 func (suite *TraefikOidcTestSuite) TestInitiateAuthentication() {
 	req := httptest.NewRequest("GET", "http://example.com", nil)
 	rw := httptest.NewRecorder()
@@ -523,9 +516,13 @@ func (suite *TraefikOidcTestSuite) TestServeHTTP_ExpiredToken() {
 	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
 	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
+	// Set up expectation for VerifyToken
+	suite.mockTokenVerifier.On("VerifyToken", "expired.eyJleHAiOjF9.signature").Return(fmt.Errorf("token has expired"))
+
 	suite.oidc.ServeHTTP(rw, req)
 
 	suite.Equal(http.StatusFound, rw.Code) // Should redirect to authentication
+	suite.mockTokenVerifier.AssertExpectations(suite.T())
 }
 
 func (suite *TraefikOidcTestSuite) TestHandleCallback_InvalidState() {
