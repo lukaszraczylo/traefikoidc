@@ -267,6 +267,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			// and the session was cleared, but user tries to refresh the page
 			// and different traefik instance is used.
 			http.Redirect(rw, req, "/", http.StatusFound)
+			return
 		}
 		http.Error(rw, "Authentication failed", http.StatusUnauthorized)
 		return
