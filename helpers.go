@@ -143,7 +143,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 	sessionState, ok := session.Values["csrf"].(string)
 	if !ok || callbackState != sessionState {
 		handleError(rw, "Invalid state parameter", http.StatusBadRequest, t.logger)
-		return false, ""
+		return false, "invalid-state-param"
 	}
 
 	code := req.URL.Query().Get("code")

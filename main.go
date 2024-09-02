@@ -261,6 +261,13 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			http.Redirect(rw, req, originalPath, http.StatusFound)
 			return
 		}
+		if !authSuccess && originalPath == "invalid-state-param" {
+			// redirect to the root path so that the user can try again
+			// this usually happens when user was previously authenticated
+			// and the session was cleared, but user tries to refresh the page
+			// and different traefik instance is used.
+			http.Redirect(rw, req, "/", http.StatusFound)
+		}
 		http.Error(rw, "Authentication failed", http.StatusUnauthorized)
 		return
 	}
