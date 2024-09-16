@@ -129,6 +129,8 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	if err != nil {
 		t.logger.Errorf("Failed to clear session: %v", err)
 	}
+
+	// Initiate a new authentication flow
 	t.initiateAuthentication(rw, req, session, t.redirectURL)
 }
 

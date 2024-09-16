@@ -410,6 +410,7 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 		setupSession    func() *sessions.Session
 		expectedAuth    bool
 		expectedRefresh bool
+		expectedExpired bool
 	}{
 		{
 			name: "Valid Token",
@@ -421,6 +422,7 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 			},
 			expectedAuth:    true,
 			expectedRefresh: false,
+			expectedExpired: false,
 		},
 		{
 			name: "Expired Token",
@@ -432,6 +434,7 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 			},
 			expectedAuth:    false,
 			expectedRefresh: false,
+			expectedExpired: true,
 		},
 		{
 			name: "Token Needs Refresh",
@@ -446,6 +449,7 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 			},
 			expectedAuth:    true,
 			expectedRefresh: true,
+			expectedExpired: false,
 		},
 		{
 			name: "Not Authenticated",
@@ -456,6 +460,7 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 			},
 			expectedAuth:    false,
 			expectedRefresh: false,
+			expectedExpired: false,
 		},
 	}
 
@@ -463,12 +468,14 @@ func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
 		suite.Run(tc.name, func() {
 			session := tc.setupSession()
 			suite.mockTokenVerifier.On("VerifyToken", mock.AnythingOfType("string")).Return(nil).Maybe()
-			authenticated, needsRefresh := suite.oidc.isUserAuthenticated(session)
+			authenticated, needsRefresh, expired := suite.oidc.isUserAuthenticated(session)
 			suite.Equal(tc.expectedAuth, authenticated)
 			suite.Equal(tc.expectedRefresh, needsRefresh)
+			suite.Equal(tc.expectedExpired, expired)
 		})
 	}
 }
+
 func (suite *TraefikOidcTestSuite) TestInitiateAuthentication() {
 	req := httptest.NewRequest("GET", "http://example.com", nil)
 	rw := httptest.NewRecorder()

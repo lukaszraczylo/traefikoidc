@@ -273,7 +273,26 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	authenticated, needsRefresh := t.isUserAuthenticated(session)
+	authenticated, needsRefresh, expired := t.isUserAuthenticated(session)
+
+	if expired {
+		t.handleExpiredToken(rw, req, session)
+		return
+	}
+
+	if !authenticated {
+		t.initiateAuthentication(rw, req, session, t.redirectURL)
+		return
+	}
+
+	if needsRefresh {
+		refreshed := t.refreshToken(rw, req, session)
+		if !refreshed {
+			t.handleExpiredToken(rw, req, session)
+			return
+		}
+	}
+
 	if authenticated {
 		if needsRefresh {
 			// Attempt to refresh the token silently
@@ -338,48 +357,48 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 	return req.Host
 }
 
-func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool) {
+func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool, bool) {
 	authenticated, _ := session.Values["authenticated"].(bool)
 	if !authenticated {
-		return false, false
+		return false, false, false
 	}
 
 	idToken, ok := session.Values["id_token"].(string)
 	if !ok || idToken == "" {
-		return false, false
+		return false, false, true // Session is invalid, consider it expired
 	}
 
 	// Verify the token
 	if err := t.verifyToken(idToken); err != nil {
 		t.logger.Errorf("Token verification failed: %v", err)
-		return false, false
+		return false, false, true // Token is invalid, consider it expired
 	}
 
 	claims, err := extractClaims(idToken)
 	if err != nil {
 		t.logger.Errorf("Failed to extract claims: %v", err)
-		return false, false
+		return false, false, true // Can't read claims, consider it expired
 	}
 
 	exp, ok := claims["exp"].(float64)
 	if !ok {
 		t.logger.Errorf("Failed to get expiration time from claims")
-		return false, false
+		return false, false, true // No expiration, consider it expired
 	}
 
 	now := time.Now().Unix()
 	expTime := int64(exp)
 
 	if now > expTime {
-		return false, false // Token has expired
+		return false, false, true // Token has expired
 	}
 
 	gracePeriod := time.Minute * 5
 	if time.Now().Add(gracePeriod).Unix() > expTime {
-		return true, true // Token will expire soon, needs refresh
+		return true, true, false // Token will expire soon, needs refresh
 	}
 
-	return true, false
+	return true, false, false // Token is valid and not expiring soon
 }
 
 func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
