@@ -275,12 +275,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	authenticated, needsRefresh, expired := t.isUserAuthenticated(session)
 
-	if expired {
-		t.handleExpiredToken(rw, req, session)
-		return
-	}
-
-	if !authenticated {
+	if expired || !authenticated {
 		t.initiateAuthentication(rw, req, session, t.redirectURL)
 		return
 	}
@@ -288,7 +283,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if needsRefresh {
 		refreshed := t.refreshToken(rw, req, session)
 		if !refreshed {
-			t.handleExpiredToken(rw, req, session)
+			t.initiateAuthentication(rw, req, session, t.redirectURL)
 			return
 		}
 	}

@@ -137,15 +137,17 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) (bool, string) {
 	session, err := t.store.Get(req, cookieName)
 	if err != nil {
-		handleError(rw, "Session error", http.StatusInternalServerError, t.logger)
+		t.logger.Errorf("Session error: %v", err)
+		t.initiateAuthentication(rw, req, session, t.redirectURL)
 		return false, ""
 	}
 
 	callbackState := req.URL.Query().Get("state")
 	sessionState, ok := session.Values["csrf"].(string)
 	if !ok || callbackState != sessionState {
-		handleError(rw, "Invalid state parameter", http.StatusBadRequest, t.logger)
-		return false, "invalid-state-param"
+		t.logger.Debug("Invalid state parameter. Session might have expired.")
+		t.initiateAuthentication(rw, req, session, t.redirectURL)
+		return false, ""
 	}
 
 	code := req.URL.Query().Get("code")
