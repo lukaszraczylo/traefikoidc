@@ -24,6 +24,7 @@ type Config struct {
 	ForceHTTPS           bool     `json:"forceHTTPS"`
 	RateLimit            int      `json:"rateLimit"`
 	ExcludedURLs         []string `json:"excludedURLs"`
+	AllowedUserDomains   []string `json:"allowedUserDomains"`
 }
 
 func CreateConfig() *Config {

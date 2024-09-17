@@ -26,30 +26,31 @@ type JWTVerifier interface {
 }
 
 type TraefikOidc struct {
-	next           http.Handler
-	name           string
-	store          sessions.Store
-	redirURLPath   string
-	logoutURLPath  string
-	issuerURL      string
-	jwkCache       *JWKCache
-	tokenBlacklist *TokenBlacklist
-	jwksURL        string
-	clientID       string
-	clientSecret   string
-	authURL        string
-	tokenURL       string
-	scopes         []string
-	limiter        *rate.Limiter
-	forceHTTPS     bool
-	scheme         string
-	tokenCache     *TokenCache
-	httpClient     *http.Client
-	logger         *Logger
-	redirectURL    string
-	tokenVerifier  TokenVerifier
-	jwtVerifier    JWTVerifier
-	excludedURLs   map[string]struct{}
+	next               http.Handler
+	name               string
+	store              sessions.Store
+	redirURLPath       string
+	logoutURLPath      string
+	issuerURL          string
+	jwkCache           *JWKCache
+	tokenBlacklist     *TokenBlacklist
+	jwksURL            string
+	clientID           string
+	clientSecret       string
+	authURL            string
+	tokenURL           string
+	scopes             []string
+	limiter            *rate.Limiter
+	forceHTTPS         bool
+	scheme             string
+	tokenCache         *TokenCache
+	httpClient         *http.Client
+	logger             *Logger
+	redirectURL        string
+	tokenVerifier      TokenVerifier
+	jwtVerifier        JWTVerifier
+	excludedURLs       map[string]struct{}
+	allowedUserDomains map[string]struct{}
 }
 
 type ProviderMetadata struct {
@@ -191,6 +192,13 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			return m
 		}(),
 		redirectURL: "",
+		allowedUserDomains: func() map[string]struct{} {
+			m := make(map[string]struct{})
+			for _, domain := range config.AllowedUserDomains {
+				m[domain] = struct{}{}
+			}
+			return m
+		}(),
 	}
 	// add defaultExcludedURLs to excludedURLs
 	for k, v := range defaultExcludedURLs {
@@ -289,28 +297,33 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if authenticated {
-		if needsRefresh {
-			// Attempt to refresh the token silently
-			if refreshed := t.refreshToken(rw, req, session); !refreshed {
-				// If refresh failed, re-authenticate
-				t.initiateAuthentication(rw, req, session, t.redirectURL)
-				return
-			}
-		}
-
 		idToken, ok := session.Values["id_token"].(string)
 		if !ok || idToken == "" {
+			t.logger.Errorf("No id_token found in session")
+			t.initiateAuthentication(rw, req, session, t.redirectURL)
 			return
 		}
 
 		claims, err := extractClaims(idToken)
 		if err != nil {
 			t.logger.Errorf("Failed to extract claims: %v", err)
+			t.initiateAuthentication(rw, req, session, t.redirectURL)
 			return
 		}
 
-		// Add authenticated user email to the header X-Forwarded-User
 		email, _ := claims["email"].(string)
+		if email == "" {
+			t.logger.Errorf("No email found in token claims")
+			t.initiateAuthentication(rw, req, session, t.redirectURL)
+			return
+		}
+
+		if !t.isAllowedDomain(email) {
+			t.logger.Infof("User with email %s is not from an allowed domain", email)
+			http.Error(rw, "Access denied: Your email domain is not allowed", http.StatusForbidden)
+			return
+		}
+
 		req.Header.Set("X-Forwarded-User", email)
 
 		t.next.ServeHTTP(rw, req)
@@ -507,4 +520,19 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	}
 
 	return true
+}
+
+func (t *TraefikOidc) isAllowedDomain(email string) bool {
+	if len(t.allowedUserDomains) == 0 {
+		return true // If no domains are specified, all are allowed
+	}
+
+	parts := strings.Split(email, "@")
+	if len(parts) != 2 {
+		return false // Invalid email format
+	}
+
+	domain := parts[1]
+	_, ok := t.allowedUserDomains[domain]
+	return ok
 }

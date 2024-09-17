@@ -4,7 +4,7 @@ type: middleware
 import: github.com/lukaszraczylo/traefikoidc
 
 summary: |
-  Middleware adding OIDC authentication to traefik routes.
+  Middleware adding OIDC authentication to traefik routes. Does what it says on the tin.
 
 testData:
   providerURL: https://accounts.google.com
@@ -16,10 +16,12 @@ testData:
     - openid
     - email
     - profile
+  allowedUserDomains: # If not provided - will rely entirely on the OIDC yes/no
+    - raczylo.com
   sessionEncryptionKey: potato-secret
   forceHTTPS: false
   logLevel: debug # debug, info, warn, error
   rateLimit: 100 # Simple rate limiter to prevent brute force attacks
   excludedURLs: # Determines the list of URLs which are NOT a subject to authentication
-    - /login
+    - /login # covers /login, /login/me, /login/reminder etc.
     - /my-public-data

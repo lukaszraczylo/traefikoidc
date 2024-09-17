@@ -5,6 +5,13 @@ This middleware is supposed to replace the need for the forward-auth and oauth2-
 
 ### Configuration options
 
+Middleware currently supports following scenarios:
+
+* Setting custom callback and logout URLs via `callbackURL` and `logoutURL`
+* Allowing for access only from the listed domains if `allowedUserDomains` is set, otherwise it relies entirely on the OIDC provider
+* Using excluded URLs which do **NOT** require the OIDC authentication
+* Rate limiting requests to prevent the bruteforce attacks
+
 #### Docker compose example
 
 `docker-compose.yaml`
@@ -94,6 +101,8 @@ http:
             - openid
             - email
             - profile
+          allowedUserDomains: # If not provided - will rely entirely on the OIDC yes/no
+            - raczylo.com
           sessionEncryptionKey: potato-secret
           forceHTTPS: false
           logLevel: debug # debug, info, warn, error
