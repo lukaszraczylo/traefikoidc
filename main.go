@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -32,6 +33,7 @@ type TraefikOidc struct {
 	redirURLPath       string
 	logoutURLPath      string
 	issuerURL          string
+	revocationURL      string
 	jwkCache           *JWKCache
 	tokenBlacklist     *TokenBlacklist
 	jwksURL            string
@@ -54,10 +56,11 @@ type TraefikOidc struct {
 }
 
 type ProviderMetadata struct {
-	Issuer   string `json:"issuer"`
-	AuthURL  string `json:"authorization_endpoint"`
-	TokenURL string `json:"token_endpoint"`
-	JWKSURL  string `json:"jwks_uri"`
+	Issuer    string `json:"issuer"`
+	AuthURL   string `json:"authorization_endpoint"`
+	TokenURL  string `json:"token_endpoint"`
+	JWKSURL   string `json:"jwks_uri"`
+	RevokeURL string `json:"revocation_endpoint"`
 }
 
 var defaultExcludedURLs = map[string]struct{}{
@@ -176,6 +179,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			return config.LogoutURL
 		}(),
 		issuerURL:      metadata.Issuer,
+		revocationURL:  metadata.RevokeURL,
 		tokenBlacklist: NewTokenBlacklist(),
 		jwkCache:       &JWKCache{},
 		jwksURL:        metadata.JWKSURL,
@@ -325,7 +329,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		if !t.isAllowedDomain(email) {
 			t.logger.Infof("User with email %s is not from an allowed domain", email)
-			http.Error(rw, fmt.Sprintf("Access denied: Your email domain is not allowed. <a href=\"%s\">Log me out</a>", t.logoutURLPath), http.StatusForbidden)
+			http.Error(rw, fmt.Sprintf("Access denied: Your email domain is not allowed. To log out, visit: %s", t.logoutURLPath), http.StatusForbidden)
 			return
 		}
 
@@ -488,21 +492,40 @@ func (t *TraefikOidc) RevokeToken(token string) {
 	}
 }
 
-func (t *TraefikOidc) refreshSession(w http.ResponseWriter, r *http.Request) {
-	session, err := t.store.Get(r, cookieName)
-	if err != nil {
-		t.logger.Errorf("Error getting session: %v", err)
-		return
+func (t *TraefikOidc) RevokeTokenWithProvider(token string) error {
+	t.logger.Debugf("Revoking token with provider")
+
+	data := url.Values{
+		"token":           {token},
+		"token_type_hint": {"access_token", "refresh_token"},
+		"client_id":       {t.clientID},
+		"client_secret":   {t.clientSecret},
 	}
 
-	if auth, ok := session.Values["authenticated"].(bool); ok && auth {
-		// Refresh the session
-		session.Options.MaxAge = ConstSessionTimeout
-		err = session.Save(r, w)
-		if err != nil {
-			t.logger.Errorf("Error saving session: %v", err)
-		}
+	// Create the request
+	req, err := http.NewRequestWithContext(context.Background(), "POST", t.revocationURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("failed to create token revocation request: %w", err)
 	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Send the request
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send token revocation request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check the response
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("token revocation failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	t.logger.Debugf("Token successfully revoked")
+	return nil
 }
 
 func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, session *sessions.Session) bool {

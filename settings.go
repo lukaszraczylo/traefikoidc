@@ -14,6 +14,7 @@ const (
 
 type Config struct {
 	ProviderURL          string   `json:"providerURL"`
+	RevocationURL        string   `json:"revocationURL"`
 	CallbackURL          string   `json:"callbackURL"`
 	LogoutURL            string   `json:"logoutURL"`
 	ClientID             string   `json:"clientID"`

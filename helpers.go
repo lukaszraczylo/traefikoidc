@@ -106,6 +106,11 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if idToken, ok := session.Values["id_token"].(string); ok {
+		err := t.RevokeTokenWithProvider(idToken)
+		if err != nil {
+			handleError(rw, "Failed to revoke token", http.StatusInternalServerError, t.logger)
+			return
+		}
 		t.RevokeToken(idToken)
 	}
 

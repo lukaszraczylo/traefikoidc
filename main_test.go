@@ -114,6 +114,7 @@ func (suite *TraefikOidcTestSuite) SetupTest() {
 		authURL:        "https://example.com/auth",
 		tokenURL:       "https://example.com/token",
 		jwksURL:        "https://example.com/.well-known/jwks.json",
+		revocationURL:  "https://example.com/revoke",
 		tokenVerifier:  suite.mockTokenVerifier,
 		jwtVerifier:    suite.mockJWTVerifier,
 	}
@@ -376,10 +377,20 @@ func (suite *TraefikOidcTestSuite) TestHandleLogout() {
 	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
 	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
+	// Mock the HTTP client for token revocation
+	suite.mockHTTPClient.On("RoundTrip", mock.MatchedBy(func(req *http.Request) bool {
+		return req.URL.String() == suite.oidc.revocationURL
+	})).Return(&http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"status":"ok"}`)),
+	}, nil)
+
 	suite.oidc.handleLogout(rw, req)
 
 	suite.Equal(http.StatusForbidden, rw.Code)
 	suite.Equal("Logged out\n", rw.Body.String())
+
+	suite.mockHTTPClient.AssertExpectations(suite.T())
 }
 
 func (suite *TraefikOidcTestSuite) TestExtractClaims() {
@@ -784,10 +795,20 @@ func (suite *TraefikOidcTestSuite) TestHandleLogout_CustomLogoutURL() {
 	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
 	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
+	// Mock the HTTP client for token revocation
+	suite.mockHTTPClient.On("RoundTrip", mock.MatchedBy(func(req *http.Request) bool {
+		return req.URL.String() == suite.oidc.revocationURL
+	})).Return(&http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"status":"ok"}`)),
+	}, nil)
+
 	suite.oidc.ServeHTTP(rw, req)
 
 	suite.Equal(http.StatusForbidden, rw.Code)
 	suite.Equal("Logged out\n", rw.Body.String())
+
+	suite.mockHTTPClient.AssertExpectations(suite.T())
 }
 
 func (suite *TraefikOidcTestSuite) TestVerifyToken_RateLimitReached() {
