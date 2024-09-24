@@ -165,11 +165,16 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	t := &TraefikOidc{
-		next:           next,
-		name:           name,
-		store:          store,
-		redirURLPath:   config.CallbackURL,
-		logoutURLPath:  config.LogoutURL,
+		next:         next,
+		name:         name,
+		store:        store,
+		redirURLPath: config.CallbackURL,
+		logoutURLPath: func() string {
+			if config.LogoutURL == "" {
+				return config.CallbackURL + "/logout"
+			}
+			return config.LogoutURL
+		}(),
 		issuerURL:      metadata.Issuer,
 		tokenBlacklist: NewTokenBlacklist(),
 		jwkCache:       &JWKCache{},
@@ -313,14 +318,14 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		email, _ := claims["email"].(string)
 		if email == "" {
-			t.logger.Errorf("No email found in token claims")
+			t.logger.Debugf("No email found in token claims")
 			t.initiateAuthentication(rw, req, session, t.redirectURL)
 			return
 		}
 
 		if !t.isAllowedDomain(email) {
 			t.logger.Infof("User with email %s is not from an allowed domain", email)
-			http.Error(rw, "Access denied: Your email domain is not allowed", http.StatusForbidden)
+			http.Error(rw, fmt.Sprintf("Access denied: Your email domain is not allowed. <a href=\"%s\">Log me out</a>", t.logoutURLPath), http.StatusForbidden)
 			return
 		}
 
