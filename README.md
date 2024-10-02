@@ -1,7 +1,8 @@
 ## Traefik OIDC middleware
 
-This middleware is under active development - things should NOT break, but they might.
 This middleware is supposed to replace the need for the forward-auth and oauth2-proxy when using traefik as a reverse proxy to support the OIDC authentication.
+
+Middleware has been tested with Auth0 and Logto.
 
 ### Configuration options
 

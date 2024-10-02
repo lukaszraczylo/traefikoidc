@@ -5,6 +5,7 @@ import: github.com/lukaszraczylo/traefikoidc
 
 summary: |
   Middleware adding OIDC authentication to traefik routes. Does what it says on the tin.
+  Middleware has been tested with Auth0 and Logto. It should work with any OIDC provider.
 
 testData:
   providerURL: https://accounts.google.com
