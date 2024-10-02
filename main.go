@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -98,6 +99,8 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 }
 
 func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error {
+	t.logger.Debugf("Verifying JWT. Header: %+v", jwt.Header)
+
 	jwks, err := t.jwkCache.GetJWKS(t.jwksURL, t.httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to get JWKS: %w", err)
@@ -107,27 +110,57 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	if !ok {
 		return fmt.Errorf("missing key ID in token header")
 	}
+	t.logger.Debugf("Token kid: %s", kid)
 
-	publicKeys := make(map[string][]byte)
+	alg, ok := jwt.Header["alg"].(string)
+	if !ok {
+		return fmt.Errorf("missing algorithm in token header")
+	}
+	t.logger.Debugf("Token alg: %s", alg)
+
+	var matchingKey *JWK
 	for _, key := range jwks.Keys {
 		if key.Kid == kid {
-			publicKeyPEM, err := jwkToPEM(&key)
-			if err != nil {
-				return err
-			}
-			publicKeys[key.Kid] = publicKeyPEM
+			matchingKey = &key
+			break
 		}
 	}
 
-	if len(publicKeys) == 0 {
-		return fmt.Errorf("no matching public keys found")
+	if matchingKey == nil {
+		return fmt.Errorf("no matching public key found for kid: %s", kid)
+	}
+	t.logger.Debugf("Matching key found. Type: %s, Algorithm: %s", matchingKey.Kty, matchingKey.Alg)
+
+	publicKeyPEM, err := jwkToPEM(matchingKey)
+	if err != nil {
+		return fmt.Errorf("failed to convert JWK to PEM: %w", err)
+	}
+	t.logger.Debugf("Public key PEM generated. Length: %d", len(publicKeyPEM))
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid token format")
 	}
 
-	if err := t.verifySignatureConcurrently(token, publicKeys); err != nil {
+	signedContent := parts[0] + "." + parts[1]
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	if err := verifySignature(signedContent, signature, publicKeyPEM, alg); err != nil {
+		t.logger.Errorf("Signature verification failed: %v", err)
 		return fmt.Errorf("signature verification failed: %w", err)
 	}
+	t.logger.Debug("Signature verified successfully")
 
-	return jwt.Verify(t.issuerURL, t.clientID)
+	// Verify standard claims
+	if err := jwt.Verify(t.issuerURL, t.clientID); err != nil {
+		return fmt.Errorf("standard claim verification failed: %w", err)
+	}
+	t.logger.Debug("Standard claims verified successfully")
+
+	return nil
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {

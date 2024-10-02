@@ -2,18 +2,16 @@ package traefikoidc
 
 import (
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"math/big"
 	"strings"
-	"sync"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 )
 
 type JWT struct {
@@ -75,69 +73,63 @@ func verifyExpiration(expiration float64) error {
 	return nil
 }
 
-func (t *TraefikOidc) verifySignatureConcurrently(token string, publicKeys map[string][]byte) error {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return fmt.Errorf("invalid token format")
-	}
-
-	signedContent := parts[0] + "." + parts[1]
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return fmt.Errorf("failed to decode signature: %w", err)
-	}
-
-	var eg errgroup.Group
-	var mu sync.Mutex
-	var verificationSuccess bool
-
-	for _, publicKeyPEM := range publicKeys {
-		publicKeyPEM := publicKeyPEM // Create a new variable for the goroutine
-		eg.Go(func() error {
-			err := verifySignature(signedContent, signature, publicKeyPEM)
-			if err == nil {
-				mu.Lock()
-				verificationSuccess = true
-				mu.Unlock()
-			}
-			return nil // Always return nil to continue checking other keys
-		})
-	}
-
-	if err := eg.Wait(); err != nil {
-		return err
-	}
-
-	if !verificationSuccess {
-		return fmt.Errorf("signature verification failed for all keys")
-	}
-
-	return nil
-}
-
-func verifySignature(signedContent string, signature []byte, publicKeyPEM []byte) error {
+func verifySignature(signedContent string, signature []byte, publicKeyPEM []byte, alg string) error {
 	block, _ := pem.Decode(publicKeyPEM)
 	if block == nil {
 		return fmt.Errorf("failed to parse PEM block containing the public key")
 	}
 
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
 		return fmt.Errorf("failed to parse public key: %w", err)
 	}
 
-	rsaPublicKey, ok := pub.(*rsa.PublicKey)
-	if !ok {
-		return fmt.Errorf("not an RSA public key")
+	var hashFunc crypto.Hash
+
+	switch alg {
+	case "RS256", "PS256", "ES256":
+		hashFunc = crypto.SHA256
+	case "RS384", "PS384", "ES384":
+		hashFunc = crypto.SHA384
+	case "RS512", "PS512", "ES512":
+		hashFunc = crypto.SHA512
+	default:
+		return fmt.Errorf("unsupported algorithm: %s", alg)
 	}
 
-	hash := sha256.Sum256([]byte(signedContent))
-	err = rsa.VerifyPKCS1v15(rsaPublicKey, crypto.SHA256, hash[:], signature)
-	if err != nil {
-		return fmt.Errorf("invalid token signature: %w", err)
-	}
+	h := hashFunc.New()
+	h.Write([]byte(signedContent))
+	hashed := h.Sum(nil)
 
-	return nil
+	switch pub := pubKey.(type) {
+	case *ecdsa.PublicKey:
+		if strings.HasPrefix(alg, "ES") {
+			// ECDSA signature handling
+			keyBytes := (pub.Params().BitSize + 7) / 8
+			if len(signature) != 2*keyBytes {
+				return fmt.Errorf("invalid signature length: expected %d bytes, got %d bytes", 2*keyBytes, len(signature))
+			}
+			r := new(big.Int).SetBytes(signature[:keyBytes])
+			s := new(big.Int).SetBytes(signature[keyBytes:])
+
+			if ecdsa.Verify(pub, hashed, r, s) {
+				return nil
+			}
+			return fmt.Errorf("invalid ECDSA signature")
+		}
+		return fmt.Errorf("algorithm %s is not compatible with ECDSA public key", alg)
+	case *rsa.PublicKey:
+		if strings.HasPrefix(alg, "RS") {
+			err := rsa.VerifyPKCS1v15(pub, hashFunc, hashed, signature)
+			if err != nil {
+				return fmt.Errorf("RSA signature verification failed: %w", err)
+			}
+			return nil
+		}
+		return fmt.Errorf("algorithm %s is not compatible with RSA public key", alg)
+	default:
+		return fmt.Errorf("unsupported public key type: %T", pub)
+	}
 }
 
 func verifyIssuedAt(issuedAt float64) error {
@@ -161,21 +153,4 @@ func decodeSegment(seg string) (map[string]interface{}, error) {
 	}
 
 	return result, nil
-}
-
-func (t *TraefikOidc) verifyAndCacheToken(token string) error {
-	return t.tokenVerifier.VerifyToken(token)
-}
-
-func (t *TraefikOidc) verifyJWTSignatureAndClaims(jwt *JWT, token string) error {
-	return t.jwtVerifier.VerifyJWTSignatureAndClaims(jwt, token)
-}
-
-func getPublicKeyPEM(jwks *JWKSet, kid string) ([]byte, error) {
-	for _, key := range jwks.Keys {
-		if key.Kid == kid {
-			return jwkToPEM(&key)
-		}
-	}
-	return nil, fmt.Errorf("unable to find matching public key")
 }

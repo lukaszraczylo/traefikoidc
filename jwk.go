@@ -1,6 +1,8 @@
 package traefikoidc
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
@@ -20,6 +22,9 @@ type JWK struct {
 	N   string `json:"n"`
 	E   string `json:"e"`
 	Alg string `json:"alg"`
+	Crv string `json:"crv"`
+	X   string `json:"x"`
+	Y   string `json:"y"`
 }
 
 type JWKSet struct {
@@ -77,27 +82,9 @@ func fetchJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	return &jwks, nil
 }
 
-func verifyNonce(tokenNonce, expectedNonce string) error {
-	if tokenNonce != expectedNonce {
-		return fmt.Errorf("invalid nonce")
-	}
-	return nil
-}
-
 func verifyAudience(tokenAudience, expectedAudience string) error {
 	if tokenAudience != expectedAudience {
 		return fmt.Errorf("invalid audience")
-	}
-	return nil
-}
-
-func verifyTokenTimes(issuedAt, expiration int64, allowedClockSkew time.Duration) error {
-	now := time.Now().Unix()
-	if now < issuedAt-int64(allowedClockSkew.Seconds()) {
-		return fmt.Errorf("token used before issued")
-	}
-	if now > expiration+int64(allowedClockSkew.Seconds()) {
-		return fmt.Errorf("token is expired")
 	}
 	return nil
 }
@@ -109,17 +96,18 @@ func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 	return nil
 }
 
-func validateClaims(claims map[string]interface{}) error {
-	requiredClaims := []string{"sub", "iss", "aud", "exp", "iat"}
-	for _, claim := range requiredClaims {
-		if _, ok := claims[claim]; !ok {
-			return fmt.Errorf("missing required claim: %s", claim)
-		}
+func jwkToPEM(jwk *JWK) ([]byte, error) {
+	switch jwk.Kty {
+	case "RSA":
+		return rsaJWKToPEM(jwk)
+	case "EC":
+		return ecJWKToPEM(jwk)
+	default:
+		return nil, fmt.Errorf("unsupported key type: %s", jwk.Kty)
 	}
-	return nil
 }
 
-func jwkToPEM(jwk *JWK) ([]byte, error) {
+func rsaJWKToPEM(jwk *JWK) ([]byte, error) {
 	n, err := base64.RawURLEncoding.DecodeString(jwk.N)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode JWK 'n' parameter: %w", err)
@@ -141,6 +129,48 @@ func jwkToPEM(jwk *JWK) ([]byte, error) {
 
 	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "RSA PUBLIC KEY",
+		Bytes: publicKeyBytes,
+	})
+
+	return publicKeyPEM, nil
+}
+
+func ecJWKToPEM(jwk *JWK) ([]byte, error) {
+	x, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWK 'x' parameter: %w", err)
+	}
+
+	y, err := base64.RawURLEncoding.DecodeString(jwk.Y)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWK 'y' parameter: %w", err)
+	}
+
+	var curve elliptic.Curve
+	switch jwk.Crv {
+	case "P-256":
+		curve = elliptic.P256()
+	case "P-384":
+		curve = elliptic.P384()
+	case "P-521":
+		curve = elliptic.P521()
+	default:
+		return nil, fmt.Errorf("unsupported elliptic curve: %s", jwk.Crv)
+	}
+
+	publicKey := &ecdsa.PublicKey{
+		Curve: curve,
+		X:     new(big.Int).SetBytes(x),
+		Y:     new(big.Int).SetBytes(y),
+	}
+
+	publicKeyBytes, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal public key: %w", err)
+	}
+
+	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
 		Bytes: publicKeyBytes,
 	})
 

@@ -247,8 +247,9 @@ func (suite *TraefikOidcTestSuite) TestBuildAuthURL() {
 
 func (suite *TraefikOidcTestSuite) TestJWKToPEM() {
 	jwk := &JWK{
-		N: base64.RawURLEncoding.EncodeToString(big.NewInt(12345).Bytes()),
-		E: base64.RawURLEncoding.EncodeToString(big.NewInt(65537).Bytes()),
+		Kty: "RSA", // Set the key type to RSA
+		N:   base64.RawURLEncoding.EncodeToString(big.NewInt(12345).Bytes()),
+		E:   base64.RawURLEncoding.EncodeToString(big.NewInt(65537).Bytes()),
 	}
 	pem, err := jwkToPEM(jwk)
 	suite.Require().NoError(err)
