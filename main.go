@@ -55,6 +55,7 @@ type TraefikOidc struct {
 	jwtVerifier                JWTVerifier
 	excludedURLs               map[string]struct{}
 	allowedUserDomains         map[string]struct{}
+	allowedRolesAndGroups      map[string]struct{}
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string)
 	exchangeCodeForTokenFunc   func(code string) (map[string]interface{}, error)
 	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
@@ -246,6 +247,13 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			}
 			return m
 		}(),
+		allowedRolesAndGroups: func() map[string]struct{} {
+			m := make(map[string]struct{})
+			for _, roleOrGroup := range config.AllowedRolesAndGroups {
+				m[roleOrGroup] = struct{}{}
+			}
+			return m
+		}(),
 	}
 
 	t.initiateAuthenticationFunc = t.defaultInitiateAuthentication
@@ -405,6 +413,34 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		groups, roles, err := t.extractGroupsAndRoles(idToken)
+		if err != nil {
+			t.logger.Errorf("Failed to extract groups and roles: %v", err)
+		} else {
+			// Set headers for groups and roles
+			if len(groups) > 0 {
+				req.Header.Set("X-User-Groups", strings.Join(groups, ","))
+			}
+			if len(roles) > 0 {
+				req.Header.Set("X-User-Roles", strings.Join(roles, ","))
+			}
+		}
+
+		if len(t.allowedRolesAndGroups) > 0 {
+			allowed := false
+			for _, roleOrGroup := range append(groups, roles...) {
+				if _, ok := t.allowedRolesAndGroups[roleOrGroup]; ok {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				t.logger.Infof("User with email %s does not have any allowed roles or groups", email)
+				http.Error(rw, fmt.Sprintf("Access denied: You do not have any allowed roles or groups. To log out, visit: %s", t.logoutURLPath), http.StatusForbidden)
+				return
+			}
+		}
+
 		req.Header.Set("X-Forwarded-User", email)
 
 		t.next.ServeHTTP(rw, req)
@@ -525,8 +561,6 @@ func (t *TraefikOidc) verifyToken(token string) error {
 	return t.tokenVerifier.VerifyToken(token)
 }
 
-var authURLBuilder strings.Builder
-
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 	params := url.Values{}
 	params.Set("client_id", t.clientID)
@@ -638,4 +672,48 @@ func (t *TraefikOidc) isAllowedDomain(email string) bool {
 	domain := parts[1]
 	_, ok := t.allowedUserDomains[domain]
 	return ok
+}
+
+func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string, error) {
+	claims, err := t.extractClaimsFunc(idToken)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to extract claims: %w", err)
+	}
+
+	var groups []string
+	var roles []string
+
+	// Check for groups claim
+	if groupsClaim, ok := claims["groups"]; ok {
+		if groupsSlice, ok := groupsClaim.([]interface{}); ok {
+			for _, group := range groupsSlice {
+				if groupStr, ok := group.(string); ok {
+					t.logger.Debugf("Found group: %s", groupStr)
+					groups = append(groups, groupStr)
+				}
+			}
+		}
+	}
+
+	if len(groups) == 0 {
+		t.logger.Debug("No groups found in groups claim, checking roles claim")
+	}
+
+	// Check for roles claim
+	if rolesClaim, ok := claims["roles"]; ok {
+		if rolesSlice, ok := rolesClaim.([]interface{}); ok {
+			for _, role := range rolesSlice {
+				if roleStr, ok := role.(string); ok {
+					t.logger.Debug("Found role: %s", roleStr)
+					roles = append(roles, roleStr)
+				}
+			}
+		}
+	}
+
+	if len(roles) == 0 {
+		t.logger.Debug("No roles found in roles claim")
+	}
+
+	return groups, roles, nil
 }

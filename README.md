@@ -17,6 +17,96 @@ Middleware currently supports following scenarios:
 * Using excluded URLs which do **NOT** require the OIDC authentication
 * Rate limiting requests to prevent the bruteforce attacks
 
+#### How to configure...
+
+##### Excluded URLs with open access
+
+```
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-with-open-urls
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: xxx
+      clientID: yyy
+      clientSecret: zzz
+      sessionEncryptionKey: vvv
+      callbackURL: /cool-oidc/callback
+      logoutURL: /cool-oidc/logout
+      scopes:
+        - openid
+        - email
+        - profile
+      excludedURLs: # Determines the list of URLs which are NOT a subject to authentication
+        - /login # covers /login, /login/me, /login/reminder etc.
+        - /my-public-data
+```
+
+
+##### Allowed email domains
+
+Assuming that your OIDC provider allows anyone to log in, you may want to limit the access to people using emains in specific domain.
+
+```
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-only-my-users
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: xxx
+      clientID: yyy
+      clientSecret: zzz
+      sessionEncryptionKey: vvv
+      callbackURL: /new-oidc/callback
+      logoutURL: /new-oidc/logout
+      scopes:
+        - openid
+        - email
+        - profile
+      allowedUserDomains:
+        - raczylo.com
+```
+
+
+##### Allowed groups and roles
+
+In case of multiple roles / groups and access separation for various endpoints you will need to create multiple traefik middlewares.
+Following example allows access for users who have additional role `guest-endpoints` assigned.
+
+```
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-guest-endpoints
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: xxx
+      clientID: yyy
+      clientSecret: zzz
+      sessionEncryptionKey: vvv
+      callbackURL: /my-oidc/callback
+      logoutURL: /my-oidc/logout
+      scopes:
+        - openid
+        - email
+        - profile
+        - roles     # This line queries the OIDC provider for roles
+      forceHTTPS: true
+      allowedRolesAndGroups:
+        - guest-endpoints  # This line specifies the roles or groups allowed to access content
+      allowedUserDomains:
+        - raczylo.com
+```
+
+
 #### Docker compose example
 
 `docker-compose.yaml`

@@ -15,20 +15,21 @@ const (
 )
 
 type Config struct {
-	ProviderURL          string   `json:"providerURL"`
-	RevocationURL        string   `json:"revocationURL"`
-	CallbackURL          string   `json:"callbackURL"`
-	LogoutURL            string   `json:"logoutURL"`
-	ClientID             string   `json:"clientID"`
-	ClientSecret         string   `json:"clientSecret"`
-	Scopes               []string `json:"scopes"`
-	LogLevel             string   `json:"logLevel"`
-	SessionEncryptionKey string   `json:"sessionEncryptionKey"`
-	ForceHTTPS           bool     `json:"forceHTTPS"`
-	RateLimit            int      `json:"rateLimit"`
-	ExcludedURLs         []string `json:"excludedURLs"`
-	AllowedUserDomains   []string `json:"allowedUserDomains"`
-	HTTPClient           *http.Client
+	ProviderURL           string   `json:"providerURL"`
+	RevocationURL         string   `json:"revocationURL"`
+	CallbackURL           string   `json:"callbackURL"`
+	LogoutURL             string   `json:"logoutURL"`
+	ClientID              string   `json:"clientID"`
+	ClientSecret          string   `json:"clientSecret"`
+	Scopes                []string `json:"scopes"`
+	LogLevel              string   `json:"logLevel"`
+	SessionEncryptionKey  string   `json:"sessionEncryptionKey"`
+	ForceHTTPS            bool     `json:"forceHTTPS"`
+	RateLimit             int      `json:"rateLimit"`
+	ExcludedURLs          []string `json:"excludedURLs"`
+	AllowedUserDomains    []string `json:"allowedUserDomains"`
+	AllowedRolesAndGroups []string `json:"allowedRolesAndGroups"`
+	HTTPClient            *http.Client
 }
 
 var defaultSessionOptions = &sessions.Options{
