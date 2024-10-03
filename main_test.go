@@ -195,6 +195,7 @@ func (suite *TraefikOidcTestSuite) TestServeHTTP_CallbackPath() {
 	session := sessions.NewSession(suite.mockStore, cookieName)
 	session.Values["csrf"] = "test_state"
 	session.Values["incoming_path"] = "/original_path"
+	session.Values["nonce"] = "test_nonce" // Add nonce to session
 
 	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
 	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
@@ -202,6 +203,7 @@ func (suite *TraefikOidcTestSuite) TestServeHTTP_CallbackPath() {
 	claims := map[string]interface{}{
 		"exp":   float64(time.Now().Add(time.Hour).Unix()),
 		"email": "test@example.com",
+		"nonce": "test_nonce", // Add nonce to ID Token claims
 	}
 	claimsJSON, _ := json.Marshal(claims)
 	encodedClaims := base64.RawURLEncoding.EncodeToString(claimsJSON)
