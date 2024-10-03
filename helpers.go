@@ -94,6 +94,8 @@ func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 		response.RefreshToken = refreshToken
 	}
 
+	t.logger.Debug("Token response: %+v", response)
+
 	return response, nil
 }
 
@@ -181,12 +183,39 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 		return false, ""
 	}
 
+	// Verify the nonce
+	nonceFromToken, ok := claims["nonce"].(string)
+	if !ok || nonceFromToken == "" {
+		t.logger.Error("Nonce claim is missing in ID Token")
+		handleError(rw, "Nonce verification failed", http.StatusUnauthorized, t.logger)
+		return false, ""
+	}
+
+	sessionNonce, ok := session.Values["nonce"].(string)
+	if !ok || sessionNonce == "" {
+		t.logger.Error("Nonce is missing in session")
+		handleError(rw, "Nonce verification failed", http.StatusUnauthorized, t.logger)
+		return false, ""
+	}
+
+	if nonceFromToken != sessionNonce {
+		t.logger.Error("Nonce mismatch")
+		handleError(rw, "Nonce verification failed", http.StatusUnauthorized, t.logger)
+		return false, ""
+	}
+
+	// Remove 'nonce' and 'csrf' from session after successful verification
+	delete(session.Values, "nonce")
+	delete(session.Values, "csrf")
+
 	email, _ := claims["email"].(string)
 
 	session.Values["authenticated"] = true
 	session.Values["id_token"] = rawIDToken
 	session.Values["refresh_token"] = oauth2Token["refresh_token"]
 	session.Values["email"] = email
+	session.Values["access_token"] = oauth2Token["access_token"]
+
 	if err := session.Save(req, rw); err != nil {
 		handleError(rw, "Failed to save session", http.StatusInternalServerError, t.logger)
 		return false, ""

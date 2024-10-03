@@ -46,20 +46,41 @@ func parseJWT(token string) (*JWT, error) {
 func (j *JWT) Verify(issuerURL, clientID string) error {
 	claims := j.Claims
 
-	if err := verifyIssuer(claims["iss"].(string), issuerURL); err != nil {
+	iss, ok := claims["iss"].(string)
+	if !ok {
+		return fmt.Errorf("missing 'iss' claim")
+	}
+	if err := verifyIssuer(iss, issuerURL); err != nil {
 		return err
 	}
 
-	if err := verifyAudience(claims["aud"].(string), clientID); err != nil {
+	aud, ok := claims["aud"]
+	if !ok {
+		return fmt.Errorf("missing 'aud' claim")
+	}
+	if err := verifyAudience(aud, clientID); err != nil {
 		return err
 	}
 
-	if err := verifyExpiration(claims["exp"].(float64)); err != nil {
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		return fmt.Errorf("missing or invalid 'exp' claim")
+	}
+	if err := verifyExpiration(exp); err != nil {
 		return err
 	}
 
-	if err := verifyIssuedAt(claims["iat"].(float64)); err != nil {
+	iat, ok := claims["iat"].(float64)
+	if !ok {
+		return fmt.Errorf("missing or invalid 'iat' claim")
+	}
+	if err := verifyIssuedAt(iat); err != nil {
 		return err
+	}
+
+	sub, ok := claims["sub"].(string)
+	if !ok || sub == "" {
+		return fmt.Errorf("missing or empty 'sub' claim")
 	}
 
 	return nil

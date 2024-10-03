@@ -69,7 +69,7 @@ var defaultExcludedURLs = map[string]struct{}{
 }
 
 func (t *TraefikOidc) VerifyToken(token string) error {
-	t.logger.Debugf("Verifying token")
+	t.logger.Debugf("Verifying token: %s", token)
 	if !t.limiter.Allow() {
 		return fmt.Errorf("rate limit exceeded")
 	}
@@ -325,7 +325,12 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	authenticated, needsRefresh, expired := t.isUserAuthenticated(session)
 
-	if expired || !authenticated {
+	if expired {
+		t.handleExpiredToken(rw, req, session)
+		return
+	}
+
+	if !authenticated {
 		t.initiateAuthentication(rw, req, session, t.redirectURL)
 		return
 	}
@@ -333,7 +338,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if needsRefresh {
 		refreshed := t.refreshToken(rw, req, session)
 		if !refreshed {
-			t.initiateAuthentication(rw, req, session, t.redirectURL)
+			t.handleExpiredToken(rw, req, session)
 			return
 		}
 	}
@@ -430,21 +435,21 @@ func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool
 		return false, false, true // Can't read claims, consider it expired
 	}
 
-	exp, ok := claims["exp"].(float64)
+	expClaim, ok := claims["exp"].(float64)
 	if !ok {
 		t.logger.Errorf("Failed to get expiration time from claims")
 		return false, false, true // No expiration, consider it expired
 	}
 
 	now := time.Now().Unix()
-	expTime := int64(exp)
+	expTime := int64(expClaim)
 
 	if now > expTime {
 		return false, false, true // Token has expired
 	}
 
 	gracePeriod := time.Minute * 5
-	if time.Now().Add(gracePeriod).Unix() > expTime {
+	if now+int64(gracePeriod.Seconds()) > expTime {
 		return true, true, false // Token will expire soon, needs refresh
 	}
 
@@ -457,15 +462,17 @@ func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.R
 	session.Values["incoming_path"] = req.URL.Path
 	t.logger.Debugf("Setting CSRF token: %s", csrfToken)
 
-	if err := session.Save(req, rw); err != nil {
-		t.logger.Errorf("Failed to save session: %v", err)
-		http.Error(rw, "Failed to save session", http.StatusInternalServerError)
-		return
-	}
-
 	nonce, err := generateNonce()
 	if err != nil {
 		http.Error(rw, "Failed to generate nonce", http.StatusInternalServerError)
+		return
+	}
+	session.Values["nonce"] = nonce
+	t.logger.Debugf("Setting nonce: %s", nonce)
+
+	if err := session.Save(req, rw); err != nil {
+		t.logger.Errorf("Failed to save session: %v", err)
+		http.Error(rw, "Failed to save session", http.StatusInternalServerError)
 		return
 	}
 
