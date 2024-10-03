@@ -19,6 +19,8 @@ testData:
     - profile
   allowedUserDomains: # If not provided - will rely entirely on the OIDC yes/no
     - raczylo.com
+  allowedRolesAndGroups:
+    - guest-endpoints
   sessionEncryptionKey: potato-secret
   forceHTTPS: false
   logLevel: debug # debug, info, warn, error
