@@ -20,27 +20,36 @@ type JWT struct {
 	Signature string
 }
 
-func parseJWT(token string) (*JWT, error) {
-	parts := strings.Split(token, ".")
+func parseJWT(tokenString string) (*JWT, error) {
+	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid token format")
+		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
-	header, err := decodeSegment(parts[0])
+	jwt := &JWT{}
+
+	// Decode and unmarshal the header
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode header: %w", err)
+		return nil, fmt.Errorf("invalid JWT format: failed to decode header: %v", err)
+	}
+	if err := json.Unmarshal(headerBytes, &jwt.Header); err != nil {
+		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal header: %v", err)
 	}
 
-	claims, err := decodeSegment(parts[1])
+	// Decode and unmarshal the claims
+	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode claims: %w", err)
+		return nil, fmt.Errorf("invalid JWT format: failed to decode claims: %v", err)
+	}
+	if err := json.Unmarshal(claimsBytes, &jwt.Claims); err != nil {
+		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal claims: %v", err)
 	}
 
-	return &JWT{
-		Header:    header,
-		Claims:    claims,
-		Signature: parts[2],
-	}, nil
+	// Set the signature
+	jwt.Signature = parts[2]
+
+	return jwt, nil
 }
 
 func (j *JWT) Verify(issuerURL, clientID string) error {
@@ -159,19 +168,4 @@ func verifyIssuedAt(issuedAt float64) error {
 		return fmt.Errorf("token used before issued")
 	}
 	return nil
-}
-
-func decodeSegment(seg string) (map[string]interface{}, error) {
-	data, err := base64.RawURLEncoding.DecodeString(seg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode segment: %w", err)
-	}
-
-	var result map[string]interface{}
-	err = json.Unmarshal(data, &result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal segment: %w", err)
-	}
-
-	return result, nil
 }

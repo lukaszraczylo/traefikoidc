@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,32 +29,35 @@ type JWTVerifier interface {
 }
 
 type TraefikOidc struct {
-	next               http.Handler
-	name               string
-	store              sessions.Store
-	redirURLPath       string
-	logoutURLPath      string
-	issuerURL          string
-	revocationURL      string
-	jwkCache           *JWKCache
-	tokenBlacklist     *TokenBlacklist
-	jwksURL            string
-	clientID           string
-	clientSecret       string
-	authURL            string
-	tokenURL           string
-	scopes             []string
-	limiter            *rate.Limiter
-	forceHTTPS         bool
-	scheme             string
-	tokenCache         *TokenCache
-	httpClient         *http.Client
-	logger             *Logger
-	redirectURL        string
-	tokenVerifier      TokenVerifier
-	jwtVerifier        JWTVerifier
-	excludedURLs       map[string]struct{}
-	allowedUserDomains map[string]struct{}
+	next                       http.Handler
+	name                       string
+	store                      sessions.Store
+	redirURLPath               string
+	logoutURLPath              string
+	issuerURL                  string
+	revocationURL              string
+	jwkCache                   JWKCacheInterface
+	tokenBlacklist             *TokenBlacklist
+	jwksURL                    string
+	clientID                   string
+	clientSecret               string
+	authURL                    string
+	tokenURL                   string
+	scopes                     []string
+	limiter                    *rate.Limiter
+	forceHTTPS                 bool
+	scheme                     string
+	tokenCache                 *TokenCache
+	httpClient                 *http.Client
+	logger                     *Logger
+	redirectURL                string
+	tokenVerifier              TokenVerifier
+	jwtVerifier                JWTVerifier
+	excludedURLs               map[string]struct{}
+	allowedUserDomains         map[string]struct{}
+	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string)
+	exchangeCodeForTokenFunc   func(code string) (map[string]interface{}, error)
+	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
 }
 
 type ProviderMetadata struct {
@@ -67,6 +71,8 @@ type ProviderMetadata struct {
 var defaultExcludedURLs = map[string]struct{}{
 	"/favicon": {},
 }
+
+var newTicker = time.NewTicker
 
 func (t *TraefikOidc) VerifyToken(token string) error {
 	t.logger.Debugf("Verifying token: %s", token)
@@ -165,18 +171,7 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	store := sessions.NewCookieStore([]byte(config.SessionEncryptionKey))
-	store.Options = &sessions.Options{
-		Path:     "/",
-		MaxAge:   ConstSessionTimeout,
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-	}
-
-	metadata, err := discoverProviderMetadata(config.ProviderURL, http.Client{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover provider metadata: %w", err)
-	}
+	store.Options = defaultSessionOptions
 
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -195,9 +190,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		MaxIdleConnsPerHost:   10,
 	}
 
-	httpClient := &http.Client{
-		Timeout:   time.Second * 30,
-		Transport: transport,
+	var httpClient *http.Client
+	if config.HTTPClient != nil {
+		httpClient = config.HTTPClient
+	} else {
+		httpClient = &http.Client{
+			Timeout:   time.Second * 30,
+			Transport: transport,
+		}
+	}
+
+	metadata, err := discoverProviderMetadata(config.ProviderURL, httpClient, NewLogger(config.LogLevel))
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover provider metadata: %w", err)
 	}
 
 	t := &TraefikOidc{
@@ -242,6 +247,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			return m
 		}(),
 	}
+
+	t.initiateAuthenticationFunc = t.defaultInitiateAuthentication
+	t.exchangeCodeForTokenFunc = t.exchangeCodeForToken
+	t.extractClaimsFunc = extractClaims
+
 	// add defaultExcludedURLs to excludedURLs
 	for k, v := range defaultExcludedURLs {
 		t.excludedURLs[k] = v
@@ -253,8 +263,44 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	return t, nil
 }
 
-func discoverProviderMetadata(providerURL string, httpClient http.Client) (*ProviderMetadata, error) {
+func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Logger) (*ProviderMetadata, error) {
 	wellKnownURL := strings.TrimSuffix(providerURL, "/") + "/.well-known/openid-configuration"
+
+	maxRetries := 5
+	baseDelay := 1 * time.Second
+	maxDelay := 30 * time.Second
+	totalTimeout := 5 * time.Minute
+
+	start := time.Now()
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if time.Since(start) > totalTimeout {
+			l.Error("Timeout exceeded while fetching provider metadata")
+			return nil, fmt.Errorf("timeout exceeded while fetching provider metadata: %w", lastErr)
+		}
+
+		metadata, err := fetchMetadata(wellKnownURL, httpClient)
+		if err == nil {
+			l.Debug("Provider metadata fetched successfully")
+			return metadata, nil
+		}
+
+		lastErr = err
+
+		delay := time.Duration(math.Pow(2, float64(attempt))) * baseDelay
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+		l.Debug("Failed to fetch provider metadata, retrying in %s", delay)
+		time.Sleep(delay)
+	}
+
+	l.Error("Max retries exceeded while fetching provider metadata")
+	return nil, fmt.Errorf("max retries exceeded while fetching provider metadata: %w", lastErr)
+}
+
+func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetadata, error) {
 	resp, err := httpClient.Get(wellKnownURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch provider metadata: %w", err)
@@ -277,26 +323,20 @@ func discoverProviderMetadata(providerURL string, httpClient http.Client) (*Prov
 }
 
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	// Check if the URL is excluded first
 	if t.determineExcludedURL(req.URL.Path) {
 		t.next.ServeHTTP(rw, req)
 		return
 	}
 
 	t.scheme = t.determineScheme(req)
+	defaultSessionOptions.Secure = t.scheme == "https"
 	host := t.determineHost(req)
-
-	if req.URL.Path == t.logoutURLPath {
-		t.handleLogout(rw, req)
-		return
-	}
 
 	if t.redirectURL == "" {
 		t.redirectURL = buildFullURL(t.scheme, host, t.redirURLPath)
 		t.logger.Debugf("Redirect URL updated to: %s", t.redirectURL)
 	}
 
-	// Only get or create a session if the URL is not excluded
 	session, err := t.store.Get(req, cookieName)
 	if err != nil {
 		t.logger.Errorf("Error getting session: %v", err)
@@ -304,22 +344,15 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	t.logger.Debugf("Session contents at start: %+v", session.Values)
+
+	if req.URL.Path == t.logoutURLPath {
+		t.handleLogout(rw, req)
+		return
+	}
+
 	if req.URL.Path == t.redirURLPath {
-		t.logger.Debugf("Handling callback, URL: %s", req.URL.String())
-		authSuccess, originalPath := t.handleCallback(rw, req)
-		if authSuccess {
-			http.Redirect(rw, req, originalPath, http.StatusFound)
-			return
-		}
-		if !authSuccess && originalPath == "invalid-state-param" {
-			// redirect to the root path so that the user can try again
-			// this usually happens when user was previously authenticated
-			// and the session was cleared, but user tries to refresh the page
-			// and different traefik instance is used.
-			http.Redirect(rw, req, "/", http.StatusFound)
-			return
-		}
-		http.Error(rw, "Authentication failed", http.StatusUnauthorized)
+		t.handleCallback(rw, req)
 		return
 	}
 
@@ -331,7 +364,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if !authenticated {
-		t.initiateAuthentication(rw, req, session, t.redirectURL)
+		t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
 		return
 	}
 
@@ -343,25 +376,26 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// authenticated, _ := session.Values["authenticated"].(bool)
 	if authenticated {
 		idToken, ok := session.Values["id_token"].(string)
 		if !ok || idToken == "" {
 			t.logger.Errorf("No id_token found in session")
-			t.initiateAuthentication(rw, req, session, t.redirectURL)
+			t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
 			return
 		}
 
 		claims, err := extractClaims(idToken)
 		if err != nil {
 			t.logger.Errorf("Failed to extract claims: %v", err)
-			t.initiateAuthentication(rw, req, session, t.redirectURL)
+			t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
 			return
 		}
 
 		email, _ := claims["email"].(string)
 		if email == "" {
 			t.logger.Debugf("No email found in token claims")
-			t.initiateAuthentication(rw, req, session, t.redirectURL)
+			t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
 			return
 		}
 
@@ -377,8 +411,8 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// If the user is not authenticated, initiate authentication
-	t.initiateAuthentication(rw, req, session, t.redirectURL)
+	t.logger.Debug("User is not authenticated, initiating authentication")
+	t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
 }
 
 func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
@@ -414,12 +448,16 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 
 func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool, bool) {
 	authenticated, _ := session.Values["authenticated"].(bool)
+	t.logger.Debugf("Session authenticated value: %v", authenticated)
+
 	if !authenticated {
+		t.logger.Debug("User is not authenticated according to session")
 		return false, false, false
 	}
 
 	idToken, ok := session.Values["id_token"].(string)
 	if !ok || idToken == "" {
+		t.logger.Debug("No id_token found in session")
 		return false, false, true // Session is invalid, consider it expired
 	}
 
@@ -445,21 +483,24 @@ func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool
 	expTime := int64(expClaim)
 
 	if now > expTime {
+		t.logger.Debug("Token has expired")
 		return false, false, true // Token has expired
 	}
 
 	gracePeriod := time.Minute * 5
 	if now+int64(gracePeriod.Seconds()) > expTime {
+		t.logger.Debug("Token will expire soon")
 		return true, true, false // Token will expire soon, needs refresh
 	}
 
 	return true, false, false // Token is valid and not expiring soon
 }
 
-func (t *TraefikOidc) initiateAuthentication(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
+func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
 	csrfToken := uuid.New().String()
 	session.Values["csrf"] = csrfToken
 	session.Values["incoming_path"] = req.URL.Path
+	session.Options = defaultSessionOptions
 	t.logger.Debugf("Setting CSRF token: %s", csrfToken)
 
 	nonce, err := generateNonce()
@@ -487,28 +528,20 @@ func (t *TraefikOidc) verifyToken(token string) error {
 var authURLBuilder strings.Builder
 
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
-	authURLBuilder.Reset()
-	authURLBuilder.Grow(256) // Pre-allocate some space
-	authURLBuilder.WriteString(t.authURL)
-	authURLBuilder.WriteString("?client_id=")
-	authURLBuilder.WriteString(t.clientID)
-	authURLBuilder.WriteString("&response_type=code&redirect_uri=")
-	authURLBuilder.WriteString(url.QueryEscape(redirectURL))
-	authURLBuilder.WriteString("&state=")
-	authURLBuilder.WriteString(state)
-	authURLBuilder.WriteString("&nonce=")
-	authURLBuilder.WriteString(nonce)
-
+	params := url.Values{}
+	params.Set("client_id", t.clientID)
+	params.Set("response_type", "code")
+	params.Set("redirect_uri", redirectURL)
+	params.Set("state", state)
+	params.Set("nonce", nonce)
 	if len(t.scopes) > 0 {
-		authURLBuilder.WriteString("&scope=")
-		authURLBuilder.WriteString(strings.Join(t.scopes, "+"))
+		params.Set("scope", strings.Join(t.scopes, " "))
 	}
-
-	return authURLBuilder.String()
+	return t.authURL + "?" + params.Encode()
 }
 
 func (t *TraefikOidc) startTokenCleanup() {
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := newTicker(1 * time.Minute)
 	go func() {
 		for range ticker.C {
 			t.logger.Debug("Cleaning up token cache")
@@ -569,6 +602,7 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token string) error {
 }
 
 func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, session *sessions.Session) bool {
+	t.logger.Debug("Refreshing token")
 	refreshToken, ok := session.Values["refresh_token"].(string)
 	if !ok || refreshToken == "" {
 		return false
@@ -582,6 +616,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 
 	session.Values["id_token"] = newToken.IDToken
 	session.Values["refresh_token"] = newToken.RefreshToken
+	session.Options = defaultSessionOptions
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("Failed to save refreshed session: %v", err)
 		return false

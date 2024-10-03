@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/gorilla/sessions"
 )
 
 const (
@@ -26,6 +28,15 @@ type Config struct {
 	RateLimit            int      `json:"rateLimit"`
 	ExcludedURLs         []string `json:"excludedURLs"`
 	AllowedUserDomains   []string `json:"allowedUserDomains"`
+	HTTPClient           *http.Client
+}
+
+var defaultSessionOptions = &sessions.Options{
+	HttpOnly: true,
+	Secure:   false,
+	SameSite: http.SameSiteLaxMode,
+	MaxAge:   ConstSessionTimeout,
+	Path:     "/",
 }
 
 func CreateConfig() *Config {
@@ -119,6 +130,6 @@ func (l *Logger) Errorf(format string, args ...interface{}) {
 }
 
 func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
-	logger.Errorf(message)
+	logger.Error(message)
 	http.Error(w, message, code)
 }
