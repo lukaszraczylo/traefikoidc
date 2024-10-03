@@ -82,9 +82,25 @@ func fetchJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	return &jwks, nil
 }
 
-func verifyAudience(tokenAudience, expectedAudience string) error {
-	if tokenAudience != expectedAudience {
-		return fmt.Errorf("invalid audience")
+func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
+	switch aud := tokenAudience.(type) {
+	case string:
+		if aud != expectedAudience {
+			return fmt.Errorf("invalid audience")
+		}
+	case []interface{}:
+		found := false
+		for _, v := range aud {
+			if str, ok := v.(string); ok && str == expectedAudience {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("invalid audience")
+		}
+	default:
+		return fmt.Errorf("invalid 'aud' claim type")
 	}
 	return nil
 }
