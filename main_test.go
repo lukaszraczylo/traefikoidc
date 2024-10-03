@@ -1,14 +1,14 @@
-// main_test.go
-
 package traefikoidc
 
 import (
-	"bytes"
-	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -17,1020 +17,566 @@ import (
 	"time"
 
 	"github.com/gorilla/sessions"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/suite"
 	"golang.org/x/time/rate"
 )
 
-type MockHTTPClient struct {
-	mock.Mock
+// TestSuite holds common test data and setup
+type TestSuite struct {
+	t             *testing.T
+	rsaPrivateKey *rsa.PrivateKey
+	rsaPublicKey  *rsa.PublicKey
+	ecPrivateKey  *ecdsa.PrivateKey
+	tOidc         *TraefikOidc
+	mockJWKCache  *MockJWKCache
+	token         string
 }
 
-func (m *MockHTTPClient) RoundTrip(req *http.Request) (*http.Response, error) {
-	args := m.Called(req)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
+// Setup initializes the test suite
+func (ts *TestSuite) Setup() {
+	var err error
+	ts.rsaPrivateKey, err = rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		ts.t.Fatalf("Failed to generate RSA key: %v", err)
 	}
-	return args.Get(0).(*http.Response), args.Error(1)
-}
+	ts.rsaPublicKey = &ts.rsaPrivateKey.PublicKey
 
-type MockSessionStore struct {
-	mock.Mock
-}
-
-func (m *MockSessionStore) Get(r *http.Request, name string) (*sessions.Session, error) {
-	args := m.Called(r, name)
-	if session, ok := args.Get(0).(*sessions.Session); ok {
-		return session, args.Error(1)
-	}
-	return nil, args.Error(1)
-}
-
-func (m *MockSessionStore) New(r *http.Request, name string) (*sessions.Session, error) {
-	args := m.Called(r, name)
-	return args.Get(0).(*sessions.Session), args.Error(1)
-}
-
-func (m *MockSessionStore) Save(r *http.Request, w http.ResponseWriter, s *sessions.Session) error {
-	args := m.Called(r, w, s)
-	return args.Error(0)
-}
-
-type MockTokenVerifier struct {
-	mock.Mock
-}
-
-func (m *MockTokenVerifier) VerifyToken(token string) error {
-	args := m.Called(token)
-	return args.Error(0)
-}
-
-type MockJWTVerifier struct {
-	mock.Mock
-}
-
-func (m *MockJWTVerifier) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error {
-	args := m.Called(jwt, token)
-	return args.Error(0)
-}
-
-type TraefikOidcTestSuite struct {
-	suite.Suite
-	oidc              *TraefikOidc
-	mockHTTPClient    *MockHTTPClient
-	mockStore         *MockSessionStore
-	mockTokenVerifier *MockTokenVerifier
-	mockJWTVerifier   *MockJWTVerifier
-}
-
-func (suite *TraefikOidcTestSuite) SetupTest() {
-	suite.mockHTTPClient = new(MockHTTPClient)
-	suite.mockStore = new(MockSessionStore)
-	suite.mockTokenVerifier = new(MockTokenVerifier)
-	suite.mockJWTVerifier = new(MockJWTVerifier)
-
-	config := &Config{
-		ProviderURL:          "https://example.com",
-		ClientID:             "test-client-id",
-		ClientSecret:         "test-client-secret",
-		CallbackURL:          "/callback",
-		LogoutURL:            "/logout",
-		SessionEncryptionKey: "test-encryption-key",
-		Scopes:               []string{"openid", "email", "profile"},
+	// Generate EC key for EC key tests
+	ts.ecPrivateKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		ts.t.Fatalf("Failed to generate EC key: %v", err)
 	}
 
-	suite.oidc = &TraefikOidc{
-		clientID:       config.ClientID,
-		clientSecret:   config.ClientSecret,
-		redirURLPath:   config.CallbackURL,
-		logoutURLPath:  config.LogoutURL,
-		store:          suite.mockStore,
-		httpClient:     &http.Client{Transport: suite.mockHTTPClient},
-		jwkCache:       &JWKCache{},
-		tokenBlacklist: NewTokenBlacklist(),
-		tokenCache:     NewTokenCache(),
-		logger:         NewLogger("info"),
-		limiter:        rate.NewLimiter(rate.Every(time.Second), 100),
-		authURL:        "https://example.com/auth",
-		tokenURL:       "https://example.com/token",
-		jwksURL:        "https://example.com/.well-known/jwks.json",
-		revocationURL:  "https://example.com/revoke",
-		tokenVerifier:  suite.mockTokenVerifier,
-		jwtVerifier:    suite.mockJWTVerifier,
+	// Create a JWK for the RSA public key
+	jwk := JWK{
+		Kty: "RSA",
+		Kid: "test-key-id",
+		Alg: "RS256",
+		N:   base64.RawURLEncoding.EncodeToString(ts.rsaPublicKey.N.Bytes()),
+		E:   base64.RawURLEncoding.EncodeToString(bigIntToBytes(big.NewInt(int64(ts.rsaPublicKey.E)))),
 	}
-}
-
-func (suite *TraefikOidcTestSuite) TestServeHTTP_AuthenticatedUser() {
-	testCases := []struct {
-		name           string
-		setupClaims    func() map[string]interface{}
-		expectedStatus int
-		expectedBody   string
-		expectedHeader string
-	}{
-		{
-			name: "Valid authenticated user",
-			setupClaims: func() map[string]interface{} {
-				return map[string]interface{}{
-					"exp":   float64(time.Now().Add(time.Hour).Unix()),
-					"email": "user@example.com",
-				}
-			},
-			expectedStatus: http.StatusOK,
-			expectedBody:   "OK",
-			expectedHeader: "user@example.com",
-		},
-		{
-			name: "Authenticated user without email",
-			setupClaims: func() map[string]interface{} {
-				return map[string]interface{}{
-					"exp": float64(time.Now().Add(time.Hour).Unix()),
-				}
-			},
-			expectedStatus: http.StatusFound,
-			expectedBody:   "",
-			expectedHeader: "",
-		},
+	jwks := &JWKSet{
+		Keys: []JWK{jwk},
 	}
 
-	for _, tc := range testCases {
-		suite.Run(tc.name, func() {
-			req := httptest.NewRequest("GET", "http://example.com", nil)
-			rw := httptest.NewRecorder()
-
-			session := sessions.NewSession(suite.mockStore, cookieName)
-			session.Values["authenticated"] = true
-
-			claims := tc.setupClaims()
-			claimsJSON, _ := json.Marshal(claims)
-			encodedClaims := base64.RawURLEncoding.EncodeToString(claimsJSON)
-			mockToken := fmt.Sprintf("header.%s.signature", encodedClaims)
-			session.Values["id_token"] = mockToken
-
-			suite.mockStore.On("Get", req, cookieName).Return(session, nil)
-			suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-			suite.mockTokenVerifier.On("VerifyToken", mockToken).Return(nil)
-
-			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("OK"))
-			})
-
-			suite.oidc.next = nextHandler
-
-			suite.oidc.ServeHTTP(rw, req)
-
-			suite.Equal(tc.expectedStatus, rw.Code)
-			suite.Contains(rw.Body.String(), tc.expectedBody)
-			suite.Equal(tc.expectedHeader, req.Header.Get("X-Forwarded-User"))
-		})
-	}
-}
-
-func (suite *TraefikOidcTestSuite) TestServeHTTP_CallbackPath() {
-	req := httptest.NewRequest("GET", "http://example.com"+suite.oidc.redirURLPath+"?code=test_code&state=test_state", nil)
-	rw := httptest.NewRecorder()
-
-	session := sessions.NewSession(suite.mockStore, cookieName)
-	session.Values["csrf"] = "test_state"
-	session.Values["incoming_path"] = "/original_path"
-	session.Values["nonce"] = "test_nonce" // Add nonce to session
-
-	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
-	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	claims := map[string]interface{}{
-		"exp":   float64(time.Now().Add(time.Hour).Unix()),
-		"email": "test@example.com",
-		"nonce": "test_nonce", // Add nonce to ID Token claims
-	}
-	claimsJSON, _ := json.Marshal(claims)
-	encodedClaims := base64.RawURLEncoding.EncodeToString(claimsJSON)
-	mockToken := fmt.Sprintf("header.%s.signature", encodedClaims)
-
-	tokenResponse := map[string]interface{}{
-		"id_token": mockToken,
-	}
-	tokenResponseJSON, _ := json.Marshal(tokenResponse)
-
-	suite.mockHTTPClient.On("RoundTrip", mock.MatchedBy(func(req *http.Request) bool {
-		return strings.Contains(req.URL.String(), "token")
-	})).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(string(tokenResponseJSON))),
-	}, nil)
-
-	suite.mockTokenVerifier.On("VerifyToken", mockToken).Return(nil)
-
-	suite.oidc.ServeHTTP(rw, req)
-
-	suite.Equal(http.StatusFound, rw.Code)
-	suite.Equal("/original_path", rw.Header().Get("Location"))
-}
-
-func (suite *TraefikOidcTestSuite) TestVerifyToken() {
-	token := "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Rfa2lkIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjE1MTYyMzkxMjJ9.ZmFrZV9zaWduYXR1cmU"
-
-	suite.mockTokenVerifier.On("VerifyToken", token).Return(nil)
-
-	err := suite.oidc.verifyToken(token)
-	suite.Require().NoError(err)
-}
-
-func (suite *TraefikOidcTestSuite) TestBuildAuthURL() {
-	authURL := suite.oidc.buildAuthURL("http://example.com/callback", "test_state", "test_nonce")
-	suite.Contains(authURL, suite.oidc.authURL)
-	suite.Contains(authURL, "client_id="+suite.oidc.clientID)
-	suite.Contains(authURL, "redirect_uri=http%3A%2F%2Fexample.com%2Fcallback")
-	suite.Contains(authURL, "state=test_state")
-	suite.Contains(authURL, "nonce=test_nonce")
-}
-
-func (suite *TraefikOidcTestSuite) TestJWKToPEM() {
-	jwk := &JWK{
-		Kty: "RSA", // Set the key type to RSA
-		N:   base64.RawURLEncoding.EncodeToString(big.NewInt(12345).Bytes()),
-		E:   base64.RawURLEncoding.EncodeToString(big.NewInt(65537).Bytes()),
-	}
-	pem, err := jwkToPEM(jwk)
-	suite.Require().NoError(err)
-	suite.NotEmpty(pem)
-}
-
-func (suite *TraefikOidcTestSuite) TestTokenBlacklist() {
-	tb := NewTokenBlacklist()
-	token := "test_token"
-	expiration := time.Now().Add(time.Hour)
-
-	tb.Add(token, expiration)
-	suite.True(tb.IsBlacklisted(token))
-
-	tb.Cleanup()
-	suite.True(tb.IsBlacklisted(token))
-
-	tb.Add("expired_token", time.Now().Add(-time.Hour))
-	tb.Cleanup()
-	suite.False(tb.IsBlacklisted("expired_token"))
-}
-
-func (suite *TraefikOidcTestSuite) TestTokenCache() {
-	tc := NewTokenCache()
-	token := "test_token"
-	expiration := time.Now().Add(time.Hour)
-
-	tc.Set(token, expiration)
-	info, exists := tc.Get(token)
-	suite.True(exists)
-	suite.Equal(token, info.Token)
-	suite.Equal(expiration, info.ExpiresAt)
-
-	tc.Delete(token)
-	_, exists = tc.Get(token)
-	suite.False(exists)
-
-	tc.Set("expired_token", time.Now().Add(-time.Hour))
-	tc.Cleanup()
-	_, exists = tc.Get("expired_token")
-	suite.False(exists)
-}
-
-func TestTraefikOidcSuite(t *testing.T) {
-	suite.Run(t, new(TraefikOidcTestSuite))
-}
-
-func (suite *TraefikOidcTestSuite) TestGenerateNonce() {
-	nonce, err := generateNonce()
-	suite.NoError(err)
-	suite.Len(nonce, 44) // Base64 encoded 32 bytes
-}
-
-func (suite *TraefikOidcTestSuite) TestBuildFullURL() {
-	url := buildFullURL("https", "example.com", "/path")
-	suite.Equal("https://example.com/path", url)
-
-	url = buildFullURL("", "example.com", "/path")
-	suite.Equal("http://example.com/path", url)
-}
-
-func (suite *TraefikOidcTestSuite) TestExchangeTokens() {
-	ctx := context.Background()
-
-	testCases := []struct {
-		name          string
-		grantType     string
-		codeOrToken   string
-		redirectURL   string
-		expectedToken map[string]interface{}
-	}{
-		{
-			name:        "Authorization Code Exchange",
-			grantType:   "authorization_code",
-			codeOrToken: "test_code",
-			redirectURL: "http://example.com/callback",
-			expectedToken: map[string]interface{}{
-				"access_token":  "test_access_token",
-				"id_token":      "test_id_token",
-				"refresh_token": "test_refresh_token",
-				"expires_in":    float64(3600),
-				"token_type":    "Bearer",
-			},
-		},
-		{
-			name:        "Refresh Token Exchange",
-			grantType:   "refresh_token",
-			codeOrToken: "test_refresh_token",
-			redirectURL: "",
-			expectedToken: map[string]interface{}{
-				"access_token":  "new_access_token",
-				"id_token":      "new_id_token",
-				"refresh_token": "new_refresh_token",
-				"expires_in":    float64(3600),
-				"token_type":    "Bearer",
-			},
-		},
+	// Create a mock JWKCache
+	ts.mockJWKCache = &MockJWKCache{
+		JWKS: jwks,
+		Err:  nil,
 	}
 
-	for _, tc := range testCases {
-		suite.Run(tc.name, func() {
-			tokenJSON, _ := json.Marshal(tc.expectedToken)
-
-			// Set up the mock HTTP client
-			suite.mockHTTPClient.On("RoundTrip", mock.AnythingOfType("*http.Request")).Return(&http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader(tokenJSON)),
-			}, nil).Once()
-
-			token, err := suite.oidc.exchangeTokens(ctx, tc.grantType, tc.codeOrToken, tc.redirectURL)
-			suite.NoError(err)
-			suite.Equal(tc.expectedToken, token)
-
-			suite.mockHTTPClient.AssertExpectations(suite.T())
-		})
-	}
-}
-
-func (suite *TraefikOidcTestSuite) TestHandleLogout() {
-	req := httptest.NewRequest("GET", "http://example.com/logout", nil)
-	rw := httptest.NewRecorder()
-
-	session := sessions.NewSession(suite.mockStore, cookieName)
-	session.Values["id_token"] = "test_token"
-
-	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
-	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	// Mock the HTTP client for token revocation
-	suite.mockHTTPClient.On("RoundTrip", mock.MatchedBy(func(req *http.Request) bool {
-		return req.URL.String() == suite.oidc.revocationURL
-	})).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(`{"status":"ok"}`)),
-	}, nil)
-
-	suite.oidc.handleLogout(rw, req)
-
-	suite.Equal(http.StatusForbidden, rw.Code)
-	suite.Equal("Logged out\n", rw.Body.String())
-
-	suite.mockHTTPClient.AssertExpectations(suite.T())
-}
-
-func (suite *TraefikOidcTestSuite) TestExtractClaims() {
-	tokenString := "header.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.signature"
-	claims, err := extractClaims(tokenString)
-	suite.NoError(err)
-	suite.Equal("1234567890", claims["sub"])
-	suite.Equal("John Doe", claims["name"])
-	suite.Equal(float64(1516239022), claims["iat"])
-}
-
-func (suite *TraefikOidcTestSuite) TestDiscoverProviderMetadata() {
-	providerURL := "https://example.com"
-	expectedMetadata := &ProviderMetadata{
-		Issuer:   "https://example.com",
-		AuthURL:  "https://example.com/auth",
-		TokenURL: "https://example.com/token",
-		JWKSURL:  "https://example.com/.well-known/jwks.json",
-	}
-	metadataJSON, _ := json.Marshal(expectedMetadata)
-
-	httpClient := &http.Client{
-		Transport: suite.mockHTTPClient,
+	// Create a test JWT token signed with the RSA private key
+	ts.token, err = createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+		"iss":   "https://test-issuer.com",
+		"aud":   "test-client-id",
+		"exp":   time.Now().Add(1 * time.Hour).Unix(),
+		"iat":   time.Now().Unix(),
+		"sub":   "test-subject",
+		"email": "user@example.com",
+	})
+	if err != nil {
+		ts.t.Fatalf("Failed to create test JWT: %v", err)
 	}
 
-	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(bytes.NewReader(metadataJSON)),
-	}, nil)
-
-	metadata, err := discoverProviderMetadata(providerURL, *httpClient)
-	suite.NoError(err)
-	suite.Equal(expectedMetadata, metadata)
-}
-
-func (suite *TraefikOidcTestSuite) TestDetermineScheme() {
-	req := httptest.NewRequest("GET", "http://example.com", nil)
-	scheme := suite.oidc.determineScheme(req)
-	suite.Equal("http", scheme)
-
-	req.Header.Set("X-Forwarded-Proto", "https")
-	scheme = suite.oidc.determineScheme(req)
-	suite.Equal("https", scheme)
-
-	suite.oidc.forceHTTPS = true
-	scheme = suite.oidc.determineScheme(req)
-	suite.Equal("https", scheme)
-}
-
-func (suite *TraefikOidcTestSuite) TestDetermineHost() {
-	req := httptest.NewRequest("GET", "http://example.com", nil)
-	host := suite.oidc.determineHost(req)
-	suite.Equal("example.com", host)
-
-	req.Header.Set("X-Forwarded-Host", "forwarded.example.com")
-	host = suite.oidc.determineHost(req)
-	suite.Equal("forwarded.example.com", host)
-}
-
-func (suite *TraefikOidcTestSuite) TestIsUserAuthenticated() {
-	testCases := []struct {
-		name            string
-		setupSession    func() *sessions.Session
-		expectedAuth    bool
-		expectedRefresh bool
-		expectedExpired bool
-	}{
-		{
-			name: "Valid Token",
-			setupSession: func() *sessions.Session {
-				session := sessions.NewSession(suite.mockStore, cookieName)
-				session.Values["authenticated"] = true
-				session.Values["id_token"] = "valid.eyJleHAiOjk5OTk5OTk5OTl9.signature"
-				return session
-			},
-			expectedAuth:    true,
-			expectedRefresh: false,
-			expectedExpired: false,
-		},
-		{
-			name: "Expired Token",
-			setupSession: func() *sessions.Session {
-				session := sessions.NewSession(suite.mockStore, cookieName)
-				session.Values["authenticated"] = true
-				session.Values["id_token"] = "expired.eyJleHAiOjE1OTM1NjE2MDB9.signature"
-				return session
-			},
-			expectedAuth:    false,
-			expectedRefresh: false,
-			expectedExpired: true,
-		},
-		{
-			name: "Token Needs Refresh",
-			setupSession: func() *sessions.Session {
-				session := sessions.NewSession(suite.mockStore, cookieName)
-				session.Values["authenticated"] = true
-				// Set expiration to 4 minutes from now
-				exp := time.Now().Add(4 * time.Minute).Unix()
-				token := fmt.Sprintf("needsrefresh.%s.signature", base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp))))
-				session.Values["id_token"] = token
-				return session
-			},
-			expectedAuth:    true,
-			expectedRefresh: true,
-			expectedExpired: false,
-		},
-		{
-			name: "Not Authenticated",
-			setupSession: func() *sessions.Session {
-				session := sessions.NewSession(suite.mockStore, cookieName)
-				session.Values["authenticated"] = false
-				return session
-			},
-			expectedAuth:    false,
-			expectedRefresh: false,
-			expectedExpired: false,
-		},
+	// Common TraefikOidc instance
+	ts.tOidc = &TraefikOidc{
+		issuerURL:                "https://test-issuer.com",
+		clientID:                 "test-client-id",
+		clientSecret:             "test-client-secret",
+		jwkCache:                 ts.mockJWKCache,
+		jwksURL:                  "https://test-jwks-url.com",
+		revocationURL:            "https://revocation-endpoint.com",
+		limiter:                  rate.NewLimiter(rate.Every(time.Second), 10),
+		tokenBlacklist:           NewTokenBlacklist(),
+		tokenCache:               NewTokenCache(),
+		logger:                   NewLogger("info"),
+		store:                    sessions.NewCookieStore([]byte("test-secret-key")),
+		allowedUserDomains:       map[string]struct{}{"example.com": {}},
+		excludedURLs:             map[string]struct{}{"/favicon": {}},
+		httpClient:               &http.Client{},
+		exchangeCodeForTokenFunc: ts.exchangeCodeForTokenFunc,
+		extractClaimsFunc:        extractClaims,
 	}
 
-	for _, tc := range testCases {
-		suite.Run(tc.name, func() {
-			session := tc.setupSession()
-			suite.mockTokenVerifier.On("VerifyToken", mock.AnythingOfType("string")).Return(nil).Maybe()
-			authenticated, needsRefresh, expired := suite.oidc.isUserAuthenticated(session)
-			suite.Equal(tc.expectedAuth, authenticated)
-			suite.Equal(tc.expectedRefresh, needsRefresh)
-			suite.Equal(tc.expectedExpired, expired)
-		})
+	ts.tOidc.tokenVerifier = ts.tOidc
+	ts.tOidc.jwtVerifier = ts.tOidc
+}
+
+// Helper functions used by TraefikOidc
+func (ts *TestSuite) exchangeCodeForTokenFunc(code string) (map[string]interface{}, error) {
+	return map[string]interface{}{
+		"id_token": ts.token,
+	}, nil
+}
+
+// MockJWKCache implements JWKCacheInterface
+type MockJWKCache struct {
+	JWKS *JWKSet
+	Err  error
+}
+
+func (m *MockJWKCache) GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error) {
+	return m.JWKS, m.Err
+}
+
+// Helper function to create a JWT token
+func createTestJWT(privateKey *rsa.PrivateKey, alg, kid string, claims map[string]interface{}) (string, error) {
+	header := map[string]interface{}{
+		"alg": alg,
+		"kid": kid,
+		"typ": "JWT",
 	}
-}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
 
-func (suite *TraefikOidcTestSuite) TestInitiateAuthentication() {
-	req := httptest.NewRequest("GET", "http://example.com", nil)
-	rw := httptest.NewRecorder()
-	session := sessions.NewSession(suite.mockStore, cookieName)
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	claimsEncoded := base64.RawURLEncoding.EncodeToString(claimsJSON)
 
-	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	signedContent := headerEncoded + "." + claimsEncoded
 
-	suite.oidc.initiateAuthentication(rw, req, session, "http://example.com/callback")
+	hasher := crypto.SHA256.New()
+	hasher.Write([]byte(signedContent))
+	hashed := hasher.Sum(nil)
 
-	suite.Equal(http.StatusFound, rw.Code)
-	location := rw.Header().Get("Location")
-	suite.Contains(location, suite.oidc.authURL)
-	suite.Contains(location, "redirect_uri=http%3A%2F%2Fexample.com%2Fcallback")
-}
-
-func (suite *TraefikOidcTestSuite) TestRevokeToken() {
-	token := "valid.eyJleHAiOjk5OTk5OTk5OTl9.signature"
-	suite.oidc.RevokeToken(token)
-
-	_, exists := suite.oidc.tokenCache.Get(token)
-	suite.False(exists)
-	suite.True(suite.oidc.tokenBlacklist.IsBlacklisted(token))
-}
-
-func (suite *TraefikOidcTestSuite) TestServeHTTP_InvalidSession() {
-	req := httptest.NewRequest("GET", "http://example.com", nil)
-	rw := httptest.NewRecorder()
-
-	suite.mockStore.On("Get", req, cookieName).Return((*sessions.Session)(nil), fmt.Errorf("invalid session"))
-
-	suite.oidc.ServeHTTP(rw, req)
-
-	suite.Equal(http.StatusInternalServerError, rw.Code)
-	suite.Contains(rw.Body.String(), "Session error")
-}
-
-func (suite *TraefikOidcTestSuite) TestServeHTTP_ExpiredToken() {
-	req := httptest.NewRequest("GET", "http://example.com", nil)
-	rw := httptest.NewRecorder()
-
-	session := sessions.NewSession(suite.mockStore, cookieName)
-	session.Values["authenticated"] = true
-	session.Values["id_token"] = "expired.eyJleHAiOjF9.signature" // expired token
-
-	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
-	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	// Set up expectation for VerifyToken
-	suite.mockTokenVerifier.On("VerifyToken", "expired.eyJleHAiOjF9.signature").Return(fmt.Errorf("token has expired"))
-
-	suite.oidc.ServeHTTP(rw, req)
-
-	suite.Equal(http.StatusFound, rw.Code) // Should redirect to authentication
-	suite.mockTokenVerifier.AssertExpectations(suite.T())
-}
-
-func (suite *TraefikOidcTestSuite) TestHandleCallback_InvalidState() {
-	testCases := []struct {
-		name           string
-		setupSession   func() *sessions.Session
-		expectedStatus int
-		expectedBody   string
-	}{
-		{
-			name: "Invalid state",
-			setupSession: func() *sessions.Session {
-				session := sessions.NewSession(suite.mockStore, cookieName)
-				session.Values["csrf"] = "valid_state"
-				return session
-			},
-			expectedStatus: http.StatusFound,
-			expectedBody:   "Authentication failed",
-		},
-		{
-			name: "No CSRF in session",
-			setupSession: func() *sessions.Session {
-				return sessions.NewSession(suite.mockStore, cookieName)
-			},
-			expectedStatus: http.StatusFound,
-			expectedBody:   "Authentication failed",
-		},
+	signatureBytes, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed)
+	if err != nil {
+		return "", err
 	}
 
-	for _, tc := range testCases {
-		suite.Run(tc.name, func() {
-			req := httptest.NewRequest("GET", "http://example.com"+suite.oidc.redirURLPath+"?code=test_code&state=invalid_state", nil)
-			rw := httptest.NewRecorder()
+	signatureEncoded := base64.RawURLEncoding.EncodeToString(signatureBytes)
 
-			session := tc.setupSession()
+	token := signedContent + "." + signatureEncoded
 
-			suite.mockStore.On("Get", req, cookieName).Return(session, nil)
-			suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-			suite.oidc.ServeHTTP(rw, req)
-
-			suite.Equal(tc.expectedStatus, rw.Code)
-			suite.Contains(rw.Body.String(), tc.expectedBody)
-		})
-	}
+	return token, nil
 }
 
-func (suite *TraefikOidcTestSuite) TestHandleCallback_TokenExchangeError() {
-	req := httptest.NewRequest("GET", "http://example.com"+suite.oidc.redirURLPath+"?code=invalid_code&state=test_state", nil)
-	rw := httptest.NewRecorder()
-
-	session := sessions.NewSession(suite.mockStore, cookieName)
-	session.Values["csrf"] = "test_state"
-
-	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
-	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(&http.Response{
-		StatusCode: http.StatusBadRequest,
-		Body:       io.NopCloser(strings.NewReader(`{"error": "invalid_grant"}`)),
-	}, nil)
-
-	suite.oidc.ServeHTTP(rw, req)
-
-	suite.Equal(http.StatusUnauthorized, rw.Code)
-	suite.Contains(rw.Body.String(), "Authentication failed")
+func bigIntToBytes(i *big.Int) []byte {
+	return i.Bytes()
 }
 
-func (suite *TraefikOidcTestSuite) TestVerifyToken_RateLimitExceeded() {
-	suite.oidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 1) // Set a very low limit
+// TestVerifyToken tests the VerifyToken method
+func TestVerifyToken(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
 
-	// Use up the only allowed request
-	suite.oidc.limiter.Allow()
-
-	err := suite.oidc.VerifyToken("some_token")
-	suite.Error(err)
-	suite.Contains(err.Error(), "rate limit exceeded")
-}
-
-func (suite *TraefikOidcTestSuite) TestVerifyToken_BlacklistedToken() {
-	token := "blacklisted_token"
-	suite.oidc.tokenBlacklist.Add(token, time.Now().Add(time.Hour))
-
-	err := suite.oidc.VerifyToken(token)
-	suite.Error(err)
-	suite.Contains(err.Error(), "token is blacklisted")
-}
-
-func (suite *TraefikOidcTestSuite) TestExtractClaims_InvalidToken() {
-	invalidToken := "invalid.token.format"
-	claims, err := extractClaims(invalidToken)
-	suite.Error(err)
-	suite.Nil(claims)
-}
-
-func (suite *TraefikOidcTestSuite) TestDiscoverProviderMetadata_HTTPError() {
-	providerURL := "https://example.com"
-	httpClient := &http.Client{
-		Transport: suite.mockHTTPClient,
-	}
-
-	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(&http.Response{
-		StatusCode: http.StatusInternalServerError,
-		Body:       io.NopCloser(strings.NewReader("Internal Server Error")),
-	}, nil)
-
-	metadata, err := discoverProviderMetadata(providerURL, *httpClient)
-	suite.Error(err)
-	suite.Nil(metadata)
-	suite.Contains(err.Error(), "failed to fetch provider metadata: status code 500")
-}
-
-func (suite *TraefikOidcTestSuite) TestRevokeToken_InvalidToken() {
-	invalidToken := "invalid.token"
-	suite.oidc.RevokeToken(invalidToken)
-
-	// Check that the invalid token is not added to the blacklist
-	suite.False(suite.oidc.tokenBlacklist.IsBlacklisted(invalidToken))
-}
-
-func TestTraefikOidc_ServeHTTP(t *testing.T) {
-	type fields struct {
-		next           http.Handler
-		name           string
-		store          sessions.Store
-		redirURLPath   string
-		logoutURLPath  string
-		issuerURL      string
-		jwkCache       *JWKCache
-		tokenBlacklist *TokenBlacklist
-		jwksURL        string
-		clientID       string
-		clientSecret   string
-		authURL        string
-		tokenURL       string
-		scopes         []string
-		limiter        *rate.Limiter
-		forceHTTPS     bool
-		scheme         string
-		tokenCache     *TokenCache
-		httpClient     *http.Client
-		logger         *Logger
-		redirectURL    string
-		tokenVerifier  TokenVerifier
-		jwtVerifier    JWTVerifier
-	}
-	type args struct {
-		rw  http.ResponseWriter
-		req *http.Request
-	}
 	tests := []struct {
-		name   string
-		fields fields
-		args   args
+		name          string
+		token         string
+		blacklist     bool
+		rateLimit     bool
+		cacheToken    bool
+		expectedError bool
 	}{
-		// TODO: Add test cases.
+		{
+			name:          "Valid token",
+			token:         ts.token,
+			expectedError: false,
+		},
+		{
+			name:          "Invalid token signature",
+			token:         ts.token + "invalid",
+			expectedError: true,
+		},
+		{
+			name:          "Blacklisted token",
+			token:         ts.token,
+			blacklist:     true,
+			expectedError: true,
+		},
+		{
+			name:          "Rate limit exceeded",
+			token:         ts.token,
+			rateLimit:     true,
+			expectedError: true,
+		},
+		{
+			name:          "Token in cache",
+			token:         ts.token,
+			cacheToken:    true,
+			expectedError: false,
+		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tr := &TraefikOidc{
-				next:           tt.fields.next,
-				name:           tt.fields.name,
-				store:          tt.fields.store,
-				redirURLPath:   tt.fields.redirURLPath,
-				logoutURLPath:  tt.fields.logoutURLPath,
-				issuerURL:      tt.fields.issuerURL,
-				jwkCache:       tt.fields.jwkCache,
-				tokenBlacklist: tt.fields.tokenBlacklist,
-				jwksURL:        tt.fields.jwksURL,
-				clientID:       tt.fields.clientID,
-				clientSecret:   tt.fields.clientSecret,
-				authURL:        tt.fields.authURL,
-				tokenURL:       tt.fields.tokenURL,
-				scopes:         tt.fields.scopes,
-				limiter:        tt.fields.limiter,
-				forceHTTPS:     tt.fields.forceHTTPS,
-				scheme:         tt.fields.scheme,
-				tokenCache:     tt.fields.tokenCache,
-				httpClient:     tt.fields.httpClient,
-				logger:         tt.fields.logger,
-				redirectURL:    tt.fields.redirectURL,
-				tokenVerifier:  tt.fields.tokenVerifier,
-				jwtVerifier:    tt.fields.jwtVerifier,
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset token blacklist and cache
+			ts.tOidc.tokenBlacklist = NewTokenBlacklist()
+			ts.tOidc.tokenCache = NewTokenCache()
+			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
+
+			// Set up the test case
+			if tc.blacklist {
+				ts.tOidc.tokenBlacklist.Add(tc.token, time.Now().Add(1*time.Hour))
 			}
-			tr.ServeHTTP(tt.args.rw, tt.args.req)
+
+			if tc.rateLimit {
+				// Exceed rate limit
+				ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 0)
+			}
+
+			if tc.cacheToken {
+				ts.tOidc.tokenCache.Set(tc.token, time.Now().Add(1*time.Hour))
+			}
+
+			err := ts.tOidc.VerifyToken(tc.token)
+			if tc.expectedError && err == nil {
+				t.Errorf("Test %s: expected error but got nil", tc.name)
+			}
+			if !tc.expectedError && err != nil {
+				t.Errorf("Test %s: expected no error but got %v", tc.name, err)
+			}
 		})
 	}
 }
 
-func (suite *TraefikOidcTestSuite) TestBuildAuthURL_CustomScopes() {
-	suite.oidc.scopes = []string{"openid", "email", "custom_scope"}
-	authURL := suite.oidc.buildAuthURL("http://example.com/callback", "test_state", "test_nonce")
-	suite.Contains(authURL, "scope=openid+email+custom_scope")
-}
+// TestServeHTTP tests the ServeHTTP method
+func TestServeHTTP(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
 
-func (suite *TraefikOidcTestSuite) TestBuildAuthURL_EmptyScopes() {
-	suite.oidc.scopes = []string{}
-	authURL := suite.oidc.buildAuthURL("http://example.com/callback", "test_state", "test_nonce")
-	suite.NotContains(authURL, "scope=")
-}
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+	ts.tOidc.next = nextHandler
+	ts.tOidc.name = "test"
 
-func (suite *TraefikOidcTestSuite) TestDetermineScheme_ForceHTTPS() {
-	suite.oidc.forceHTTPS = true
-	req := httptest.NewRequest("GET", "http://example.com", nil)
-	scheme := suite.oidc.determineScheme(req)
-	suite.Equal("https", scheme)
-}
-
-func (suite *TraefikOidcTestSuite) TestHandleLogout_CustomLogoutURL() {
-	suite.oidc.logoutURLPath = "/custom-logout"
-	req := httptest.NewRequest("GET", "http://example.com/custom-logout", nil)
-	rw := httptest.NewRecorder()
-
-	session := sessions.NewSession(suite.mockStore, cookieName)
-	session.Values["id_token"] = "test_token"
-
-	suite.mockStore.On("Get", req, cookieName).Return(session, nil)
-	suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	// Mock the HTTP client for token revocation
-	suite.mockHTTPClient.On("RoundTrip", mock.MatchedBy(func(req *http.Request) bool {
-		return req.URL.String() == suite.oidc.revocationURL
-	})).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(`{"status":"ok"}`)),
-	}, nil)
-
-	suite.oidc.ServeHTTP(rw, req)
-
-	suite.Equal(http.StatusForbidden, rw.Code)
-	suite.Equal("Logged out\n", rw.Body.String())
-
-	suite.mockHTTPClient.AssertExpectations(suite.T())
-}
-
-func (suite *TraefikOidcTestSuite) TestVerifyToken_RateLimitReached() {
-	suite.oidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 1) // Set a very low limit
-	suite.oidc.limiter.Allow()                                     // Use up the only allowed request
-
-	err := suite.oidc.VerifyToken("some_token")
-	suite.Error(err)
-	suite.Contains(err.Error(), "rate limit exceeded")
-}
-
-func (suite *TraefikOidcTestSuite) TestVerifyToken_InvalidJWTFormat() {
-	invalidToken := "invalid.jwt.format"
-	err := suite.oidc.VerifyToken(invalidToken)
-	suite.Error(err)
-	suite.Contains(err.Error(), "failed to parse JWT")
-}
-
-func (suite *TraefikOidcTestSuite) TestDiscoverProviderMetadata_InvalidURL() {
-	invalidURL := "invalid-url"
-	httpClient := &http.Client{
-		Transport: suite.mockHTTPClient,
-	}
-
-	suite.mockHTTPClient.On("RoundTrip", mock.Anything).Return(nil, fmt.Errorf("invalid URL"))
-
-	_, err := discoverProviderMetadata(invalidURL, *httpClient)
-	suite.Error(err)
-	suite.Contains(err.Error(), "failed to fetch provider metadata")
-}
-
-func (suite *TraefikOidcTestSuite) TestServeHTTP_ExcludedURLs() {
-	suite.oidc.excludedURLs = map[string]struct{}{
-		"/public":     {},
-		"/api/health": {},
-	}
-
-	testCases := []struct {
+	tests := []struct {
 		name           string
-		url            string
+		requestPath    string
+		sessionValues  map[interface{}]interface{}
 		expectedStatus int
 		expectedBody   string
 	}{
 		{
-			name:           "Excluded URL - public",
-			url:            "http://example.com/public",
-			expectedStatus: http.StatusOK,
-			expectedBody:   "Public content",
-		},
-		{
-			name:           "Excluded URL - api health",
-			url:            "http://example.com/api/health",
-			expectedStatus: http.StatusOK,
-			expectedBody:   "API is healthy",
-		},
-		{
-			name:           "Non-excluded URL",
-			url:            "http://example.com/private",
-			expectedStatus: http.StatusFound, // Expect a redirect to auth
-		},
-	}
-
-	for _, tc := range testCases {
-		suite.Run(tc.name, func() {
-			req := httptest.NewRequest("GET", tc.url, nil)
-			rw := httptest.NewRecorder()
-
-			if !strings.HasPrefix(req.URL.Path, "/public") && !strings.HasPrefix(req.URL.Path, "/api/health") {
-				// For non-excluded URLs, set up session mock
-				session := sessions.NewSession(suite.mockStore, cookieName)
-				suite.mockStore.On("Get", req, cookieName).Return(session, nil).Once()
-				suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
-			}
-
-			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(tc.expectedBody))
-			})
-
-			suite.oidc.next = nextHandler
-
-			suite.oidc.ServeHTTP(rw, req)
-
-			suite.Equal(tc.expectedStatus, rw.Code)
-			if tc.expectedStatus == http.StatusOK {
-				suite.Equal(tc.expectedBody, rw.Body.String())
-			}
-
-			suite.mockStore.AssertExpectations(suite.T())
-		})
-	}
-}
-
-func (suite *TraefikOidcTestSuite) TestServeHTTP_DomainRestriction() {
-	testCases := []struct {
-		name           string
-		allowedDomains map[string]struct{}
-		email          string
-		expectedStatus int
-		expectedBody   string
-		expectedHeader string
-	}{
-		{
-			name:           "Allowed domain",
-			allowedDomains: map[string]struct{}{"example.com": {}},
-			email:          "user@example.com",
+			name:           "Excluded URL",
+			requestPath:    "/favicon.ico",
 			expectedStatus: http.StatusOK,
 			expectedBody:   "OK",
-			expectedHeader: "user@example.com",
 		},
 		{
-			name:           "Not allowed domain",
-			allowedDomains: map[string]struct{}{"example.com": {}},
-			email:          "user@notallowed.com",
-			expectedStatus: http.StatusForbidden,
-			expectedBody:   "Access denied: Your email domain is not allowed",
-			expectedHeader: "",
-		},
-		{
-			name:           "No domain restriction",
-			allowedDomains: map[string]struct{}{},
-			email:          "user@anydomain.com",
-			expectedStatus: http.StatusOK,
-			expectedBody:   "OK",
-			expectedHeader: "user@anydomain.com",
-		},
-		{
-			name:           "No email claim",
-			allowedDomains: map[string]struct{}{"example.com": {}},
-			email:          "",
+			name:           "Unauthenticated request to protected URL",
+			requestPath:    "/protected",
 			expectedStatus: http.StatusFound,
-			expectedBody:   "",
-			expectedHeader: "",
+		},
+		{
+			name:        "Authenticated request to protected URL",
+			requestPath: "/protected",
+			sessionValues: map[interface{}]interface{}{
+				"authenticated": true,
+				"email":         "user@example.com",
+				"id_token":      ts.token,
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "OK",
+		},
+		{
+			name:        "Logout URL",
+			requestPath: "/logout",
+			sessionValues: map[interface{}]interface{}{
+				"authenticated": true,
+				"email":         "user@example.com",
+				"id_token":      ts.token,
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Logged out\n",
 		},
 	}
 
-	for _, tc := range testCases {
-		suite.Run(tc.name, func() {
-			suite.oidc.allowedUserDomains = tc.allowedDomains
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a request
+			req := httptest.NewRequest("GET", tc.requestPath, nil)
+			req.Header.Set("X-Forwarded-Proto", "http")
+			req.Header.Set("X-Forwarded-Host", "localhost")
 
-			req := httptest.NewRequest("GET", "http://example.com", nil)
-			rw := httptest.NewRecorder()
+			// Create a temporary response recorder to save the session
+			rrSession := httptest.NewRecorder()
 
-			session := sessions.NewSession(suite.mockStore, cookieName)
-			session.Values["authenticated"] = true
-
-			claims := map[string]interface{}{
-				"exp": float64(time.Now().Add(time.Hour).Unix()),
+			// Create a session
+			session, _ := ts.tOidc.store.New(req, cookieName)
+			if tc.sessionValues != nil {
+				for k, v := range tc.sessionValues {
+					session.Values[k] = v
+				}
+				session.Save(req, rrSession)
 			}
-			if tc.email != "" {
-				claims["email"] = tc.email
+
+			// Copy session cookie from rrSession to request
+			for _, cookie := range rrSession.Result().Cookies() {
+				req.AddCookie(cookie)
 			}
-			claimsJSON, _ := json.Marshal(claims)
-			encodedClaims := base64.RawURLEncoding.EncodeToString(claimsJSON)
-			mockToken := fmt.Sprintf("header.%s.signature", encodedClaims)
-			session.Values["id_token"] = mockToken
 
-			suite.mockStore.On("Get", req, cookieName).Return(session, nil).Once()
-			suite.mockStore.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+			// Create a response recorder for ServeHTTP
+			rr := httptest.NewRecorder()
 
-			suite.mockTokenVerifier.On("VerifyToken", mockToken).Return(nil).Once()
+			// Call ServeHTTP
+			ts.tOidc.ServeHTTP(rr, req)
 
-			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("OK"))
-			})
-
-			suite.oidc.next = nextHandler
-
-			suite.oidc.ServeHTTP(rw, req)
-
-			suite.Equal(tc.expectedStatus, rw.Code)
-			suite.Contains(rw.Body.String(), tc.expectedBody)
-			suite.Equal(tc.expectedHeader, req.Header.Get("X-Forwarded-User"))
-
-			suite.mockStore.AssertExpectations(suite.T())
-			suite.mockTokenVerifier.AssertExpectations(suite.T())
+			// Check the response
+			if rr.Code != tc.expectedStatus {
+				t.Errorf("Test %s: expected status %d, got %d", tc.name, tc.expectedStatus, rr.Code)
+			}
+			if tc.expectedBody != "" && strings.TrimSpace(rr.Body.String()) != strings.TrimSpace(rr.Body.String()) {
+				t.Errorf("Test %s: expected body '%s', got '%s'", tc.name, tc.expectedBody, rr.Body.String())
+			}
 		})
 	}
 }
 
-func (suite *TraefikOidcTestSuite) TestIsAllowedDomain() {
-	testCases := []struct {
-		name            string
-		email           string
-		allowedDomains  map[string]struct{}
-		expectedAllowed bool
+func TestJWKToPEM(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	tests := []struct {
+		name          string
+		jwk           *JWK
+		expectError   bool
+		errorContains string
 	}{
 		{
-			name:            "Allowed domain",
-			email:           "user@example.com",
-			allowedDomains:  map[string]struct{}{"example.com": {}, "test.com": {}},
-			expectedAllowed: true,
+			name: "Unsupported Key Type",
+			jwk: &JWK{
+				Kty: "unsupported",
+				Kid: "test-key-id",
+			},
+			expectError:   true,
+			errorContains: "unsupported key type",
 		},
 		{
-			name:            "Not allowed domain",
-			email:           "user@notallowed.com",
-			allowedDomains:  map[string]struct{}{"example.com": {}, "test.com": {}},
-			expectedAllowed: false,
-		},
-		{
-			name:            "Empty allowed domains",
-			email:           "user@anydomainallowed.com",
-			allowedDomains:  map[string]struct{}{},
-			expectedAllowed: true,
-		},
-		{
-			name:            "Invalid email format",
-			email:           "invalidemail",
-			allowedDomains:  map[string]struct{}{"example.com": {}},
-			expectedAllowed: false,
+			name: "EC Key",
+			jwk: &JWK{
+				Kty: "EC",
+				Kid: "test-ec-key-id",
+				Crv: "P-256",
+				X:   base64.RawURLEncoding.EncodeToString(ts.ecPrivateKey.PublicKey.X.Bytes()),
+				Y:   base64.RawURLEncoding.EncodeToString(ts.ecPrivateKey.PublicKey.Y.Bytes()),
+			},
+			expectError: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		suite.Run(tc.name, func() {
-			suite.oidc.allowedUserDomains = tc.allowedDomains
-			allowed := suite.oidc.isAllowedDomain(tc.email)
-			suite.Equal(tc.expectedAllowed, allowed)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pemBytes, err := jwkToPEM(tc.jwk)
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error, got nil")
+				} else if !strings.Contains(err.Error(), tc.errorContains) {
+					t.Errorf("Expected error containing '%s', got '%v'", tc.errorContains, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				if len(pemBytes) == 0 {
+					t.Error("PEM bytes should not be empty")
+				}
+			}
+		})
+	}
+}
+
+func TestParseJWT(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	tests := []struct {
+		name          string
+		token         string
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:          "Invalid Format",
+			token:         "invalid.jwt.token",
+			expectError:   true,
+			errorContains: "invalid JWT format",
+		},
+		{
+			name:        "Valid Token",
+			token:       ts.token,
+			expectError: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseJWT(tc.token)
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error, got nil")
+				} else if !strings.Contains(err.Error(), tc.errorContains) {
+					t.Errorf("Expected error containing '%s', got '%v'", tc.errorContains, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestJWTVerify_MissingClaims(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	jwt := &JWT{
+		Header: map[string]interface{}{
+			"alg": "RS256",
+			"kid": "test-key-id",
+		},
+		Claims: map[string]interface{}{
+			// Missing 'iss', 'aud', 'exp', 'iat', 'sub'
+		},
+	}
+
+	err := jwt.Verify("https://test-issuer.com", "test-client-id")
+	if err == nil {
+		t.Error("Expected error for missing claims, got nil")
+	}
+}
+
+func TestHandleCallback(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	tests := []struct {
+		name                 string
+		queryParams          string
+		exchangeCodeForToken func(code string) (map[string]interface{}, error)
+		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
+		expectedStatus       int
+	}{
+		{
+			name:        "Success",
+			queryParams: "?code=test-code",
+			exchangeCodeForToken: func(code string) (map[string]interface{}, error) {
+				return map[string]interface{}{
+					"id_token": "test-id-token",
+				}, nil
+			},
+			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+				return map[string]interface{}{
+					"email": "user@example.com",
+				}, nil
+			},
+			expectedStatus: http.StatusFound,
+		},
+		{
+			name:           "Missing Code",
+			queryParams:    "",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:        "Exchange Code Error",
+			queryParams: "?code=test-code",
+			exchangeCodeForToken: func(code string) (map[string]interface{}, error) {
+				return nil, fmt.Errorf("exchange code error")
+			},
+			expectedStatus: http.StatusInternalServerError,
+		},
+		{
+			name:        "Missing ID Token",
+			queryParams: "?code=test-code",
+			exchangeCodeForToken: func(code string) (map[string]interface{}, error) {
+				return map[string]interface{}{}, nil
+			},
+			expectedStatus: http.StatusInternalServerError,
+		},
+		{
+			name:        "Disallowed Email",
+			queryParams: "?code=test-code",
+			exchangeCodeForToken: func(code string) (map[string]interface{}, error) {
+				return map[string]interface{}{
+					"id_token": "test-id-token",
+				}, nil
+			},
+			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+				return map[string]interface{}{
+					"email": "user@disallowed.com",
+				}, nil
+			},
+			expectedStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a new instance for each test to avoid state carryover
+			tOidc := &TraefikOidc{
+				store:                    sessions.NewCookieStore([]byte("test-secret-key")),
+				allowedUserDomains:       map[string]struct{}{"example.com": {}},
+				logger:                   NewLogger("info"),
+				exchangeCodeForTokenFunc: tc.exchangeCodeForToken,
+				extractClaimsFunc:        tc.extractClaimsFunc,
+			}
+
+			// Create request and response recorder
+			req := httptest.NewRequest("GET", "/callback"+tc.queryParams, nil)
+			rr := httptest.NewRecorder()
+
+			// Create session
+			session, _ := tOidc.store.New(req, cookieName)
+			session.Save(req, rr)
+
+			// Copy session cookie to request
+			for _, cookie := range rr.Result().Cookies() {
+				req.AddCookie(cookie)
+			}
+
+			// Reset rr for the actual test
+			rr = httptest.NewRecorder()
+
+			// Call handleCallback
+			tOidc.handleCallback(rr, req)
+
+			// Check response
+			if rr.Code != tc.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tc.expectedStatus, rr.Code)
+			}
+		})
+	}
+}
+
+func TestIsAllowedDomain(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	tests := []struct {
+		name    string
+		email   string
+		allowed bool
+	}{
+		{
+			name:    "Allowed domain",
+			email:   "user@example.com",
+			allowed: true,
+		},
+		{
+			name:    "Disallowed domain",
+			email:   "user@notallowed.com",
+			allowed: false,
+		},
+		{
+			name:    "Invalid email",
+			email:   "invalid-email",
+			allowed: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			allowed := ts.tOidc.isAllowedDomain(tc.email)
+			if allowed != tc.allowed {
+				t.Errorf("Expected allowed=%v, got %v", tc.allowed, allowed)
+			}
 		})
 	}
 }

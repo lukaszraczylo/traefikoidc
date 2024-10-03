@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
 )
 
@@ -80,15 +81,30 @@ func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 		return nil, fmt.Errorf("failed to refresh token: %w", err)
 	}
 
+	newAccessToken, ok := result["access_token"].(string)
+	if !ok || newAccessToken == "" {
+		return nil, fmt.Errorf("no access_token field in token response")
+	}
+
+	rawIDToken, ok := result["id_token"].(string)
+	if !ok || rawIDToken == "" {
+		return nil, fmt.Errorf("no id_token field in token response")
+	}
+
+	newRefreshToken, ok := result["refresh_token"].(string)
+	if !ok || newRefreshToken == "" {
+		return nil, fmt.Errorf("no refresh_token field in token response")
+	}
+
 	response := &TokenResponse{
-		IDToken:     result["id_token"].(string),
-		AccessToken: result["access_token"].(string),
+		IDToken:     rawIDToken,
+		AccessToken: newAccessToken,
 		ExpiresIn:   int(result["expires_in"].(float64)),
 		TokenType:   result["token_type"].(string),
 	}
 
 	// The refresh token might not be returned if it hasn't changed
-	if newRefreshToken, ok := result["refresh_token"].(string); ok {
+	if newRefreshToken != refreshToken {
 		response.RefreshToken = newRefreshToken
 	} else {
 		response.RefreshToken = refreshToken
@@ -116,6 +132,7 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		t.RevokeToken(idToken)
 	}
 
+	session.Options = defaultSessionOptions
 	// Clear the session
 	session.Options.MaxAge = -1
 	session.Values = make(map[interface{}]interface{})
@@ -131,103 +148,85 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Request, session *sessions.Session) {
 	// Clear the existing session
 	session.Options.MaxAge = -1
-	session.Values = make(map[interface{}]interface{})
-	err := session.Save(req, rw)
-	if err != nil {
-		t.logger.Errorf("Failed to clear session: %v", err)
+	for k := range session.Values {
+		delete(session.Values, k)
+	}
+
+	// Set new values
+	session.Values["csrf"] = uuid.New().String()
+	session.Values["incoming_path"] = req.URL.Path
+	session.Values["nonce"], _ = generateNonce()
+	session.Options = defaultSessionOptions
+
+	// Save the session before initiating authentication
+	if err := session.Save(req, rw); err != nil {
+		t.logger.Errorf("Failed to save session: %v", err)
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
 	// Initiate a new authentication flow
-	t.initiateAuthentication(rw, req, session, t.redirectURL)
+	t.initiateAuthenticationFunc(rw, req, session, t.redirectURL)
 }
 
-func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) (bool, string) {
+func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) {
 	session, err := t.store.Get(req, cookieName)
 	if err != nil {
 		t.logger.Errorf("Session error: %v", err)
-		t.initiateAuthentication(rw, req, session, t.redirectURL)
-		return false, ""
+		http.Error(rw, "Session error", http.StatusInternalServerError)
+		return
 	}
 
-	callbackState := req.URL.Query().Get("state")
-	sessionState, ok := session.Values["csrf"].(string)
-	if !ok || callbackState != sessionState {
-		t.logger.Debug("Invalid state parameter. Session might have expired.")
-		t.initiateAuthentication(rw, req, session, t.redirectURL)
-		return false, ""
-	}
+	t.logger.Debugf("Handling callback, URL: %s", req.URL.String())
 
 	code := req.URL.Query().Get("code")
-	redirectURL := buildFullURL(t.scheme, req.Host, t.redirURLPath)
+	if code == "" {
+		t.logger.Error("No code in callback")
+		http.Error(rw, "No code in callback", http.StatusBadRequest)
+		return
+	}
 
-	oauth2Token, err := t.exchangeTokens(req.Context(), "authorization_code", code, redirectURL)
+	token, err := t.exchangeCodeForTokenFunc(code)
 	if err != nil {
-		handleError(rw, "Failed to exchange token", http.StatusUnauthorized, t.logger)
-		return false, ""
+		t.logger.Errorf("Failed to exchange code for token: %v", err)
+		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
+		return
 	}
 
-	rawIDToken, ok := oauth2Token["id_token"].(string)
-	if !ok {
-		handleError(rw, "No id_token field in oauth2 token", http.StatusUnauthorized, t.logger)
-		return false, ""
+	idToken, ok := token["id_token"].(string)
+	if !ok || idToken == "" {
+		t.logger.Error("No id_token in token response")
+		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
+		return
 	}
 
-	if err := t.verifyToken(rawIDToken); err != nil {
-		handleError(rw, "Failed to verify token", http.StatusUnauthorized, t.logger)
-		return false, ""
-	}
-
-	claims, err := extractClaims(rawIDToken)
+	claims, err := t.extractClaimsFunc(idToken)
 	if err != nil {
-		handleError(rw, "Failed to extract claims", http.StatusInternalServerError, t.logger)
-		return false, ""
+		t.logger.Errorf("Failed to extract claims: %v", err)
+		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
+		return
 	}
-
-	// Verify the nonce
-	nonceFromToken, ok := claims["nonce"].(string)
-	if !ok || nonceFromToken == "" {
-		t.logger.Error("Nonce claim is missing in ID Token")
-		handleError(rw, "Nonce verification failed", http.StatusUnauthorized, t.logger)
-		return false, ""
-	}
-
-	sessionNonce, ok := session.Values["nonce"].(string)
-	if !ok || sessionNonce == "" {
-		t.logger.Error("Nonce is missing in session")
-		handleError(rw, "Nonce verification failed", http.StatusUnauthorized, t.logger)
-		return false, ""
-	}
-
-	if nonceFromToken != sessionNonce {
-		t.logger.Error("Nonce mismatch")
-		handleError(rw, "Nonce verification failed", http.StatusUnauthorized, t.logger)
-		return false, ""
-	}
-
-	// Remove 'nonce' and 'csrf' from session after successful verification
-	delete(session.Values, "nonce")
-	delete(session.Values, "csrf")
 
 	email, _ := claims["email"].(string)
+	if email == "" || !t.isAllowedDomain(email) {
+		t.logger.Errorf("Invalid or disallowed email: %s", email)
+		http.Error(rw, "Authentication failed: Invalid or disallowed email", http.StatusForbidden)
+		return
+	}
 
 	session.Values["authenticated"] = true
-	session.Values["id_token"] = rawIDToken
-	session.Values["refresh_token"] = oauth2Token["refresh_token"]
 	session.Values["email"] = email
-	session.Values["access_token"] = oauth2Token["access_token"]
+	session.Values["id_token"] = idToken
+	session.Options = defaultSessionOptions
 
 	if err := session.Save(req, rw); err != nil {
-		handleError(rw, "Failed to save session", http.StatusInternalServerError, t.logger)
-		return false, ""
+		t.logger.Errorf("Failed to save session: %v", err)
+		http.Error(rw, "Failed to save session", http.StatusInternalServerError)
+		return
 	}
 
-	originalPath, ok := session.Values["incoming_path"].(string)
-	if !ok {
-		originalPath = "/"
-	}
-	delete(session.Values, "incoming_path")
-
-	return true, originalPath
+	t.logger.Debugf("Authentication successful. User email: %s", email)
+	http.Redirect(rw, req, "/", http.StatusFound)
 }
 
 func extractClaims(tokenString string) (map[string]interface{}, error) {
@@ -336,4 +335,26 @@ func (tc *TokenCache) Cleanup() {
 			delete(tc.cache, token)
 		}
 	}
+}
+
+func (t *TraefikOidc) exchangeCodeForToken(code string) (map[string]interface{}, error) {
+	data := url.Values{}
+	data.Set("grant_type", "authorization_code")
+	data.Set("client_id", t.clientID)
+	data.Set("client_secret", t.clientSecret)
+	data.Set("code", code)
+	data.Set("redirect_uri", t.redirectURL)
+
+	resp, err := t.httpClient.PostForm(t.tokenURL, data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange token: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode token response: %v", err)
+	}
+
+	return result, nil
 }

@@ -37,6 +37,10 @@ type JWKCache struct {
 	mutex     sync.RWMutex
 }
 
+type JWKCacheInterface interface {
+	GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error)
+}
+
 func (c *JWKCache) GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	c.mutex.RLock()
 	if c.jwks != nil && time.Now().Before(c.expiresAt) {
