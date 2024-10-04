@@ -95,8 +95,9 @@ func (ts *TestSuite) Setup() {
 		httpClient:               &http.Client{},
 		exchangeCodeForTokenFunc: ts.exchangeCodeForTokenFunc,
 		extractClaimsFunc:        extractClaims,
+		initComplete:             make(chan struct{}),
 	}
-
+	close(ts.tOidc.initComplete)
 	ts.tOidc.tokenVerifier = ts.tOidc
 	ts.tOidc.jwtVerifier = ts.tOidc
 }
