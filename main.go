@@ -100,7 +100,9 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 	}
 
 	expirationTime := time.Unix(int64(jwt.Claims["exp"].(float64)), 0)
-	t.tokenCache.Set(token, expirationTime)
+	now := time.Now()
+	duration := expirationTime.Sub(now)
+	t.tokenCache.Set(token, jwt.Claims, duration)
 
 	return nil
 }
@@ -184,11 +186,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			return dialer.DialContext(ctx, network, addr)
 		},
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		MaxIdleConnsPerHost:   10,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
 	}
 
 	var httpClient *http.Client

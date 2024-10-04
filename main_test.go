@@ -220,7 +220,9 @@ func TestVerifyToken(t *testing.T) {
 			}
 
 			if tc.cacheToken {
-				ts.tOidc.tokenCache.Set(tc.token, time.Now().Add(1*time.Hour))
+				ts.tOidc.tokenCache.Set(tc.token, map[string]interface{}{
+					"empty": "claim",
+				}, 60)
 			}
 
 			err := ts.tOidc.VerifyToken(tc.token)

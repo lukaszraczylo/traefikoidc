@@ -248,11 +248,6 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 	return claims, nil
 }
 
-type UsedTokens struct {
-	tokens map[string]bool
-	mutex  sync.RWMutex
-}
-
 type TokenBlacklist struct {
 	blacklist map[string]time.Time
 	mutex     sync.RWMutex
@@ -289,8 +284,7 @@ func (tb *TokenBlacklist) Cleanup() {
 }
 
 type TokenCache struct {
-	cache map[string]*TokenInfo
-	mutex sync.RWMutex
+	cache *Cache
 }
 
 type TokenInfo struct {
@@ -300,41 +294,32 @@ type TokenInfo struct {
 
 func NewTokenCache() *TokenCache {
 	return &TokenCache{
-		cache: make(map[string]*TokenInfo),
+		cache: NewCache(),
 	}
 }
 
-func (tc *TokenCache) Set(token string, expiresAt time.Time) {
-	tc.mutex.Lock()
-	defer tc.mutex.Unlock()
-	tc.cache[token] = &TokenInfo{Token: token, ExpiresAt: expiresAt}
+func (tc *TokenCache) Set(token string, claims map[string]interface{}, expiration time.Duration) {
+	token = "t-" + token
+	tc.cache.Set(token, claims, expiration)
 }
 
-func (tc *TokenCache) Get(token string) (*TokenInfo, bool) {
-	tc.mutex.RLock()
-	defer tc.mutex.RUnlock()
-	info, exists := tc.cache[token]
-	if exists && time.Now().Before(info.ExpiresAt) {
-		return info, true
+func (tc *TokenCache) Get(token string) (map[string]interface{}, bool) {
+	token = "t-" + token
+	value, found := tc.cache.Get(token)
+	if !found {
+		return nil, false
 	}
-	return nil, false
+	claims, ok := value.(map[string]interface{})
+	return claims, ok
 }
 
 func (tc *TokenCache) Delete(token string) {
-	tc.mutex.Lock()
-	defer tc.mutex.Unlock()
-	delete(tc.cache, token)
+	token = "t-" + token
+	tc.cache.Delete(token)
 }
 
 func (tc *TokenCache) Cleanup() {
-	tc.mutex.Lock()
-	defer tc.mutex.Unlock()
-	now := time.Now()
-	for token, info := range tc.cache {
-		if now.After(info.ExpiresAt) {
-			delete(tc.cache, token)
-		}
-	}
+	tc.cache.Cleanup()
 }
 
 func (t *TraefikOidc) exchangeCodeForToken(code string) (map[string]interface{}, error) {
