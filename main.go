@@ -266,7 +266,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	t.jwtVerifier = t
 	t.startTokenCleanup()
 	go t.initializeMetadata(config.ProviderURL)
-
 	return t, nil
 }
 
