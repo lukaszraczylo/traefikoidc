@@ -15,6 +15,34 @@ Middleware currently supports following scenarios:
 
 #### How to configure...
 
+##### Keeping secrets secret
+
+This works ONLY in kubernetes environments. Don't forget to create secret traefik-middleware-oidc with fields ISSUER, CLIENT_ID and SECRET keys.
+
+```
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-with-open-urls
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: urn:k8s:secret:traefik-middleware-oidc:ISSUER
+      clientID: urn:k8s:secret:traefik-middleware-oidc:CLIENT_ID
+      clientSecret: urn:k8s:secret:traefik-middleware-oidc:SECRET
+      sessionEncryptionKey: vvv
+      callbackURL: /cool-oidc/callback
+      logoutURL: /cool-oidc/logout
+      scopes:
+        - openid
+        - email
+        - profile
+      excludedURLs: # Determines the list of URLs which are NOT a subject to authentication
+        - /login # covers /login, /login/me, /login/reminder etc.
+        - /my-public-data
+```
+
 ##### Excluded URLs with open access
 
 ```
