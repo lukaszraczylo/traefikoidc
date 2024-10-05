@@ -226,7 +226,14 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 	}
 
 	t.logger.Debugf("Authentication successful. User email: %s", email)
-	http.Redirect(rw, req, "/", http.StatusFound)
+	http.Redirect(rw, req, func() string {
+		if path, ok := session.Values["incoming_path"].(string); ok {
+			t.logger.Debug("Redirecting to incoming path from original request: %s", path)
+			return path
+		}
+		t.logger.Debug("Redirecting to root path as no incoming path found")
+		return "/"
+	}(), http.StatusFound)
 }
 
 func extractClaims(tokenString string) (map[string]interface{}, error) {
