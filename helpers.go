@@ -350,3 +350,11 @@ func (t *TraefikOidc) exchangeCodeForToken(code string) (map[string]interface{},
 
 	return result, nil
 }
+
+func createStringMap(keys []string) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, key := range keys {
+		result[key] = struct{}{}
+	}
+	return result
+}
