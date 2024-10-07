@@ -220,37 +220,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		tokenBlacklist: NewTokenBlacklist(),
 		jwkCache:       &JWKCache{},
 
-		clientID:     config.ClientID,
-		clientSecret: config.ClientSecret,
-		forceHTTPS:   config.ForceHTTPS,
-		scopes:       config.Scopes,
-		limiter:      rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
-		tokenCache:   NewTokenCache(),
-		httpClient:   httpClient,
-		logger:       NewLogger(config.LogLevel),
-		excludedURLs: func() map[string]struct{} {
-			m := make(map[string]struct{})
-			for _, url := range config.ExcludedURLs {
-				m[url] = struct{}{}
-			}
-			return m
-		}(),
-		redirectURL: "",
-		allowedUserDomains: func() map[string]struct{} {
-			m := make(map[string]struct{})
-			for _, domain := range config.AllowedUserDomains {
-				m[domain] = struct{}{}
-			}
-			return m
-		}(),
-		allowedRolesAndGroups: func() map[string]struct{} {
-			m := make(map[string]struct{})
-			for _, roleOrGroup := range config.AllowedRolesAndGroups {
-				m[roleOrGroup] = struct{}{}
-			}
-			return m
-		}(),
-		initComplete: make(chan struct{}),
+		clientID:              config.ClientID,
+		clientSecret:          config.ClientSecret,
+		forceHTTPS:            config.ForceHTTPS,
+		scopes:                config.Scopes,
+		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
+		tokenCache:            NewTokenCache(),
+		httpClient:            httpClient,
+		logger:                NewLogger(config.LogLevel),
+		excludedURLs:          createStringMap(config.ExcludedURLs),
+		redirectURL:           "",
+		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
+		allowedRolesAndGroups: createStringMap(config.AllowedRolesAndGroups),
+		initComplete:          make(chan struct{}),
 	}
 
 	t.initiateAuthenticationFunc = t.defaultInitiateAuthentication
