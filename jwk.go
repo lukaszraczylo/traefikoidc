@@ -117,14 +117,18 @@ func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 }
 
 func jwkToPEM(jwk *JWK) ([]byte, error) {
-	switch jwk.Kty {
-	case "RSA":
-		return rsaJWKToPEM(jwk)
-	case "EC":
-		return ecJWKToPEM(jwk)
-	default:
+	converter, ok := jwkConverters[jwk.Kty]
+	if !ok {
 		return nil, fmt.Errorf("unsupported key type: %s", jwk.Kty)
 	}
+	return converter(jwk)
+}
+
+type jwkToPEMConverter func(*JWK) ([]byte, error)
+
+var jwkConverters = map[string]jwkToPEMConverter{
+	"RSA": rsaJWKToPEM,
+	"EC":  ecJWKToPEM,
 }
 
 func rsaJWKToPEM(jwk *JWK) ([]byte, error) {
