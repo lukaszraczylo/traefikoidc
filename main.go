@@ -2,7 +2,6 @@ package traefikoidc
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,16 +18,19 @@ import (
 	"golang.org/x/time/rate"
 )
 
-const ConstSessionTimeout = 86400
+const ConstSessionTimeout = 86400 // Session timeout in seconds
 
+// TokenVerifier interface for token verification
 type TokenVerifier interface {
 	VerifyToken(token string) error
 }
 
+// JWTVerifier interface for JWT verification
 type JWTVerifier interface {
 	VerifyJWTSignatureAndClaims(jwt *JWT, token string) error
 }
 
+// TraefikOidc is the main struct for the OIDC middleware
 type TraefikOidc struct {
 	next                       http.Handler
 	name                       string
@@ -58,12 +60,13 @@ type TraefikOidc struct {
 	allowedUserDomains         map[string]struct{}
 	allowedRolesAndGroups      map[string]struct{}
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string)
-	exchangeCodeForTokenFunc   func(code string) (map[string]interface{}, error)
+	exchangeCodeForTokenFunc   func(code string) (*TokenResponse, error)
 	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
 	initOnce                   sync.Once
 	initComplete               chan struct{}
 }
 
+// ProviderMetadata holds OIDC provider metadata
 type ProviderMetadata struct {
 	Issuer    string `json:"issuer"`
 	AuthURL   string `json:"authorization_endpoint"`
@@ -72,36 +75,45 @@ type ProviderMetadata struct {
 	RevokeURL string `json:"revocation_endpoint"`
 }
 
+// defaultExcludedURLs are the paths that are excluded from authentication
 var defaultExcludedURLs = map[string]struct{}{
 	"/favicon": {},
 }
 
 var newTicker = time.NewTicker
 
+// VerifyToken verifies the provided JWT token
 func (t *TraefikOidc) VerifyToken(token string) error {
-	t.logger.Debugf("Verifying token: %s", token)
+	t.logger.Debugf("Verifying token")
+
+	// Rate limiting
 	if !t.limiter.Allow() {
 		return fmt.Errorf("rate limit exceeded")
 	}
 
+	// Check if token is blacklisted
 	if t.tokenBlacklist.IsBlacklisted(token) {
 		return fmt.Errorf("token is blacklisted")
 	}
 
+	// Check if token is cached
 	if _, exists := t.tokenCache.Get(token); exists {
 		t.logger.Debugf("Token is valid and cached")
 		return nil // Token is valid and cached
 	}
 
+	// Parse the JWT
 	jwt, err := parseJWT(token)
 	if err != nil {
 		return fmt.Errorf("failed to parse JWT: %w", err)
 	}
 
+	// Verify JWT signature and claims
 	if err := t.VerifyJWTSignatureAndClaims(jwt, token); err != nil {
 		return err
 	}
 
+	// Cache the token until it expires
 	expirationTime := time.Unix(int64(jwt.Claims["exp"].(float64)), 0)
 	now := time.Now()
 	duration := expirationTime.Sub(now)
@@ -110,26 +122,27 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 	return nil
 }
 
+// VerifyJWTSignatureAndClaims verifies the JWT signature and standard claims
 func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error {
-	t.logger.Debugf("Verifying JWT. Header: %+v", jwt.Header)
+	t.logger.Debugf("Verifying JWT signature and claims")
 
+	// Get JWKS
 	jwks, err := t.jwkCache.GetJWKS(t.jwksURL, t.httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to get JWKS: %w", err)
 	}
 
+	// Retrieve key ID and algorithm from JWT header
 	kid, ok := jwt.Header["kid"].(string)
 	if !ok {
 		return fmt.Errorf("missing key ID in token header")
 	}
-	t.logger.Debugf("Token kid: %s", kid)
-
 	alg, ok := jwt.Header["alg"].(string)
 	if !ok {
 		return fmt.Errorf("missing algorithm in token header")
 	}
-	t.logger.Debugf("Token alg: %s", alg)
 
+	// Find the matching key in JWKS
 	var matchingKey *JWK
 	for _, key := range jwks.Keys {
 		if key.Kid == kid {
@@ -137,48 +150,35 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 			break
 		}
 	}
-
 	if matchingKey == nil {
 		return fmt.Errorf("no matching public key found for kid: %s", kid)
 	}
-	t.logger.Debugf("Matching key found. Type: %s, Algorithm: %s", matchingKey.Kty, matchingKey.Alg)
 
+	// Convert JWK to PEM format
 	publicKeyPEM, err := jwkToPEM(matchingKey)
 	if err != nil {
 		return fmt.Errorf("failed to convert JWK to PEM: %w", err)
 	}
-	t.logger.Debugf("Public key PEM generated. Length: %d", len(publicKeyPEM))
 
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return fmt.Errorf("invalid token format")
-	}
-
-	signedContent := parts[0] + "." + parts[1]
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return fmt.Errorf("failed to decode signature: %w", err)
-	}
-
-	if err := verifySignature(signedContent, signature, publicKeyPEM, alg); err != nil {
-		t.logger.Errorf("Signature verification failed: %v", err)
+	// Verify the signature
+	if err := verifySignature(token, publicKeyPEM, alg); err != nil {
 		return fmt.Errorf("signature verification failed: %w", err)
 	}
-	t.logger.Debug("Signature verified successfully")
 
 	// Verify standard claims
 	if err := jwt.Verify(t.issuerURL, t.clientID); err != nil {
 		return fmt.Errorf("standard claim verification failed: %w", err)
 	}
-	t.logger.Debug("Standard claims verified successfully")
 
 	return nil
 }
 
+// New creates a new instance of the OIDC middleware
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	store := sessions.NewCookieStore([]byte(config.SessionEncryptionKey))
 	store.Options = defaultSessionOptions
 
+	// Setup HTTP client
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -217,9 +217,8 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			}
 			return config.LogoutURL
 		}(),
-		tokenBlacklist: NewTokenBlacklist(),
-		jwkCache:       &JWKCache{},
-
+		tokenBlacklist:        NewTokenBlacklist(),
+		jwkCache:              &JWKCache{},
 		clientID:              config.ClientID,
 		clientSecret:          config.ClientSecret,
 		forceHTTPS:            config.ForceHTTPS,
@@ -229,17 +228,18 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		httpClient:            httpClient,
 		logger:                NewLogger(config.LogLevel),
 		excludedURLs:          createStringMap(config.ExcludedURLs),
-		redirectURL:           "",
 		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
 		allowedRolesAndGroups: createStringMap(config.AllowedRolesAndGroups),
 		initComplete:          make(chan struct{}),
 	}
 
-	t.initiateAuthenticationFunc = t.defaultInitiateAuthentication
-	t.exchangeCodeForTokenFunc = t.exchangeCodeForToken
 	t.extractClaimsFunc = extractClaims
+	t.exchangeCodeForTokenFunc = t.exchangeCodeForToken
+	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+	}
 
-	// add defaultExcludedURLs to excludedURLs
+	// Add default excluded URLs
 	for k, v := range defaultExcludedURLs {
 		t.excludedURLs[k] = v
 	}
@@ -248,14 +248,16 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	t.jwtVerifier = t
 	t.startTokenCleanup()
 	go t.initializeMetadata(config.ProviderURL)
+
 	return t, nil
 }
 
+// initializeMetadata discovers and initializes the provider metadata
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.initOnce.Do(func() {
 		metadata, err := discoverProviderMetadata(providerURL, t.httpClient, t.logger)
 		if err != nil {
-			t.logger.Error("Failed to discover provider metadata: %v", err)
+			t.logger.Errorf("Failed to discover provider metadata: %v", err)
 		} else {
 			t.logger.Debug("Provider metadata discovered successfully")
 			t.jwksURL = metadata.JWKSURL
@@ -268,6 +270,7 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	})
 }
 
+// discoverProviderMetadata fetches the OIDC provider metadata
 func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Logger) (*ProviderMetadata, error) {
 	wellKnownURL := strings.TrimSuffix(providerURL, "/") + "/.well-known/openid-configuration"
 
@@ -281,7 +284,7 @@ func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Lo
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if time.Since(start) > totalTimeout {
-			l.Error("Timeout exceeded while fetching provider metadata")
+			l.Errorf("Timeout exceeded while fetching provider metadata")
 			return nil, fmt.Errorf("timeout exceeded while fetching provider metadata: %w", lastErr)
 		}
 
@@ -293,18 +296,20 @@ func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Lo
 
 		lastErr = err
 
+		// Exponential backoff
 		delay := time.Duration(math.Pow(2, float64(attempt))) * baseDelay
 		if delay > maxDelay {
 			delay = maxDelay
 		}
-		l.Debug("Failed to fetch provider metadata, retrying in %s", delay)
+		l.Debugf("Failed to fetch provider metadata, retrying in %s", delay)
 		time.Sleep(delay)
 	}
 
-	l.Error("Max retries exceeded while fetching provider metadata")
+	l.Errorf("Max retries exceeded while fetching provider metadata")
 	return nil, fmt.Errorf("max retries exceeded while fetching provider metadata: %w", lastErr)
 }
 
+// fetchMetadata fetches metadata from the well-known OIDC configuration endpoint
 func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetadata, error) {
 	resp, err := httpClient.Get(wellKnownURL)
 	if err != nil {
@@ -327,6 +332,7 @@ func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetad
 	return &metadata, nil
 }
 
+// ServeHTTP is the main handler for the middleware
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	select {
 	case <-t.initComplete:
@@ -342,20 +348,24 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Check if the URL is excluded from authentication
 	if t.determineExcludedURL(req.URL.Path) {
 		t.next.ServeHTTP(rw, req)
 		return
 	}
 
+	// Determine the scheme (http/https) and host
 	t.scheme = t.determineScheme(req)
 	defaultSessionOptions.Secure = t.scheme == "https"
 	host := t.determineHost(req)
 
+	// Build the redirect URL if not already set
 	if t.redirectURL == "" {
 		t.redirectURL = buildFullURL(t.scheme, host, t.redirURLPath)
 		t.logger.Debugf("Redirect URL updated to: %s", t.redirectURL)
 	}
 
+	// Get the session
 	session, err := t.store.Get(req, cookieName)
 	if err != nil {
 		t.logger.Errorf("Error getting session: %v", err)
@@ -365,16 +375,19 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	t.logger.Debugf("Session contents at start: %+v", session.Values)
 
+	// Handle logout URL
 	if req.URL.Path == t.logoutURLPath {
 		t.handleLogout(rw, req)
 		return
 	}
 
+	// Handle callback URL
 	if req.URL.Path == t.redirURLPath {
 		t.handleCallback(rw, req)
 		return
 	}
 
+	// Check if the user is authenticated
 	authenticated, needsRefresh, expired := t.isUserAuthenticated(session)
 
 	if expired {
@@ -395,84 +408,80 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// authenticated, _ := session.Values["authenticated"].(bool)
-	if authenticated {
-		idToken, ok := session.Values["id_token"].(string)
-		if !ok || idToken == "" {
-			t.logger.Errorf("No id_token found in session")
-			t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
-			return
-		}
-
-		claims, err := extractClaims(idToken)
-		if err != nil {
-			t.logger.Errorf("Failed to extract claims: %v", err)
-			t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
-			return
-		}
-
-		email, _ := claims["email"].(string)
-		if email == "" {
-			t.logger.Debugf("No email found in token claims")
-			t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
-			return
-		}
-
-		if !t.isAllowedDomain(email) {
-			t.logger.Infof("User with email %s is not from an allowed domain", email)
-			http.Error(rw, fmt.Sprintf("Access denied: Your email domain is not allowed. To log out, visit: %s", t.logoutURLPath), http.StatusForbidden)
-			return
-		}
-
-		groups, roles, err := t.extractGroupsAndRoles(idToken)
-		if err != nil {
-			t.logger.Errorf("Failed to extract groups and roles: %v", err)
-		} else {
-			// Set headers for groups and roles
-			if len(groups) > 0 {
-				req.Header.Set("X-User-Groups", strings.Join(groups, ","))
-			}
-			if len(roles) > 0 {
-				req.Header.Set("X-User-Roles", strings.Join(roles, ","))
-			}
-		}
-
-		if len(t.allowedRolesAndGroups) > 0 {
-			allowed := false
-			for _, roleOrGroup := range append(groups, roles...) {
-				if _, ok := t.allowedRolesAndGroups[roleOrGroup]; ok {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				t.logger.Infof("User with email %s does not have any allowed roles or groups", email)
-				http.Error(rw, fmt.Sprintf("Access denied: You do not have any allowed roles or groups. To log out, visit: %s", t.logoutURLPath), http.StatusForbidden)
-				return
-			}
-		}
-
-		req.Header.Set("X-Forwarded-User", email)
-
-		t.next.ServeHTTP(rw, req)
+	// At this point, the user is authenticated
+	idToken, ok := session.Values["id_token"].(string)
+	if !ok || idToken == "" {
+		t.logger.Errorf("No id_token found in session")
+		t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
 		return
 	}
 
-	t.logger.Debug("User is not authenticated, initiating authentication")
-	t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
+	claims, err := extractClaims(idToken)
+	if err != nil {
+		t.logger.Errorf("Failed to extract claims: %v", err)
+		t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
+		return
+	}
+
+	email, _ := claims["email"].(string)
+	if email == "" {
+		t.logger.Debugf("No email found in token claims")
+		t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
+		return
+	}
+
+	if !t.isAllowedDomain(email) {
+		t.logger.Infof("User with email %s is not from an allowed domain", email)
+		http.Error(rw, fmt.Sprintf("Access denied: Your email domain is not allowed. To log out, visit: %s", t.logoutURLPath), http.StatusForbidden)
+		return
+	}
+
+	groups, roles, err := t.extractGroupsAndRoles(idToken)
+	if err != nil {
+		t.logger.Errorf("Failed to extract groups and roles: %v", err)
+	} else {
+		// Set headers for groups and roles
+		if len(groups) > 0 {
+			req.Header.Set("X-User-Groups", strings.Join(groups, ","))
+		}
+		if len(roles) > 0 {
+			req.Header.Set("X-User-Roles", strings.Join(roles, ","))
+		}
+	}
+
+	if len(t.allowedRolesAndGroups) > 0 {
+		allowed := false
+		for _, roleOrGroup := range append(groups, roles...) {
+			if _, ok := t.allowedRolesAndGroups[roleOrGroup]; ok {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			t.logger.Infof("User with email %s does not have any allowed roles or groups", email)
+			http.Error(rw, fmt.Sprintf("Access denied: You do not have any allowed roles or groups. To log out, visit: %s", t.logoutURLPath), http.StatusForbidden)
+			return
+		}
+	}
+
+	req.Header.Set("X-Forwarded-User", email)
+
+	t.next.ServeHTTP(rw, req)
 }
 
+// determineExcludedURL checks if the current request URL is in the excluded list
 func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 	for excludedURL := range t.excludedURLs {
 		if strings.HasPrefix(currentRequest, excludedURL) {
-			t.logger.Debug("URL is excluded - got %s / excluded hit: %s", currentRequest, excludedURL)
+			t.logger.Debugf("URL is excluded - got %s / excluded hit: %s", currentRequest, excludedURL)
 			return true
 		}
 	}
-	t.logger.Debug("URL is not excluded - got %s", currentRequest)
+	t.logger.Debugf("URL is not excluded - got %s", currentRequest)
 	return false
 }
 
+// determineScheme determines the scheme (http or https) of the request
 func (t *TraefikOidc) determineScheme(req *http.Request) string {
 	if t.forceHTTPS {
 		return "https"
@@ -486,6 +495,7 @@ func (t *TraefikOidc) determineScheme(req *http.Request) string {
 	return "http"
 }
 
+// determineHost determines the host of the request
 func (t *TraefikOidc) determineHost(req *http.Request) string {
 	if host := req.Header.Get("X-Forwarded-Host"); host != "" {
 		return host
@@ -493,6 +503,7 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 	return req.Host
 }
 
+// isUserAuthenticated checks if the user is authenticated
 func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool, bool) {
 	authenticated, _ := session.Values["authenticated"].(bool)
 	t.logger.Debugf("Session authenticated value: %v", authenticated)
@@ -543,13 +554,16 @@ func (t *TraefikOidc) isUserAuthenticated(session *sessions.Session) (bool, bool
 	return true, false, false // Token is valid and not expiring soon
 }
 
+// defaultInitiateAuthentication initiates the authentication process
 func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
+	// Generate CSRF token
 	csrfToken := uuid.New().String()
 	session.Values["csrf"] = csrfToken
 	session.Values["incoming_path"] = req.URL.Path
 	session.Options = defaultSessionOptions
 	t.logger.Debugf("Setting CSRF token: %s", csrfToken)
 
+	// Generate nonce
 	nonce, err := generateNonce()
 	if err != nil {
 		http.Error(rw, "Failed to generate nonce", http.StatusInternalServerError)
@@ -558,20 +572,24 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	session.Values["nonce"] = nonce
 	t.logger.Debugf("Setting nonce: %s", nonce)
 
+	// Save the session
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("Failed to save session: %v", err)
 		http.Error(rw, "Failed to save session", http.StatusInternalServerError)
 		return
 	}
 
+	// Build the authentication URL
 	authURL := t.buildAuthURL(redirectURL, csrfToken, nonce)
 	http.Redirect(rw, req, authURL, http.StatusFound)
 }
 
+// verifyToken verifies the token using the token verifier
 func (t *TraefikOidc) verifyToken(token string) error {
 	return t.tokenVerifier.VerifyToken(token)
 }
 
+// buildAuthURL constructs the authentication URL
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 	params := url.Values{}
 	params.Set("client_id", t.clientID)
@@ -585,6 +603,7 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 	return t.authURL + "?" + params.Encode()
 }
 
+// startTokenCleanup starts the token cleanup goroutine
 func (t *TraefikOidc) startTokenCleanup() {
 	ticker := newTicker(1 * time.Minute)
 	go func() {
@@ -596,6 +615,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 	}()
 }
 
+// RevokeToken adds the token to the blacklist
 func (t *TraefikOidc) RevokeToken(token string) {
 	// Remove from cache
 	t.tokenCache.Delete(token)
@@ -610,12 +630,13 @@ func (t *TraefikOidc) RevokeToken(token string) {
 	}
 }
 
-func (t *TraefikOidc) RevokeTokenWithProvider(token string) error {
+// RevokeTokenWithProvider revokes the token with the provider
+func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	t.logger.Debugf("Revoking token with provider")
 
 	data := url.Values{
 		"token":           {token},
-		"token_type_hint": {"access_token", "refresh_token"},
+		"token_type_hint": {tokenType},
 		"client_id":       {t.clientID},
 		"client_secret":   {t.clientSecret},
 	}
@@ -646,10 +667,12 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token string) error {
 	return nil
 }
 
+// refreshToken refreshes the user's token
 func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, session *sessions.Session) bool {
 	t.logger.Debug("Refreshing token")
 	refreshToken, ok := session.Values["refresh_token"].(string)
 	if !ok || refreshToken == "" {
+		t.logger.Debug("No refresh token found in session")
 		return false
 	}
 
@@ -659,6 +682,13 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		return false
 	}
 
+	// Verify the new id_token
+	if err := t.verifyToken(newToken.IDToken); err != nil {
+		t.logger.Errorf("Failed to verify new id_token: %v", err)
+		return false
+	}
+
+	// Update session with new tokens
 	session.Values["id_token"] = newToken.IDToken
 	session.Values["refresh_token"] = newToken.RefreshToken
 	session.Options = defaultSessionOptions
@@ -670,6 +700,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	return true
 }
 
+// isAllowedDomain checks if the user's email domain is allowed
 func (t *TraefikOidc) isAllowedDomain(email string) bool {
 	if len(t.allowedUserDomains) == 0 {
 		return true // If no domains are specified, all are allowed
@@ -685,6 +716,7 @@ func (t *TraefikOidc) isAllowedDomain(email string) bool {
 	return ok
 }
 
+// extractGroupsAndRoles extracts groups and roles from the id_token
 func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string, error) {
 	claims, err := t.extractClaimsFunc(idToken)
 	if err != nil {
@@ -706,24 +738,16 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 		}
 	}
 
-	if len(groups) == 0 {
-		t.logger.Debug("No groups found in groups claim, checking roles claim")
-	}
-
 	// Check for roles claim
 	if rolesClaim, ok := claims["roles"]; ok {
 		if rolesSlice, ok := rolesClaim.([]interface{}); ok {
 			for _, role := range rolesSlice {
 				if roleStr, ok := role.(string); ok {
-					t.logger.Debug("Found role: %s", roleStr)
+					t.logger.Debugf("Found role: %s", roleStr)
 					roles = append(roles, roleStr)
 				}
 			}
 		}
-	}
-
-	if len(roles) == 0 {
-		t.logger.Debug("No roles found in roles claim")
 	}
 
 	return groups, roles, nil

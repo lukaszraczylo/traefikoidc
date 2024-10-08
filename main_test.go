@@ -72,6 +72,7 @@ func (ts *TestSuite) Setup() {
 		"iat":   time.Now().Unix(),
 		"sub":   "test-subject",
 		"email": "user@example.com",
+		"nonce": "test-nonce",
 	})
 	if err != nil {
 		ts.t.Fatalf("Failed to create test JWT: %v", err)
@@ -79,33 +80,34 @@ func (ts *TestSuite) Setup() {
 
 	// Common TraefikOidc instance
 	ts.tOidc = &TraefikOidc{
-		issuerURL:                "https://test-issuer.com",
-		clientID:                 "test-client-id",
-		clientSecret:             "test-client-secret",
-		jwkCache:                 ts.mockJWKCache,
-		jwksURL:                  "https://test-jwks-url.com",
-		revocationURL:            "https://revocation-endpoint.com",
-		limiter:                  rate.NewLimiter(rate.Every(time.Second), 10),
-		tokenBlacklist:           NewTokenBlacklist(),
-		tokenCache:               NewTokenCache(),
-		logger:                   NewLogger("info"),
-		store:                    sessions.NewCookieStore([]byte("test-secret-key")),
-		allowedUserDomains:       map[string]struct{}{"example.com": {}},
-		excludedURLs:             map[string]struct{}{"/favicon": {}},
-		httpClient:               &http.Client{},
-		exchangeCodeForTokenFunc: ts.exchangeCodeForTokenFunc,
-		extractClaimsFunc:        extractClaims,
-		initComplete:             make(chan struct{}),
+		issuerURL:          "https://test-issuer.com",
+		clientID:           "test-client-id",
+		clientSecret:       "test-client-secret",
+		jwkCache:           ts.mockJWKCache,
+		jwksURL:            "https://test-jwks-url.com",
+		revocationURL:      "https://revocation-endpoint.com",
+		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
+		tokenBlacklist:     NewTokenBlacklist(),
+		tokenCache:         NewTokenCache(),
+		logger:             NewLogger("info"),
+		store:              sessions.NewCookieStore([]byte("test-secret-key")),
+		allowedUserDomains: map[string]struct{}{"example.com": {}},
+		excludedURLs:       map[string]struct{}{"/favicon": {}},
+		httpClient:         &http.Client{},
+		extractClaimsFunc:  extractClaims,
+		initComplete:       make(chan struct{}),
 	}
 	close(ts.tOidc.initComplete)
+	ts.tOidc.exchangeCodeForTokenFunc = ts.exchangeCodeForTokenFunc
 	ts.tOidc.tokenVerifier = ts.tOidc
 	ts.tOidc.jwtVerifier = ts.tOidc
 }
 
 // Helper functions used by TraefikOidc
-func (ts *TestSuite) exchangeCodeForTokenFunc(code string) (map[string]interface{}, error) {
-	return map[string]interface{}{
-		"id_token": ts.token,
+func (ts *TestSuite) exchangeCodeForTokenFunc(code string) (*TokenResponse, error) {
+	return &TokenResponse{
+		IDToken:      ts.token,
+		RefreshToken: "test-refresh-token",
 	}, nil
 }
 
@@ -453,60 +455,148 @@ func TestHandleCallback(t *testing.T) {
 	tests := []struct {
 		name                 string
 		queryParams          string
-		exchangeCodeForToken func(code string) (map[string]interface{}, error)
+		exchangeCodeForToken func(code string) (*TokenResponse, error)
 		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
+		sessionSetupFunc     func(session *sessions.Session)
 		expectedStatus       int
 	}{
 		{
 			name:        "Success",
-			queryParams: "?code=test-code",
-			exchangeCodeForToken: func(code string) (map[string]interface{}, error) {
-				return map[string]interface{}{
-					"id_token": "test-id-token",
+			queryParams: "?code=test-code&state=test-csrf-token",
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				return &TokenResponse{
+					IDToken:      ts.token,
+					RefreshToken: "test-refresh-token",
 				}, nil
 			},
 			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
 				return map[string]interface{}{
 					"email": "user@example.com",
+					"nonce": "test-nonce",
 				}, nil
+			},
+			sessionSetupFunc: func(session *sessions.Session) {
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
 			},
 			expectedStatus: http.StatusFound,
 		},
 		{
-			name:           "Missing Code",
-			queryParams:    "",
+			name:        "Missing Code",
+			queryParams: "",
+			sessionSetupFunc: func(session *sessions.Session) {
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
+			},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name:        "Exchange Code Error",
-			queryParams: "?code=test-code",
-			exchangeCodeForToken: func(code string) (map[string]interface{}, error) {
+			queryParams: "?code=test-code&state=test-csrf-token",
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
 				return nil, fmt.Errorf("exchange code error")
+			},
+			sessionSetupFunc: func(session *sessions.Session) {
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
 			},
 			expectedStatus: http.StatusInternalServerError,
 		},
 		{
 			name:        "Missing ID Token",
-			queryParams: "?code=test-code",
-			exchangeCodeForToken: func(code string) (map[string]interface{}, error) {
-				return map[string]interface{}{}, nil
+			queryParams: "?code=test-code&state=test-csrf-token",
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				return &TokenResponse{}, nil
+			},
+			sessionSetupFunc: func(session *sessions.Session) {
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
 			},
 			expectedStatus: http.StatusInternalServerError,
 		},
 		{
 			name:        "Disallowed Email",
-			queryParams: "?code=test-code",
-			exchangeCodeForToken: func(code string) (map[string]interface{}, error) {
-				return map[string]interface{}{
-					"id_token": "test-id-token",
+			queryParams: "?code=test-code&state=test-csrf-token",
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				return &TokenResponse{
+					IDToken:      ts.token,
+					RefreshToken: "test-refresh-token",
 				}, nil
 			},
 			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
 				return map[string]interface{}{
 					"email": "user@disallowed.com",
+					"nonce": "test-nonce",
 				}, nil
 			},
+			sessionSetupFunc: func(session *sessions.Session) {
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
+			},
 			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:        "Invalid State Parameter",
+			queryParams: "?code=test-code&state=invalid-csrf-token",
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				return &TokenResponse{
+					IDToken:      ts.token,
+					RefreshToken: "test-refresh-token",
+				}, nil
+			},
+			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+				return map[string]interface{}{
+					"email": "user@example.com",
+					"nonce": "test-nonce",
+				}, nil
+			},
+			sessionSetupFunc: func(session *sessions.Session) {
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:        "Nonce Mismatch",
+			queryParams: "?code=test-code&state=test-csrf-token",
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				return &TokenResponse{
+					IDToken:      ts.token,
+					RefreshToken: "test-refresh-token",
+				}, nil
+			},
+			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+				return map[string]interface{}{
+					"email": "user@example.com",
+					"nonce": "invalid-nonce",
+				}, nil
+			},
+			sessionSetupFunc: func(session *sessions.Session) {
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
+			},
+			expectedStatus: http.StatusInternalServerError,
+		},
+		{
+			name:        "Missing Nonce in Claims",
+			queryParams: "?code=test-code&state=test-csrf-token",
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				return &TokenResponse{
+					IDToken:      ts.token,
+					RefreshToken: "test-refresh-token",
+				}, nil
+			},
+			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+				return map[string]interface{}{
+					"email": "user@example.com",
+					// Missing nonce
+				}, nil
+			},
+			sessionSetupFunc: func(session *sessions.Session) {
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
+			},
+			expectedStatus: http.StatusInternalServerError,
 		},
 	}
 
@@ -519,6 +609,8 @@ func TestHandleCallback(t *testing.T) {
 				logger:                   NewLogger("info"),
 				exchangeCodeForTokenFunc: tc.exchangeCodeForToken,
 				extractClaimsFunc:        tc.extractClaimsFunc,
+				tokenVerifier:            ts.tOidc.tokenVerifier,
+				jwtVerifier:              ts.tOidc.jwtVerifier,
 			}
 
 			// Create request and response recorder
@@ -527,6 +619,9 @@ func TestHandleCallback(t *testing.T) {
 
 			// Create session
 			session, _ := tOidc.store.New(req, cookieName)
+			if tc.sessionSetupFunc != nil {
+				tc.sessionSetupFunc(session)
+			}
 			session.Save(req, rr)
 
 			// Copy session cookie to request

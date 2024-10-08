@@ -4,29 +4,36 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
+	"crypto/sha256"
+	"strings"
+
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"math/big"
-	"strings"
+
 	"time"
 )
 
+// JWT represents a JSON Web Token
 type JWT struct {
 	Header    map[string]interface{}
 	Claims    map[string]interface{}
-	Signature string
+	Signature []byte
+	Token     string
 }
 
+// parseJWT parses a JWT token string into a JWT struct
 func parseJWT(tokenString string) (*JWT, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
-	jwt := &JWT{}
+	jwt := &JWT{
+		Token: tokenString,
+	}
 
 	// Decode and unmarshal the header
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
@@ -46,12 +53,17 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal claims: %v", err)
 	}
 
-	// Set the signature
-	jwt.Signature = parts[2]
+	// Decode the signature
+	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid JWT format: failed to decode signature: %v", err)
+	}
+	jwt.Signature = signatureBytes
 
 	return jwt, nil
 }
 
+// Verify verifies the standard claims in the JWT
 func (j *JWT) Verify(issuerURL, clientID string) error {
 	claims := j.Claims
 
@@ -95,6 +107,39 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 	return nil
 }
 
+// verifyAudience verifies the audience claim
+func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
+	switch aud := tokenAudience.(type) {
+	case string:
+		if aud != expectedAudience {
+			return fmt.Errorf("invalid audience")
+		}
+	case []interface{}:
+		found := false
+		for _, v := range aud {
+			if str, ok := v.(string); ok && str == expectedAudience {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("invalid audience")
+		}
+	default:
+		return fmt.Errorf("invalid 'aud' claim type")
+	}
+	return nil
+}
+
+// verifyIssuer verifies the issuer claim
+func verifyIssuer(tokenIssuer, expectedIssuer string) error {
+	if tokenIssuer != expectedIssuer {
+		return fmt.Errorf("invalid issuer")
+	}
+	return nil
+}
+
+// verifyExpiration checks if the token has expired
 func verifyExpiration(expiration float64) error {
 	expirationTime := time.Unix(int64(expiration), 0)
 	if time.Now().After(expirationTime) {
@@ -103,7 +148,24 @@ func verifyExpiration(expiration float64) error {
 	return nil
 }
 
-func verifySignature(signedContent string, signature []byte, publicKeyPEM []byte, alg string) error {
+// verifyIssuedAt checks if the token was issued in the future
+func verifyIssuedAt(issuedAt float64) error {
+	issuedAtTime := time.Unix(int64(issuedAt), 0)
+	if time.Now().Before(issuedAtTime) {
+		return fmt.Errorf("token used before issued")
+	}
+	return nil
+}
+
+// verifySignature verifies the token signature
+func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error {
+	parts := strings.Split(tokenString, ".")
+	signedContent := parts[0] + "." + parts[1]
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return fmt.Errorf("failed to decode signature: %w", err)
+	}
+
 	block, _ := pem.Decode(publicKeyPEM)
 	if block == nil {
 		return fmt.Errorf("failed to parse PEM block containing the public key")
@@ -114,69 +176,19 @@ func verifySignature(signedContent string, signature []byte, publicKeyPEM []byte
 		return fmt.Errorf("failed to parse public key: %w", err)
 	}
 
-	var hash crypto.Hash
-	var verifyFunc func(publicKey interface{}, hashed []byte, signature []byte, hash crypto.Hash) error
-
-	switch alg {
-	case "RS256", "RS384", "RS512":
-		hash = crypto.SHA256 // SHA384 and SHA512 are used for RS384 and RS512 respectively.
-		verifyFunc = rsaVerifyPKCS1v15
-	case "PS256", "PS384", "PS512":
-		hash = crypto.SHA256 // SHA384 and SHA512 are used for PS384 and PS512 respectively.
-		verifyFunc = rsaVerifyPSS
-	case "ES256", "ES384", "ES512":
-		hash = crypto.SHA256 // SHA384 and SHA512 are used for ES384 and ES512 respectively.
-		verifyFunc = ecdsaVerify
-	default:
-		return fmt.Errorf("unsupported algorithm: %s", alg)
-	}
-
-	h := hash.New()
+	h := sha256.New()
 	h.Write([]byte(signedContent))
 	hashed := h.Sum(nil)
 
-	return verifyFunc(pubKey, hashed, signature, hash)
-}
-
-func rsaVerifyPKCS1v15(publicKey interface{}, hashed []byte, signature []byte, hash crypto.Hash) error {
-	pubKey, ok := publicKey.(*rsa.PublicKey)
-	if !ok {
-		return fmt.Errorf("invalid public key type for RSA: %T", publicKey)
-	}
-	return rsa.VerifyPKCS1v15(pubKey, hash, hashed, signature)
-}
-
-func rsaVerifyPSS(publicKey interface{}, hashed []byte, signature []byte, hash crypto.Hash) error {
-	pubKey, ok := publicKey.(*rsa.PublicKey)
-	if !ok {
-		return fmt.Errorf("invalid public key type for RSA: %T", publicKey)
-	}
-	opts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}
-	return rsa.VerifyPSS(pubKey, crypto.SHA256, hashed, signature, opts)
-}
-
-func ecdsaVerify(publicKey interface{}, hashed []byte, signature []byte, hash crypto.Hash) error {
-	pubKey, ok := publicKey.(*ecdsa.PublicKey)
-	if !ok {
-		return fmt.Errorf("invalid public key type for ECDSA: %T", publicKey)
-	}
-	keyBytes := (pubKey.Params().BitSize + 7) / 8
-	if len(signature) != 2*keyBytes {
-		return fmt.Errorf("invalid signature length for ECDSA: expected %d bytes, got %d bytes", 2*keyBytes, len(signature))
-	}
-	r := new(big.Int).SetBytes(signature[:keyBytes])
-	s := new(big.Int).SetBytes(signature[keyBytes:])
-
-	if ecdsa.Verify(pubKey, hashed, r, s) {
+	switch pubKey := pubKey.(type) {
+	case *rsa.PublicKey:
+		return rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hashed, signature)
+	case *ecdsa.PublicKey:
+		if !ecdsa.VerifyASN1(pubKey, hashed, signature) {
+			return fmt.Errorf("invalid ECDSA signature")
+		}
 		return nil
+	default:
+		return fmt.Errorf("unsupported public key type: %T", pubKey)
 	}
-	return fmt.Errorf("invalid ECDSA signature")
-}
-
-func verifyIssuedAt(issuedAt float64) error {
-	issuedAtTime := time.Unix(int64(issuedAt), 0)
-	if time.Now().Before(issuedAtTime) {
-		return fmt.Errorf("token used before issued")
-	}
-	return nil
 }

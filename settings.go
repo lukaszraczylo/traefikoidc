@@ -14,6 +14,7 @@ const (
 	cookieName = "_raczylo_oidc"
 )
 
+// Config holds the configuration for the OIDC middleware
 type Config struct {
 	ProviderURL           string   `json:"providerURL"`
 	RevocationURL         string   `json:"revocationURL"`
@@ -40,6 +41,7 @@ var defaultSessionOptions = &sessions.Options{
 	Path:     "/",
 }
 
+// CreateConfig creates a new Config with default values
 func CreateConfig() *Config {
 	c := &Config{}
 
@@ -62,6 +64,7 @@ func CreateConfig() *Config {
 	return c
 }
 
+// Validate validates the Config
 func (c *Config) Validate() error {
 	if c.ProviderURL == "" {
 		return fmt.Errorf("providerURL is required")
@@ -81,12 +84,14 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// Logger is a simple logger with different levels
 type Logger struct {
 	logError *log.Logger
 	logInfo  *log.Logger
 	logDebug *log.Logger
 }
 
+// NewLogger creates a new Logger
 func NewLogger(logLevel string) *Logger {
 	logError := log.New(io.Discard, "ERROR: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
 	logInfo := log.New(io.Discard, "INFO: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
@@ -106,30 +111,37 @@ func NewLogger(logLevel string) *Logger {
 	}
 }
 
+// Info logs an info message
 func (l *Logger) Info(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
+// Debug logs a debug message
 func (l *Logger) Debug(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
 
+// Error logs an error message
 func (l *Logger) Error(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
 
+// Infof logs an info message
 func (l *Logger) Infof(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
+// Debugf logs a debug message
 func (l *Logger) Debugf(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
 
+// Errorf logs an error message
 func (l *Logger) Errorf(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
 
+// handleError writes an error message to the response and logs it
 func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
 	logger.Error(message)
 	http.Error(w, message, code)

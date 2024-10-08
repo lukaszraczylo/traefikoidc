@@ -4,17 +4,19 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
+	"math/big"
+
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net/http"
 	"sync"
 	"time"
 )
 
+// JWK represents a JSON Web Key
 type JWK struct {
 	Kty string `json:"kty"`
 	Kid string `json:"kid"`
@@ -27,20 +29,24 @@ type JWK struct {
 	Y   string `json:"y"`
 }
 
+// JWKSet represents a set of JWKs
 type JWKSet struct {
 	Keys []JWK `json:"keys"`
 }
 
+// JWKCache caches the JWKs
 type JWKCache struct {
 	jwks      *JWKSet
 	expiresAt time.Time
 	mutex     sync.RWMutex
 }
 
+// JWKCacheInterface defines the interface for the JWK cache
 type JWKCacheInterface interface {
 	GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error)
 }
 
+// GetJWKS gets the JWKS, either from cache or by fetching it
 func (c *JWKCache) GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	c.mutex.RLock()
 	if c.jwks != nil && time.Now().Before(c.expiresAt) {
@@ -67,6 +73,7 @@ func (c *JWKCache) GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, er
 	return jwks, nil
 }
 
+// fetchJWKS fetches the JWKS from the provider
 func fetchJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	resp, err := httpClient.Get(jwksURL)
 	if err != nil {
@@ -86,36 +93,7 @@ func fetchJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	return &jwks, nil
 }
 
-func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
-	switch aud := tokenAudience.(type) {
-	case string:
-		if aud != expectedAudience {
-			return fmt.Errorf("invalid audience")
-		}
-	case []interface{}:
-		found := false
-		for _, v := range aud {
-			if str, ok := v.(string); ok && str == expectedAudience {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("invalid audience")
-		}
-	default:
-		return fmt.Errorf("invalid 'aud' claim type")
-	}
-	return nil
-}
-
-func verifyIssuer(tokenIssuer, expectedIssuer string) error {
-	if tokenIssuer != expectedIssuer {
-		return fmt.Errorf("invalid issuer")
-	}
-	return nil
-}
-
+// jwkToPEM converts a JWK to PEM format
 func jwkToPEM(jwk *JWK) ([]byte, error) {
 	converter, ok := jwkConverters[jwk.Kty]
 	if !ok {
@@ -131,41 +109,45 @@ var jwkConverters = map[string]jwkToPEMConverter{
 	"EC":  ecJWKToPEM,
 }
 
+// rsaJWKToPEM converts an RSA JWK to PEM
 func rsaJWKToPEM(jwk *JWK) ([]byte, error) {
-	n, err := base64.RawURLEncoding.DecodeString(jwk.N)
+	nBytes, err := base64.RawURLEncoding.DecodeString(jwk.N)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode JWK 'n' parameter: %w", err)
 	}
-	e, err := base64.RawURLEncoding.DecodeString(jwk.E)
+	eBytes, err := base64.RawURLEncoding.DecodeString(jwk.E)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode JWK 'e' parameter: %w", err)
 	}
 
-	publicKey := &rsa.PublicKey{
-		N: new(big.Int).SetBytes(n),
-		E: int(new(big.Int).SetBytes(e).Int64()),
+	n := new(big.Int).SetBytes(nBytes)
+	e := new(big.Int).SetBytes(eBytes)
+
+	pubKey := &rsa.PublicKey{
+		N: n,
+		E: int(e.Int64()),
 	}
 
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(publicKey)
+	pubKeyBytes, err := x509.MarshalPKIXPublicKey(pubKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal public key: %w", err)
+		return nil, fmt.Errorf("failed to marshal RSA public key: %w", err)
 	}
 
-	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PUBLIC KEY",
-		Bytes: publicKeyBytes,
+	pubKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: pubKeyBytes,
 	})
 
-	return publicKeyPEM, nil
+	return pubKeyPEM, nil
 }
 
+// ecJWKToPEM converts an EC JWK to PEM
 func ecJWKToPEM(jwk *JWK) ([]byte, error) {
-	x, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode JWK 'x' parameter: %w", err)
 	}
-
-	y, err := base64.RawURLEncoding.DecodeString(jwk.Y)
+	yBytes, err := base64.RawURLEncoding.DecodeString(jwk.Y)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode JWK 'y' parameter: %w", err)
 	}
@@ -182,21 +164,21 @@ func ecJWKToPEM(jwk *JWK) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported elliptic curve: %s", jwk.Crv)
 	}
 
-	publicKey := &ecdsa.PublicKey{
+	pubKey := &ecdsa.PublicKey{
 		Curve: curve,
-		X:     new(big.Int).SetBytes(x),
-		Y:     new(big.Int).SetBytes(y),
+		X:     new(big.Int).SetBytes(xBytes),
+		Y:     new(big.Int).SetBytes(yBytes),
 	}
 
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(publicKey)
+	pubKeyBytes, err := x509.MarshalPKIXPublicKey(pubKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal public key: %w", err)
+		return nil, fmt.Errorf("failed to marshal EC public key: %w", err)
 	}
 
-	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
+	pubKeyPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "PUBLIC KEY",
-		Bytes: publicKeyBytes,
+		Bytes: pubKeyBytes,
 	})
 
-	return publicKeyPEM, nil
+	return pubKeyPEM, nil
 }
