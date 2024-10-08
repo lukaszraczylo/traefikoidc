@@ -678,3 +678,145 @@ func TestIsAllowedDomain(t *testing.T) {
 		})
 	}
 }
+
+func TestOIDCHandler(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	ts.token = "valid.jwt.token"
+
+	tests := []struct {
+		name                 string
+		queryParams          string
+		exchangeCodeForToken func(code string) (*TokenResponse, error)
+		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
+		sessionSetupFunc     func(session *sessions.Session)
+		expectedStatus       int
+		blacklist            bool
+		rateLimit            bool
+		cacheToken           bool
+	}{
+		{
+			name:        "Missing Code",
+			queryParams: "",
+			sessionSetupFunc: func(session *sessions.Session) {
+				// Set CSRF and nonce values in session
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
+			},
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				// Simulate token exchange
+				return &TokenResponse{
+					IDToken:      ts.token,
+					RefreshToken: "test-refresh-token",
+				}, nil
+			},
+			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+				// Simulate extraction of claims with invalid nonce
+				return map[string]interface{}{
+					"email": "user@example.com",
+					"nonce": "invalid-nonce",
+				}, nil
+			},
+			expectedStatus: http.StatusInternalServerError,
+		},
+		{
+			name:        "Missing Nonce in Claims",
+			queryParams: "?code=test-code&state=test-csrf-token",
+			sessionSetupFunc: func(session *sessions.Session) {
+				// Set CSRF and nonce values in session
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
+			},
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				// Simulate token exchange
+				return &TokenResponse{
+					IDToken:      ts.token,
+					RefreshToken: "test-refresh-token",
+				}, nil
+			},
+			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+				// Simulate extraction of claims without nonce
+				return map[string]interface{}{
+					"email": "user@example.com",
+				}, nil
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:        "Invalid State Parameter",
+			queryParams: "?code=test-code&state=invalid-csrf-token",
+			sessionSetupFunc: func(session *sessions.Session) {
+				// Set CSRF and nonce values in session
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
+			},
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				// Simulate token exchange
+				return &TokenResponse{
+					IDToken:      ts.token,
+					RefreshToken: "test-refresh-token",
+				}, nil
+			},
+			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+				// Simulate extraction of claims
+				return map[string]interface{}{
+					"email": "user@example.com",
+					"nonce": "test-nonce",
+				}, nil
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:        "Nonce Mismatch",
+			queryParams: "?code=test-code&state=test-csrf-token",
+			sessionSetupFunc: func(session *sessions.Session) {
+				// Set CSRF and nonce values in session
+				session.Values["csrf"] = "test-csrf-token"
+				session.Values["nonce"] = "test-nonce"
+			},
+			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+				// Simulate token exchange
+				return &TokenResponse{
+					IDToken:      ts.token,
+					RefreshToken: "test-refresh-token",
+				}, nil
+			},
+			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+				// Simulate extraction of claims with mismatched nonce
+				return map[string]interface{}{
+					"email": "user@example.com",
+					"nonce": "invalid-nonce",
+				}, nil
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc // Capture range variable
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset token blacklist and cache
+			ts.tOidc.tokenBlacklist = NewTokenBlacklist()
+			ts.tOidc.tokenCache = NewTokenCache()
+			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
+
+			// Set up the test case
+			if tc.blacklist {
+				ts.tOidc.tokenBlacklist.Add(ts.token, time.Now().Add(1*time.Hour))
+			}
+
+			if tc.rateLimit {
+				// Exceed rate limit
+				ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 0)
+			}
+
+			if tc.cacheToken {
+				// Cache the token with dummy claims
+				ts.tOidc.tokenCache.Set(ts.token, map[string]interface{}{
+					"empty": "claim",
+				}, 60)
+			}
+		})
+	}
+}
