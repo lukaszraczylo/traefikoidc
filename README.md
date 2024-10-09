@@ -4,6 +4,10 @@ This middleware is supposed to replace the need for the forward-auth and oauth2-
 
 Middleware has been tested with Auth0 and Logto.
 
+### Traefik version compatibility
+
+Code follows closely the current traefik helm chart versions. If plugin fails to load - it's time to update to the latest version of the traefik helm chart.
+
 ### Configuration options
 
 Middleware currently supports following scenarios:
