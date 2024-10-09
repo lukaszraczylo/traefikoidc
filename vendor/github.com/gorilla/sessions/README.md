@@ -1,4 +1,7 @@
-# sessions
+# Gorilla Sessions
+
+> [!IMPORTANT]
+> The latest version of this repository requires go 1.23 because of the new partitioned attribute. The last version that is compatible with older versions of go is v1.3.0.
 
 ![testing](https://github.com/gorilla/sessions/actions/workflows/test.yml/badge.svg)
 [![codecov](https://codecov.io/github/gorilla/sessions/branch/main/graph/badge.svg)](https://codecov.io/github/gorilla/sessions)
@@ -74,6 +77,7 @@ Other implementations of the `sessions.Store` interface:
 - [github.com/dsoprea/go-appengine-sessioncascade](https://github.com/dsoprea/go-appengine-sessioncascade) - Memcache/Datastore/Context in AppEngine
 - [github.com/kidstuff/mongostore](https://github.com/kidstuff/mongostore) - MongoDB
 - [github.com/srinathgs/mysqlstore](https://github.com/srinathgs/mysqlstore) - MySQL
+- [github.com/danielepintore/gorilla-sessions-mysql](https://github.com/danielepintore/gorilla-sessions-mysql) - MySQL
 - [github.com/EnumApps/clustersqlstore](https://github.com/EnumApps/clustersqlstore) - MySQL Cluster
 - [github.com/antonlindstrom/pgstore](https://github.com/antonlindstrom/pgstore) - PostgreSQL
 - [github.com/boj/redistore](https://github.com/boj/redistore) - Redis
