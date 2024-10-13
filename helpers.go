@@ -20,8 +20,7 @@ import (
 // generateNonce generates a random nonce
 func generateNonce() (string, error) {
 	nonceBytes := make([]byte, 32)
-	_, err := rand.Read(nonceBytes)
-	if err != nil {
+	if _, err := rand.Read(nonceBytes); err != nil {
 		return "", fmt.Errorf("could not generate nonce: %w", err)
 	}
 	return base64.URLEncoding.EncodeToString(nonceBytes), nil
@@ -43,14 +42,15 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType, codeOrToken
 		"client_secret": {t.clientSecret},
 	}
 
-	if grantType == "authorization_code" {
+	switch grantType {
+	case "authorization_code":
 		data.Set("code", codeOrToken)
 		data.Set("redirect_uri", redirectURL)
-	} else if grantType == "refresh_token" {
+	case "refresh_token":
 		data.Set("refresh_token", codeOrToken)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", t.tokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
@@ -107,43 +107,40 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	// Revoke tokens if available
-	if refreshToken, ok := session.Values["refresh_token"].(string); ok && refreshToken != "" {
-		if err := t.RevokeTokenWithProvider(refreshToken, "refresh_token"); err != nil {
-			t.logger.Errorf("Failed to revoke refresh token: %v", err)
+	for _, tokenType := range []string{"refresh_token", "access_token"} {
+		if token, ok := session.Values[tokenType].(string); ok && token != "" {
+			if err := t.RevokeTokenWithProvider(token, tokenType); err != nil {
+				t.logger.Errorf("Failed to revoke %s: %v", tokenType, err)
+			}
+			t.RevokeToken(token)
 		}
-		t.RevokeToken(refreshToken)
-	}
-	if accessToken, ok := session.Values["access_token"].(string); ok && accessToken != "" {
-		if err := t.RevokeTokenWithProvider(accessToken, "access_token"); err != nil {
-			t.logger.Errorf("Failed to revoke access token: %v", err)
-		}
-		t.RevokeToken(accessToken)
+		delete(session.Values, tokenType)
 	}
 
-	// Remove tokens from session
+	// Remove other session values
 	delete(session.Values, "id_token")
-	delete(session.Values, "refresh_token")
-	delete(session.Values, "access_token")
 	delete(session.Values, "authenticated")
 
 	// Set session options to delete the session
-	session.Options = defaultSessionOptions
-	session.Options.MaxAge = -1
+	session.Options = &sessions.Options{MaxAge: -1, Path: "/", HttpOnly: true, Secure: true}
 
 	if err := session.Save(req, rw); err != nil {
 		handleError(rw, "Failed to save session", http.StatusInternalServerError, t.logger)
 		return
 	}
 
-	// Redirect or display logout message
 	rw.WriteHeader(http.StatusOK)
 	rw.Write([]byte("Logged out successfully"))
 }
 
 // handleExpiredToken handles the case when a token has expired
 func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Request, session *sessions.Session) {
+	if session == nil {
+		t.logger.Error("Session is nil in handleExpiredToken")
+		http.Error(rw, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 	// Clear the existing session
-	session.Options.MaxAge = -1
 	for k := range session.Values {
 		delete(session.Values, k)
 	}
@@ -152,16 +149,14 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	session.Values["csrf"] = uuid.New().String()
 	session.Values["incoming_path"] = req.URL.Path
 	session.Values["nonce"], _ = generateNonce()
-	session.Options = defaultSessionOptions
+	session.Options = &sessions.Options{MaxAge: 3600, Path: "/", HttpOnly: true, Secure: true}
 
-	// Save the session before initiating authentication
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("Failed to save session: %v", err)
 		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	// Initiate a new authentication flow
 	t.initiateAuthenticationFunc(rw, req, session, t.redirectURL)
 }
 
@@ -176,34 +171,21 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 
 	t.logger.Debugf("Handling callback, URL: %s", req.URL.String())
 
-	// Check for errors in the query parameters
-	if req.URL.Query().Get("error") != "" {
+	if errParam := req.URL.Query().Get("error"); errParam != "" {
 		errorDescription := req.URL.Query().Get("error_description")
-		t.logger.Errorf("Authentication error: %s - %s", req.URL.Query().Get("error"), errorDescription)
+		t.logger.Errorf("Authentication error: %s - %s", errParam, errorDescription)
 		http.Error(rw, fmt.Sprintf("Authentication error: %s", errorDescription), http.StatusBadRequest)
 		return
 	}
 
-	// Validate the state parameter matches the session's CSRF token
 	state := req.URL.Query().Get("state")
-	if state == "" {
-		t.logger.Error("No state in callback")
-		http.Error(rw, "State parameter missing in callback", http.StatusBadRequest)
-		return
-	}
 	csrfToken, ok := session.Values["csrf"].(string)
-	if !ok || csrfToken == "" {
-		t.logger.Error("CSRF token missing in session")
-		http.Error(rw, "CSRF token missing", http.StatusBadRequest)
-		return
-	}
-	if state != csrfToken {
-		t.logger.Error("State parameter does not match CSRF token in session")
+	if !ok || state == "" || csrfToken == "" || state != csrfToken {
+		t.logger.Error("Invalid state parameter or CSRF token")
 		http.Error(rw, "Invalid state parameter", http.StatusBadRequest)
 		return
 	}
 
-	// Proceed to exchange the code for tokens
 	code := req.URL.Query().Get("code")
 	if code == "" {
 		t.logger.Error("No code in callback")
@@ -218,7 +200,6 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	// Extract id_token
 	idToken := tokenResponse.IDToken
 	if idToken == "" {
 		t.logger.Error("No id_token in token response")
@@ -226,14 +207,12 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	// Verify the id_token
 	if err := t.verifyToken(idToken); err != nil {
 		t.logger.Errorf("Failed to verify id_token: %v", err)
 		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
 		return
 	}
 
-	// Extract claims from id_token
 	claims, err := t.extractClaimsFunc(idToken)
 	if err != nil {
 		t.logger.Errorf("Failed to extract claims: %v", err)
@@ -241,26 +220,14 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	// Verify the nonce claim matches the one stored in session
 	nonceClaim, ok := claims["nonce"].(string)
-	if !ok || nonceClaim == "" {
-		t.logger.Error("Nonce claim missing in id_token")
-		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
-		return
-	}
-	sessionNonce, ok := session.Values["nonce"].(string)
-	if !ok || sessionNonce == "" {
-		t.logger.Error("Nonce not found in session")
-		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
-		return
-	}
-	if nonceClaim != sessionNonce {
-		t.logger.Error("Nonce claim does not match session nonce")
+	sessionNonce, ok2 := session.Values["nonce"].(string)
+	if !ok || !ok2 || nonceClaim == "" || sessionNonce == "" || nonceClaim != sessionNonce {
+		t.logger.Error("Invalid nonce")
 		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
 		return
 	}
 
-	// Get the email from claims
 	email, _ := claims["email"].(string)
 	if email == "" || !t.isAllowedDomain(email) {
 		t.logger.Errorf("Invalid or disallowed email: %s", email)
@@ -268,14 +235,12 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	// Store tokens and authentication status in session
 	session.Values["authenticated"] = true
 	session.Values["email"] = email
 	session.Values["id_token"] = idToken
 	session.Values["refresh_token"] = tokenResponse.RefreshToken
-	session.Options = defaultSessionOptions
+	session.Options = &sessions.Options{MaxAge: 3600, Path: "/", HttpOnly: true, Secure: true}
 
-	// Remove CSRF and nonce from session
 	delete(session.Values, "csrf")
 	delete(session.Values, "nonce")
 
@@ -287,7 +252,6 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 
 	t.logger.Debugf("Authentication successful. User email: %s", email)
 
-	// Redirect to the original requested path or default to root
 	redirectPath := "/"
 	if path, ok := session.Values["incoming_path"].(string); ok && path != t.redirURLPath {
 		t.logger.Debugf("Redirecting to incoming path from original request: %s", path)
@@ -318,42 +282,32 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 
 // TokenBlacklist maintains a blacklist of tokens
 type TokenBlacklist struct {
-	blacklist map[string]time.Time
-	mutex     sync.RWMutex
+	blacklist sync.Map
 }
 
 // NewTokenBlacklist creates a new TokenBlacklist
 func NewTokenBlacklist() *TokenBlacklist {
-	return &TokenBlacklist{
-		blacklist: make(map[string]time.Time),
+	return &TokenBlacklist{}
+}
+func (tb *TokenBlacklist) Add(token string, expiration time.Time) {
+	tb.blacklist.Store(token, expiration)
+}
+
+func (tb *TokenBlacklist) IsBlacklisted(token string) bool {
+	if exp, ok := tb.blacklist.Load(token); ok {
+		return time.Now().Before(exp.(time.Time))
 	}
+	return false
 }
 
-// Add adds a token to the blacklist
-func (tb *TokenBlacklist) Add(tokenID string, expiration time.Time) {
-	tb.mutex.Lock()
-	defer tb.mutex.Unlock()
-	tb.blacklist[tokenID] = expiration
-}
-
-// IsBlacklisted checks if a token is blacklisted
-func (tb *TokenBlacklist) IsBlacklisted(tokenID string) bool {
-	tb.mutex.RLock()
-	defer tb.mutex.RUnlock()
-	expiration, exists := tb.blacklist[tokenID]
-	return exists && time.Now().Before(expiration)
-}
-
-// Cleanup removes expired tokens from the blacklist
 func (tb *TokenBlacklist) Cleanup() {
-	tb.mutex.Lock()
-	defer tb.mutex.Unlock()
 	now := time.Now()
-	for tokenID, expiration := range tb.blacklist {
-		if now.After(expiration) {
-			delete(tb.blacklist, tokenID)
+	tb.blacklist.Range(func(key, value interface{}) bool {
+		if now.After(value.(time.Time)) {
+			tb.blacklist.Delete(key)
 		}
-	}
+		return true
+	})
 }
 
 // TokenCache caches tokens
@@ -370,14 +324,12 @@ func NewTokenCache() *TokenCache {
 
 // Set sets a token in the cache
 func (tc *TokenCache) Set(token string, claims map[string]interface{}, expiration time.Duration) {
-	token = "t-" + token
-	tc.cache.Set(token, claims, expiration)
+	tc.cache.Set("t-"+token, claims, expiration)
 }
 
 // Get retrieves a token from the cache
 func (tc *TokenCache) Get(token string) (map[string]interface{}, bool) {
-	token = "t-" + token
-	value, found := tc.cache.Get(token)
+	value, found := tc.cache.Get("t-" + token)
 	if !found {
 		return nil, false
 	}
@@ -387,8 +339,7 @@ func (tc *TokenCache) Get(token string) (map[string]interface{}, bool) {
 
 // Delete removes a token from the cache
 func (tc *TokenCache) Delete(token string) {
-	token = "t-" + token
-	tc.cache.Delete(token)
+	tc.cache.Delete("t-" + token)
 }
 
 // Cleanup cleans up expired tokens from the cache
@@ -408,7 +359,7 @@ func (t *TraefikOidc) exchangeCodeForToken(code string) (*TokenResponse, error) 
 
 // createStringMap creates a map from a slice of strings
 func createStringMap(keys []string) map[string]struct{} {
-	result := make(map[string]struct{})
+	result := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		result[key] = struct{}{}
 	}

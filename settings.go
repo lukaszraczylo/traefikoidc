@@ -14,6 +14,14 @@ const (
 	cookieName = "_raczylo_oidc"
 )
 
+const (
+	headerXForwardedProto = "X-Forwarded-Proto"
+	headerXForwardedHost  = "X-Forwarded-Host"
+	headerXForwardedUser  = "X-Forwarded-User"
+	headerXUserGroups     = "X-User-Groups"
+	headerXUserRoles      = "X-User-Roles"
+)
+
 // Config holds the configuration for the OIDC middleware
 type Config struct {
 	ProviderURL           string   `json:"providerURL"`

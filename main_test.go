@@ -167,6 +167,18 @@ func TestVerifyToken(t *testing.T) {
 	ts := &TestSuite{t: t}
 	ts.Setup()
 
+	ts.mockJWKCache.JWKS = &JWKSet{
+		Keys: []JWK{
+			{
+				Kty: "RSA",
+				Kid: "test-key-id",
+				Alg: "RS256",
+				N:   base64.RawURLEncoding.EncodeToString(ts.rsaPublicKey.N.Bytes()),
+				E:   base64.RawURLEncoding.EncodeToString(bigIntToBytes(big.NewInt(int64(ts.rsaPublicKey.E)))),
+			},
+		},
+	}
+
 	tests := []struct {
 		name          string
 		token         string

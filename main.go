@@ -436,7 +436,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	groups, roles, err := t.extractGroupsAndRoles(idToken)
+	groups, roles := t.extractGroupsAndRoles(claims)
 	if err != nil {
 		t.logger.Errorf("Failed to extract groups and roles: %v", err)
 	} else {
@@ -483,16 +483,16 @@ func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 
 // determineScheme determines the scheme (http or https) of the request
 func (t *TraefikOidc) determineScheme(req *http.Request) string {
-	if t.forceHTTPS {
+	switch {
+	case t.forceHTTPS:
 		return "https"
-	}
-	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
-		return scheme
-	}
-	if req.TLS != nil {
+	case req.Header.Get(headerXForwardedProto) != "":
+		return req.Header.Get(headerXForwardedProto)
+	case req.TLS != nil:
 		return "https"
+	default:
+		return "http"
 	}
-	return "http"
 }
 
 // determineHost determines the host of the request
@@ -703,52 +703,33 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 // isAllowedDomain checks if the user's email domain is allowed
 func (t *TraefikOidc) isAllowedDomain(email string) bool {
 	if len(t.allowedUserDomains) == 0 {
-		return true // If no domains are specified, all are allowed
+		return true
 	}
-
-	parts := strings.Split(email, "@")
-	if len(parts) != 2 {
-		return false // Invalid email format
+	atIndex := strings.LastIndex(email, "@")
+	if atIndex == -1 {
+		return false
 	}
-
-	domain := parts[1]
+	domain := email[atIndex+1:]
 	_, ok := t.allowedUserDomains[domain]
 	return ok
 }
 
 // extractGroupsAndRoles extracts groups and roles from the id_token
-func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string, error) {
-	claims, err := t.extractClaimsFunc(idToken)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to extract claims: %w", err)
-	}
+func (t *TraefikOidc) extractGroupsAndRoles(claims map[string]interface{}) ([]string, []string) {
+	groups := extractStringSlice(claims, "groups")
+	roles := extractStringSlice(claims, "roles")
+	return groups, roles
+}
 
-	var groups []string
-	var roles []string
-
-	// Check for groups claim
-	if groupsClaim, ok := claims["groups"]; ok {
-		if groupsSlice, ok := groupsClaim.([]interface{}); ok {
-			for _, group := range groupsSlice {
-				if groupStr, ok := group.(string); ok {
-					t.logger.Debugf("Found group: %s", groupStr)
-					groups = append(groups, groupStr)
-				}
+func extractStringSlice(claims map[string]interface{}, key string) []string {
+	if slice, ok := claims[key].([]interface{}); ok {
+		result := make([]string, 0, len(slice))
+		for _, item := range slice {
+			if str, ok := item.(string); ok {
+				result = append(result, str)
 			}
 		}
+		return result
 	}
-
-	// Check for roles claim
-	if rolesClaim, ok := claims["roles"]; ok {
-		if rolesSlice, ok := rolesClaim.([]interface{}); ok {
-			for _, role := range rolesSlice {
-				if roleStr, ok := role.(string); ok {
-					t.logger.Debugf("Found role: %s", roleStr)
-					roles = append(roles, roleStr)
-				}
-			}
-		}
-	}
-
-	return groups, roles, nil
+	return nil
 }

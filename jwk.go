@@ -4,13 +4,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
-	"math/big"
-
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"sync"
 	"time"
@@ -58,6 +57,7 @@ func (c *JWKCache) GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, er
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
+	// Double-check locking pattern
 	if c.jwks != nil && time.Now().Before(c.expiresAt) {
 		return c.jwks, nil
 	}
@@ -120,25 +120,12 @@ func rsaJWKToPEM(jwk *JWK) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decode JWK 'e' parameter: %w", err)
 	}
 
-	n := new(big.Int).SetBytes(nBytes)
-	e := new(big.Int).SetBytes(eBytes)
-
 	pubKey := &rsa.PublicKey{
-		N: n,
-		E: int(e.Int64()),
+		N: new(big.Int).SetBytes(nBytes),
+		E: int(new(big.Int).SetBytes(eBytes).Int64()),
 	}
 
-	pubKeyBytes, err := x509.MarshalPKIXPublicKey(pubKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal RSA public key: %w", err)
-	}
-
-	pubKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: pubKeyBytes,
-	})
-
-	return pubKeyPEM, nil
+	return marshalPublicKey(pubKey)
 }
 
 // ecJWKToPEM converts an EC JWK to PEM
@@ -152,16 +139,9 @@ func ecJWKToPEM(jwk *JWK) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decode JWK 'y' parameter: %w", err)
 	}
 
-	var curve elliptic.Curve
-	switch jwk.Crv {
-	case "P-256":
-		curve = elliptic.P256()
-	case "P-384":
-		curve = elliptic.P384()
-	case "P-521":
-		curve = elliptic.P521()
-	default:
-		return nil, fmt.Errorf("unsupported elliptic curve: %s", jwk.Crv)
+	curve, err := getCurve(jwk.Crv)
+	if err != nil {
+		return nil, err
 	}
 
 	pubKey := &ecdsa.PublicKey{
@@ -170,15 +150,32 @@ func ecJWKToPEM(jwk *JWK) ([]byte, error) {
 		Y:     new(big.Int).SetBytes(yBytes),
 	}
 
+	return marshalPublicKey(pubKey)
+}
+
+// getCurve returns the elliptic curve based on the JWK curve parameter
+func getCurve(crv string) (elliptic.Curve, error) {
+	switch crv {
+	case "P-256":
+		return elliptic.P256(), nil
+	case "P-384":
+		return elliptic.P384(), nil
+	case "P-521":
+		return elliptic.P521(), nil
+	default:
+		return nil, fmt.Errorf("unsupported elliptic curve: %s", crv)
+	}
+}
+
+// marshalPublicKey marshals a public key to PEM format
+func marshalPublicKey(pubKey interface{}) ([]byte, error) {
 	pubKeyBytes, err := x509.MarshalPKIXPublicKey(pubKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal EC public key: %w", err)
+		return nil, fmt.Errorf("failed to marshal public key: %w", err)
 	}
 
-	pubKeyPEM := pem.EncodeToMemory(&pem.Block{
+	return pem.EncodeToMemory(&pem.Block{
 		Type:  "PUBLIC KEY",
 		Bytes: pubKeyBytes,
-	})
-
-	return pubKeyPEM, nil
+	}), nil
 }
