@@ -385,14 +385,25 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Build post logout redirect URI with FQDN if not set
-	if t.postLogoutRedirectURI == "" {
-		// Get the host from request headers or direct host
-		host := t.determineHost(req)
-		scheme := t.determineScheme(req)
+	// Build post logout redirect URI with full URL
+	host := t.determineHost(req)
+	scheme := t.determineScheme(req)
 
-		// Build the full URL with scheme and host
-		t.postLogoutRedirectURI = fmt.Sprintf("%s://%s%s",
+	// Ensure we have a complete post logout redirect URI
+	var postLogoutRedirectURI string
+	if t.postLogoutRedirectURI != "" {
+		if strings.HasPrefix(t.postLogoutRedirectURI, "http://") || strings.HasPrefix(t.postLogoutRedirectURI, "https://") {
+			postLogoutRedirectURI = t.postLogoutRedirectURI
+		} else {
+			// Convert relative path to absolute URL
+			postLogoutRedirectURI = fmt.Sprintf("%s://%s%s",
+				scheme,
+				host,
+				t.postLogoutRedirectURI)
+		}
+	} else {
+		// Default to logout path if not set
+		postLogoutRedirectURI = fmt.Sprintf("%s://%s%s",
 			scheme,
 			host,
 			t.logoutURLPath)
@@ -400,19 +411,19 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 
 	// If we have an end session endpoint and an ID token, use OIDC end session
 	if t.endSessionURL != "" && idToken != "" {
-		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, t.postLogoutRedirectURI)
+		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, postLogoutRedirectURI)
 		if err != nil {
 			handleError(rw, fmt.Sprintf("Failed to build logout URL: %v", err), http.StatusInternalServerError, t.logger)
 			return
 		}
-		t.logger.Debugf("Redirecting to end session URL: %s", logoutURL)
+		t.logger.Debugf("Redirecting to end session URL: %s with post_logout_redirect_uri: %s", logoutURL, postLogoutRedirectURI)
 		http.Redirect(rw, req, logoutURL, http.StatusFound)
 		return
 	}
 
 	// If no end session endpoint or no ID token, just redirect to the post logout URI
-	t.logger.Debugf("Redirecting to post logout URI: %s", t.postLogoutRedirectURI)
-	http.Redirect(rw, req, t.postLogoutRedirectURI, http.StatusFound)
+	t.logger.Debugf("Redirecting to post logout URI: %s", postLogoutRedirectURI)
+	http.Redirect(rw, req, postLogoutRedirectURI, http.StatusFound)
 }
 
 // BuildLogoutURL constructs the OIDC end session URL
@@ -422,13 +433,10 @@ func BuildLogoutURL(endSessionURL, idToken, postLogoutRedirectURI string) (strin
 		return "", fmt.Errorf("failed to parse end session URL: %w", err)
 	}
 
-	if postLogoutRedirectURI == "" {
-		postLogoutRedirectURI = "/"
-	}
-
 	q := u.Query()
 	q.Set("id_token_hint", idToken)
 	if postLogoutRedirectURI != "" {
+		// Ensure postLogoutRedirectURI is properly URL encoded
 		q.Set("post_logout_redirect_uri", postLogoutRedirectURI)
 	}
 	u.RawQuery = q.Encode()
