@@ -31,6 +31,7 @@ type Config struct {
 	AllowedUserDomains    []string `json:"allowedUserDomains"`
 	AllowedRolesAndGroups []string `json:"allowedRolesAndGroups"`
 	OIDCEndSessionURL     string   `json:"oidcEndSessionURL"`
+	PostLogoutRedirectURI string   `json:"postLogoutRedirectURI"`
 	HTTPClient            *http.Client
 }
 
@@ -60,6 +61,10 @@ func CreateConfig() *Config {
 
 	if c.RateLimit == 0 {
 		c.RateLimit = 100
+	}
+
+	if c.PostLogoutRedirectURI == "" {
+		c.PostLogoutRedirectURI = c.CallbackURL
 	}
 
 	return c

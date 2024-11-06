@@ -65,6 +65,7 @@ type TraefikOidc struct {
 	initComplete               chan struct{}
 	endSessionURL              string
 	baseURL                    string
+	postLogoutRedirectURI      string
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -241,6 +242,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
 		allowedRolesAndGroups: createStringMap(config.AllowedRolesAndGroups),
 		initComplete:          make(chan struct{}),
+		postLogoutRedirectURI: config.PostLogoutRedirectURI,
 	}
 
 	t.extractClaimsFunc = extractClaims
@@ -766,4 +768,12 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 	}
 
 	return groups, roles, nil
+}
+
+// buildFullURL constructs a full URL from scheme, host and path
+func buildFullURL(scheme, host, path string) string {
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }

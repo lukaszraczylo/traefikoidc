@@ -27,14 +27,6 @@ func generateNonce() (string, error) {
 	return base64.URLEncoding.EncodeToString(nonceBytes), nil
 }
 
-// buildFullURL constructs a full URL from scheme, host, and path
-func buildFullURL(scheme, host, path string) string {
-	if scheme == "" {
-		scheme = "http"
-	}
-	return fmt.Sprintf("%s://%s%s", scheme, host, path)
-}
-
 // exchangeTokens exchanges a code or refresh token for tokens
 func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType, codeOrToken, redirectURL string) (*TokenResponse, error) {
 	data := url.Values{
@@ -95,76 +87,6 @@ func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 	t.logger.Debugf("Token response: %+v", tokenResponse)
 
 	return tokenResponse, nil
-}
-
-// handleLogout handles the logout process
-func (t *TraefikOidc) handleLogout(w http.ResponseWriter, r *http.Request) {
-	session, err := t.store.Get(r, cookieName)
-	if err != nil {
-		handleError(w, fmt.Sprintf("Error getting session: %v", err), http.StatusInternalServerError, t.logger)
-		return
-	}
-
-	// Get tokens from session
-	idToken, _ := session.Values["id_token"].(string)
-	refreshToken, _ := session.Values["refresh_token"].(string)
-	accessToken, _ := session.Values["access_token"].(string)
-
-	// Revoke tokens if they exist
-	if refreshToken != "" {
-		t.RevokeTokenWithProvider(refreshToken, "refresh_token")
-		t.RevokeToken(refreshToken)
-	}
-	if accessToken != "" {
-		t.RevokeTokenWithProvider(accessToken, "access_token")
-		t.RevokeToken(accessToken)
-	}
-
-	// Clear session
-	session.Options.MaxAge = -1
-	session.Values = make(map[interface{}]interface{})
-	if err := session.Save(r, w); err != nil {
-		handleError(w, fmt.Sprintf("Error saving session: %v", err), http.StatusInternalServerError, t.logger)
-		return
-	}
-
-	// Determine redirect URL
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
-	scheme := "http"
-	if r.Header.Get("X-Forwarded-Proto") == "https" || t.forceHTTPS {
-		scheme = "https"
-	}
-	baseURL := fmt.Sprintf("%s://%s/", scheme, host)
-
-	if t.endSessionURL != "" && idToken != "" {
-		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, baseURL)
-		if err != nil {
-			handleError(w, fmt.Sprintf("Invalid end session URL: %v", err), http.StatusInternalServerError, t.logger)
-			return
-		}
-		http.Redirect(w, r, logoutURL, http.StatusFound)
-		return
-	}
-
-	http.Redirect(w, r, baseURL, http.StatusFound)
-}
-
-// BuildLogoutURL constructs the logout URL with proper encoding
-func BuildLogoutURL(endSessionURL, idToken, postLogoutRedirectURI string) (string, error) {
-	u, err := url.Parse(endSessionURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid end session URL: %v", err)
-	}
-
-	q := u.Query()
-	q.Set("id_token_hint", idToken)
-	q.Set("post_logout_redirect_uri", postLogoutRedirectURI)
-	u.RawQuery = q.Encode()
-
-	return u.String(), nil
 }
 
 // handleExpiredToken handles the case when a token has expired
@@ -440,4 +362,64 @@ func createStringMap(keys []string) map[string]struct{} {
 		result[key] = struct{}{}
 	}
 	return result
+}
+
+// handleLogout handles the logout request
+func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
+	session, err := t.store.Get(req, cookieName)
+	if err != nil {
+		t.logger.Errorf("Error getting session: %v", err)
+		http.Error(rw, "Session error", http.StatusInternalServerError)
+		return
+	}
+
+	// Get the id_token before clearing the session
+	idToken, _ := session.Values["id_token"].(string)
+
+	// Clear and expire the session
+	session.Values = make(map[interface{}]interface{})
+	session.Options.MaxAge = -1
+	if err := session.Save(req, rw); err != nil {
+		t.logger.Errorf("Error saving session: %v", err)
+		http.Error(rw, "Session error", http.StatusInternalServerError)
+		return
+	}
+
+	// Build post logout redirect URI if not set
+	if t.postLogoutRedirectURI == "" {
+		t.postLogoutRedirectURI = buildFullURL(t.scheme, t.determineHost(req), "/")
+	}
+
+	// If we have an end session endpoint and an ID token, use OIDC end session
+	if t.endSessionURL != "" && idToken != "" {
+		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, t.logoutURLPath)
+		if err != nil {
+			handleError(rw, fmt.Sprintf("Failed to build logout URL: %v", err), http.StatusInternalServerError, t.logger)
+			return
+		}
+		t.logger.Debugf("Redirecting to end session URL: %s", logoutURL)
+		http.Redirect(rw, req, logoutURL, http.StatusFound)
+		return
+	}
+
+	// If no end session endpoint or no ID token, just redirect to the post logout URI
+	t.logger.Debugf("Redirecting to post logout URI: %s", t.postLogoutRedirectURI)
+	http.Redirect(rw, req, t.postLogoutRedirectURI, http.StatusFound)
+}
+
+// BuildLogoutURL constructs the OIDC end session URL
+func BuildLogoutURL(endSessionURL, idToken, postLogoutRedirectURI string) (string, error) {
+	u, err := url.Parse(endSessionURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse end session URL: %w", err)
+	}
+
+	q := u.Query()
+	q.Set("id_token_hint", idToken)
+	if postLogoutRedirectURI != "" {
+		q.Set("post_logout_redirect_uri", postLogoutRedirectURI)
+	}
+	u.RawQuery = q.Encode()
+
+	return u.String(), nil
 }
