@@ -65,6 +65,7 @@ type TraefikOidc struct {
 	initComplete               chan struct{}
 	endSessionURL              string
 	baseURL                    string
+	postLogoutRedirectURI      string
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -226,6 +227,12 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 				return config.CallbackURL + "/logout"
 			}
 			return config.LogoutURL
+		}(),
+		postLogoutRedirectURI: func() string {
+			if config.PostLogoutRedirectURI == "" {
+				return "/"
+			}
+			return config.PostLogoutRedirectURI
 		}(),
 		tokenBlacklist:        NewTokenBlacklist(),
 		jwkCache:              &JWKCache{},
@@ -766,4 +773,19 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 	}
 
 	return groups, roles, nil
+}
+
+// buildFullURL constructs a full URL from scheme, host and path
+func buildFullURL(scheme, host, path string) string {
+	// If the path is already a full URL, return it as-is
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+
+	// Ensure the path starts with a forward slash
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }

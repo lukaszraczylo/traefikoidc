@@ -31,6 +31,7 @@ type Config struct {
 	AllowedUserDomains    []string `json:"allowedUserDomains"`
 	AllowedRolesAndGroups []string `json:"allowedRolesAndGroups"`
 	OIDCEndSessionURL     string   `json:"oidcEndSessionURL"`
+	PostLogoutRedirectURI string   `json:"postLogoutRedirectURI"`
 	HTTPClient            *http.Client
 }
 

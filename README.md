@@ -38,6 +38,7 @@ spec:
       sessionEncryptionKey: vvv
       callbackURL: /cool-oidc/callback
       logoutURL: /cool-oidc/logout
+      postLogoutRedirectURI: /my-website/you-have-logged-out # Optional post logout URL redirection
       scopes:
         - openid
         - email
