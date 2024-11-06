@@ -772,8 +772,15 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 
 // buildFullURL constructs a full URL from scheme, host and path
 func buildFullURL(scheme, host, path string) string {
+	// If the path is already a full URL, return it as-is
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
 		return path
 	}
+
+	// Ensure the path starts with a forward slash
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
 	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }

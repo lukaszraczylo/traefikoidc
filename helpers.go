@@ -385,14 +385,22 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Build post logout redirect URI if not set
+	// Build post logout redirect URI with FQDN if not set
 	if t.postLogoutRedirectURI == "" {
-		t.postLogoutRedirectURI = buildFullURL(t.scheme, t.determineHost(req), "/")
+		// Get the host from request headers or direct host
+		host := t.determineHost(req)
+		scheme := t.determineScheme(req)
+
+		// Build the full URL with scheme and host
+		t.postLogoutRedirectURI = fmt.Sprintf("%s://%s%s",
+			scheme,
+			host,
+			t.logoutURLPath)
 	}
 
 	// If we have an end session endpoint and an ID token, use OIDC end session
 	if t.endSessionURL != "" && idToken != "" {
-		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, t.logoutURLPath)
+		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, t.postLogoutRedirectURI)
 		if err != nil {
 			handleError(rw, fmt.Sprintf("Failed to build logout URL: %v", err), http.StatusInternalServerError, t.logger)
 			return
@@ -412,6 +420,10 @@ func BuildLogoutURL(endSessionURL, idToken, postLogoutRedirectURI string) (strin
 	u, err := url.Parse(endSessionURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse end session URL: %w", err)
+	}
+
+	if postLogoutRedirectURI == "" {
+		postLogoutRedirectURI = "/"
 	}
 
 	q := u.Query()

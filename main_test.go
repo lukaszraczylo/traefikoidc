@@ -863,7 +863,7 @@ func TestHandleLogout(t *testing.T) {
 			},
 			endSessionURL:  "https://provider/end-session",
 			expectedStatus: http.StatusFound,
-			expectedURL:    "https://provider/end-session?id_token_hint=test.id.token&post_logout_redirect_uri=http%3A%2F%2Fexample.com%2F",
+			expectedURL:    "https://provider/end-session?id_token_hint=test.id.token&post_logout_redirect_uri=http%3A%2F%2Fexample.com",
 			host:           "test-host",
 		},
 		{
@@ -876,14 +876,14 @@ func TestHandleLogout(t *testing.T) {
 			},
 			endSessionURL:  "",
 			expectedStatus: http.StatusFound,
-			expectedURL:    "http://example.com/",
+			expectedURL:    "http://example.com",
 			host:           "test-host",
 		},
 		{
 			name:           "Logout with empty session",
 			setupSession:   func(session *sessions.Session) {},
 			expectedStatus: http.StatusFound,
-			expectedURL:    "http://example.com/",
+			expectedURL:    "http://example.com",
 			host:           "test-host",
 		},
 		{
