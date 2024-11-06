@@ -13,6 +13,7 @@ testData:
   clientSecret: secret
   callbackURL: /oauth2/callback
   logoutURL: /oauth2/logout
+  postLogoutRedirectURI: /oidc/different-logout # If not provided it will redirect to the "/" URL
   scopes: # If not provided, default scopes will be used (openid, email, profile)
     - openid
     - email
