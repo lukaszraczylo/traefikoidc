@@ -30,6 +30,7 @@ type Config struct {
 	ExcludedURLs          []string `json:"excludedURLs"`
 	AllowedUserDomains    []string `json:"allowedUserDomains"`
 	AllowedRolesAndGroups []string `json:"allowedRolesAndGroups"`
+	OIDCEndSessionURL     string   `json:"oidcEndSessionURL"`
 	HTTPClient            *http.Client
 }
 

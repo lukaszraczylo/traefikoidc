@@ -97,47 +97,74 @@ func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 	return tokenResponse, nil
 }
 
-// handleLogout handles the user logout
-func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
-	session, err := t.store.Get(req, cookieName)
-	t.logger.Debugf("Logging out user")
+// handleLogout handles the logout process
+func (t *TraefikOidc) handleLogout(w http.ResponseWriter, r *http.Request) {
+	session, err := t.store.Get(r, cookieName)
 	if err != nil {
-		handleError(rw, "Session error", http.StatusInternalServerError, t.logger)
+		handleError(w, fmt.Sprintf("Error getting session: %v", err), http.StatusInternalServerError, t.logger)
 		return
 	}
 
-	// Revoke tokens if available
-	if refreshToken, ok := session.Values["refresh_token"].(string); ok && refreshToken != "" {
-		if err := t.RevokeTokenWithProvider(refreshToken, "refresh_token"); err != nil {
-			t.logger.Errorf("Failed to revoke refresh token: %v", err)
-		}
+	// Get tokens from session
+	idToken, _ := session.Values["id_token"].(string)
+	refreshToken, _ := session.Values["refresh_token"].(string)
+	accessToken, _ := session.Values["access_token"].(string)
+
+	// Revoke tokens if they exist
+	if refreshToken != "" {
+		t.RevokeTokenWithProvider(refreshToken, "refresh_token")
 		t.RevokeToken(refreshToken)
 	}
-	if accessToken, ok := session.Values["access_token"].(string); ok && accessToken != "" {
-		if err := t.RevokeTokenWithProvider(accessToken, "access_token"); err != nil {
-			t.logger.Errorf("Failed to revoke access token: %v", err)
-		}
+	if accessToken != "" {
+		t.RevokeTokenWithProvider(accessToken, "access_token")
 		t.RevokeToken(accessToken)
 	}
 
-	// Remove tokens from session
-	delete(session.Values, "id_token")
-	delete(session.Values, "refresh_token")
-	delete(session.Values, "access_token")
-	delete(session.Values, "authenticated")
-
-	// Set session options to delete the session
-	session.Options = defaultSessionOptions
+	// Clear session
 	session.Options.MaxAge = -1
-
-	if err := session.Save(req, rw); err != nil {
-		handleError(rw, "Failed to save session", http.StatusInternalServerError, t.logger)
+	session.Values = make(map[interface{}]interface{})
+	if err := session.Save(r, w); err != nil {
+		handleError(w, fmt.Sprintf("Error saving session: %v", err), http.StatusInternalServerError, t.logger)
 		return
 	}
 
-	// Redirect or display logout message
-	rw.WriteHeader(http.StatusOK)
-	rw.Write([]byte("Logged out successfully"))
+	// Determine redirect URL
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	scheme := "http"
+	if r.Header.Get("X-Forwarded-Proto") == "https" || t.forceHTTPS {
+		scheme = "https"
+	}
+	baseURL := fmt.Sprintf("%s://%s/", scheme, host)
+
+	if t.endSessionURL != "" && idToken != "" {
+		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, baseURL)
+		if err != nil {
+			handleError(w, fmt.Sprintf("Invalid end session URL: %v", err), http.StatusInternalServerError, t.logger)
+			return
+		}
+		http.Redirect(w, r, logoutURL, http.StatusFound)
+		return
+	}
+
+	http.Redirect(w, r, baseURL, http.StatusFound)
+}
+
+// BuildLogoutURL constructs the logout URL with proper encoding
+func BuildLogoutURL(endSessionURL, idToken, postLogoutRedirectURI string) (string, error) {
+	u, err := url.Parse(endSessionURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid end session URL: %v", err)
+	}
+
+	q := u.Query()
+	q.Set("id_token_hint", idToken)
+	q.Set("post_logout_redirect_uri", postLogoutRedirectURI)
+	u.RawQuery = q.Encode()
+
+	return u.String(), nil
 }
 
 // handleExpiredToken handles the case when a token has expired

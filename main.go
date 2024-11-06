@@ -62,17 +62,19 @@ type TraefikOidc struct {
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string)
 	exchangeCodeForTokenFunc   func(code string) (*TokenResponse, error)
 	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
-	initOnce                   sync.Once
 	initComplete               chan struct{}
+	endSessionURL              string
+	baseURL                    string
 }
 
 // ProviderMetadata holds OIDC provider metadata
 type ProviderMetadata struct {
-	Issuer    string `json:"issuer"`
-	AuthURL   string `json:"authorization_endpoint"`
-	TokenURL  string `json:"token_endpoint"`
-	JWKSURL   string `json:"jwks_uri"`
-	RevokeURL string `json:"revocation_endpoint"`
+	Issuer        string `json:"issuer"`
+	AuthURL       string `json:"authorization_endpoint"`
+	TokenURL      string `json:"token_endpoint"`
+	JWKSURL       string `json:"jwks_uri"`
+	RevokeURL     string `json:"revocation_endpoint"`
+	EndSessionURL string `json:"end_session_endpoint"`
 }
 
 // defaultExcludedURLs are the paths that are excluded from authentication
@@ -81,6 +83,14 @@ var defaultExcludedURLs = map[string]struct{}{
 }
 
 var newTicker = time.NewTicker
+
+var (
+	globalMetadataCache struct {
+		sync.Once
+		metadata *ProviderMetadata
+		err      error
+	}
+)
 
 // VerifyToken verifies the provided JWT token
 func (t *TraefikOidc) VerifyToken(token string) error {
@@ -254,20 +264,26 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 // initializeMetadata discovers and initializes the provider metadata
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
-	t.initOnce.Do(func() {
+	globalMetadataCache.Once.Do(func() {
+		t.logger.Debug("Starting global provider metadata discovery")
 		metadata, err := discoverProviderMetadata(providerURL, t.httpClient, t.logger)
-		if err != nil {
-			t.logger.Errorf("Failed to discover provider metadata: %v", err)
-		} else {
-			t.logger.Debug("Provider metadata discovered successfully")
-			t.jwksURL = metadata.JWKSURL
-			t.authURL = metadata.AuthURL
-			t.tokenURL = metadata.TokenURL
-			t.issuerURL = metadata.Issuer
-			t.revocationURL = metadata.RevokeURL
-		}
-		close(t.initComplete)
+		globalMetadataCache.metadata = metadata
+		globalMetadataCache.err = err
 	})
+
+	if globalMetadataCache.err != nil {
+		t.logger.Errorf("Failed to discover provider metadata: %v", globalMetadataCache.err)
+	} else if globalMetadataCache.metadata != nil {
+		t.logger.Debug("Using cached provider metadata")
+		t.jwksURL = globalMetadataCache.metadata.JWKSURL
+		t.authURL = globalMetadataCache.metadata.AuthURL
+		t.tokenURL = globalMetadataCache.metadata.TokenURL
+		t.issuerURL = globalMetadataCache.metadata.Issuer
+		t.revocationURL = globalMetadataCache.metadata.RevokeURL
+		t.endSessionURL = globalMetadataCache.metadata.EndSessionURL
+	}
+
+	close(t.initComplete)
 }
 
 // discoverProviderMetadata fetches the OIDC provider metadata
@@ -620,14 +636,9 @@ func (t *TraefikOidc) RevokeToken(token string) {
 	// Remove from cache
 	t.tokenCache.Delete(token)
 
-	// Add to blacklist
-	claims, err := extractClaims(token)
-	if err == nil {
-		if exp, ok := claims["exp"].(float64); ok {
-			expTime := time.Unix(int64(exp), 0)
-			t.tokenBlacklist.Add(token, expTime)
-		}
-	}
+	// Add to blacklist with default expiration
+	expiry := time.Now().Add(24 * time.Hour) // or other appropriate duration
+	t.tokenBlacklist.Add(token, expiry)
 }
 
 // RevokeTokenWithProvider revokes the token with the provider
@@ -726,26 +737,30 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 	var groups []string
 	var roles []string
 
-	// Check for groups claim
-	if groupsClaim, ok := claims["groups"]; ok {
-		if groupsSlice, ok := groupsClaim.([]interface{}); ok {
-			for _, group := range groupsSlice {
-				if groupStr, ok := group.(string); ok {
-					t.logger.Debugf("Found group: %s", groupStr)
-					groups = append(groups, groupStr)
-				}
+	// Extract groups with type checking
+	if groupsClaim, exists := claims["groups"]; exists {
+		groupsSlice, ok := groupsClaim.([]interface{})
+		if !ok {
+			return nil, nil, fmt.Errorf("groups claim is not an array")
+		}
+		for _, group := range groupsSlice {
+			if groupStr, ok := group.(string); ok {
+				t.logger.Debugf("Found group: %s", groupStr)
+				groups = append(groups, groupStr)
 			}
 		}
 	}
 
-	// Check for roles claim
-	if rolesClaim, ok := claims["roles"]; ok {
-		if rolesSlice, ok := rolesClaim.([]interface{}); ok {
-			for _, role := range rolesSlice {
-				if roleStr, ok := role.(string); ok {
-					t.logger.Debugf("Found role: %s", roleStr)
-					roles = append(roles, roleStr)
-				}
+	// Extract roles with type checking
+	if rolesClaim, exists := claims["roles"]; exists {
+		rolesSlice, ok := rolesClaim.([]interface{})
+		if !ok {
+			return nil, nil, fmt.Errorf("roles claim is not an array")
+		}
+		for _, role := range rolesSlice {
+			if roleStr, ok := role.(string); ok {
+				t.logger.Debugf("Found role: %s", roleStr)
+				roles = append(roles, roleStr)
 			}
 		}
 	}
