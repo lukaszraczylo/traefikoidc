@@ -863,9 +863,8 @@ func TestHandleLogout(t *testing.T) {
 			},
 			endSessionURL:  "https://provider/end-session",
 			expectedStatus: http.StatusFound,
-			// Fix: The entire URL should be URL-encoded
-			expectedURL: "https://provider/end-session?id_token_hint=test.id.token&post_logout_redirect_uri=http%3A%2F%2Fexample.com%2F",
-			host:        "test-host",
+			expectedURL:    "https://provider/end-session?id_token_hint=test.id.token&post_logout_redirect_uri=http%3A%2F%2Fexample.com%2F",
+			host:           "test-host",
 		},
 		{
 			name: "Successful logout without end session endpoint",

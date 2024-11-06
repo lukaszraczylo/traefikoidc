@@ -1,7 +1,9 @@
-//go:build !go1.11
-// +build !go1.11
+//go:build go1.11
+// +build go1.11
 
 package sessions
+
+import "net/http"
 
 // Options stores configuration for a session or session store.
 //
@@ -16,4 +18,6 @@ type Options struct {
 	MaxAge   int
 	Secure   bool
 	HttpOnly bool
+	// Defaults to http.SameSiteDefaultMode
+	SameSite http.SameSite
 }
