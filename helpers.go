@@ -90,7 +90,7 @@ func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 }
 
 // handleExpiredToken handles the case when a token has expired
-func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Request, session *sessions.Session) {
+func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
 	// Clear the existing session
 	session.Options.MaxAge = -1
 	for k := range session.Values {
@@ -111,11 +111,11 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	}
 
 	// Initiate a new authentication flow
-	t.initiateAuthenticationFunc(rw, req, session, t.redirectURL)
+	t.initiateAuthenticationFunc(rw, req, session, redirectURL)
 }
 
 // handleCallback handles the callback from the OIDC provider
-func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) {
+func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, redirectURL string) {
 	session, err := t.store.Get(req, cookieName)
 	if err != nil {
 		t.logger.Errorf("Session error: %v", err)
@@ -160,7 +160,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	tokenResponse, err := t.exchangeCodeForTokenFunc(code)
+	tokenResponse, err := t.exchangeCodeForTokenFunc(code, redirectURL)
 	if err != nil {
 		t.logger.Errorf("Failed to exchange code for token: %v", err)
 		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
@@ -346,9 +346,9 @@ func (tc *TokenCache) Cleanup() {
 }
 
 // exchangeCodeForToken exchanges the authorization code for tokens
-func (t *TraefikOidc) exchangeCodeForToken(code string) (*TokenResponse, error) {
+func (t *TraefikOidc) exchangeCodeForToken(code string, redirectURL string) (*TokenResponse, error) {
 	ctx := context.Background()
-	tokenResponse, err := t.exchangeTokens(ctx, "authorization_code", code, t.redirectURL)
+	tokenResponse, err := t.exchangeTokens(ctx, "authorization_code", code, redirectURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code for token: %w", err)
 	}

@@ -53,14 +53,13 @@ type TraefikOidc struct {
 	tokenCache                 *TokenCache
 	httpClient                 *http.Client
 	logger                     *Logger
-	redirectURL                string
 	tokenVerifier              TokenVerifier
 	jwtVerifier                JWTVerifier
 	excludedURLs               map[string]struct{}
 	allowedUserDomains         map[string]struct{}
 	allowedRolesAndGroups      map[string]struct{}
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string)
-	exchangeCodeForTokenFunc   func(code string) (*TokenResponse, error)
+	exchangeCodeForTokenFunc   func(code string, redirectURL string) (*TokenResponse, error)
 	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
 	initComplete               chan struct{}
 	endSessionURL              string
@@ -382,10 +381,12 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	defaultSessionOptions.Secure = t.scheme == "https"
 	host := t.determineHost(req)
 
+	redirectURL := buildFullURL(t.scheme, host, t.redirURLPath)
+
 	// Build the redirect URL if not already set
-	if t.redirectURL == "" {
-		t.redirectURL = buildFullURL(t.scheme, host, t.redirURLPath)
-		t.logger.Debugf("Redirect URL updated to: %s", t.redirectURL)
+	if redirectURL == "" {
+		redirectURL = buildFullURL(t.scheme, host, t.redirURLPath)
+		t.logger.Debugf("Redirect URL updated to: %s", redirectURL)
 	}
 
 	// Get the session
@@ -406,7 +407,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// Handle callback URL
 	if req.URL.Path == t.redirURLPath {
-		t.handleCallback(rw, req)
+		t.handleCallback(rw, req, redirectURL)
 		return
 	}
 
@@ -414,19 +415,19 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	authenticated, needsRefresh, expired := t.isUserAuthenticated(session)
 
 	if expired {
-		t.handleExpiredToken(rw, req, session)
+		t.handleExpiredToken(rw, req, session, redirectURL)
 		return
 	}
 
 	if !authenticated {
-		t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		return
 	}
 
 	if needsRefresh {
 		refreshed := t.refreshToken(rw, req, session)
 		if !refreshed {
-			t.handleExpiredToken(rw, req, session)
+			t.handleExpiredToken(rw, req, session, redirectURL)
 			return
 		}
 	}
@@ -435,21 +436,21 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	idToken, ok := session.Values["id_token"].(string)
 	if !ok || idToken == "" {
 		t.logger.Errorf("No id_token found in session")
-		t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		return
 	}
 
 	claims, err := extractClaims(idToken)
 	if err != nil {
 		t.logger.Errorf("Failed to extract claims: %v", err)
-		t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		return
 	}
 
 	email, _ := claims["email"].(string)
 	if email == "" {
 		t.logger.Debugf("No email found in token claims")
-		t.defaultInitiateAuthentication(rw, req, session, t.redirectURL)
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		return
 	}
 

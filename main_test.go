@@ -104,7 +104,7 @@ func (ts *TestSuite) Setup() {
 }
 
 // Helper functions used by TraefikOidc
-func (ts *TestSuite) exchangeCodeForTokenFunc(code string) (*TokenResponse, error) {
+func (ts *TestSuite) exchangeCodeForTokenFunc(code string, redirectURL string) (*TokenResponse, error) {
 	return &TokenResponse{
 		IDToken:      ts.token,
 		RefreshToken: "test-refresh-token",
@@ -452,10 +452,12 @@ func TestHandleCallback(t *testing.T) {
 	ts := &TestSuite{t: t}
 	ts.Setup()
 
+	redirectURL := "http://example.com/"
+
 	tests := []struct {
 		name                 string
 		queryParams          string
-		exchangeCodeForToken func(code string) (*TokenResponse, error)
+		exchangeCodeForToken func(code string, redirectURL string) (*TokenResponse, error)
 		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
 		sessionSetupFunc     func(session *sessions.Session)
 		expectedStatus       int
@@ -463,7 +465,7 @@ func TestHandleCallback(t *testing.T) {
 		{
 			name:        "Success",
 			queryParams: "?code=test-code&state=test-csrf-token",
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				return &TokenResponse{
 					IDToken:      ts.token,
 					RefreshToken: "test-refresh-token",
@@ -493,7 +495,7 @@ func TestHandleCallback(t *testing.T) {
 		{
 			name:        "Exchange Code Error",
 			queryParams: "?code=test-code&state=test-csrf-token",
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				return nil, fmt.Errorf("exchange code error")
 			},
 			sessionSetupFunc: func(session *sessions.Session) {
@@ -505,7 +507,7 @@ func TestHandleCallback(t *testing.T) {
 		{
 			name:        "Missing ID Token",
 			queryParams: "?code=test-code&state=test-csrf-token",
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				return &TokenResponse{}, nil
 			},
 			sessionSetupFunc: func(session *sessions.Session) {
@@ -517,7 +519,7 @@ func TestHandleCallback(t *testing.T) {
 		{
 			name:        "Disallowed Email",
 			queryParams: "?code=test-code&state=test-csrf-token",
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				return &TokenResponse{
 					IDToken:      ts.token,
 					RefreshToken: "test-refresh-token",
@@ -538,7 +540,7 @@ func TestHandleCallback(t *testing.T) {
 		{
 			name:        "Invalid State Parameter",
 			queryParams: "?code=test-code&state=invalid-csrf-token",
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				return &TokenResponse{
 					IDToken:      ts.token,
 					RefreshToken: "test-refresh-token",
@@ -559,7 +561,7 @@ func TestHandleCallback(t *testing.T) {
 		{
 			name:        "Nonce Mismatch",
 			queryParams: "?code=test-code&state=test-csrf-token",
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				return &TokenResponse{
 					IDToken:      ts.token,
 					RefreshToken: "test-refresh-token",
@@ -580,7 +582,7 @@ func TestHandleCallback(t *testing.T) {
 		{
 			name:        "Missing Nonce in Claims",
 			queryParams: "?code=test-code&state=test-csrf-token",
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				return &TokenResponse{
 					IDToken:      ts.token,
 					RefreshToken: "test-refresh-token",
@@ -633,7 +635,7 @@ func TestHandleCallback(t *testing.T) {
 			rr = httptest.NewRecorder()
 
 			// Call handleCallback
-			tOidc.handleCallback(rr, req)
+			tOidc.handleCallback(rr, req, redirectURL)
 
 			// Check response
 			if rr.Code != tc.expectedStatus {
@@ -688,7 +690,7 @@ func TestOIDCHandler(t *testing.T) {
 	tests := []struct {
 		name                 string
 		queryParams          string
-		exchangeCodeForToken func(code string) (*TokenResponse, error)
+		exchangeCodeForToken func(code string, redirectURL string) (*TokenResponse, error)
 		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
 		sessionSetupFunc     func(session *sessions.Session)
 		expectedStatus       int
@@ -704,7 +706,7 @@ func TestOIDCHandler(t *testing.T) {
 				session.Values["csrf"] = "test-csrf-token"
 				session.Values["nonce"] = "test-nonce"
 			},
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				// Simulate token exchange
 				return &TokenResponse{
 					IDToken:      ts.token,
@@ -728,7 +730,7 @@ func TestOIDCHandler(t *testing.T) {
 				session.Values["csrf"] = "test-csrf-token"
 				session.Values["nonce"] = "test-nonce"
 			},
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				// Simulate token exchange
 				return &TokenResponse{
 					IDToken:      ts.token,
@@ -751,7 +753,7 @@ func TestOIDCHandler(t *testing.T) {
 				session.Values["csrf"] = "test-csrf-token"
 				session.Values["nonce"] = "test-nonce"
 			},
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				// Simulate token exchange
 				return &TokenResponse{
 					IDToken:      ts.token,
@@ -775,7 +777,7 @@ func TestOIDCHandler(t *testing.T) {
 				session.Values["csrf"] = "test-csrf-token"
 				session.Values["nonce"] = "test-nonce"
 			},
-			exchangeCodeForToken: func(code string) (*TokenResponse, error) {
+			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				// Simulate token exchange
 				return &TokenResponse{
 					IDToken:      ts.token,
@@ -1183,7 +1185,6 @@ func TestHandleExpiredToken(t *testing.T) {
 			tOidc := &TraefikOidc{
 				store:         sessions.NewCookieStore([]byte("test-secret-key")),
 				logger:        NewLogger("info"),
-				redirectURL:   "http://example.com/callback",
 				tokenVerifier: ts.tOidc.tokenVerifier,
 				jwtVerifier:   ts.tOidc.jwtVerifier,
 				initComplete:  make(chan struct{}),
@@ -1204,7 +1205,7 @@ func TestHandleExpiredToken(t *testing.T) {
 			tc.setupSession(session)
 
 			// Handle expired token
-			tOidc.handleExpiredToken(rr, req, session)
+			tOidc.handleExpiredToken(rr, req, session, tc.expectedPath)
 
 			// Verify session is cleaned
 			if len(session.Values) != 3 { // Should only have csrf, incoming_path, and nonce
