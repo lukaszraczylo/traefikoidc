@@ -187,10 +187,7 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	store := sessions.NewCookieStore([]byte(config.SessionEncryptionKey))
 	store.Options = newSessionOptions(func() bool {
-		if config.ForceHTTPS {
-			return true
-		}
-		return false
+		return config.ForceHTTPS
 	}())
 
 	// Setup HTTP client
