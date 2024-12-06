@@ -6,8 +6,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/gorilla/sessions"
 )
 
 const (
@@ -33,14 +31,6 @@ type Config struct {
 	OIDCEndSessionURL     string   `json:"oidcEndSessionURL"`
 	PostLogoutRedirectURI string   `json:"postLogoutRedirectURI"`
 	HTTPClient            *http.Client
-}
-
-var defaultSessionOptions = &sessions.Options{
-	HttpOnly: true,
-	Secure:   false,
-	SameSite: http.SameSiteLaxMode,
-	MaxAge:   ConstSessionTimeout,
-	Path:     "/",
 }
 
 // CreateConfig creates a new Config with default values

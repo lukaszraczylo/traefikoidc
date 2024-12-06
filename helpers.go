@@ -17,6 +17,16 @@ import (
 	"github.com/gorilla/sessions"
 )
 
+func newSessionOptions(isSecure bool) *sessions.Options {
+	return &sessions.Options{
+			HttpOnly: true,
+			Secure:   isSecure,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   ConstSessionTimeout,
+			Path:     "/",
+	}
+}
+
 // generateNonce generates a random nonce
 func generateNonce() (string, error) {
 	nonceBytes := make([]byte, 32)
@@ -101,7 +111,7 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	session.Values["csrf"] = uuid.New().String()
 	session.Values["incoming_path"] = req.URL.Path
 	session.Values["nonce"], _ = generateNonce()
-	session.Options = defaultSessionOptions
+	session.Options = newSessionOptions(t.determineScheme(req) == "https")
 
 	// Save the session before initiating authentication
 	if err := session.Save(req, rw); err != nil {
@@ -222,7 +232,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	session.Values["email"] = email
 	session.Values["id_token"] = idToken
 	session.Values["refresh_token"] = tokenResponse.RefreshToken
-	session.Options = defaultSessionOptions
+	session.Options = newSessionOptions(t.determineScheme(req) == "https")
 
 	// Remove CSRF and nonce from session
 	delete(session.Values, "csrf")

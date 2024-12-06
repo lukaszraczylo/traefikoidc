@@ -1223,6 +1223,8 @@ func TestHandleExpiredToken(t *testing.T) {
 				t.Error("Nonce not set")
 			}
 
+			defaultSessionOptions := newSessionOptions(tOidc.determineScheme(req) == "https")
+
 			// Verify session options
 			if session.Options.MaxAge != defaultSessionOptions.MaxAge {
 				t.Error("Session MaxAge not set correctly")

@@ -186,7 +186,9 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 // New creates a new instance of the OIDC middleware
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	store := sessions.NewCookieStore([]byte(config.SessionEncryptionKey))
-	store.Options = defaultSessionOptions
+	store.Options = newSessionOptions(func() bool {
+		return config.ForceHTTPS
+	}())
 
 	// Setup HTTP client
 	transport := &http.Transport{
@@ -200,7 +202,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		},
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		ExpectContinueTimeout: 0,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   100,
 		IdleConnTimeout:       90 * time.Second,
@@ -377,12 +379,9 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	// Determine the scheme (http/https) and host
-	t.scheme = t.determineScheme(req)
-	defaultSessionOptions.Secure = t.scheme == "https"
+	scheme := t.determineScheme(req)
 	host := t.determineHost(req)
-
-	redirectURL := buildFullURL(t.scheme, host, t.redirURLPath)
-
+	redirectURL := buildFullURL(scheme, host, t.redirURLPath)
 	// Build the redirect URL if not already set
 	if redirectURL == "" {
 		redirectURL = buildFullURL(t.scheme, host, t.redirURLPath)
@@ -397,6 +396,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	session.Options = newSessionOptions(scheme == "https")
 	t.logger.Debugf("Session contents at start: %+v", session.Values)
 
 	// Handle logout URL
@@ -584,7 +584,7 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	csrfToken := uuid.New().String()
 	session.Values["csrf"] = csrfToken
 	session.Values["incoming_path"] = req.URL.Path
-	session.Options = defaultSessionOptions
+	session.Options = newSessionOptions(t.determineScheme(req) == "https")
 	t.logger.Debugf("Setting CSRF token: %s", csrfToken)
 
 	// Generate nonce
@@ -710,7 +710,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	// Update session with new tokens
 	session.Values["id_token"] = newToken.IDToken
 	session.Values["refresh_token"] = newToken.RefreshToken
-	session.Options = defaultSessionOptions
+	session.Options = newSessionOptions(t.determineScheme(req) == "https")
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("Failed to save refreshed session: %v", err)
 		return false
