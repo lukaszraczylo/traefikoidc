@@ -22,13 +22,14 @@ import (
 
 // TestSuite holds common test data and setup
 type TestSuite struct {
-	t             *testing.T
-	rsaPrivateKey *rsa.PrivateKey
-	rsaPublicKey  *rsa.PublicKey
-	ecPrivateKey  *ecdsa.PrivateKey
-	tOidc         *TraefikOidc
-	mockJWKCache  *MockJWKCache
-	token         string
+	t              *testing.T
+	rsaPrivateKey  *rsa.PrivateKey
+	rsaPublicKey   *rsa.PublicKey
+	ecPrivateKey   *ecdsa.PrivateKey
+	tOidc          *TraefikOidc
+	mockJWKCache   *MockJWKCache
+	token          string
+	sessionManager *SessionManager
 }
 
 // Setup initializes the test suite
@@ -78,6 +79,9 @@ func (ts *TestSuite) Setup() {
 		ts.t.Fatalf("Failed to create test JWT: %v", err)
 	}
 
+	logger := NewLogger("info")
+	ts.sessionManager = NewSessionManager("test-secret-key", false, logger)
+
 	// Common TraefikOidc instance
 	ts.tOidc = &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
@@ -89,13 +93,13 @@ func (ts *TestSuite) Setup() {
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
 		tokenBlacklist:     NewTokenBlacklist(),
 		tokenCache:         NewTokenCache(),
-		logger:             NewLogger("info"),
-		store:              sessions.NewCookieStore([]byte("test-secret-key")),
+		logger:             logger,
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
 		excludedURLs:       map[string]struct{}{"/favicon": {}},
 		httpClient:         &http.Client{},
 		extractClaimsFunc:  extractClaims,
 		initComplete:       make(chan struct{}),
+		sessionManager:     ts.sessionManager,
 	}
 	close(ts.tOidc.initComplete)
 	ts.tOidc.exchangeCodeForTokenFunc = ts.exchangeCodeForTokenFunc
@@ -257,6 +261,7 @@ func TestServeHTTP(t *testing.T) {
 		sessionValues  map[interface{}]interface{}
 		expectedStatus int
 		expectedBody   string
+		setupSession   func(*SessionData)
 	}{
 		{
 			name:           "Excluded URL",
@@ -272,10 +277,10 @@ func TestServeHTTP(t *testing.T) {
 		{
 			name:        "Authenticated request to protected URL",
 			requestPath: "/protected",
-			sessionValues: map[interface{}]interface{}{
-				"authenticated": true,
-				"email":         "user@example.com",
-				"id_token":      ts.token,
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetEmail("user@example.com")
+				session.SetAccessToken(ts.token)
 			},
 			expectedStatus: http.StatusOK,
 			expectedBody:   "OK",
@@ -283,52 +288,52 @@ func TestServeHTTP(t *testing.T) {
 		{
 			name:        "Logout URL",
 			requestPath: "/logout",
-			sessionValues: map[interface{}]interface{}{
-				"authenticated": true,
-				"email":         "user@example.com",
-				"id_token":      ts.token,
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetEmail("user@example.com")
+				session.SetAccessToken(ts.token)
 			},
 			expectedStatus: http.StatusOK,
-			expectedBody:   "Logged out\n",
+			expectedBody:   "",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Create a request
 			req := httptest.NewRequest("GET", tc.requestPath, nil)
 			req.Header.Set("X-Forwarded-Proto", "http")
 			req.Header.Set("X-Forwarded-Host", "localhost")
-
-			// Create a temporary response recorder to save the session
-			rrSession := httptest.NewRecorder()
-
-			// Create a session
-			session, _ := ts.tOidc.store.New(req, cookieName)
-			if tc.sessionValues != nil {
-				for k, v := range tc.sessionValues {
-					session.Values[k] = v
-				}
-				session.Save(req, rrSession)
-			}
-
-			// Copy session cookie from rrSession to request
-			for _, cookie := range rrSession.Result().Cookies() {
-				req.AddCookie(cookie)
-			}
-
-			// Create a response recorder for ServeHTTP
 			rr := httptest.NewRecorder()
+
+			// Setup session if needed
+			session, err := ts.tOidc.sessionManager.GetSession(req)
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
+			}
+			if tc.setupSession != nil {
+				tc.setupSession(session)
+				if err := session.Save(req, rr); err != nil {
+					t.Fatalf("Failed to save session: %v", err)
+				}
+
+				// Copy cookies to the new request
+				for _, cookie := range rr.Result().Cookies() {
+					req.AddCookie(cookie)
+				}
+				rr = httptest.NewRecorder()
+			}
 
 			// Call ServeHTTP
 			ts.tOidc.ServeHTTP(rr, req)
 
-			// Check the response
+			// Check response
 			if rr.Code != tc.expectedStatus {
-				t.Errorf("Test %s: expected status %d, got %d", tc.name, tc.expectedStatus, rr.Code)
+				t.Errorf("Expected status %d, got %d", tc.expectedStatus, rr.Code)
 			}
-			if tc.expectedBody != "" && strings.TrimSpace(rr.Body.String()) != strings.TrimSpace(rr.Body.String()) {
-				t.Errorf("Test %s: expected body '%s', got '%s'", tc.name, tc.expectedBody, rr.Body.String())
+			if tc.expectedBody != "" {
+				if body := strings.TrimSpace(rr.Body.String()); body != tc.expectedBody {
+					t.Errorf("Expected body %q, got %q", tc.expectedBody, body)
+				}
 			}
 		})
 	}
@@ -459,7 +464,7 @@ func TestHandleCallback(t *testing.T) {
 		queryParams          string
 		exchangeCodeForToken func(code string, redirectURL string) (*TokenResponse, error)
 		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
-		sessionSetupFunc     func(session *sessions.Session)
+		sessionSetupFunc     func(*SessionData)
 		expectedStatus       int
 	}{
 		{
@@ -477,18 +482,18 @@ func TestHandleCallback(t *testing.T) {
 					"nonce": "test-nonce",
 				}, nil
 			},
-			sessionSetupFunc: func(session *sessions.Session) {
-				session.Values["csrf"] = "test-csrf-token"
-				session.Values["nonce"] = "test-nonce"
+			sessionSetupFunc: func(session *SessionData) {
+				session.SetCSRF("test-csrf-token")
+				session.SetNonce("test-nonce")
 			},
 			expectedStatus: http.StatusFound,
 		},
 		{
 			name:        "Missing Code",
 			queryParams: "",
-			sessionSetupFunc: func(session *sessions.Session) {
-				session.Values["csrf"] = "test-csrf-token"
-				session.Values["nonce"] = "test-nonce"
+			sessionSetupFunc: func(session *SessionData) {
+				session.SetCSRF("test-csrf-token")
+				session.SetNonce("test-nonce")
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
@@ -498,9 +503,9 @@ func TestHandleCallback(t *testing.T) {
 			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				return nil, fmt.Errorf("exchange code error")
 			},
-			sessionSetupFunc: func(session *sessions.Session) {
-				session.Values["csrf"] = "test-csrf-token"
-				session.Values["nonce"] = "test-nonce"
+			sessionSetupFunc: func(session *SessionData) {
+				session.SetCSRF("test-csrf-token")
+				session.SetNonce("test-nonce")
 			},
 			expectedStatus: http.StatusInternalServerError,
 		},
@@ -510,9 +515,9 @@ func TestHandleCallback(t *testing.T) {
 			exchangeCodeForToken: func(code string, redirectURL string) (*TokenResponse, error) {
 				return &TokenResponse{}, nil
 			},
-			sessionSetupFunc: func(session *sessions.Session) {
-				session.Values["csrf"] = "test-csrf-token"
-				session.Values["nonce"] = "test-nonce"
+			sessionSetupFunc: func(session *SessionData) {
+				session.SetCSRF("test-csrf-token")
+				session.SetNonce("test-nonce")
 			},
 			expectedStatus: http.StatusInternalServerError,
 		},
@@ -531,9 +536,9 @@ func TestHandleCallback(t *testing.T) {
 					"nonce": "test-nonce",
 				}, nil
 			},
-			sessionSetupFunc: func(session *sessions.Session) {
-				session.Values["csrf"] = "test-csrf-token"
-				session.Values["nonce"] = "test-nonce"
+			sessionSetupFunc: func(session *SessionData) {
+				session.SetCSRF("test-csrf-token")
+				session.SetNonce("test-nonce")
 			},
 			expectedStatus: http.StatusForbidden,
 		},
@@ -552,9 +557,9 @@ func TestHandleCallback(t *testing.T) {
 					"nonce": "test-nonce",
 				}, nil
 			},
-			sessionSetupFunc: func(session *sessions.Session) {
-				session.Values["csrf"] = "test-csrf-token"
-				session.Values["nonce"] = "test-nonce"
+			sessionSetupFunc: func(session *SessionData) {
+				session.SetCSRF("test-csrf-token")
+				session.SetNonce("test-nonce")
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
@@ -573,9 +578,9 @@ func TestHandleCallback(t *testing.T) {
 					"nonce": "invalid-nonce",
 				}, nil
 			},
-			sessionSetupFunc: func(session *sessions.Session) {
-				session.Values["csrf"] = "test-csrf-token"
-				session.Values["nonce"] = "test-nonce"
+			sessionSetupFunc: func(session *SessionData) {
+				session.SetCSRF("test-csrf-token")
+				session.SetNonce("test-nonce")
 			},
 			expectedStatus: http.StatusInternalServerError,
 		},
@@ -594,9 +599,9 @@ func TestHandleCallback(t *testing.T) {
 					// Missing nonce
 				}, nil
 			},
-			sessionSetupFunc: func(session *sessions.Session) {
-				session.Values["csrf"] = "test-csrf-token"
-				session.Values["nonce"] = "test-nonce"
+			sessionSetupFunc: func(session *SessionData) {
+				session.SetCSRF("test-csrf-token")
+				session.SetNonce("test-nonce")
 			},
 			expectedStatus: http.StatusInternalServerError,
 		},
@@ -604,15 +609,18 @@ func TestHandleCallback(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			logger := NewLogger("info")
+			sessionManager := NewSessionManager("test-secret-key", false, logger)
+
 			// Create a new instance for each test to avoid state carryover
 			tOidc := &TraefikOidc{
-				store:                    sessions.NewCookieStore([]byte("test-secret-key")),
 				allowedUserDomains:       map[string]struct{}{"example.com": {}},
-				logger:                   NewLogger("info"),
+				logger:                   logger,
 				exchangeCodeForTokenFunc: tc.exchangeCodeForToken,
 				extractClaimsFunc:        tc.extractClaimsFunc,
 				tokenVerifier:            ts.tOidc.tokenVerifier,
 				jwtVerifier:              ts.tOidc.jwtVerifier,
+				sessionManager:           sessionManager,
 			}
 
 			// Create request and response recorder
@@ -620,18 +628,23 @@ func TestHandleCallback(t *testing.T) {
 			rr := httptest.NewRecorder()
 
 			// Create session
-			session, _ := tOidc.store.New(req, cookieName)
+			session, err := sessionManager.GetSession(req)
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
+			}
 			if tc.sessionSetupFunc != nil {
 				tc.sessionSetupFunc(session)
 			}
-			session.Save(req, rr)
+			if err := session.Save(req, rr); err != nil {
+				t.Fatalf("Failed to save session: %v", err)
+			}
 
-			// Copy session cookie to request
+			// Copy cookies to the new request
 			for _, cookie := range rr.Result().Cookies() {
 				req.AddCookie(cookie)
 			}
 
-			// Reset rr for the actual test
+			// Reset response recorder for the actual test
 			rr = httptest.NewRecorder()
 
 			// Call handleCallback
@@ -849,7 +862,7 @@ func TestHandleLogout(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		setupSession   func(*sessions.Session)
+		setupSession   func(*SessionData)
 		endSessionURL  string
 		expectedStatus int
 		expectedURL    string
@@ -857,11 +870,10 @@ func TestHandleLogout(t *testing.T) {
 	}{
 		{
 			name: "Successful logout with end session endpoint",
-			setupSession: func(session *sessions.Session) {
-				session.Values["authenticated"] = true
-				session.Values["id_token"] = "test.id.token"
-				session.Values["refresh_token"] = "test-refresh-token"
-				session.Values["access_token"] = "test-access-token"
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetAccessToken("test.id.token")
+				session.SetRefreshToken("test-refresh-token")
 			},
 			endSessionURL:  "https://provider/end-session",
 			expectedStatus: http.StatusFound,
@@ -870,11 +882,10 @@ func TestHandleLogout(t *testing.T) {
 		},
 		{
 			name: "Successful logout without end session endpoint",
-			setupSession: func(session *sessions.Session) {
-				session.Values["authenticated"] = true
-				session.Values["id_token"] = "test.id.token"
-				session.Values["refresh_token"] = "test-refresh-token"
-				session.Values["access_token"] = "test-access-token"
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetAccessToken("test.id.token")
+				session.SetRefreshToken("test-refresh-token")
 			},
 			endSessionURL:  "",
 			expectedStatus: http.StatusFound,
@@ -883,16 +894,17 @@ func TestHandleLogout(t *testing.T) {
 		},
 		{
 			name:           "Logout with empty session",
-			setupSession:   func(session *sessions.Session) {},
+			setupSession:   func(session *SessionData) {},
 			expectedStatus: http.StatusFound,
 			expectedURL:    "http://example.com/",
 			host:           "test-host",
 		},
 		{
 			name: "Logout with invalid end session URL",
-			setupSession: func(session *sessions.Session) {
-				session.Values["authenticated"] = true
-				session.Values["id_token"] = "test.id.token"
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetAccessToken("test.id.token")
+				session.SetRefreshToken("test-refresh-token")
 			},
 			endSessionURL:  ":\\invalid-url",
 			expectedStatus: http.StatusInternalServerError,
@@ -902,19 +914,20 @@ func TestHandleLogout(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Create a new TraefikOidc instance for each test
+			logger := NewLogger("info")
+			sessionManager := NewSessionManager("test-secret-key", false, logger)
 			tOidc := &TraefikOidc{
-				store:          sessions.NewCookieStore([]byte("test-secret-key")),
 				revocationURL:  mockRevocationServer.URL,
 				endSessionURL:  tc.endSessionURL,
 				scheme:         "http",
-				logger:         NewLogger("info"),
+				logger:         logger,
 				tokenBlacklist: NewTokenBlacklist(),
 				httpClient:     &http.Client{},
 				clientID:       "test-client-id",
 				clientSecret:   "test-client-secret",
 				tokenCache:     NewTokenCache(),
 				forceHTTPS:     false,
+				sessionManager: sessionManager,
 			}
 
 			// Create request with proper headers
@@ -925,16 +938,18 @@ func TestHandleLogout(t *testing.T) {
 			rr := httptest.NewRecorder()
 
 			// Get a session
-			session, err := tOidc.store.Get(req, cookieName)
+			session, err := sessionManager.GetSession(req)
 			if err != nil {
 				t.Fatalf("Failed to get session: %v", err)
 			}
+			if tc.setupSession != nil {
+				tc.setupSession(session)
+			}
+			if err := session.Save(req, rr); err != nil {
+				t.Fatalf("Failed to save session: %v", err)
+			}
 
-			// Setup session
-			tc.setupSession(session)
-			session.Save(req, rr)
-
-			// Copy session cookie to request
+			// Copy cookies to the new request
 			for _, cookie := range rr.Result().Cookies() {
 				req.AddCookie(cookie)
 			}
@@ -950,7 +965,6 @@ func TestHandleLogout(t *testing.T) {
 				t.Errorf("Expected status %d, got %d", tc.expectedStatus, rr.Code)
 			}
 
-			// Check redirect URL if expected
 			if tc.expectedURL != "" {
 				location := rr.Header().Get("Location")
 				if location != tc.expectedURL {
@@ -959,23 +973,31 @@ func TestHandleLogout(t *testing.T) {
 			}
 
 			// Verify session is cleared
-			newSession, _ := tOidc.store.Get(req, cookieName)
-			if len(newSession.Values) > 0 {
-				t.Error("Session was not cleared")
+			updatedSession, err := sessionManager.GetSession(req)
+			if err != nil {
+				t.Fatalf("Failed to get updated session: %v", err)
 			}
-			if newSession.Options.MaxAge != -1 {
-				t.Error("Session MaxAge was not set to -1")
+
+			// Verify tokens are cleared
+			if token := updatedSession.GetAccessToken(); token != "" {
+				t.Error("Access token not cleared")
+			}
+			if token := updatedSession.GetRefreshToken(); token != "" {
+				t.Error("Refresh token not cleared")
+			}
+			if updatedSession.GetAuthenticated() {
+				t.Error("Session still marked as authenticated")
 			}
 
 			// Check token blacklist
-			if refreshToken, ok := session.Values["refresh_token"].(string); ok && refreshToken != "" {
-				if !tOidc.tokenBlacklist.IsBlacklisted(refreshToken) {
-					t.Error("Refresh token was not blacklisted")
+			if token := session.GetAccessToken(); token != "" {
+				if !tOidc.tokenBlacklist.IsBlacklisted(token) {
+					t.Error("Access token was not blacklisted")
 				}
 			}
-			if accessToken, ok := session.Values["access_token"].(string); ok && accessToken != "" {
-				if !tOidc.tokenBlacklist.IsBlacklisted(accessToken) {
-					t.Error("Access token was not blacklisted")
+			if token := session.GetRefreshToken(); token != "" {
+				if !tOidc.tokenBlacklist.IsBlacklisted(token) {
+					t.Error("Refresh token was not blacklisted")
 				}
 			}
 		})
@@ -1156,24 +1178,24 @@ func TestHandleExpiredToken(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		setupSession func(*sessions.Session)
+		setupSession func(*SessionData)
 		expectedPath string
 	}{
 		{
 			name: "Basic expired token",
-			setupSession: func(session *sessions.Session) {
-				session.Values["authenticated"] = true
-				session.Values["id_token"] = "expired.token"
-				session.Values["email"] = "test@example.com"
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetAccessToken("expired.token")
+				session.SetEmail("test@example.com")
 			},
 			expectedPath: "/original/path",
 		},
 		{
 			name: "Session with additional values",
-			setupSession: func(session *sessions.Session) {
-				session.Values["authenticated"] = true
-				session.Values["id_token"] = "expired.token"
-				session.Values["custom_value"] = "should-be-cleared"
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetAccessToken("expired.token")
+				session.mainSession.Values["custom_value"] = "should-be-cleared"
 			},
 			expectedPath: "/another/path",
 		},
@@ -1181,16 +1203,16 @@ func TestHandleExpiredToken(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Create a new TraefikOidc instance for each test
+			logger := NewLogger("info")
+			sessionManager := NewSessionManager("test-secret-key", false, logger)
+
 			tOidc := &TraefikOidc{
-				store:         sessions.NewCookieStore([]byte("test-secret-key")),
-				logger:        NewLogger("info"),
-				tokenVerifier: ts.tOidc.tokenVerifier,
-				jwtVerifier:   ts.tOidc.jwtVerifier,
-				initComplete:  make(chan struct{}),
-				// Add this initialization of initiateAuthenticationFunc
-				initiateAuthenticationFunc: func(rw http.ResponseWriter, req *http.Request, session *sessions.Session, redirectURL string) {
-					// Mock implementation for test
+				sessionManager: sessionManager,
+				logger:         logger,
+				tokenVerifier:  ts.tOidc.tokenVerifier,
+				jwtVerifier:    ts.tOidc.jwtVerifier,
+				initComplete:   make(chan struct{}),
+				initiateAuthenticationFunc: func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 					http.Redirect(rw, req, "/login", http.StatusFound)
 				},
 			}
@@ -1201,33 +1223,40 @@ func TestHandleExpiredToken(t *testing.T) {
 			rr := httptest.NewRecorder()
 
 			// Get session
-			session, _ := tOidc.store.New(req, cookieName)
+			session, err := sessionManager.GetSession(req)
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
+			}
+
+			// Setup session data
 			tc.setupSession(session)
 
 			// Handle expired token
 			tOidc.handleExpiredToken(rr, req, session, tc.expectedPath)
 
-			// Verify session is cleaned
-			if len(session.Values) != 3 { // Should only have csrf, incoming_path, and nonce
-				t.Errorf("Expected 3 session values, got %d", len(session.Values))
+			// Get the updated session to verify changes
+			updatedSession, err := sessionManager.GetSession(req)
+			if err != nil {
+				t.Fatalf("Failed to get updated session: %v", err)
 			}
 
-			// Verify required values are set
-			if _, ok := session.Values["csrf"].(string); !ok {
+			// Verify main session values
+			if updatedSession.GetCSRF() == "" {
 				t.Error("CSRF token not set")
 			}
-			if path, ok := session.Values["incoming_path"].(string); !ok || path != tc.expectedPath {
+			if path := updatedSession.GetIncomingPath(); path != tc.expectedPath {
 				t.Errorf("Expected path %s, got %s", tc.expectedPath, path)
 			}
-			if _, ok := session.Values["nonce"].(string); !ok {
+			if updatedSession.GetNonce() == "" {
 				t.Error("Nonce not set")
 			}
 
-			defaultSessionOptions := newSessionOptions(tOidc.determineScheme(req) == "https")
-
-			// Verify session options
-			if session.Options.MaxAge != defaultSessionOptions.MaxAge {
-				t.Error("Session MaxAge not set correctly")
+			// Verify tokens are cleared
+			if token := updatedSession.GetAccessToken(); token != "" {
+				t.Error("Access token not cleared")
+			}
+			if token := updatedSession.GetRefreshToken(); token != "" {
+				t.Error("Refresh token not cleared")
 			}
 
 			// Verify redirect status
