@@ -430,6 +430,34 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	groups, roles, err := t.extractGroupsAndRoles(session.GetAccessToken())
+	if err != nil {
+		t.logger.Errorf("Failed to extract groups and roles: %v", err)
+	} else {
+		if len(groups) > 0 {
+			req.Header.Set("X-User-Groups", strings.Join(groups, ","))
+		}
+		if len(roles) > 0 {
+			req.Header.Set("X-User-Roles", strings.Join(roles, ","))
+		}
+	}
+
+	// Check allowed roles and groups
+	if len(t.allowedRolesAndGroups) > 0 {
+		allowed := false
+		for _, roleOrGroup := range append(groups, roles...) {
+			if _, ok := t.allowedRolesAndGroups[roleOrGroup]; ok {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			t.logger.Infof("User with email %s does not have any allowed roles or groups", email)
+			http.Error(rw, fmt.Sprintf("Access denied: You do not have any allowed roles or groups. To log out, visit: %s", t.logoutURLPath), http.StatusForbidden)
+			return
+		}
+	}
+
 	// Set user information in headers
 	req.Header.Set("X-Forwarded-User", email)
 
