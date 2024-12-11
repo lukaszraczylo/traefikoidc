@@ -12,6 +12,20 @@ const (
 	mainCookieName     = "_raczylo_oidc"         // Main session cookie
 	accessTokenCookie  = "_raczylo_oidc_access"  // Access token cookie
 	refreshTokenCookie = "_raczylo_oidc_refresh" // Refresh token cookie
+	maxCookieSize      = 2000                    // Max size for each chunk to stay within 4096-byte cookie limit
+
+	// REASON:
+	// Let x be the maximum size of the chunk (maxCookieSize).
+	// Encrypted size = x + 28 bytes
+	// Base64-encoded size = ((x + 28) * 4) / 3 bytes
+	// ((x + 28) * 4) / 3 <= 4096
+	// Multiply both sides by 3:
+	// 4 * (x + 28) <= 4096 * 3
+	// 4 * (x + 28) <= 12288
+	// Divide both sides by 4:
+	// x + 28 <= 3072
+	// Subtract 28 from both sides:
+	// x <= 3044
 )
 
 // SessionManager handles multiple session cookies
@@ -60,20 +74,44 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 
 	sessionData := &SessionData{
 		manager:        sm,
+		request:        r,
 		mainSession:    mainSession,
 		accessSession:  accessSession,
 		refreshSession: refreshSession,
 	}
 
+	// Retrieve chunked access token sessions
+	sessionData.accessTokenChunks = sm.getTokenChunkSessions(r, accessTokenCookie)
+	// Retrieve chunked refresh token sessions
+	sessionData.refreshTokenChunks = sm.getTokenChunkSessions(r, refreshTokenCookie)
+
 	return sessionData, nil
+}
+
+// getTokenChunkSessions retrieves sessions for token chunks
+func (sm *SessionManager) getTokenChunkSessions(r *http.Request, baseName string) map[int]*sessions.Session {
+	chunks := make(map[int]*sessions.Session)
+	for i := 0; ; i++ {
+		sessionName := fmt.Sprintf("%s_%d", baseName, i)
+		session, err := sm.store.Get(r, sessionName)
+		if err != nil || session.IsNew {
+			// No more sessions
+			break
+		}
+		chunks[i] = session
+	}
+	return chunks
 }
 
 // SessionData holds all session information
 type SessionData struct {
-	manager        *SessionManager
-	mainSession    *sessions.Session
-	accessSession  *sessions.Session
-	refreshSession *sessions.Session
+	manager            *SessionManager
+	request            *http.Request
+	mainSession        *sessions.Session
+	accessSession      *sessions.Session
+	refreshSession     *sessions.Session
+	accessTokenChunks  map[int]*sessions.Session
+	refreshTokenChunks map[int]*sessions.Session
 }
 
 // Save saves all session data
@@ -81,18 +119,40 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	isSecure := strings.HasPrefix(r.URL.Scheme, "https") || sd.manager.forceHTTPS
 
 	// Set options for all sessions
-	sd.mainSession.Options = sd.manager.getSessionOptions(isSecure)
-	sd.accessSession.Options = sd.manager.getSessionOptions(isSecure)
-	sd.refreshSession.Options = sd.manager.getSessionOptions(isSecure)
+	options := sd.manager.getSessionOptions(isSecure)
+	sd.mainSession.Options = options
+	sd.accessSession.Options = options
+	sd.refreshSession.Options = options
 
+	// Save main session
 	if err := sd.mainSession.Save(r, w); err != nil {
 		return fmt.Errorf("failed to save main session: %w", err)
 	}
+
+	// Save access token session
 	if err := sd.accessSession.Save(r, w); err != nil {
 		return fmt.Errorf("failed to save access token session: %w", err)
 	}
+
+	// Save refresh token session
 	if err := sd.refreshSession.Save(r, w); err != nil {
 		return fmt.Errorf("failed to save refresh token session: %w", err)
+	}
+
+	// Save access token chunks
+	for _, session := range sd.accessTokenChunks {
+		session.Options = options
+		if err := session.Save(r, w); err != nil {
+			return fmt.Errorf("failed to save access token chunk session: %w", err)
+		}
+	}
+
+	// Save refresh token chunks
+	for _, session := range sd.refreshTokenChunks {
+		session.Options = options
+		if err := session.Save(r, w); err != nil {
+			return fmt.Errorf("failed to save refresh token chunk session: %w", err)
+		}
 	}
 
 	return nil
@@ -115,7 +175,21 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 		delete(sd.refreshSession.Values, k)
 	}
 
+	// Clear chunk sessions
+	sd.clearTokenChunks(r, sd.accessTokenChunks)
+	sd.clearTokenChunks(r, sd.refreshTokenChunks)
+
 	return sd.Save(r, w)
+}
+
+// clearTokenChunks clears chunked token sessions
+func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*sessions.Session) {
+	for _, session := range chunks {
+		session.Options.MaxAge = -1
+		for k := range session.Values {
+			delete(session.Values, k)
+		}
+	}
 }
 
 // GetAuthenticated returns authentication status
@@ -132,23 +206,108 @@ func (sd *SessionData) SetAuthenticated(value bool) {
 // GetAccessToken returns the access token
 func (sd *SessionData) GetAccessToken() string {
 	token, _ := sd.accessSession.Values["token"].(string)
-	return token
+	if token != "" {
+		return token
+	}
+
+	// Reassemble token from chunks
+	if len(sd.accessTokenChunks) == 0 {
+		return ""
+	}
+
+	var chunks []string
+	for i := 0; ; i++ {
+		session, ok := sd.accessTokenChunks[i]
+		if !ok {
+			break
+		}
+		chunk, _ := session.Values["token_chunk"].(string)
+		chunks = append(chunks, chunk)
+	}
+
+	return strings.Join(chunks, "")
 }
 
 // SetAccessToken sets the access token
 func (sd *SessionData) SetAccessToken(token string) {
-	sd.accessSession.Values["token"] = token
+	// Clear existing chunks
+	sd.clearTokenChunks(sd.request, sd.accessTokenChunks)
+	sd.accessTokenChunks = make(map[int]*sessions.Session)
+
+	if len(token) <= maxCookieSize {
+		sd.accessSession.Values["token"] = token
+	} else {
+		// Split token into chunks
+		sd.accessSession.Values["token"] = ""
+		chunks := splitIntoChunks(token, maxCookieSize)
+		for i, chunk := range chunks {
+			sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
+			session, _ := sd.manager.store.Get(sd.request, sessionName)
+			session.Values["token_chunk"] = chunk
+			sd.accessTokenChunks[i] = session
+		}
+	}
 }
 
 // GetRefreshToken returns the refresh token
 func (sd *SessionData) GetRefreshToken() string {
 	token, _ := sd.refreshSession.Values["token"].(string)
-	return token
+	if token != "" {
+		return token
+	}
+
+	// Reassemble token from chunks
+	if len(sd.refreshTokenChunks) == 0 {
+		return ""
+	}
+
+	var chunks []string
+	for i := 0; ; i++ {
+		session, ok := sd.refreshTokenChunks[i]
+		if !ok {
+			break
+		}
+		chunk, _ := session.Values["token_chunk"].(string)
+		chunks = append(chunks, chunk)
+	}
+
+	return strings.Join(chunks, "")
 }
 
 // SetRefreshToken sets the refresh token
 func (sd *SessionData) SetRefreshToken(token string) {
-	sd.refreshSession.Values["token"] = token
+	// Clear existing chunks
+	sd.clearTokenChunks(sd.request, sd.refreshTokenChunks)
+	sd.refreshTokenChunks = make(map[int]*sessions.Session)
+
+	if len(token) <= maxCookieSize {
+		sd.refreshSession.Values["token"] = token
+	} else {
+		// Split token into chunks
+		sd.refreshSession.Values["token"] = ""
+		chunks := splitIntoChunks(token, maxCookieSize)
+		for i, chunk := range chunks {
+			sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
+			session, _ := sd.manager.store.Get(sd.request, sessionName)
+			session.Values["token_chunk"] = chunk
+			sd.refreshTokenChunks[i] = session
+		}
+	}
+}
+
+// splitIntoChunks splits a string into chunks of specified size
+func splitIntoChunks(s string, chunkSize int) []string {
+	var chunks []string
+	for len(s) > 0 {
+		if len(s) > chunkSize {
+			chunks = append(chunks, s[:chunkSize])
+			s = s[chunkSize:]
+		} else {
+			chunks = append(chunks, s)
+			break
+		}
+	}
+	return chunks
 }
 
 // GetCSRF returns the CSRF token
