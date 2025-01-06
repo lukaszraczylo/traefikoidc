@@ -180,17 +180,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			dialer := &net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
+				Timeout:   15 * time.Second,  // Reduced timeout
+				KeepAlive: 15 * time.Second,  // Reduced keepalive
 			}
 			return dialer.DialContext(ctx, network, addr)
 		},
 		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   10 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,   // Reduced from 10s
 		ExpectContinueTimeout: 0,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   100,
-		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          30,                // Reduced from 100
+		MaxIdleConnsPerHost:   10,                // Reduced from 100
+		IdleConnTimeout:       30 * time.Second,   // Reduced from 90s
+		DisableKeepAlives:     false,             // Enable connection reuse
+		MaxConnsPerHost:       50,                // Limit max connections
 	}
 
 	var httpClient *http.Client
@@ -198,7 +200,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		httpClient = config.HTTPClient
 	} else {
 		httpClient = &http.Client{
-			Timeout:   time.Second * 30,
+			Timeout:   time.Second * 15, // Reduced timeout
 			Transport: transport,
 		}
 	}

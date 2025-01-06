@@ -24,13 +24,24 @@ type Cache struct {
 	// mutex protects concurrent access to the items map
 	// Use RLock/RUnlock for reads and Lock/Unlock for writes
 	mutex sync.RWMutex
+
+	// maxSize is the maximum number of items allowed in the cache
+	maxSize int
+
+	// accessList maintains the order of item access for eviction
+	accessList []string
 }
+
+// DefaultMaxSize is the default maximum number of items in the cache
+const DefaultMaxSize = 1000
 
 // NewCache creates a new empty cache instance.
 // The cache is immediately ready for use and is thread-safe.
 func NewCache() *Cache {
 	return &Cache{
-		items: make(map[string]CacheItem),
+		items:      make(map[string]CacheItem),
+		maxSize:    DefaultMaxSize,
+		accessList: make([]string, 0, DefaultMaxSize),
 	}
 }
 
@@ -43,10 +54,27 @@ func NewCache() *Cache {
 func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	// If key exists, update it
+	if _, exists := c.items[key]; exists {
+		c.items[key] = CacheItem{
+			Value:     value,
+			ExpiresAt: time.Now().Add(expiration),
+		}
+		return
+	}
+
+	// If cache is full, remove oldest item
+	if len(c.items) >= c.maxSize {
+		c.evictOldest()
+	}
+
+	// Add new item
 	c.items[key] = CacheItem{
 		Value:     value,
 		ExpiresAt: time.Now().Add(expiration),
 	}
+	c.accessList = append(c.accessList, key)
 }
 
 // Get retrieves an item from the cache if it exists and hasn't expired.
@@ -58,15 +86,25 @@ func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 // Thread-safe: Uses read locking to ensure safe concurrent access.
 func (c *Cache) Get(key string) (interface{}, bool) {
 	c.mutex.RLock()
-	defer c.mutex.RUnlock()
 	item, found := c.items[key]
+	c.mutex.RUnlock()
+
 	if !found {
 		return nil, false
 	}
+
 	if time.Now().After(item.ExpiresAt) {
-		delete(c.items, key)
+		c.mutex.Lock()
+		c.removeItem(key)
+		c.mutex.Unlock()
 		return nil, false
 	}
+
+	// Update access order
+	c.mutex.Lock()
+	c.updateAccessOrder(key)
+	c.mutex.Unlock()
+
 	return item.Value, true
 }
 
@@ -86,10 +124,46 @@ func (c *Cache) Delete(key string) {
 func (c *Cache) Cleanup() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
 	now := time.Now()
-	for key, item := range c.items {
-		if now.After(item.ExpiresAt) {
+	var newAccessList []string
+
+	for _, key := range c.accessList {
+		if item, exists := c.items[key]; exists && !now.After(item.ExpiresAt) {
+			newAccessList = append(newAccessList, key)
+		} else {
 			delete(c.items, key)
+		}
+	}
+
+	c.accessList = newAccessList
+}
+
+// evictOldest removes the least recently used item from the cache
+func (c *Cache) evictOldest() {
+	if len(c.accessList) > 0 {
+		oldest := c.accessList[0]
+		c.removeItem(oldest)
+	}
+}
+
+// removeItem removes an item from both the cache and access list
+func (c *Cache) removeItem(key string) {
+	delete(c.items, key)
+	for i, k := range c.accessList {
+		if k == key {
+			c.accessList = append(c.accessList[:i], c.accessList[i+1:]...)
+			break
+		}
+	}
+}
+
+// updateAccessOrder moves the accessed key to the end of the access list
+func (c *Cache) updateAccessOrder(key string) {
+	for i, k := range c.accessList {
+		if k == key {
+			c.accessList = append(append(c.accessList[:i], c.accessList[i+1:]...), key)
+			break
 		}
 	}
 }
