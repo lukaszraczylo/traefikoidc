@@ -187,8 +187,10 @@ func NewLogger(logLevel string) *Logger {
 	logDebug := log.New(io.Discard, "DEBUG: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
 
 	logError.SetOutput(os.Stderr)
-	logInfo.SetOutput(os.Stdout)
-
+	
+	if logLevel == "debug" || logLevel == "info" {
+		logInfo.SetOutput(os.Stdout)
+	}
 	if logLevel == "debug" {
 		logDebug.SetOutput(os.Stdout)
 	}
