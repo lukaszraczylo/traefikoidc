@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -82,14 +81,6 @@ var defaultExcludedURLs = map[string]struct{}{
 }
 
 var newTicker = time.NewTicker
-
-var (
-	globalMetadataCache struct {
-		sync.Once
-		metadata *ProviderMetadata
-		err      error
-	}
-)
 
 // VerifyToken verifies the provided JWT token
 func (t *TraefikOidc) VerifyToken(token string) error {
@@ -266,23 +257,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 // initializeMetadata discovers and initializes the provider metadata
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
-	globalMetadataCache.Once.Do(func() {
-		t.logger.Debug("Starting global provider metadata discovery")
-		metadata, err := discoverProviderMetadata(providerURL, t.httpClient, t.logger)
-		globalMetadataCache.metadata = metadata
-		globalMetadataCache.err = err
-	})
-
-	if globalMetadataCache.err != nil {
-		t.logger.Errorf("Failed to discover provider metadata: %v", globalMetadataCache.err)
-	} else if globalMetadataCache.metadata != nil {
-		t.logger.Debug("Using cached provider metadata")
-		t.jwksURL = globalMetadataCache.metadata.JWKSURL
-		t.authURL = globalMetadataCache.metadata.AuthURL
-		t.tokenURL = globalMetadataCache.metadata.TokenURL
-		t.issuerURL = globalMetadataCache.metadata.Issuer
-		t.revocationURL = globalMetadataCache.metadata.RevokeURL
-		t.endSessionURL = globalMetadataCache.metadata.EndSessionURL
+	t.logger.Debug("Starting provider metadata discovery")
+	metadata, err := discoverProviderMetadata(providerURL, t.httpClient, t.logger)
+	
+	if err != nil {
+		t.logger.Errorf("Failed to discover provider metadata: %v", err)
+	} else if metadata != nil {
+		t.logger.Debug("Using provider metadata")
+		t.jwksURL = metadata.JWKSURL
+		t.authURL = metadata.AuthURL
+		t.tokenURL = metadata.TokenURL
+		t.issuerURL = metadata.Issuer
+		t.revocationURL = metadata.RevokeURL
+		t.endSessionURL = metadata.EndSessionURL
 	}
 
 	close(t.initComplete)
