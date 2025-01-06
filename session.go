@@ -8,34 +8,54 @@ import (
 	"github.com/gorilla/sessions"
 )
 
+// Cookie names and configuration constants used for session management
 const (
-	mainCookieName     = "_raczylo_oidc"         // Main session cookie
-	accessTokenCookie  = "_raczylo_oidc_access"  // Access token cookie
-	refreshTokenCookie = "_raczylo_oidc_refresh" // Refresh token cookie
-	maxCookieSize      = 2000                    // Max size for each chunk to stay within 4096-byte cookie limit
+	// mainCookieName is the name of the main session cookie that stores authentication state
+	// and basic user information like email and CSRF tokens
+	mainCookieName = "_raczylo_oidc"
 
-	// REASON:
-	// Let x be the maximum size of the chunk (maxCookieSize).
-	// Encrypted size = x + 28 bytes
-	// Base64-encoded size = ((x + 28) * 4) / 3 bytes
-	// ((x + 28) * 4) / 3 <= 4096
-	// Multiply both sides by 3:
-	// 4 * (x + 28) <= 4096 * 3
-	// 4 * (x + 28) <= 12288
-	// Divide both sides by 4:
-	// x + 28 <= 3072
-	// Subtract 28 from both sides:
-	// x <= 3044
+	// accessTokenCookie is the name of the cookie that stores the OIDC access token
+	// This may be split into multiple cookies if the token is large
+	accessTokenCookie = "_raczylo_oidc_access"
+
+	// refreshTokenCookie is the name of the cookie that stores the OIDC refresh token
+	// This may be split into multiple cookies if the token is large
+	refreshTokenCookie = "_raczylo_oidc_refresh"
+
+	// maxCookieSize is the maximum size for each cookie chunk.
+	// This value is calculated to ensure the final cookie size stays within browser limits:
+	// 1. Browser cookie size limit is typically 4096 bytes
+	// 2. Cookie content undergoes encryption (adds 28 bytes) and base64 encoding (4/3 ratio)
+	// 3. Calculation:
+	//    - Let x be the chunk size
+	//    - After encryption: x + 28 bytes
+	//    - After base64: ((x + 28) * 4/3) bytes
+	//    - Must satisfy: ((x + 28) * 4/3) ≤ 4096
+	//    - Solving for x: x ≤ 3044
+	// 4. We use 2000 as a conservative limit to account for cookie metadata
+	maxCookieSize = 2000
 )
 
-// SessionManager handles multiple session cookies
+// SessionManager handles the management of multiple session cookies for OIDC authentication.
+// It provides functionality for storing and retrieving authentication state, tokens,
+// and other session-related data across multiple cookies to handle large tokens.
 type SessionManager struct {
-	store      sessions.Store
+	// store is the underlying session store for cookie management
+	store sessions.Store
+
+	// forceHTTPS enforces secure cookie attributes regardless of request scheme
 	forceHTTPS bool
-	logger     *Logger
+
+	// logger provides structured logging capabilities
+	logger *Logger
 }
 
-// NewSessionManager creates a new session manager
+// NewSessionManager creates a new session manager with the specified configuration.
+// Parameters:
+//   - encryptionKey: Key used to encrypt session data (must be at least 32 bytes)
+//   - forceHTTPS: When true, forces secure cookie attributes regardless of request scheme
+//   - logger: Logger instance for recording session-related events
+// The manager handles session creation, storage, and cookie security settings.
 func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) *SessionManager {
 	return &SessionManager{
 		store:      sessions.NewCookieStore([]byte(encryptionKey)),
@@ -44,7 +64,14 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) *S
 	}
 }
 
-// getSessionOptions returns session options based on scheme
+// getSessionOptions returns secure session options configured for the current request.
+// Parameters:
+//   - isSecure: Whether the current request is using HTTPS
+// The options ensure cookies are:
+//   - HTTP-only (not accessible via JavaScript)
+//   - Secure when using HTTPS or when forceHTTPS is enabled
+//   - Using SameSite=Lax for CSRF protection
+//   - Set with appropriate timeout and path settings
 func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 	return &sessions.Options{
 		HttpOnly: true,
@@ -55,7 +82,10 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 	}
 }
 
-// GetSession retrieves all session data
+// GetSession retrieves all session data for the current request.
+// It loads the main session and token sessions, including any chunked token data,
+// and combines them into a single SessionData structure for easy access.
+// Returns an error if any session component cannot be loaded.
 func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	mainSession, err := sm.store.Get(r, mainCookieName)
 	if err != nil {
@@ -88,7 +118,12 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	return sessionData, nil
 }
 
-// getTokenChunkSessions retrieves sessions for token chunks
+// getTokenChunkSessions retrieves all session chunks for a given token type.
+// Parameters:
+//   - r: The HTTP request
+//   - baseName: The base name for the token's session cookies
+// Returns a map of chunk index to session, used for handling large tokens
+// that exceed single cookie size limits.
 func (sm *SessionManager) getTokenChunkSessions(r *http.Request, baseName string) map[int]*sessions.Session {
 	chunks := make(map[int]*sessions.Session)
 	for i := 0; ; i++ {
@@ -103,18 +138,39 @@ func (sm *SessionManager) getTokenChunkSessions(r *http.Request, baseName string
 	return chunks
 }
 
-// SessionData holds all session information
+// SessionData holds all session information for an authenticated user.
+// It manages multiple session cookies to handle the main session state
+// and potentially large access and refresh tokens that may need to be
+// split across multiple cookies due to browser size limitations.
 type SessionData struct {
-	manager            *SessionManager
-	request            *http.Request
-	mainSession        *sessions.Session
-	accessSession      *sessions.Session
-	refreshSession     *sessions.Session
-	accessTokenChunks  map[int]*sessions.Session
+	// manager is the SessionManager that created this SessionData
+	manager *SessionManager
+
+	// request is the current HTTP request associated with this session
+	request *http.Request
+
+	// mainSession stores authentication state and basic user info
+	mainSession *sessions.Session
+
+	// accessSession stores the primary access token cookie
+	accessSession *sessions.Session
+
+	// refreshSession stores the primary refresh token cookie
+	refreshSession *sessions.Session
+
+	// accessTokenChunks stores additional chunks of the access token
+	// when it exceeds the maximum cookie size
+	accessTokenChunks map[int]*sessions.Session
+
+	// refreshTokenChunks stores additional chunks of the refresh token
+	// when it exceeds the maximum cookie size
 	refreshTokenChunks map[int]*sessions.Session
 }
 
-// Save saves all session data
+// Save persists all session data to cookies in the HTTP response.
+// It saves the main session, token sessions, and any token chunks,
+// applying appropriate security options to each cookie. All cookies
+// are saved with consistent security settings based on the request scheme.
 func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	isSecure := strings.HasPrefix(r.URL.Scheme, "https") || sd.manager.forceHTTPS
 
@@ -158,7 +214,9 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	return nil
 }
 
-// Clear clears all session data
+// Clear removes all session data by expiring all cookies and clearing their values.
+// This is typically used during logout to ensure all session data is properly cleaned up.
+// It handles both main session data and any token chunks that may exist.
 func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	// Clear and expire all sessions
 	sd.mainSession.Options.MaxAge = -1
@@ -182,7 +240,9 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	return sd.Save(r, w)
 }
 
-// clearTokenChunks clears chunked token sessions
+// clearTokenChunks removes all session chunks for a given token type.
+// It expires the cookies and removes all stored values to ensure
+// no token data remains after logout or token invalidation.
 func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*sessions.Session) {
 	for _, session := range chunks {
 		session.Options.MaxAge = -1
@@ -192,18 +252,24 @@ func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*session
 	}
 }
 
-// GetAuthenticated returns authentication status
+// GetAuthenticated returns whether the current session is authenticated.
+// Returns true if the user has successfully completed OIDC authentication,
+// false otherwise or if the authentication status cannot be determined.
 func (sd *SessionData) GetAuthenticated() bool {
 	auth, _ := sd.mainSession.Values["authenticated"].(bool)
 	return auth
 }
 
-// SetAuthenticated sets authentication status
+// SetAuthenticated updates the session's authentication status.
+// This should be called after successful OIDC authentication or during logout.
 func (sd *SessionData) SetAuthenticated(value bool) {
 	sd.mainSession.Values["authenticated"] = value
 }
 
-// GetAccessToken returns the access token
+// GetAccessToken retrieves the complete access token from the session.
+// If the token was split into chunks due to size limitations, it will
+// automatically reassemble the complete token from all chunks.
+// Returns an empty string if no token is found.
 func (sd *SessionData) GetAccessToken() string {
 	token, _ := sd.accessSession.Values["token"].(string)
 	if token != "" {
@@ -228,7 +294,11 @@ func (sd *SessionData) GetAccessToken() string {
 	return strings.Join(chunks, "")
 }
 
-// SetAccessToken sets the access token
+// SetAccessToken stores the access token in the session.
+// If the token exceeds maxCookieSize, it is automatically split into
+// multiple cookie chunks to handle large tokens while staying within
+// browser cookie size limits. Any existing token or chunks are cleared
+// before setting the new token.
 func (sd *SessionData) SetAccessToken(token string) {
 	// Clear existing chunks
 	sd.clearTokenChunks(sd.request, sd.accessTokenChunks)
@@ -249,7 +319,10 @@ func (sd *SessionData) SetAccessToken(token string) {
 	}
 }
 
-// GetRefreshToken returns the refresh token
+// GetRefreshToken retrieves the complete refresh token from the session.
+// If the token was split into chunks due to size limitations, it will
+// automatically reassemble the complete token from all chunks.
+// Returns an empty string if no token is found.
 func (sd *SessionData) GetRefreshToken() string {
 	token, _ := sd.refreshSession.Values["token"].(string)
 	if token != "" {
@@ -274,7 +347,11 @@ func (sd *SessionData) GetRefreshToken() string {
 	return strings.Join(chunks, "")
 }
 
-// SetRefreshToken sets the refresh token
+// SetRefreshToken stores the refresh token in the session.
+// If the token exceeds maxCookieSize, it is automatically split into
+// multiple cookie chunks to handle large tokens while staying within
+// browser cookie size limits. Any existing token or chunks are cleared
+// before setting the new token.
 func (sd *SessionData) SetRefreshToken(token string) {
 	// Clear existing chunks
 	sd.clearTokenChunks(sd.request, sd.refreshTokenChunks)
@@ -295,7 +372,12 @@ func (sd *SessionData) SetRefreshToken(token string) {
 	}
 }
 
-// splitIntoChunks splits a string into chunks of specified size
+// splitIntoChunks splits a string into chunks of specified size.
+// This is used internally to handle large tokens that exceed cookie size limits.
+// Parameters:
+//   - s: The string to split
+//   - chunkSize: Maximum size of each chunk
+// Returns an array of string chunks, each no larger than chunkSize.
 func splitIntoChunks(s string, chunkSize int) []string {
 	var chunks []string
 	for len(s) > 0 {
@@ -310,46 +392,65 @@ func splitIntoChunks(s string, chunkSize int) []string {
 	return chunks
 }
 
-// GetCSRF returns the CSRF token
+// GetCSRF retrieves the CSRF token from the session.
+// This token is used to prevent cross-site request forgery attacks
+// by ensuring requests originate from the authenticated user.
+// Returns an empty string if no CSRF token is found.
 func (sd *SessionData) GetCSRF() string {
 	csrf, _ := sd.mainSession.Values["csrf"].(string)
 	return csrf
 }
 
-// SetCSRF sets the CSRF token
+// SetCSRF stores a new CSRF token in the session.
+// This should be called when initiating authentication to generate
+// a new token for the authentication flow.
 func (sd *SessionData) SetCSRF(token string) {
 	sd.mainSession.Values["csrf"] = token
 }
 
-// GetNonce returns the nonce
+// GetNonce retrieves the nonce value from the session.
+// The nonce is used to prevent replay attacks in the OIDC flow
+// by ensuring the token received matches the authentication request.
+// Returns an empty string if no nonce is found.
 func (sd *SessionData) GetNonce() string {
 	nonce, _ := sd.mainSession.Values["nonce"].(string)
 	return nonce
 }
 
-// SetNonce sets the nonce
+// SetNonce stores a new nonce value in the session.
+// This should be called when initiating authentication to generate
+// a new nonce for the OIDC authentication flow.
 func (sd *SessionData) SetNonce(nonce string) {
 	sd.mainSession.Values["nonce"] = nonce
 }
 
-// GetEmail returns the user's email
+// GetEmail retrieves the authenticated user's email address from the session.
+// The email is typically extracted from the OIDC ID token claims.
+// Returns an empty string if no email is found.
 func (sd *SessionData) GetEmail() string {
 	email, _ := sd.mainSession.Values["email"].(string)
 	return email
 }
 
-// SetEmail sets the user's email
+// SetEmail stores the user's email address in the session.
+// This should be called after successful authentication when
+// processing the OIDC ID token claims.
 func (sd *SessionData) SetEmail(email string) {
 	sd.mainSession.Values["email"] = email
 }
 
-// GetIncomingPath returns the original incoming path
+// GetIncomingPath retrieves the original request path that triggered
+// the authentication flow. This is used to redirect the user back
+// to their intended destination after successful authentication.
+// Returns an empty string if no path was stored.
 func (sd *SessionData) GetIncomingPath() string {
 	path, _ := sd.mainSession.Values["incoming_path"].(string)
 	return path
 }
 
-// SetIncomingPath sets the original incoming path
+// SetIncomingPath stores the original request path that triggered
+// the authentication flow. This should be called before redirecting
+// to the OIDC provider to remember where to send the user afterward.
 func (sd *SessionData) SetIncomingPath(path string) {
 	sd.mainSession.Values["incoming_path"] = path
 }

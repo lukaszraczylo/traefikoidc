@@ -16,15 +16,31 @@ import (
 	"time"
 )
 
-// JWT represents a JSON Web Token
+// JWT represents a JSON Web Token as defined in RFC 7519.
+// It contains the three parts of a JWT: header, claims (payload),
+// and signature, along with the original token string.
 type JWT struct {
-	Header    map[string]interface{}
-	Claims    map[string]interface{}
+	// Header contains the token metadata (algorithm, key ID, etc.)
+	Header map[string]interface{}
+
+	// Claims contains the token claims (subject, expiration, etc.)
+	Claims map[string]interface{}
+
+	// Signature contains the raw signature bytes
 	Signature []byte
-	Token     string
+
+	// Token is the original JWT string
+	Token string
 }
 
-// parseJWT parses a JWT token string into a JWT struct
+// parseJWT parses a JWT token string into a JWT struct.
+// It validates the token format and decodes the three parts
+// (header, claims, signature) using base64url decoding.
+// Parameters:
+//   - tokenString: The raw JWT token string
+// Returns:
+//   - A parsed JWT struct
+//   - An error if the token format is invalid or parsing fails
 func parseJWT(tokenString string) (*JWT, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
@@ -63,7 +79,14 @@ func parseJWT(tokenString string) (*JWT, error) {
 	return jwt, nil
 }
 
-// Verify verifies the standard claims in the JWT
+// Verify validates the standard JWT claims as defined in RFC 7519.
+// It checks:
+//   - issuer (iss) matches the expected issuer URL
+//   - audience (aud) includes the client ID
+//   - expiration time (exp) is in the future
+//   - issued at time (iat) is in the past
+//   - subject (sub) is present and not empty
+// Returns an error if any validation fails.
 func (j *JWT) Verify(issuerURL, clientID string) error {
 	claims := j.Claims
 
@@ -107,7 +130,13 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 	return nil
 }
 
-// verifyAudience verifies the audience claim
+// verifyAudience validates the token's audience claim.
+// The audience can be either a single string or an array of strings.
+// For array audiences, the expected audience must match any one value.
+// Parameters:
+//   - tokenAudience: The audience claim from the token
+//   - expectedAudience: The expected audience value
+// Returns an error if validation fails.
 func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 	switch aud := tokenAudience.(type) {
 	case string:
@@ -131,7 +160,12 @@ func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 	return nil
 }
 
-// verifyIssuer verifies the issuer claim
+// verifyIssuer validates the token's issuer claim.
+// The issuer URL must exactly match the expected issuer.
+// Parameters:
+//   - tokenIssuer: The issuer claim from the token
+//   - expectedIssuer: The expected issuer URL
+// Returns an error if validation fails.
 func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 	if tokenIssuer != expectedIssuer {
 		return fmt.Errorf("invalid issuer")
@@ -139,7 +173,11 @@ func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 	return nil
 }
 
-// verifyExpiration checks if the token has expired
+// verifyExpiration checks if the token's expiration time has passed.
+// The expiration time is compared against the current time.
+// Parameters:
+//   - expiration: The expiration timestamp from the token
+// Returns an error if the token has expired.
 func verifyExpiration(expiration float64) error {
 	expirationTime := time.Unix(int64(expiration), 0)
 	if time.Now().After(expirationTime) {
@@ -148,7 +186,12 @@ func verifyExpiration(expiration float64) error {
 	return nil
 }
 
-// verifyIssuedAt checks if the token was issued in the future
+// verifyIssuedAt validates the token's issued-at time.
+// Ensures the token wasn't issued in the future, which could
+// indicate clock skew or a malicious token.
+// Parameters:
+//   - issuedAt: The issued-at timestamp from the token
+// Returns an error if the token was issued in the future.
 func verifyIssuedAt(issuedAt float64) error {
 	issuedAtTime := time.Unix(int64(issuedAt), 0)
 	if time.Now().Before(issuedAtTime) {
@@ -157,7 +200,16 @@ func verifyIssuedAt(issuedAt float64) error {
 	return nil
 }
 
-// verifySignature verifies the token signature using the provided public key and algorithm
+// verifySignature validates the token's cryptographic signature.
+// Supports multiple signature algorithms:
+//   - RSA: RS256, RS384, RS512 (PKCS#1 v1.5)
+//   - RSA-PSS: PS256, PS384, PS512
+//   - ECDSA: ES256, ES384, ES512
+// Parameters:
+//   - tokenString: The complete JWT token string
+//   - publicKeyPEM: The PEM-encoded public key for verification
+//   - alg: The signature algorithm identifier
+// Returns an error if signature verification fails.
 func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error {
 	// Split the token into its three parts
 	parts := strings.Split(tokenString, ".")
