@@ -258,21 +258,42 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 // initializeMetadata discovers and initializes the provider metadata
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.logger.Debug("Starting provider metadata discovery")
-	metadata, err := discoverProviderMetadata(providerURL, t.httpClient, t.logger)
 	
-	if err != nil {
-		t.logger.Errorf("Failed to discover provider metadata: %v", err)
-	} else if metadata != nil {
-		t.logger.Debug("Using provider metadata")
-		t.jwksURL = metadata.JWKSURL
-		t.authURL = metadata.AuthURL
-		t.tokenURL = metadata.TokenURL
-		t.issuerURL = metadata.Issuer
-		t.revocationURL = metadata.RevokeURL
-		t.endSessionURL = metadata.EndSessionURL
+	// Keep retrying until successful
+	backoff := time.Second
+	maxBackoff := 30 * time.Second
+	for {
+		metadata, err := discoverProviderMetadata(providerURL, t.httpClient, t.logger)
+		
+		if err != nil {
+			t.logger.Errorf("Failed to discover provider metadata: %v, retrying in %v", err, backoff)
+			time.Sleep(backoff)
+			
+			// Exponential backoff with max
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			continue
+		}
+		
+		if metadata != nil {
+			t.logger.Debug("Successfully initialized provider metadata")
+			t.jwksURL = metadata.JWKSURL
+			t.authURL = metadata.AuthURL
+			t.tokenURL = metadata.TokenURL
+			t.issuerURL = metadata.Issuer
+			t.revocationURL = metadata.RevokeURL
+			t.endSessionURL = metadata.EndSessionURL
+			
+			// Only close channel on success
+			close(t.initComplete)
+			return
+		}
+		
+		t.logger.Error("Received nil metadata, retrying")
+		time.Sleep(backoff)
 	}
-
-	close(t.initComplete)
 }
 
 // discoverProviderMetadata fetches the OIDC provider metadata
@@ -342,13 +363,17 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	select {
 	case <-t.initComplete:
 		if t.issuerURL == "" {
-			t.logger.Debug("OIDC middleware not yet initialized")
-			http.Error(rw, "OIDC middleware not yet initialized", http.StatusInternalServerError)
+			t.logger.Error("OIDC provider metadata initialization failed")
+			http.Error(rw, "OIDC provider metadata initialization failed - please check provider availability", http.StatusServiceUnavailable)
 			return
 		}
 	case <-req.Context().Done():
 		t.logger.Debug("Request cancelled")
 		http.Error(rw, "Request cancelled", http.StatusServiceUnavailable)
+		return
+	case <-time.After(30 * time.Second):
+		t.logger.Error("Timeout waiting for OIDC initialization")
+		http.Error(rw, "Timeout waiting for OIDC provider initialization - please try again", http.StatusServiceUnavailable)
 		return
 	}
 
