@@ -113,16 +113,30 @@ func TestSessionManager(t *testing.T) {
 func calculateExpectedCookieCount(accessToken, refreshToken string) int {
 	count := 3 // main, access, refresh
 
-	// Calculate number of chunks for access token
-	accessChunks := len(splitIntoChunks(accessToken, maxCookieSize))
-	if accessChunks > 1 {
-			count += accessChunks
+	// Helper to calculate chunks for compressed token
+	calculateChunks := func(token string) int {
+		// Compress token (matching the actual implementation)
+		compressed := compressToken(token)
+		
+		// If compressed token fits in one cookie, no additional chunks needed
+		if len(compressed) <= maxCookieSize {
+			return 0
+		}
+		
+		// Calculate chunks needed for compressed token
+		return len(splitIntoChunks(compressed, maxCookieSize))
 	}
 
-	// Calculate number of chunks for refresh token
-	refreshChunks := len(splitIntoChunks(refreshToken, maxCookieSize))
-	if refreshChunks > 1 {
-			count += refreshChunks
+	// Add chunks for access token if needed
+	accessChunks := calculateChunks(accessToken)
+	if accessChunks > 0 {
+		count += accessChunks
+	}
+
+	// Add chunks for refresh token if needed
+	refreshChunks := calculateChunks(refreshToken)
+	if refreshChunks > 0 {
+		count += refreshChunks
 	}
 
 	return count
