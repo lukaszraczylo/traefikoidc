@@ -67,21 +67,24 @@ func (ts *TestSuite) Setup() {
 	}
 
 	// Create a test JWT token signed with the RSA private key
+	now := time.Now()
 	ts.token, err = createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
-		"exp":   time.Now().Add(1 * time.Hour).Unix(),
-		"iat":   time.Now().Unix(),
+		"exp":   now.Add(1 * time.Hour).Unix(),
+		"iat":   now.Add(-5 * time.Minute).Unix(), // Set issued time in the past to handle clock skew
+		"nbf":   now.Add(-5 * time.Minute).Unix(), // Set not before time in the past
 		"sub":   "test-subject",
 		"email": "user@example.com",
 		"nonce": "test-nonce",
+		"jti":   generateRandomString(16), // Add JWT ID for replay protection
 	})
 	if err != nil {
 		ts.t.Fatalf("Failed to create test JWT: %v", err)
 	}
 
 	logger := NewLogger("info")
-	ts.sessionManager = NewSessionManager("test-secret-key", false, logger)
+	ts.sessionManager = NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
 
 	// Common TraefikOidc instance
 	ts.tOidc = &TraefikOidc{
@@ -611,7 +614,7 @@ func TestHandleCallback(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := NewLogger("info")
-			sessionManager := NewSessionManager("test-secret-key", false, logger)
+			sessionManager := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
 
 			// Create a new instance for each test to avoid state carryover
 			tOidc := &TraefikOidc{
@@ -916,7 +919,7 @@ func TestHandleLogout(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := NewLogger("info")
-			sessionManager := NewSessionManager("test-secret-key", false, logger)
+			sessionManager := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
 			tOidc := &TraefikOidc{
 				revocationURL:  mockRevocationServer.URL,
 				endSessionURL:  tc.endSessionURL,
@@ -1205,7 +1208,7 @@ func TestHandleExpiredToken(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := NewLogger("info")
-			sessionManager := NewSessionManager("test-secret-key", false, logger)
+			sessionManager := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
 
 			tOidc := &TraefikOidc{
 				sessionManager: sessionManager,
@@ -1457,10 +1460,12 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
 				"exp":    time.Now().Add(1 * time.Hour).Unix(),
-				"iat":    time.Now().Unix(),
+				"iat":    time.Now().Add(-5 * time.Minute).Unix(),
+				"nbf":    time.Now().Add(-5 * time.Minute).Unix(),
 				"sub":    "test-subject",
 				"roles":  []interface{}{"admin", "user"},
 				"groups": []interface{}{"group1"},
+				"jti":    generateRandomString(16),
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
@@ -1481,10 +1486,12 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
 				"exp":    time.Now().Add(1 * time.Hour).Unix(),
-				"iat":    time.Now().Unix(),
+				"iat":    time.Now().Add(-5 * time.Minute).Unix(),
+				"nbf":    time.Now().Add(-5 * time.Minute).Unix(),
 				"sub":    "test-subject",
 				"roles":  []interface{}{"user"},
 				"groups": []interface{}{"allowed-group"},
+				"jti":    generateRandomString(16),
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
@@ -1506,10 +1513,12 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
 				"exp":    time.Now().Add(1 * time.Hour).Unix(),
-				"iat":    time.Now().Unix(),
+				"iat":    time.Now().Add(-5 * time.Minute).Unix(),
+				"nbf":    time.Now().Add(-5 * time.Minute).Unix(),
 				"sub":    "test-subject",
 				"roles":  []interface{}{"user"},
 				"groups": []interface{}{"regular-group"},
+				"jti":    generateRandomString(16),
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
@@ -1524,10 +1533,12 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
 				"exp":    time.Now().Add(1 * time.Hour).Unix(),
-				"iat":    time.Now().Unix(),
+				"iat":    time.Now().Add(-5 * time.Minute).Unix(),
+				"nbf":    time.Now().Add(-5 * time.Minute).Unix(),
 				"sub":    "test-subject",
 				"roles":  []interface{}{"user"},
 				"groups": []interface{}{"regular-group"},
+				"jti":    generateRandomString(16),
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
@@ -1546,8 +1557,10 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 				"iss": "https://test-issuer.com",
 				"aud": "test-client-id",
 				"exp": time.Now().Add(1 * time.Hour).Unix(),
-				"iat": time.Now().Unix(),
+				"iat": time.Now().Add(-5 * time.Minute).Unix(),
+				"nbf": time.Now().Add(-5 * time.Minute).Unix(),
 				"sub": "test-subject",
+				"jti": generateRandomString(16),
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)

@@ -83,11 +83,28 @@ func parseJWT(tokenString string) (*JWT, error) {
 // It checks:
 //   - issuer (iss) matches the expected issuer URL
 //   - audience (aud) includes the client ID
-//   - expiration time (exp) is in the future
-//   - issued at time (iat) is in the past
+//   - expiration time (exp) is in the future (with clock skew tolerance)
+//   - issued at time (iat) is in the past (with clock skew tolerance)
+//   - not before time (nbf) is in the past (with clock skew tolerance)
 //   - subject (sub) is present and not empty
+//   - algorithm matches expected value to prevent algorithm switching attacks
 // Returns an error if any validation fails.
 func (j *JWT) Verify(issuerURL, clientID string) error {
+	// Validate algorithm to prevent algorithm switching attacks
+	alg, ok := j.Header["alg"].(string)
+	if !ok {
+		return fmt.Errorf("missing 'alg' header")
+	}
+	// List of supported algorithms - should match those in verifySignature
+	supportedAlgs := map[string]bool{
+		"RS256": true, "RS384": true, "RS512": true,
+		"PS256": true, "PS384": true, "PS512": true,
+		"ES256": true, "ES384": true, "ES512": true,
+	}
+	if !supportedAlgs[alg] {
+		return fmt.Errorf("unsupported algorithm")
+	}
+
 	claims := j.Claims
 
 	iss, ok := claims["iss"].(string)
@@ -120,6 +137,18 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 	}
 	if err := verifyIssuedAt(iat); err != nil {
 		return err
+	}
+
+	// Validate nbf (not before) claim if present
+	if nbf, ok := claims["nbf"].(float64); ok {
+		if err := verifyNotBefore(nbf); err != nil {
+			return err
+		}
+	}
+
+	// Validate jti (JWT ID) claim if present to prevent replay attacks
+	if _, ok := claims["jti"].(string); !ok {
+		return fmt.Errorf("missing 'jti' claim")
 	}
 
 	sub, ok := claims["sub"].(string)
@@ -173,29 +202,44 @@ func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 	return nil
 }
 
+// Clock skew tolerance for time-based validations
+const clockSkewTolerance = 2 * time.Minute
+
 // verifyExpiration checks if the token's expiration time has passed.
-// The expiration time is compared against the current time.
+// The expiration time is compared against the current time with clock skew tolerance.
 // Parameters:
 //   - expiration: The expiration timestamp from the token
 // Returns an error if the token has expired.
 func verifyExpiration(expiration float64) error {
 	expirationTime := time.Unix(int64(expiration), 0)
-	if time.Now().After(expirationTime) {
+	if time.Now().Add(clockSkewTolerance).After(expirationTime) {
 		return fmt.Errorf("token has expired")
 	}
 	return nil
 }
 
 // verifyIssuedAt validates the token's issued-at time.
-// Ensures the token wasn't issued in the future, which could
-// indicate clock skew or a malicious token.
+// Ensures the token wasn't issued in the future, accounting for clock skew.
 // Parameters:
 //   - issuedAt: The issued-at timestamp from the token
 // Returns an error if the token was issued in the future.
 func verifyIssuedAt(issuedAt float64) error {
 	issuedAtTime := time.Unix(int64(issuedAt), 0)
-	if time.Now().Before(issuedAtTime) {
+	if time.Now().Add(-clockSkewTolerance).Before(issuedAtTime) {
 		return fmt.Errorf("token used before issued")
+	}
+	return nil
+}
+
+// verifyNotBefore validates the token's not-before time if present.
+// Ensures the token is not used before its valid time period, accounting for clock skew.
+// Parameters:
+//   - notBefore: The not-before timestamp from the token
+// Returns an error if the token is not yet valid.
+func verifyNotBefore(notBefore float64) error {
+	notBeforeTime := time.Unix(int64(notBefore), 0)
+	if time.Now().Add(-clockSkewTolerance).Before(notBeforeTime) {
+		return fmt.Errorf("token not yet valid")
 	}
 	return nil
 }

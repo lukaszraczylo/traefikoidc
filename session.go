@@ -3,30 +3,37 @@ package traefikoidc
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/sessions"
 )
 
+// generateSecureRandomString creates a cryptographically secure random string of specified length
+func generateSecureRandomString(length int) string {
+	bytes := make([]byte, length)
+	if _, err := rand.Read(bytes); err != nil {
+		panic("failed to generate random string")
+	}
+	return hex.EncodeToString(bytes)
+}
+
 // Cookie names and configuration constants used for session management
+var (
+	// Using random prefixes to make cookie names less predictable
+	mainCookieName    = "_oidc_m_" + generateSecureRandomString(8)
+	accessTokenCookie = "_oidc_a_" + generateSecureRandomString(8)
+	refreshTokenCookie = "_oidc_r_" + generateSecureRandomString(8)
+)
+
 const (
-	// mainCookieName is the name of the main session cookie that stores authentication state
-	// and basic user information like email and CSRF tokens
-	mainCookieName = "_raczylo_oidc"
-
-	// accessTokenCookie is the name of the cookie that stores the OIDC access token
-	// This may be split into multiple cookies if the token is large
-	accessTokenCookie = "_raczylo_oidc_access"
-
-	// refreshTokenCookie is the name of the cookie that stores the OIDC refresh token
-	// This may be split into multiple cookies if the token is large
-	refreshTokenCookie = "_raczylo_oidc_refresh"
-
 	// maxCookieSize is the maximum size for each cookie chunk.
 	// This value is calculated to ensure the final cookie size stays within browser limits:
 	// 1. Browser cookie size limit is typically 4096 bytes
@@ -39,6 +46,13 @@ const (
 	//    - Solving for x: x ≤ 3044
 	// 4. We use 2000 as a conservative limit to account for cookie metadata
 	maxCookieSize = 2000
+
+	// absoluteSessionTimeout defines the maximum lifetime of a session
+	// regardless of activity (24 hours)
+	absoluteSessionTimeout = 24 * time.Hour
+
+	// minEncryptionKeyLength defines the minimum length for the encryption key
+	minEncryptionKeyLength = 32
 )
 
 // compressToken compresses a token using gzip and base64 encodes it
@@ -99,6 +113,11 @@ type SessionManager struct {
 //   - logger: Logger instance for recording session-related events
 // The manager handles session creation, storage, and cookie security settings.
 func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) *SessionManager {
+	// Validate encryption key length
+	if len(encryptionKey) < minEncryptionKeyLength {
+		panic(fmt.Sprintf("encryption key must be at least %d bytes long", minEncryptionKeyLength))
+	}
+
 	sm := &SessionManager{
 		store:      sessions.NewCookieStore([]byte(encryptionKey)),
 		forceHTTPS: forceHTTPS,
@@ -130,7 +149,7 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 		HttpOnly: true,
 		Secure:   isSecure || sm.forceHTTPS,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   ConstSessionTimeout,
+		MaxAge:   int(absoluteSessionTimeout.Seconds()),
 		Path:     "/",
 	}
 }
@@ -149,6 +168,15 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	if err != nil {
 		sm.sessionPool.Put(sessionData)
 		return nil, fmt.Errorf("failed to get main session: %w", err)
+	}
+
+	// Check for absolute session timeout
+	if createdAt, ok := sessionData.mainSession.Values["created_at"].(int64); ok {
+		if time.Since(time.Unix(createdAt, 0)) > absoluteSessionTimeout {
+			sessionData.Clear(r, nil) // Clear expired session
+			sm.sessionPool.Put(sessionData)
+			return nil, fmt.Errorf("session expired")
+		}
 	}
 
 	sessionData.accessSession, err = sm.store.Get(r, accessTokenCookie)
@@ -294,7 +322,10 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	sd.clearTokenChunks(r, sd.accessTokenChunks)
 	sd.clearTokenChunks(r, sd.refreshTokenChunks)
 
-	err := sd.Save(r, w)
+	var err error
+	if w != nil {
+		err = sd.Save(r, w)
+	}
 	
 	// Return session to pool
 	sd.manager.sessionPool.Put(sd)
@@ -315,16 +346,31 @@ func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*session
 }
 
 // GetAuthenticated returns whether the current session is authenticated.
-// Returns true if the user has successfully completed OIDC authentication,
-// false otherwise or if the authentication status cannot be determined.
+// Returns true if the user has successfully completed OIDC authentication
+// and the session hasn't expired, false otherwise.
 func (sd *SessionData) GetAuthenticated() bool {
 	auth, _ := sd.mainSession.Values["authenticated"].(bool)
-	return auth
+	if !auth {
+		return false
+	}
+
+	// Check session expiration
+	createdAt, ok := sd.mainSession.Values["created_at"].(int64)
+	if !ok {
+		return false
+	}
+	return time.Since(time.Unix(createdAt, 0)) <= absoluteSessionTimeout
 }
 
-// SetAuthenticated updates the session's authentication status.
+// SetAuthenticated updates the session's authentication status and rotates session ID.
 // This should be called after successful OIDC authentication or during logout.
+// Session ID rotation helps prevent session fixation attacks.
 func (sd *SessionData) SetAuthenticated(value bool) {
+	if value {
+		// Generate new session ID and set creation time
+		sd.mainSession.ID = generateSecureRandomString(32)
+		sd.mainSession.Values["created_at"] = time.Now().Unix()
+	}
 	sd.mainSession.Values["authenticated"] = value
 }
 
