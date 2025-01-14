@@ -67,17 +67,22 @@ func (ts *TestSuite) Setup() {
 	}
 
 	// Create a test JWT token signed with the RSA private key
+	// Create timestamps with proper clock skew
 	now := time.Now()
+	exp := now.Add(1 * time.Hour).Unix()
+	iat := now.Add(-2 * time.Minute).Unix() // Account for clock skew
+	nbf := now.Add(-2 * time.Minute).Unix() // Account for clock skew
+
 	ts.token, err = createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
-		"exp":   now.Add(1 * time.Hour).Unix(),
-		"iat":   now.Add(-5 * time.Minute).Unix(), // Set issued time in the past to handle clock skew
-		"nbf":   now.Add(-5 * time.Minute).Unix(), // Set not before time in the past
+		"exp":   exp,
+		"iat":   iat,
+		"nbf":   nbf,
 		"sub":   "test-subject",
 		"email": "user@example.com",
 		"nonce": "test-nonce",
-		"jti":   generateRandomString(16), // Add JWT ID for replay protection
+		"jti":   generateRandomString(16),
 	})
 	if err != nil {
 		ts.t.Fatalf("Failed to create test JWT: %v", err)
@@ -1443,6 +1448,12 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 	ts := &TestSuite{t: t}
 	ts.Setup()
 
+	// Create consistent timestamps for all test cases
+	now := time.Now()
+	exp := now.Add(1 * time.Hour).Unix()
+	iat := now.Add(-2 * time.Minute).Unix() // Account for clock skew
+	nbf := now.Add(-2 * time.Minute).Unix() // Account for clock skew
+
 	tests := []struct {
 		name                  string
 		allowedRolesAndGroups map[string]struct{}
@@ -1459,9 +1470,9 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			claims: map[string]interface{}{
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
-				"exp":    time.Now().Add(1 * time.Hour).Unix(),
-				"iat":    time.Now().Add(-5 * time.Minute).Unix(),
-				"nbf":    time.Now().Add(-5 * time.Minute).Unix(),
+				"exp":    exp,
+				"iat":    iat,
+				"nbf":    nbf,
 				"sub":    "test-subject",
 				"roles":  []interface{}{"admin", "user"},
 				"groups": []interface{}{"group1"},
@@ -1485,9 +1496,9 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			claims: map[string]interface{}{
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
-				"exp":    time.Now().Add(1 * time.Hour).Unix(),
-				"iat":    time.Now().Add(-5 * time.Minute).Unix(),
-				"nbf":    time.Now().Add(-5 * time.Minute).Unix(),
+				"exp":    exp,
+				"iat":    iat,
+				"nbf":    nbf,
 				"sub":    "test-subject",
 				"roles":  []interface{}{"user"},
 				"groups": []interface{}{"allowed-group"},
@@ -1512,9 +1523,9 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			claims: map[string]interface{}{
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
-				"exp":    time.Now().Add(1 * time.Hour).Unix(),
-				"iat":    time.Now().Add(-5 * time.Minute).Unix(),
-				"nbf":    time.Now().Add(-5 * time.Minute).Unix(),
+				"exp":    exp,
+				"iat":    iat,
+				"nbf":    nbf,
 				"sub":    "test-subject",
 				"roles":  []interface{}{"user"},
 				"groups": []interface{}{"regular-group"},
@@ -1532,9 +1543,9 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			claims: map[string]interface{}{
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
-				"exp":    time.Now().Add(1 * time.Hour).Unix(),
-				"iat":    time.Now().Add(-5 * time.Minute).Unix(),
-				"nbf":    time.Now().Add(-5 * time.Minute).Unix(),
+				"exp":    exp,
+				"iat":    iat,
+				"nbf":    nbf,
 				"sub":    "test-subject",
 				"roles":  []interface{}{"user"},
 				"groups": []interface{}{"regular-group"},
@@ -1556,9 +1567,9 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			claims: map[string]interface{}{
 				"iss": "https://test-issuer.com",
 				"aud": "test-client-id",
-				"exp": time.Now().Add(1 * time.Hour).Unix(),
-				"iat": time.Now().Add(-5 * time.Minute).Unix(),
-				"nbf": time.Now().Add(-5 * time.Minute).Unix(),
+				"exp": exp,
+				"iat": iat,
+				"nbf": nbf,
 				"sub": "test-subject",
 				"jti": generateRandomString(16),
 			},
