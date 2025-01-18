@@ -175,6 +175,19 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 
 // New creates a new instance of the OIDC middleware
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+	if config == nil {
+		config = CreateConfig()
+	}
+
+	// Generate default session encryption key if not provided
+	if config.SessionEncryptionKey == "" {
+		key, err := generateNonce()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate session encryption key: %w", err)
+		}
+		config.SessionEncryptionKey = key
+	}
+
 	// Setup HTTP client
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
