@@ -23,13 +23,18 @@ func TestCreateConfig(t *testing.T) {
 		}
 
 		// Check default log level
-		if config.LogLevel != "info" {
-			t.Errorf("Expected default log level 'info', got '%s'", config.LogLevel)
+		if config.LogLevel != DefaultLogLevel {
+			t.Errorf("Expected default log level '%s', got '%s'", DefaultLogLevel, config.LogLevel)
 		}
 
 		// Check default rate limit
-		if config.RateLimit != 100 {
-			t.Errorf("Expected default rate limit 100, got %d", config.RateLimit)
+		if config.RateLimit != DefaultRateLimit {
+			t.Errorf("Expected default rate limit %d, got %d", DefaultRateLimit, config.RateLimit)
+		}
+
+		// Check ForceHTTPS default
+		if !config.ForceHTTPS {
+			t.Error("Expected ForceHTTPS to be true by default")
 		}
 	})
 
@@ -38,6 +43,7 @@ func TestCreateConfig(t *testing.T) {
 		config.Scopes = []string{"custom_scope"}
 		config.LogLevel = "debug"
 		config.RateLimit = 50
+		config.ForceHTTPS = false
 
 		// Verify custom values are not overwritten
 		if len(config.Scopes) != 1 || config.Scopes[0] != "custom_scope" {
@@ -48,6 +54,9 @@ func TestCreateConfig(t *testing.T) {
 		}
 		if config.RateLimit != 50 {
 			t.Error("Custom rate limit was overwritten")
+		}
+		if config.ForceHTTPS {
+			t.Error("Custom ForceHTTPS value was overwritten")
 		}
 	})
 }
@@ -98,15 +107,15 @@ func TestConfigValidate(t *testing.T) {
 			expectedError: "sessionEncryptionKey is required",
 		},
 		{
-			name: "Invalid ProviderURL",
+			name: "Non-HTTPS ProviderURL",
 			config: &Config{
-				ProviderURL:          "not-a-url",
+				ProviderURL:          "http://provider.com",
 				CallbackURL:          "/callback",
 				ClientID:             "client-id",
 				ClientSecret:         "client-secret",
 				SessionEncryptionKey: "encryption-key",
 			},
-			expectedError: "providerURL must be a valid URL",
+			expectedError: "providerURL must be a valid HTTPS URL",
 		},
 		{
 			name: "Invalid CallbackURL",
@@ -131,16 +140,16 @@ func TestConfigValidate(t *testing.T) {
 			expectedError: "sessionEncryptionKey must be at least 32 characters long",
 		},
 		{
-			name: "Negative RateLimit",
+			name: "Low RateLimit",
 			config: &Config{
 				ProviderURL:          "https://provider.com",
 				CallbackURL:          "/callback",
 				ClientID:             "client-id",
 				ClientSecret:         "client-secret",
 				SessionEncryptionKey: "this-is-a-long-enough-encryption-key",
-				RateLimit:            -1,
+				RateLimit:            5,
 			},
-			expectedError: "rateLimit must be non-negative",
+			expectedError: "rateLimit must be at least 10",
 		},
 		{
 			name: "Invalid LogLevel",
@@ -155,6 +164,30 @@ func TestConfigValidate(t *testing.T) {
 			expectedError: "logLevel must be one of: debug, info, error",
 		},
 		{
+			name: "Non-HTTPS RevocationURL",
+			config: &Config{
+				ProviderURL:          "https://provider.com",
+				CallbackURL:          "/callback",
+				ClientID:             "client-id",
+				ClientSecret:         "client-secret",
+				SessionEncryptionKey: "this-is-a-long-enough-encryption-key",
+				RevocationURL:        "http://revoke.com",
+			},
+			expectedError: "revocationURL must be a valid HTTPS URL",
+		},
+		{
+			name: "Non-HTTPS OIDCEndSessionURL",
+			config: &Config{
+				ProviderURL:          "https://provider.com",
+				CallbackURL:          "/callback",
+				ClientID:             "client-id",
+				ClientSecret:         "client-secret",
+				SessionEncryptionKey: "this-is-a-long-enough-encryption-key",
+				OIDCEndSessionURL:    "http://endsession.com",
+			},
+			expectedError: "oidcEndSessionURL must be a valid HTTPS URL",
+		},
+		{
 			name: "Valid Config",
 			config: &Config{
 				ProviderURL:          "https://provider.com",
@@ -164,6 +197,8 @@ func TestConfigValidate(t *testing.T) {
 				SessionEncryptionKey: "this-is-a-long-enough-encryption-key",
 				LogLevel:             "debug",
 				RateLimit:            100,
+				RevocationURL:        "https://revoke.com",
+				OIDCEndSessionURL:    "https://endsession.com",
 			},
 			expectedError: "",
 		},
@@ -192,9 +227,9 @@ func TestLogger(t *testing.T) {
 	var debugBuf, infoBuf, errorBuf bytes.Buffer
 
 	tests := []struct {
-		name     string
-		logLevel string
-		testFunc func(*Logger)
+		name      string
+		logLevel  string
+		testFunc  func(*Logger)
 		checkFunc func(t *testing.T, debugOut, infoOut, errorOut string)
 	}{
 		{
@@ -289,7 +324,7 @@ func TestLogger(t *testing.T) {
 			// Create logger with test buffers
 			logger := NewLogger(tc.logLevel)
 			logger.logError.SetOutput(&errorBuf)
-			
+
 			if tc.logLevel == "debug" || tc.logLevel == "info" {
 				logger.logInfo.SetOutput(&infoBuf)
 			}

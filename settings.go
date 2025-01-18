@@ -10,10 +10,6 @@ import (
 	"strings"
 )
 
-const (
-	cookieName = "_raczylo_oidc"
-)
-
 // Config holds the configuration for the OIDC middleware.
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
@@ -85,30 +81,34 @@ type Config struct {
 	HTTPClient *http.Client
 }
 
-// CreateConfig creates a new Config with sensible default values.
+const (
+	// DefaultRateLimit defines the default rate limit for requests per second
+	DefaultRateLimit = 100
+
+	// MinRateLimit defines the minimum allowed rate limit to prevent DOS
+	MinRateLimit = 10
+
+	// DefaultLogLevel defines the default logging level
+	DefaultLogLevel = "info"
+
+	// MinSessionEncryptionKeyLength defines the minimum length for session encryption key
+	MinSessionEncryptionKeyLength = 32
+)
+
+// CreateConfig creates a new Config with secure default values.
 // Default values are set for optional fields:
 //   - Scopes: ["openid", "profile", "email"]
 //   - LogLevel: "info"
 //   - LogoutURL: CallbackURL + "/logout"
 //   - RateLimit: 100 requests per second
 //   - PostLogoutRedirectURI: "/"
+//   - ForceHTTPS: true (for security)
 func CreateConfig() *Config {
-	c := &Config{}
-
-	if c.Scopes == nil {
-		c.Scopes = []string{"openid", "profile", "email"}
-	}
-
-	if c.LogLevel == "" {
-		c.LogLevel = "info"
-	}
-
-	if c.LogoutURL == "" {
-		c.LogoutURL = c.CallbackURL + "/logout"
-	}
-
-	if c.RateLimit == 0 {
-		c.RateLimit = 100
+	c := &Config{
+		Scopes:     []string{"openid", "profile", "email"},
+		LogLevel:   DefaultLogLevel,
+		RateLimit:  DefaultRateLimit,
+		ForceHTTPS: true, // Secure by default
 	}
 
 	return c
@@ -118,43 +118,85 @@ func CreateConfig() *Config {
 // It ensures all required fields are set and have valid values.
 // Returns an error if any validation check fails.
 func (c *Config) Validate() error {
+	// Validate provider URL
 	if c.ProviderURL == "" {
 		return fmt.Errorf("providerURL is required")
 	}
-	if !isValidURL(c.ProviderURL) {
-		return fmt.Errorf("providerURL must be a valid URL")
+	if !isValidSecureURL(c.ProviderURL) {
+		return fmt.Errorf("providerURL must be a valid HTTPS URL")
 	}
+
+	// Validate callback URL
 	if c.CallbackURL == "" {
 		return fmt.Errorf("callbackURL is required")
 	}
 	if !strings.HasPrefix(c.CallbackURL, "/") {
 		return fmt.Errorf("callbackURL must start with /")
 	}
+
+	// Validate client credentials
 	if c.ClientID == "" {
 		return fmt.Errorf("clientID is required")
 	}
 	if c.ClientSecret == "" {
 		return fmt.Errorf("clientSecret is required")
 	}
+
+	// Validate session encryption key
 	if c.SessionEncryptionKey == "" {
 		return fmt.Errorf("sessionEncryptionKey is required")
 	}
-	if len(c.SessionEncryptionKey) < 32 {
-		return fmt.Errorf("sessionEncryptionKey must be at least 32 characters long")
+	if len(c.SessionEncryptionKey) < MinSessionEncryptionKeyLength {
+		return fmt.Errorf("sessionEncryptionKey must be at least %d characters long", MinSessionEncryptionKeyLength)
 	}
-	if c.RateLimit < 0 {
-		return fmt.Errorf("rateLimit must be non-negative")
-	}
+
+	// Validate log level
 	if c.LogLevel != "" && !isValidLogLevel(c.LogLevel) {
 		return fmt.Errorf("logLevel must be one of: debug, info, error")
 	}
+
+	// Validate excluded URLs
+	for _, url := range c.ExcludedURLs {
+		if !strings.HasPrefix(url, "/") {
+			return fmt.Errorf("excluded URL must start with /: %s", url)
+		}
+		if strings.Contains(url, "..") {
+			return fmt.Errorf("excluded URL must not contain path traversal: %s", url)
+		}
+		if strings.Contains(url, "*") {
+			return fmt.Errorf("excluded URL must not contain wildcards: %s", url)
+		}
+	}
+
+	// Validate revocation URL if set
+	if c.RevocationURL != "" && !isValidSecureURL(c.RevocationURL) {
+		return fmt.Errorf("revocationURL must be a valid HTTPS URL")
+	}
+
+	// Validate end session URL if set
+	if c.OIDCEndSessionURL != "" && !isValidSecureURL(c.OIDCEndSessionURL) {
+		return fmt.Errorf("oidcEndSessionURL must be a valid HTTPS URL")
+	}
+
+	// Validate post-logout redirect URI if set
+	if c.PostLogoutRedirectURI != "" && c.PostLogoutRedirectURI != "/" {
+		if !isValidSecureURL(c.PostLogoutRedirectURI) && !strings.HasPrefix(c.PostLogoutRedirectURI, "/") {
+			return fmt.Errorf("postLogoutRedirectURI must be either a valid HTTPS URL or start with /")
+		}
+	}
+
+	// Validate rate limit
+	if c.RateLimit < MinRateLimit {
+		return fmt.Errorf("rateLimit must be at least %d", MinRateLimit)
+	}
+
 	return nil
 }
 
-// isValidURL checks if the provided string is a valid URL
-func isValidURL(s string) bool {
+// isValidSecureURL checks if the provided string is a valid HTTPS URL
+func isValidSecureURL(s string) bool {
 	u, err := url.Parse(s)
-	return err == nil && u.Scheme != "" && u.Host != ""
+	return err == nil && u.Scheme == "https" && u.Host != ""
 }
 
 // isValidLogLevel checks if the provided log level is valid

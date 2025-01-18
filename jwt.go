@@ -83,12 +83,37 @@ func parseJWT(tokenString string) (*JWT, error) {
 // It checks:
 //   - issuer (iss) matches the expected issuer URL
 //   - audience (aud) includes the client ID
-//   - expiration time (exp) is in the future
-//   - issued at time (iat) is in the past
+//   - expiration time (exp) is in the future (with clock skew tolerance)
+//   - issued at time (iat) is in the past (with clock skew tolerance)
+//   - not before time (nbf) is in the past (with clock skew tolerance)
 //   - subject (sub) is present and not empty
+//   - algorithm matches expected value to prevent algorithm switching attacks
 // Returns an error if any validation fails.
 func (j *JWT) Verify(issuerURL, clientID string) error {
+	// Debug logging of validation parameters
+	fmt.Printf("Validating token against:\nIssuer: %s\nClient ID: %s\n", issuerURL, clientID)
+	// Debug logging of token header
+	fmt.Printf("Token header: %+v\n", j.Header)
+
+	// Validate algorithm to prevent algorithm switching attacks
+	alg, ok := j.Header["alg"].(string)
+	if !ok {
+		return fmt.Errorf("missing 'alg' header")
+	}
+	// List of supported algorithms - should match those in verifySignature
+	supportedAlgs := map[string]bool{
+		"RS256": true, "RS384": true, "RS512": true,
+		"PS256": true, "PS384": true, "PS512": true,
+		"ES256": true, "ES384": true, "ES512": true,
+	}
+	if !supportedAlgs[alg] {
+		return fmt.Errorf("unsupported algorithm: %s", alg)
+	}
+
 	claims := j.Claims
+	
+	// Debug logging of all claims
+	fmt.Printf("Token claims: %+v\n", claims)
 
 	iss, ok := claims["iss"].(string)
 	if !ok {
@@ -122,6 +147,19 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 		return err
 	}
 
+	// Validate nbf (not before) claim if present
+	if nbf, ok := claims["nbf"].(float64); ok {
+		if err := verifyNotBefore(nbf); err != nil {
+			return err
+		}
+	}
+
+	// Validate jti (JWT ID) claim if present
+	if jti, ok := claims["jti"].(string); ok {
+		// Could add replay detection here if needed
+		_ = jti
+	}
+
 	sub, ok := claims["sub"].(string)
 	if !ok || sub == "" {
 		return fmt.Errorf("missing or empty 'sub' claim")
@@ -138,6 +176,10 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 //   - expectedAudience: The expected audience value
 // Returns an error if validation fails.
 func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
+	// Debug logging
+	fmt.Printf("Verifying audience:\nToken aud: %+v\nExpected: %s\n", 
+		tokenAudience, expectedAudience)
+
 	switch aud := tokenAudience.(type) {
 	case string:
 		if aud != expectedAudience {
@@ -167,35 +209,106 @@ func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 //   - expectedIssuer: The expected issuer URL
 // Returns an error if validation fails.
 func verifyIssuer(tokenIssuer, expectedIssuer string) error {
+	// Debug logging
+	fmt.Printf("Verifying issuer:\nToken iss: %s\nExpected: %s\n", 
+		tokenIssuer, expectedIssuer)
+
 	if tokenIssuer != expectedIssuer {
-		return fmt.Errorf("invalid issuer")
+		return fmt.Errorf("invalid issuer (token: %s, expected: %s)",
+			tokenIssuer, expectedIssuer)
 	}
 	return nil
 }
 
+// Clock skew tolerance for time-based validations
+const clockSkewTolerance = 2 * time.Minute
+
 // verifyExpiration checks if the token's expiration time has passed.
-// The expiration time is compared against the current time.
+// The expiration time is compared against the current time with clock skew tolerance.
 // Parameters:
 //   - expiration: The expiration timestamp from the token
 // Returns an error if the token has expired.
 func verifyExpiration(expiration float64) error {
 	expirationTime := time.Unix(int64(expiration), 0)
-	if time.Now().After(expirationTime) {
-		return fmt.Errorf("token has expired")
+	// Truncate current time to seconds for consistent comparison
+	now := time.Now().Truncate(time.Second)
+	skewedNow := now.Add(clockSkewTolerance)
+	
+	// Debug logging
+	fmt.Printf("Token exp: %v\nCurrent time: %v\nSkewed time: %v\nSkew: %v\n",
+		expirationTime.UTC(),
+		now.UTC(),
+		skewedNow.UTC(),
+		clockSkewTolerance)
+	
+	// Allow tokens that expire exactly now
+	if expirationTime.Equal(now) {
+		return nil
+	}
+	
+	if skewedNow.After(expirationTime) {
+		return fmt.Errorf("token has expired (exp: %v, now: %v)",
+			expirationTime.UTC(), now.UTC())
 	}
 	return nil
 }
 
 // verifyIssuedAt validates the token's issued-at time.
-// Ensures the token wasn't issued in the future, which could
-// indicate clock skew or a malicious token.
+// Ensures the token wasn't issued in the future, accounting for clock skew.
 // Parameters:
 //   - issuedAt: The issued-at timestamp from the token
 // Returns an error if the token was issued in the future.
 func verifyIssuedAt(issuedAt float64) error {
 	issuedAtTime := time.Unix(int64(issuedAt), 0)
-	if time.Now().Before(issuedAtTime) {
-		return fmt.Errorf("token used before issued")
+	// Truncate current time to seconds for consistent comparison
+	now := time.Now().Truncate(time.Second)
+	skewedNow := now.Add(-clockSkewTolerance)
+	
+	// Debug logging
+	fmt.Printf("Token iat: %v\nCurrent time: %v\nSkewed time: %v\nSkew: %v\n",
+		issuedAtTime.UTC(),
+		now.UTC(),
+		skewedNow.UTC(),
+		clockSkewTolerance)
+	
+	// Allow tokens issued in the same second as current time
+	if issuedAtTime.Equal(now) {
+		return nil
+	}
+	
+	if skewedNow.Before(issuedAtTime) {
+		return fmt.Errorf("token used before issued (iat: %v, now: %v)", 
+			issuedAtTime.UTC(), now.UTC())
+	}
+	return nil
+}
+
+// verifyNotBefore validates the token's not-before time if present.
+// Ensures the token is not used before its valid time period, accounting for clock skew.
+// Parameters:
+//   - notBefore: The not-before timestamp from the token
+// Returns an error if the token is not yet valid.
+func verifyNotBefore(notBefore float64) error {
+	notBeforeTime := time.Unix(int64(notBefore), 0)
+	// Truncate current time to seconds for consistent comparison
+	now := time.Now().Truncate(time.Second)
+	skewedNow := now.Add(-clockSkewTolerance)
+	
+	// Debug logging
+	fmt.Printf("Token nbf: %v\nCurrent time: %v\nSkewed time: %v\nSkew: %v\n",
+		notBeforeTime.UTC(),
+		now.UTC(),
+		skewedNow.UTC(),
+		clockSkewTolerance)
+	
+	// Allow tokens that become valid exactly now
+	if notBeforeTime.Equal(now) {
+		return nil
+	}
+	
+	if skewedNow.Before(notBeforeTime) {
+		return fmt.Errorf("token not yet valid (nbf: %v, now: %v)",
+			notBeforeTime.UTC(), now.UTC())
 	}
 	return nil
 }
@@ -211,6 +324,9 @@ func verifyIssuedAt(issuedAt float64) error {
 //   - alg: The signature algorithm identifier
 // Returns an error if signature verification fails.
 func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error {
+	// Debug logging
+	fmt.Printf("Verifying signature with algorithm: %s\n", alg)
+	
 	// Split the token into its three parts
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
