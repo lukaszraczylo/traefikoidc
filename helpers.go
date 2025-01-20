@@ -128,11 +128,19 @@ func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 // handleExpiredToken manages token expiration by clearing the session
 // and initiating a new authentication flow.
 func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
-	if err := session.Clear(req, rw); err != nil {
-		t.logger.Errorf("Failed to clear session: %v", err)
+	// Clear authentication data but preserve CSRF state
+	session.SetAuthenticated(false)
+	session.SetAccessToken("")
+	session.SetRefreshToken("")
+	session.SetEmail("")
+	
+	// Save the cleared session state
+	if err := session.Save(req, rw); err != nil {
+		t.logger.Errorf("Failed to save cleared session: %v", err)
 		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+	
 	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 }
 
