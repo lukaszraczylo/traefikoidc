@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -181,11 +182,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	// Generate default session encryption key if not provided
 	if config.SessionEncryptionKey == "" {
-		key, err := generateNonce()
-		if err != nil {
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
 			return nil, fmt.Errorf("failed to generate session encryption key: %w", err)
 		}
-		config.SessionEncryptionKey = key
+		config.SessionEncryptionKey = fmt.Sprintf("%x", key) // Convert to hex string
 	}
 
 	// Setup HTTP client
