@@ -400,13 +400,24 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Get session
-	session, err := t.sessionManager.GetSession(req)
-	if err != nil {
-		t.logger.Errorf("Error getting session: %v", err)
-		http.Error(rw, "Session error", http.StatusInternalServerError)
-		return
-	}
+// Get session
+session, err := t.sessionManager.GetSession(req)
+if err != nil {
+	t.logger.Errorf("Error getting session: %v", err)
+	
+	// Obtain a new session and clear any residual session cookies
+	session, _ = t.sessionManager.GetSession(req)
+	session.Clear(req, rw)
+	
+	// Build redirect URL
+	scheme := t.determineScheme(req)
+	host := t.determineHost(req)
+	redirectURL := buildFullURL(scheme, host, t.redirURLPath)
+	
+	// Initiate authentication
+	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+	return
+}
 
 	// Build redirect URL
 	scheme := t.determineScheme(req)
@@ -589,7 +600,7 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	// Set session values
 	session.SetCSRF(csrfToken)
 	session.SetNonce(nonce)
-	session.SetIncomingPath(req.URL.Path)
+	session.SetIncomingPath(req.URL.RequestURI())
 
 	// Save the session
 	if err := session.Save(req, rw); err != nil {

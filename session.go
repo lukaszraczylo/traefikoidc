@@ -172,11 +172,11 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 
 	// Check for absolute session timeout
 	if createdAt, ok := sessionData.mainSession.Values["created_at"].(int64); ok {
-		if time.Since(time.Unix(createdAt, 0)) > absoluteSessionTimeout {
-			sessionData.Clear(r, nil) // Clear expired session
-			sm.sessionPool.Put(sessionData)
-			return nil, fmt.Errorf("session expired")
-		}
+if time.Since(time.Unix(createdAt, 0)) > absoluteSessionTimeout {
+	// Session has expired
+	sm.sessionPool.Put(sessionData)
+	return nil, fmt.Errorf("session expired")
+}
 	}
 
 	sessionData.accessSession, err = sm.store.Get(r, accessTokenCookie)
