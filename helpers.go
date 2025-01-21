@@ -19,6 +19,7 @@ import (
 // newSessionOptions creates secure session cookie options.
 // Parameters:
 //   - isSecure: Whether to set the Secure flag on cookies
+//
 // Returns session options configured for security with:
 //   - HttpOnly flag to prevent JavaScript access
 //   - SameSite=Lax for CSRF protection
@@ -133,14 +134,14 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	session.SetAccessToken("")
 	session.SetRefreshToken("")
 	session.SetEmail("")
-	
+
 	// Save the cleared session state
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("Failed to save cleared session: %v", err)
 		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	
+
 	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 }
 

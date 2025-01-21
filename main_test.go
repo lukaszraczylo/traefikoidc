@@ -1370,23 +1370,23 @@ func TestMultipleMiddlewareInstances(t *testing.T) {
 
 	// Create base config
 	config := &Config{
-		ProviderURL:         mockServer.URL,
-		ClientID:            "test-client",
-		ClientSecret:        "test-secret",
-		CallbackURL:         "/callback",
+		ProviderURL:          mockServer.URL,
+		ClientID:             "test-client",
+		ClientSecret:         "test-secret",
+		CallbackURL:          "/callback",
 		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
 	}
 
 	// Create multiple middleware instances
 	routes := []string{"/api/v1", "/api/v2", "/api/v3"}
 	var middlewares []*TraefikOidc
-	
+
 	for _, route := range routes {
 		config.CallbackURL = route + "/callback"
 		middleware, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}), config, "test")
-		
+
 		if err != nil {
 			t.Fatalf("Failed to create middleware for route %s: %v", route, err)
 		}

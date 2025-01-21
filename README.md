@@ -19,6 +19,8 @@ Middleware currently supports following scenarios:
 
 #### How to configure...
 
+* `sessionEncryptionKey` should be at least 32 bytes long.
+
 ##### Keeping secrets secret
 
 This works ONLY in kubernetes environments. Don't forget to create secret traefik-middleware-oidc with fields ISSUER, CLIENT_ID and SECRET keys.

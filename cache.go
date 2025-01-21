@@ -50,6 +50,7 @@ func NewCache() *Cache {
 //   - key: Unique identifier for the cached item
 //   - value: The data to cache (can be of any type)
 //   - expiration: How long the item should remain in the cache
+//
 // Thread-safe: Uses write locking to ensure safe concurrent access.
 func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 	c.mutex.Lock()
@@ -80,9 +81,11 @@ func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 // Get retrieves an item from the cache if it exists and hasn't expired.
 // Parameters:
 //   - key: The identifier of the item to retrieve
+//
 // Returns:
 //   - value: The cached data (nil if not found or expired)
 //   - found: true if the item was found and is valid, false otherwise
+//
 // Thread-safe: Uses read locking to ensure safe concurrent access.
 func (c *Cache) Get(key string) (interface{}, bool) {
 	c.mutex.RLock()

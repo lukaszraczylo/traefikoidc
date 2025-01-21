@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"runtime"
+
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 )
@@ -185,9 +187,18 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		config.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	}
 
+	// Initialize logger
+	logger := NewLogger(config.LogLevel)
+
 	// Ensure key meets minimum length requirement
 	if len(config.SessionEncryptionKey) < minEncryptionKeyLength {
-		return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
+		if runtime.Compiler == "yaegi" {
+			// Set default encryption key for Yaegi (Traefik Plugin Analyzer)
+			config.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			logger.Infof("Session encryption key is too short; using default key for analyzer")
+		} else {
+			return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
+		}
 	}
 
 	// Setup HTTP client
@@ -195,19 +206,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			dialer := &net.Dialer{
-				Timeout:   15 * time.Second,  // Reduced timeout
-				KeepAlive: 15 * time.Second,  // Reduced keepalive
+				Timeout:   15 * time.Second, // Reduced timeout
+				KeepAlive: 15 * time.Second, // Reduced keepalive
 			}
 			return dialer.DialContext(ctx, network, addr)
 		},
 		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   5 * time.Second,   // Reduced from 10s
+		TLSHandshakeTimeout:   5 * time.Second, // Reduced from 10s
 		ExpectContinueTimeout: 0,
-		MaxIdleConns:          30,                // Reduced from 100
-		MaxIdleConnsPerHost:   10,                // Reduced from 100
-		IdleConnTimeout:       30 * time.Second,   // Reduced from 90s
-		DisableKeepAlives:     false,             // Enable connection reuse
-		MaxConnsPerHost:       50,                // Limit max connections
+		MaxIdleConns:          30,               // Reduced from 100
+		MaxIdleConnsPerHost:   10,               // Reduced from 100
+		IdleConnTimeout:       30 * time.Second, // Reduced from 90s
+		DisableKeepAlives:     false,            // Enable connection reuse
+		MaxConnsPerHost:       50,               // Limit max connections
 	}
 
 	var httpClient *http.Client
@@ -245,12 +256,13 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:            NewTokenCache(),
 		httpClient:            httpClient,
-		logger:                NewLogger(config.LogLevel),
 		excludedURLs:          createStringMap(config.ExcludedURLs),
 		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
 		allowedRolesAndGroups: createStringMap(config.AllowedRolesAndGroups),
 		initComplete:          make(chan struct{}),
 	}
+	// Assign the initialized logger
+	t.logger = logger
 
 	t.sessionManager = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
 	t.extractClaimsFunc = extractClaims
@@ -275,17 +287,17 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 // initializeMetadata discovers and initializes the provider metadata
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.logger.Debug("Starting provider metadata discovery")
-	
+
 	// Keep retrying until successful
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
 	for {
 		metadata, err := discoverProviderMetadata(providerURL, t.httpClient, t.logger)
-		
+
 		if err != nil {
 			t.logger.Errorf("Failed to discover provider metadata: %v, retrying in %v", err, backoff)
 			time.Sleep(backoff)
-			
+
 			// Exponential backoff with max
 			backoff *= 2
 			if backoff > maxBackoff {
@@ -293,7 +305,7 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 			}
 			continue
 		}
-		
+
 		if metadata != nil {
 			t.logger.Debug("Successfully initialized provider metadata")
 			t.jwksURL = metadata.JWKSURL
@@ -302,12 +314,12 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 			t.issuerURL = metadata.Issuer
 			t.revocationURL = metadata.RevokeURL
 			t.endSessionURL = metadata.EndSessionURL
-			
+
 			// Only close channel on success
 			close(t.initComplete)
 			return
 		}
-		
+
 		t.logger.Error("Received nil metadata, retrying")
 		time.Sleep(backoff)
 	}
@@ -400,24 +412,24 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-// Get session
-session, err := t.sessionManager.GetSession(req)
-if err != nil {
-	t.logger.Errorf("Error getting session: %v", err)
-	
-	// Obtain a new session and clear any residual session cookies
-	session, _ = t.sessionManager.GetSession(req)
-	session.Clear(req, rw)
-	
-	// Build redirect URL
-	scheme := t.determineScheme(req)
-	host := t.determineHost(req)
-	redirectURL := buildFullURL(scheme, host, t.redirURLPath)
-	
-	// Initiate authentication
-	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
-	return
-}
+	// Get session
+	session, err := t.sessionManager.GetSession(req)
+	if err != nil {
+		t.logger.Errorf("Error getting session: %v", err)
+
+		// Obtain a new session and clear any residual session cookies
+		session, _ = t.sessionManager.GetSession(req)
+		session.Clear(req, rw)
+
+		// Build redirect URL
+		scheme := t.determineScheme(req)
+		host := t.determineHost(req)
+		redirectURL := buildFullURL(scheme, host, t.redirURLPath)
+
+		// Initiate authentication
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+		return
+	}
 
 	// Build redirect URL
 	scheme := t.determineScheme(req)

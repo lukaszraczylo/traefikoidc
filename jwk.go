@@ -81,6 +81,7 @@ type JWKCacheInterface interface {
 // Parameters:
 //   - jwksURL: The URL of the JWKS endpoint
 //   - httpClient: The HTTP client to use for fetching keys
+//
 // Returns:
 //   - The JSON Web Key Set
 //   - An error if the keys cannot be retrieved or parsed
@@ -115,6 +116,7 @@ func (c *JWKCache) GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, er
 // Parameters:
 //   - jwksURL: The URL of the JWKS endpoint
 //   - httpClient: The HTTP client to use for the request
+//
 // Returns:
 //   - The parsed JSON Web Key Set
 //   - An error if the request fails or the response is invalid

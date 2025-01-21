@@ -22,7 +22,7 @@ testData:
     - raczylo.com
   allowedRolesAndGroups:
     - guest-endpoints
-  sessionEncryptionKey: potato-secret
+  sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
   forceHTTPS: false
   logLevel: debug # debug, info, warn, error
   rateLimit: 100 # Simple rate limiter to prevent brute force attacks
