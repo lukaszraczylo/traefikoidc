@@ -28,9 +28,9 @@ func generateSecureRandomString(length int) string {
 // Cookie names and configuration constants used for session management
 var (
 	// Using random prefixes to make cookie names less predictable
-	mainCookieName    = "_oidc_m_" + generateSecureRandomString(8)
-	accessTokenCookie = "_oidc_a_" + generateSecureRandomString(8)
-	refreshTokenCookie = "_oidc_r_" + generateSecureRandomString(8)
+	mainCookieName    = "_oidc_raczylo_m_" + generateSecureRandomString(8)
+	accessTokenCookie = "_oidc_raczylo_a_" + generateSecureRandomString(8)
+	refreshTokenCookie = "_oidc_raczylo_r_" + generateSecureRandomString(8)
 )
 
 const (
@@ -417,8 +417,18 @@ func (sd *SessionData) GetAccessToken() string {
 // browser cookie size limits. Any existing token or chunks are cleared
 // before setting the new token.
 func (sd *SessionData) SetAccessToken(token string) {
-	// Clear existing chunks
-	sd.clearTokenChunks(sd.request, sd.accessTokenChunks)
+	// Expire any existing chunk cookies
+	for i := 0; ; i++ {
+		sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
+		session, err := sd.manager.store.Get(sd.request, sessionName)
+		if err != nil || session.IsNew {
+			break
+		}
+		session.Options.MaxAge = -1
+		session.Values = make(map[interface{}]interface{})
+	}
+
+	// Clear existing chunks from memory
 	sd.accessTokenChunks = make(map[int]*sessions.Session)
 
 	// Compress token
@@ -484,8 +494,18 @@ func (sd *SessionData) GetRefreshToken() string {
 // browser cookie size limits. Any existing token or chunks are cleared
 // before setting the new token.
 func (sd *SessionData) SetRefreshToken(token string) {
-	// Clear existing chunks
-	sd.clearTokenChunks(sd.request, sd.refreshTokenChunks)
+	// Expire any existing chunk cookies
+	for i := 0; ; i++ {
+		sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
+		session, err := sd.manager.store.Get(sd.request, sessionName)
+		if err != nil || session.IsNew {
+			break
+		}
+		session.Options.MaxAge = -1
+		session.Values = make(map[interface{}]interface{})
+	}
+
+	// Clear existing chunks from memory
 	sd.refreshTokenChunks = make(map[int]*sessions.Session)
 
 	// Compress token
