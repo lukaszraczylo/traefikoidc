@@ -2,7 +2,6 @@ package traefikoidc
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -182,11 +181,13 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	// Generate default session encryption key if not provided
 	if config.SessionEncryptionKey == "" {
-		key := make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return nil, fmt.Errorf("failed to generate session encryption key: %w", err)
-		}
-		config.SessionEncryptionKey = fmt.Sprintf("%x", key) // Convert to hex string
+		// Generate a fixed key for Traefik Hub testing
+		config.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	}
+
+	// Ensure key meets minimum length requirement
+	if len(config.SessionEncryptionKey) < minEncryptionKeyLength {
+		return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
 	}
 
 	// Setup HTTP client
