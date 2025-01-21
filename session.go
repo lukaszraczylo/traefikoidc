@@ -28,9 +28,9 @@ func generateSecureRandomString(length int) string {
 // Cookie names and configuration constants used for session management
 var (
 	// Using random prefixes to make cookie names less predictable
-	mainCookieName    = "_oidc_m_" + generateSecureRandomString(8)
-	accessTokenCookie = "_oidc_a_" + generateSecureRandomString(8)
-	refreshTokenCookie = "_oidc_r_" + generateSecureRandomString(8)
+	mainCookieName    = "_oidc_raczylo_m_" + generateSecureRandomString(8)
+	accessTokenCookie = "_oidc_raczylo_a_" + generateSecureRandomString(8)
+	refreshTokenCookie = "_oidc_raczylo_r_" + generateSecureRandomString(8)
 )
 
 const (
@@ -416,9 +416,26 @@ func (sd *SessionData) GetAccessToken() string {
 // multiple cookie chunks to handle large tokens while staying within
 // browser cookie size limits. Any existing token or chunks are cleared
 // before setting the new token.
+// expireAccessTokenChunks expires any existing access token chunk cookies
+func (sd *SessionData) expireAccessTokenChunks(w http.ResponseWriter) {
+	for i := 0; ; i++ {
+		sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
+		session, err := sd.manager.store.Get(sd.request, sessionName)
+		if err != nil || session.IsNew {
+			break
+		}
+		// Expire the cookie
+		session.Options.MaxAge = -1
+		session.Values = make(map[interface{}]interface{})
+		// Save expired cookie
+		if err := session.Save(sd.request, w); err != nil {
+			sd.manager.logger.Errorf("Failed to save expired cookie: %v", err)
+		}
+	}
+}
+
 func (sd *SessionData) SetAccessToken(token string) {
-	// Clear existing chunks
-	sd.clearTokenChunks(sd.request, sd.accessTokenChunks)
+	// Clear and prepare chunks map for new token
 	sd.accessTokenChunks = make(map[int]*sessions.Session)
 
 	// Compress token
@@ -483,9 +500,26 @@ func (sd *SessionData) GetRefreshToken() string {
 // multiple cookie chunks to handle large tokens while staying within
 // browser cookie size limits. Any existing token or chunks are cleared
 // before setting the new token.
+// expireRefreshTokenChunks expires any existing refresh token chunk cookies
+func (sd *SessionData) expireRefreshTokenChunks(w http.ResponseWriter) {
+	for i := 0; ; i++ {
+		sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
+		session, err := sd.manager.store.Get(sd.request, sessionName)
+		if err != nil || session.IsNew {
+			break
+		}
+		// Expire the cookie
+		session.Options.MaxAge = -1
+		session.Values = make(map[interface{}]interface{})
+		// Save expired cookie
+		if err := session.Save(sd.request, w); err != nil {
+			sd.manager.logger.Errorf("Failed to save expired cookie: %v", err)
+		}
+	}
+}
+
 func (sd *SessionData) SetRefreshToken(token string) {
-	// Clear existing chunks
-	sd.clearTokenChunks(sd.request, sd.refreshTokenChunks)
+	// Clear and prepare chunks map for new token
 	sd.refreshTokenChunks = make(map[int]*sessions.Session)
 
 	// Compress token

@@ -77,6 +77,120 @@ func TestTokenCompression(t *testing.T) {
 }
 
 // TestSessionManager tests the SessionManager functionality
+
+func TestCookiePrefix(t *testing.T) {
+	// Create a session and verify cookie names
+	req := httptest.NewRequest("GET", "/test", nil)
+	rr := httptest.NewRecorder()
+
+	sm := NewSessionManager("0123456789abcdef0123456789abcdef", true, NewLogger("debug"))
+	session, err := sm.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+
+	// Set some data to ensure cookies are created
+	session.SetAuthenticated(true)
+	
+	// Expire any existing cookies
+	session.expireAccessTokenChunks(rr)
+	session.expireRefreshTokenChunks(rr)
+	
+	// Set new tokens
+	session.SetAccessToken("test_token")
+	session.SetRefreshToken("test_refresh_token")
+
+	if err := session.Save(req, rr); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	// Check cookie prefixes
+	cookies := rr.Result().Cookies()
+	for _, cookie := range cookies {
+		if !strings.HasPrefix(cookie.Name, "_oidc_raczylo_") {
+			t.Errorf("Cookie %s does not have expected prefix '_oidc_raczylo_'", cookie.Name)
+		}
+	}
+}
+
+func TestTokenRefreshCleanup(t *testing.T) {
+	req := httptest.NewRequest("GET", "/test", nil)
+	rr := httptest.NewRecorder()
+
+	sm := NewSessionManager("0123456789abcdef0123456789abcdef", true, NewLogger("debug"))
+	session, err := sm.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+
+	// Set a large token that will be split into chunks
+	largeToken := strings.Repeat("x", 5000)
+	session.SetAccessToken(largeToken)
+	
+	if err := session.Save(req, rr); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	// Get initial cookies
+	initialCookies := rr.Result().Cookies()
+
+	// Create a new request with the initial cookies
+	newReq := httptest.NewRequest("GET", "/test", nil)
+	for _, cookie := range initialCookies {
+		newReq.AddCookie(cookie)
+	}
+	newRr := httptest.NewRecorder()
+
+	// Get session with cookies and set a new token
+	newSession, err := sm.GetSession(newReq)
+	if err != nil {
+		t.Fatalf("Failed to get new session: %v", err)
+	}
+
+	// Create a response recorder for expired cookies
+	expiredRr := httptest.NewRecorder()
+
+	// Expire old chunk cookies
+	newSession.expireAccessTokenChunks(expiredRr)
+
+	// Set a smaller token that won't need chunks
+	newSession.SetAccessToken("small_token")
+	
+	// Save session with new token
+	if err := newSession.Save(newReq, newRr); err != nil {
+		t.Fatalf("Failed to save new session: %v", err)
+	}
+
+	// Check cookies in response where old cookies are expired
+	intermediateResponse := expiredRr.Result()
+	intermediateCount := 0
+	chunkCount := 0
+	expiredCount := 0
+
+	for _, cookie := range intermediateResponse.Cookies() {
+		if strings.Contains(cookie.Name, "_oidc_raczylo_a_") && strings.Count(cookie.Name, "_") > 3 {
+			chunkCount++
+			if cookie.MaxAge < 0 {
+				expiredCount++
+				t.Logf("Found expired chunk cookie: %s (MaxAge=%d)", cookie.Name, cookie.MaxAge)
+			}
+		} else if cookie.MaxAge >= 0 {
+			intermediateCount++
+			t.Logf("Found active cookie: %s (MaxAge=%d)", cookie.Name, cookie.MaxAge)
+		}
+	}
+
+	// All chunk cookies should be expired
+	if chunkCount > 0 && chunkCount != expiredCount {
+		t.Errorf("Not all chunk cookies are expired: %d chunks, %d expired", chunkCount, expiredCount)
+	}
+
+	// Should have fewer active cookies after setting smaller token
+	if intermediateCount >= len(initialCookies) {
+		t.Errorf("Expected fewer active cookies after token refresh, got %d, want less than %d", intermediateCount, len(initialCookies))
+	}
+}
+
 func TestSessionManager(t *testing.T) {
 	ts := &TestSuite{t: t}
 	ts.Setup()
@@ -151,6 +265,12 @@ func TestSessionManager(t *testing.T) {
 					// Set session values
 					session.SetAuthenticated(tc.authenticated)
 					session.SetEmail(tc.email)
+					
+					// Expire any existing cookies
+					session.expireAccessTokenChunks(rr)
+					session.expireRefreshTokenChunks(rr)
+					
+					// Set new tokens
 					session.SetAccessToken(tc.accessToken)
 					session.SetRefreshToken(tc.refreshToken)
 
