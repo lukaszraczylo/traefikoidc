@@ -28,8 +28,8 @@ func generateSecureRandomString(length int) string {
 // Cookie names and configuration constants used for session management
 const (
 	// Using fixed prefixes for consistent cookie naming across restarts
-	mainCookieName    = "_oidc_raczylo_m"
-	accessTokenCookie = "_oidc_raczylo_a"
+	mainCookieName     = "_oidc_raczylo_m"
+	accessTokenCookie  = "_oidc_raczylo_a"
 	refreshTokenCookie = "_oidc_raczylo_r"
 )
 
@@ -74,18 +74,18 @@ func decompressToken(compressed string) string {
 	if err != nil {
 		return compressed // return as-is if not base64
 	}
-	
+
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return compressed
 	}
 	defer gz.Close()
-	
+
 	decompressed, err := io.ReadAll(gz)
 	if err != nil {
 		return compressed
 	}
-	
+
 	return string(decompressed)
 }
 
@@ -111,6 +111,7 @@ type SessionManager struct {
 //   - encryptionKey: Key used to encrypt session data (must be at least 32 bytes)
 //   - forceHTTPS: When true, forces secure cookie attributes regardless of request scheme
 //   - logger: Logger instance for recording session-related events
+//
 // The manager handles session creation, storage, and cookie security settings.
 func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) *SessionManager {
 	// Validate encryption key length
@@ -127,8 +128,8 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) *S
 	// Initialize session pool
 	sm.sessionPool.New = func() interface{} {
 		return &SessionData{
-			manager:           sm,
-			accessTokenChunks: make(map[int]*sessions.Session),
+			manager:            sm,
+			accessTokenChunks:  make(map[int]*sessions.Session),
 			refreshTokenChunks: make(map[int]*sessions.Session),
 		}
 	}
@@ -139,6 +140,7 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) *S
 // getSessionOptions returns secure session options configured for the current request.
 // Parameters:
 //   - isSecure: Whether the current request is using HTTPS
+//
 // The options ensure cookies are:
 //   - HTTP-only (not accessible via JavaScript)
 //   - Secure when using HTTPS or when forceHTTPS is enabled
@@ -173,7 +175,7 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	// Check for absolute session timeout
 	if createdAt, ok := sessionData.mainSession.Values["created_at"].(int64); ok {
 		if time.Since(time.Unix(createdAt, 0)) > absoluteSessionTimeout {
-			sessionData.Clear(r, nil) // Clear expired session
+			// Session has expired
 			sm.sessionPool.Put(sessionData)
 			return nil, fmt.Errorf("session expired")
 		}
@@ -326,10 +328,10 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	if w != nil {
 		err = sd.Save(r, w)
 	}
-	
+
 	// Return session to pool
 	sd.manager.sessionPool.Put(sd)
-	
+
 	return err
 }
 
@@ -557,6 +559,7 @@ func (sd *SessionData) SetRefreshToken(token string) {
 // Parameters:
 //   - s: The string to split
 //   - chunkSize: Maximum size of each chunk
+//
 // Returns an array of string chunks, each no larger than chunkSize.
 func splitIntoChunks(s string, chunkSize int) []string {
 	var chunks []string

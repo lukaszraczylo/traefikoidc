@@ -221,6 +221,7 @@ type Logger struct {
 //   - "debug": Outputs all messages (debug, info, error)
 //   - "info": Outputs info and error messages
 //   - "error": Outputs only error messages
+//
 // Error messages are always written to stderr, while info and debug
 // messages are written to stdout when enabled.
 func NewLogger(logLevel string) *Logger {
@@ -229,7 +230,7 @@ func NewLogger(logLevel string) *Logger {
 	logDebug := log.New(io.Discard, "DEBUG: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
 
 	logError.SetOutput(os.Stderr)
-	
+
 	if logLevel == "debug" || logLevel == "info" {
 		logInfo.SetOutput(os.Stdout)
 	}

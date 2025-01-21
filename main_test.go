@@ -1370,23 +1370,23 @@ func TestMultipleMiddlewareInstances(t *testing.T) {
 
 	// Create base config
 	config := &Config{
-		ProviderURL:         mockServer.URL,
-		ClientID:            "test-client",
-		ClientSecret:        "test-secret",
-		CallbackURL:         "/callback",
+		ProviderURL:          mockServer.URL,
+		ClientID:             "test-client",
+		ClientSecret:         "test-secret",
+		CallbackURL:          "/callback",
 		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
 	}
 
 	// Create multiple middleware instances
 	routes := []string{"/api/v1", "/api/v2", "/api/v3"}
 	var middlewares []*TraefikOidc
-	
+
 	for _, route := range routes {
 		config.CallbackURL = route + "/callback"
 		middleware, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}), config, "test")
-		
+
 		if err != nil {
 			t.Fatalf("Failed to create middleware for route %s: %v", route, err)
 		}
@@ -1646,6 +1646,7 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 }
 
 // Helper function to compare string slices
+
 func stringSliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -1656,4 +1657,31 @@ func stringSliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestDefaultInitiateAuthentication_PreservesQueryParameters tests that defaultInitiateAuthentication preserves query parameters in the incoming path.
+func TestDefaultInitiateAuthentication_PreservesQueryParameters(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	// Create a request with query parameters
+	req := httptest.NewRequest("GET", "/protected/resource?param1=value1&param2=value2", nil)
+	rw := httptest.NewRecorder()
+
+	// Get session
+	session, err := ts.sessionManager.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+
+	// Call defaultInitiateAuthentication
+	redirectURL := "http://example.com/callback"
+	ts.tOidc.defaultInitiateAuthentication(rw, req, session, redirectURL)
+
+	// Verify that the incoming path includes query parameters
+	incomingPath := session.GetIncomingPath()
+	expectedPath := "/protected/resource?param1=value1&param2=value2"
+	if incomingPath != expectedPath {
+		t.Errorf("Expected incoming path to be '%s', got '%s'", expectedPath, incomingPath)
+	}
 }
