@@ -26,11 +26,11 @@ func generateSecureRandomString(length int) string {
 }
 
 // Cookie names and configuration constants used for session management
-var (
-	// Using random prefixes to make cookie names less predictable
-	mainCookieName    = "_oidc_raczylo_m_" + generateSecureRandomString(8)
-	accessTokenCookie = "_oidc_raczylo_a_" + generateSecureRandomString(8)
-	refreshTokenCookie = "_oidc_raczylo_r_" + generateSecureRandomString(8)
+const (
+	// Using fixed prefixes for consistent cookie naming across restarts
+	mainCookieName    = "_oidc_raczylo_m"
+	accessTokenCookie = "_oidc_raczylo_a"
+	refreshTokenCookie = "_oidc_raczylo_r"
 )
 
 const (
@@ -435,6 +435,11 @@ func (sd *SessionData) expireAccessTokenChunks(w http.ResponseWriter) {
 }
 
 func (sd *SessionData) SetAccessToken(token string) {
+	// Expire any existing chunk cookies first
+	if sd.request != nil {
+		sd.expireAccessTokenChunks(nil) // Will be saved when Save() is called
+	}
+
 	// Clear and prepare chunks map for new token
 	sd.accessTokenChunks = make(map[int]*sessions.Session)
 
@@ -519,6 +524,11 @@ func (sd *SessionData) expireRefreshTokenChunks(w http.ResponseWriter) {
 }
 
 func (sd *SessionData) SetRefreshToken(token string) {
+	// Expire any existing chunk cookies first
+	if sd.request != nil {
+		sd.expireRefreshTokenChunks(nil) // Will be saved when Save() is called
+	}
+
 	// Clear and prepare chunks map for new token
 	sd.refreshTokenChunks = make(map[int]*sessions.Session)
 
