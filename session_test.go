@@ -5,13 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
-
-func init() {
-	// Initialize random seed
-	rand.Seed(time.Now().UnixNano())
-}
 
 // generateRandomString creates a random string of specified length
 func generateRandomString(length int) string {

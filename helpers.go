@@ -12,27 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/sessions"
 )
-
-// newSessionOptions creates secure session cookie options.
-// Parameters:
-//   - isSecure: Whether to set the Secure flag on cookies
-//
-// Returns session options configured for security with:
-//   - HttpOnly flag to prevent JavaScript access
-//   - SameSite=Lax for CSRF protection
-//   - Appropriate timeout and path settings
-func newSessionOptions(isSecure bool) *sessions.Options {
-	return &sessions.Options{
-		HttpOnly: true,
-		Secure:   isSecure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   ConstSessionTimeout,
-		Path:     "/",
-	}
-}
 
 // generateNonce creates a cryptographically secure random nonce
 // for use in the OIDC authentication flow. The nonce is used to

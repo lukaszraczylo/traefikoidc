@@ -62,7 +62,6 @@ type TraefikOidc struct {
 	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
 	initComplete               chan struct{}
 	endSessionURL              string
-	baseURL                    string
 	postLogoutRedirectURI      string
 	sessionManager             *SessionManager
 }
