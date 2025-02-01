@@ -5,13 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
-
-func init() {
-	// Initialize random seed
-	rand.Seed(time.Now().UnixNano())
-}
 
 // generateRandomString creates a random string of specified length
 func generateRandomString(length int) string {
@@ -83,7 +77,7 @@ func TestCookiePrefix(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
 	rr := httptest.NewRecorder()
 
-	sm := NewSessionManager("0123456789abcdef0123456789abcdef", true, NewLogger("debug"))
+	sm, _ := NewSessionManager("0123456789abcdef0123456789abcdef", true, NewLogger("debug"))
 	session, err := sm.GetSession(req)
 	if err != nil {
 		t.Fatalf("Failed to get session: %v", err)
@@ -117,7 +111,7 @@ func TestTokenRefreshCleanup(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
 	rr := httptest.NewRecorder()
 
-	sm := NewSessionManager("0123456789abcdef0123456789abcdef", true, NewLogger("debug"))
+	sm, _ := NewSessionManager("0123456789abcdef0123456789abcdef", true, NewLogger("debug"))
 	session, err := sm.GetSession(req)
 	if err != nil {
 		t.Fatalf("Failed to get session: %v", err)

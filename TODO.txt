@@ -1,0 +1,4 @@
+## TODO / wishlist
+
+- [x] Improve caching mechanism
+- [x] Add automatic release and semver generation
