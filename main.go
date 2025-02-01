@@ -81,9 +81,6 @@ var defaultExcludedURLs = map[string]struct{}{
 	"/favicon": {},
 }
 
-var newTicker = time.NewTicker
-
-
 // VerifyToken verifies the provided JWT token
 func (t *TraefikOidc) VerifyToken(token string) error {
 	t.logger.Debugf("Verifying token")
