@@ -176,7 +176,7 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	// Check for absolute session timeout.
 	if createdAt, ok := sessionData.mainSession.Values["created_at"].(int64); ok {
 		if time.Since(time.Unix(createdAt, 0)) > absoluteSessionTimeout {
-			sm.sessionPool.Put(sessionData)
+			sessionData.Clear(r, nil)
 			return nil, fmt.Errorf("session expired")
 		}
 	}

@@ -606,7 +606,10 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		return
 	}
 
-	// Set session values
+	// Clear any existing session data to avoid stale state causing redirect loops
+	session.Clear(req, rw)
+
+	// Set new session values
 	session.SetCSRF(csrfToken)
 	session.SetNonce(nonce)
 	session.SetIncomingPath(req.URL.RequestURI())
@@ -618,7 +621,7 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		return
 	}
 
-	// Build and redirect to auth URL
+	// Build and redirect to authentication URL
 	authURL := t.buildAuthURL(redirectURL, csrfToken, nonce)
 	http.Redirect(rw, req, authURL, http.StatusFound)
 }
