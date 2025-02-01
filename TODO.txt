@@ -1,4 +1,5 @@
 ## TODO / wishlist
 
+- [] Improve test coverage
 - [x] Improve caching mechanism
 - [x] Add automatic release and semver generation
