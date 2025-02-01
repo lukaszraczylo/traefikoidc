@@ -83,6 +83,7 @@ var defaultExcludedURLs = map[string]struct{}{
 
 var newTicker = time.NewTicker
 
+
 // VerifyToken verifies the provided JWT token
 func (t *TraefikOidc) VerifyToken(token string) error {
 	t.logger.Debugf("Verifying token")
@@ -263,7 +264,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	// Assign the initialized logger
 	t.logger = logger
 
-	t.sessionManager = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
+	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
 	t.extractClaimsFunc = extractClaims
 	t.exchangeCodeForTokenFunc = t.exchangeCodeForToken
 	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
@@ -530,9 +531,6 @@ func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 
 // determineScheme determines the scheme (http or https) of the request
 func (t *TraefikOidc) determineScheme(req *http.Request) string {
-	if t.forceHTTPS {
-		return "https"
-	}
 	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
 		return scheme
 	}
@@ -601,7 +599,7 @@ func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, boo
 // defaultInitiateAuthentication initiates the authentication process
 func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 	// Generate CSRF token and nonce
-	csrfToken := uuid.New().String()
+	csrfToken := uuid.NewString()
 	nonce, err := generateNonce()
 	if err != nil {
 		http.Error(rw, "Failed to generate nonce", http.StatusInternalServerError)
@@ -646,7 +644,7 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 
 // startTokenCleanup starts the token cleanup goroutine
 func (t *TraefikOidc) startTokenCleanup() {
-	ticker := newTicker(1 * time.Minute)
+	ticker := time.NewTicker(1 * time.Minute)
 	go func() {
 		for range ticker.C {
 			t.logger.Debug("Cleaning up token cache")
