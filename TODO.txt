@@ -1,3 +1,3 @@
 ## TODO / wishlist
 
-[ empty ]
+[x] Add automatic release and semver generation
