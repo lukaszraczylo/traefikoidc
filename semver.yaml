@@ -1,0 +1,14 @@
+version: 1
+force:
+  existing: true
+  commit: e74153b107c18a06b8aa4fd048da51edde450808
+wording:
+  patch:
+    - update
+    - initial
+    - fix
+  minor:
+    - improve
+    - release
+  major:
+    - breaking
