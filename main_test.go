@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -1657,6 +1658,96 @@ func stringSliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestBuildAuthURL tests the buildAuthURL function with various URL scenarios
+func TestBuildAuthURL(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	tests := []struct {
+		name           string
+		authURL        string
+		issuerURL      string
+		redirectURL    string
+		state          string
+		nonce         string
+		expectedPrefix string
+	}{
+		{
+			name:           "Absolute Auth URL",
+			authURL:        "https://auth.example.com/oauth/authorize",
+			issuerURL:      "https://auth.example.com",
+			redirectURL:    "https://app.example.com/callback",
+			state:          "test-state",
+			nonce:         "test-nonce",
+			expectedPrefix: "https://auth.example.com/oauth/authorize?",
+		},
+		{
+			name:           "Relative Auth URL",
+			authURL:        "/oidc/auth",
+			issuerURL:      "https://logto.example.com",
+			redirectURL:    "https://app.example.com/callback",
+			state:          "test-state",
+			nonce:         "test-nonce",
+			expectedPrefix: "https://logto.example.com/oidc/auth?",
+		},
+		{
+			name:           "Relative Auth URL with Different Issuer",
+			authURL:        "/sign-in",
+			issuerURL:      "https://auth.example.com:8443",
+			redirectURL:    "https://app.example.com/callback",
+			state:          "test-state",
+			nonce:         "test-nonce",
+			expectedPrefix: "https://auth.example.com:8443/sign-in?",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Configure the test instance
+			tOidc := ts.tOidc
+			tOidc.authURL = tc.authURL
+			tOidc.issuerURL = tc.issuerURL
+
+			// Call buildAuthURL
+			result := tOidc.buildAuthURL(tc.redirectURL, tc.state, tc.nonce)
+
+			// Verify the URL starts with the expected prefix
+			if !strings.HasPrefix(result, tc.expectedPrefix) {
+				t.Errorf("Expected URL to start with %q, got %q", tc.expectedPrefix, result)
+			}
+
+			// Parse the resulting URL to verify query parameters
+			parsedURL, err := url.Parse(result)
+			if err != nil {
+				t.Fatalf("Failed to parse resulting URL: %v", err)
+			}
+
+			query := parsedURL.Query()
+			expectedParams := map[string]string{
+				"client_id":     tOidc.clientID,
+				"response_type": "code",
+				"redirect_uri":  tc.redirectURL,
+				"state":         tc.state,
+				"nonce":         tc.nonce,
+			}
+
+			for key, expected := range expectedParams {
+				if got := query.Get(key); got != expected {
+					t.Errorf("Expected %s=%q, got %q", key, expected, got)
+				}
+			}
+
+			// Verify scopes are present and correct
+			if len(tOidc.scopes) > 0 {
+				expectedScopes := strings.Join(tOidc.scopes, " ")
+				if got := query.Get("scope"); got != expectedScopes {
+					t.Errorf("Expected scope=%q, got %q", expectedScopes, got)
+				}
+			}
+		})
+	}
 }
 
 // TestDefaultInitiateAuthentication_PreservesQueryParameters tests that defaultInitiateAuthentication preserves query parameters in the incoming path.
