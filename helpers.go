@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"sync"
@@ -68,13 +69,28 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType, codeOrToken
 		data.Set("refresh_token", codeOrToken)
 	}
 
+	// Create a cookie jar for this request to handle redirects with cookies
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{
+		Transport: t.httpClient.Transport,
+		Timeout:   t.httpClient.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Always follow redirects for OIDC endpoints
+			if len(via) >= 50 {
+				return fmt.Errorf("stopped after 50 redirects")
+			}
+			return nil
+		},
+		Jar: jar,
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "POST", t.tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := t.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange tokens: %w", err)
 	}

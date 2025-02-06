@@ -1648,6 +1648,111 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 
 // Helper function to compare string slices
 
+// TestExchangeTokensWithRedirects tests the token exchange process with redirects
+func TestExchangeTokensWithRedirects(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	tests := []struct {
+		name          string
+		setupServer   func() *httptest.Server
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name: "Successful token exchange with redirects",
+			setupServer: func() *httptest.Server {
+				redirectCount := 0
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if redirectCount < 3 {
+						// Set a cookie before redirecting
+						http.SetCookie(w, &http.Cookie{
+							Name:  fmt.Sprintf("redirect-cookie-%d", redirectCount),
+							Value: "test-value",
+						})
+						redirectCount++
+						w.Header().Set("Location", r.URL.String())
+						w.WriteHeader(http.StatusFound)
+						return
+					}
+
+					// Verify all cookies from previous redirects are present
+					cookies := r.Cookies()
+					if len(cookies) != 3 {
+						t.Errorf("Expected 3 cookies, got %d", len(cookies))
+					}
+					for i := 0; i < 3; i++ {
+						found := false
+						expectedName := fmt.Sprintf("redirect-cookie-%d", i)
+						for _, cookie := range cookies {
+							if cookie.Name == expectedName {
+								found = true
+								break
+							}
+						}
+						if !found {
+							t.Errorf("Cookie %s not found", expectedName)
+						}
+					}
+
+					// Return successful token response
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(TokenResponse{
+						IDToken:      "test.id.token",
+						AccessToken:  "test-access-token",
+						TokenType:    "Bearer",
+						ExpiresIn:    3600,
+						RefreshToken: "test-refresh-token",
+					})
+				}))
+			},
+			expectError: false,
+		},
+		{
+			name: "Too many redirects",
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Location", r.URL.String())
+					w.WriteHeader(http.StatusFound)
+				}))
+			},
+			expectError:   true,
+			errorContains: "stopped after 50 redirects",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := tc.setupServer()
+			defer server.Close()
+
+			// Configure the test instance
+			tOidc := ts.tOidc
+			tOidc.tokenURL = server.URL
+
+			// Test token exchange
+			response, err := tOidc.exchangeTokens(context.Background(), "authorization_code", "test-code", "http://callback")
+
+			if tc.expectError {
+				if err == nil {
+					t.Error("Expected error but got nil")
+				} else if !strings.Contains(err.Error(), tc.errorContains) {
+					t.Errorf("Expected error containing %q, got %q", tc.errorContains, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				if response == nil {
+					t.Error("Expected token response but got nil")
+				} else if response.IDToken != "test.id.token" {
+					t.Errorf("Expected ID token %q, got %q", "test.id.token", response.IDToken)
+				}
+			}
+		})
+	}
+}
+
 func stringSliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

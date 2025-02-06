@@ -225,6 +225,13 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		httpClient = &http.Client{
 			Timeout:   time.Second * 15, // Reduced timeout
 			Transport: transport,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				// Always follow redirects for OIDC endpoints
+				if len(via) >= 50 {
+					return fmt.Errorf("stopped after 50 redirects")
+				}
+				return nil
+			},
 		}
 	}
 
