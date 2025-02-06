@@ -516,7 +516,35 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// Set user information in headers
 	req.Header.Set("X-Forwarded-User", email)
-
+	
+	// Set OIDC-specific headers
+	req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
+	req.Header.Set("X-Auth-Request-User", email)
+	if idToken := session.GetAccessToken(); idToken != "" {
+		req.Header.Set("X-Auth-Request-Token", idToken)
+	}
+	
+	// Set security headers
+	rw.Header().Set("X-Frame-Options", "DENY")
+	rw.Header().Set("X-Content-Type-Options", "nosniff")
+	rw.Header().Set("X-XSS-Protection", "1; mode=block")
+	rw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	
+	// Set CORS headers
+	origin := req.Header.Get("Origin")
+	if origin != "" {
+		rw.Header().Set("Access-Control-Allow-Origin", origin)
+		rw.Header().Set("Access-Control-Allow-Credentials", "true")
+		rw.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		rw.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		
+		// Handle preflight requests
+		if req.Method == "OPTIONS" {
+			rw.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+	
 	// Process the request
 	t.next.ServeHTTP(rw, req)
 }
