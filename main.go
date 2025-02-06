@@ -639,6 +639,19 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 	if len(t.scopes) > 0 {
 		params.Set("scope", strings.Join(t.scopes, " "))
 	}
+
+	// Ensure authURL is absolute
+	if !strings.HasPrefix(t.authURL, "http://") && !strings.HasPrefix(t.authURL, "https://") {
+		// Extract issuer base URL
+		issuerURL, err := url.Parse(t.issuerURL)
+		if err == nil {
+			return fmt.Sprintf("%s://%s%s?%s", 
+				issuerURL.Scheme, 
+				issuerURL.Host, 
+				t.authURL,
+				params.Encode())
+		}
+	}
 	return t.authURL + "?" + params.Encode()
 }
 
