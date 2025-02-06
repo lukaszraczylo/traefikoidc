@@ -292,12 +292,16 @@ type TokenBlacklist struct {
 
 	// mutex protects concurrent access to the blacklist
 	mutex sync.RWMutex
+
+	// maxSize is the maximum number of tokens in the blacklist
+	maxSize int
 }
 
 // NewTokenBlacklist creates a new TokenBlacklist instance.
 func NewTokenBlacklist() *TokenBlacklist {
 	return &TokenBlacklist{
 		blacklist: make(map[string]time.Time),
+		maxSize:   1000, // Limit the size to prevent unbounded growth
 	}
 }
 
@@ -305,6 +309,30 @@ func NewTokenBlacklist() *TokenBlacklist {
 func (tb *TokenBlacklist) Add(tokenID string, expiration time.Time) {
 	tb.mutex.Lock()
 	defer tb.mutex.Unlock()
+
+	// Clean up expired tokens if we're at capacity
+	if len(tb.blacklist) >= tb.maxSize {
+		now := time.Now()
+		for token, exp := range tb.blacklist {
+			if now.After(exp) {
+				delete(tb.blacklist, token)
+			}
+		}
+		// If still at capacity after cleanup, remove oldest token
+		if len(tb.blacklist) >= tb.maxSize {
+			var oldestToken string
+			var oldestTime time.Time
+			first := true
+			for token, exp := range tb.blacklist {
+				if first || exp.Before(oldestTime) {
+					oldestToken = token
+					oldestTime = exp
+					first = false
+				}
+			}
+			delete(tb.blacklist, oldestToken)
+		}
+	}
 	tb.blacklist[tokenID] = expiration
 }
 

@@ -664,12 +664,42 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 
 // startTokenCleanup starts the token cleanup goroutine
 func (t *TraefikOidc) startTokenCleanup() {
-	ticker := time.NewTicker(1 * time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	ticker := time.NewTicker(30 * time.Second) // Increased frequency to prevent memory buildup
+	
 	go func() {
-		for range ticker.C {
-			t.logger.Debug("Cleaning up token cache")
-			t.tokenCache.Cleanup()
-			t.tokenBlacklist.Cleanup()
+		defer ticker.Stop()
+		defer cancel()
+		
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				t.logger.Debug("Starting token cleanup cycle")
+				
+				// Run cleanup in a separate goroutine with timeout
+				cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 10*time.Second)
+				done := make(chan struct{})
+				
+				go func() {
+					defer close(done)
+					t.tokenCache.Cleanup()
+					t.tokenBlacklist.Cleanup()
+				}()
+				
+				// Wait for cleanup to complete or timeout
+				select {
+				case <-cleanupCtx.Done():
+					if cleanupCtx.Err() == context.DeadlineExceeded {
+						t.logger.Error("Token cleanup cycle timed out")
+					}
+				case <-done:
+					t.logger.Debug("Token cleanup cycle completed successfully")
+				}
+				
+				cleanupCancel()
+			}
 		}
 	}()
 }
