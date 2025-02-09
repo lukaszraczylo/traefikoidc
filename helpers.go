@@ -11,7 +11,6 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -281,79 +280,6 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 	}
 
 	return claims, nil
-}
-
-// TokenBlacklist maintains a thread-safe list of revoked tokens.
-// It stores tokens with their expiration times and automatically
-// removes expired entries during cleanup operations.
-type TokenBlacklist struct {
-	// blacklist maps token IDs to their expiration times
-	blacklist map[string]time.Time
-
-	// mutex protects concurrent access to the blacklist
-	mutex sync.RWMutex
-
-	// maxSize is the maximum number of tokens in the blacklist
-	maxSize int
-}
-
-// NewTokenBlacklist creates a new TokenBlacklist instance.
-func NewTokenBlacklist() *TokenBlacklist {
-	return &TokenBlacklist{
-		blacklist: make(map[string]time.Time),
-		maxSize:   1000, // Limit the size to prevent unbounded growth
-	}
-}
-
-// Add adds a token to the blacklist with an expiration time.
-func (tb *TokenBlacklist) Add(tokenID string, expiration time.Time) {
-	tb.mutex.Lock()
-	defer tb.mutex.Unlock()
-
-	// Clean up expired tokens if we're at capacity
-	if len(tb.blacklist) >= tb.maxSize {
-		now := time.Now()
-		for token, exp := range tb.blacklist {
-			if now.After(exp) {
-				delete(tb.blacklist, token)
-			}
-		}
-		// If still at capacity after cleanup, remove oldest token
-		if len(tb.blacklist) >= tb.maxSize {
-			var oldestToken string
-			var oldestTime time.Time
-			first := true
-			for token, exp := range tb.blacklist {
-				if first || exp.Before(oldestTime) {
-					oldestToken = token
-					oldestTime = exp
-					first = false
-				}
-			}
-			delete(tb.blacklist, oldestToken)
-		}
-	}
-	tb.blacklist[tokenID] = expiration
-}
-
-// IsBlacklisted checks if a token is in the blacklist and not expired.
-func (tb *TokenBlacklist) IsBlacklisted(tokenID string) bool {
-	tb.mutex.RLock()
-	defer tb.mutex.RUnlock()
-	expiration, exists := tb.blacklist[tokenID]
-	return exists && time.Now().Before(expiration)
-}
-
-// Cleanup removes expired tokens from the blacklist.
-func (tb *TokenBlacklist) Cleanup() {
-	tb.mutex.Lock()
-	defer tb.mutex.Unlock()
-	now := time.Now()
-	for tokenID, expiration := range tb.blacklist {
-		if now.After(expiration) {
-			delete(tb.blacklist, tokenID)
-		}
-	}
 }
 
 // TokenCache provides a caching mechanism for validated tokens.

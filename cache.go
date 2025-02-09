@@ -128,6 +128,7 @@ func (c *Cache) Cleanup() {
 
 	now := time.Now()
 	for key, item := range c.items {
+		// Only remove items that are already expired
 		if now.After(item.ExpiresAt) {
 			c.removeItem(key)
 		}
@@ -136,8 +137,23 @@ func (c *Cache) Cleanup() {
 
 // evictOldest removes the least recently used item from the cache.
 func (c *Cache) evictOldest() {
+	now := time.Now()
 	elem := c.order.Front()
-	if elem != nil {
+	
+	// First try to find an expired item from the front
+	for elem != nil {
+		entry := elem.Value.(lruEntry)
+		if item, exists := c.items[entry.key]; exists {
+			if now.After(item.ExpiresAt) {
+				c.removeItem(entry.key)
+				return
+			}
+		}
+		elem = elem.Next()
+	}
+
+	// If no expired items found, remove the oldest item
+	if elem = c.order.Front(); elem != nil {
 		entry := elem.Value.(lruEntry)
 		c.removeItem(entry.key)
 	}

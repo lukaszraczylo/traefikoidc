@@ -16,16 +16,16 @@ func TestTokenBlacklistSizeLimit(t *testing.T) {
 	}
 
 	// Verify size is at max
-	if len(tb.blacklist) != 1000 {
-		t.Errorf("Expected blacklist size to be 1000, got %d", len(tb.blacklist))
+	if tb.Count() != 1000 {
+		t.Errorf("Expected blacklist size to be 1000, got %d", tb.Count())
 	}
 
 	// Add one more token, should trigger cleanup/eviction
 	tb.Add("newtoken", time.Now().Add(time.Hour))
 
 	// Size should still be at max
-	if len(tb.blacklist) > 1000 {
-		t.Errorf("Blacklist exceeded max size: %d", len(tb.blacklist))
+	if tb.Count() > 1000 {
+		t.Errorf("Blacklist exceeded max size: %d", tb.Count())
 	}
 }
 
@@ -46,12 +46,14 @@ func TestTokenBlacklistExpiredCleanup(t *testing.T) {
 	tb.Cleanup()
 
 	// Only valid tokens should remain
-	if len(tb.blacklist) != 500 {
-		t.Errorf("Expected 500 valid tokens after cleanup, got %d", len(tb.blacklist))
+	if tb.Count() != 500 {
+		t.Errorf("Expected 500 valid tokens after cleanup, got %d", tb.Count())
 	}
 
 	// Verify only valid tokens remain
-	for token, expiry := range tb.blacklist {
+	tb.mutex.RLock()
+	defer tb.mutex.RUnlock()
+	for token, expiry := range tb.tokens {
 		if time.Now().After(expiry) {
 			t.Errorf("Found expired token after cleanup: %s", token)
 		}
@@ -130,8 +132,8 @@ func TestTokenBlacklistMemoryUsage(t *testing.T) {
 	}
 
 	// Verify size stayed within limits
-	if len(tb.blacklist) > tb.maxSize {
-		t.Errorf("Blacklist exceeded max size: %d", len(tb.blacklist))
+	if tb.Count() > 1000 {
+		t.Errorf("Blacklist exceeded max size: %d", tb.Count())
 	}
 }
 
@@ -167,8 +169,8 @@ func TestConcurrentTokenBlacklistOperations(t *testing.T) {
 	}
 
 	// Verify size constraints were maintained
-	if len(tb.blacklist) > tb.maxSize {
-		t.Errorf("Blacklist exceeded max size under concurrent operations: %d", len(tb.blacklist))
+	if tb.Count() > 1000 {
+		t.Errorf("Blacklist exceeded max size under concurrent operations: %d", tb.Count())
 	}
 }
 

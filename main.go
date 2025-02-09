@@ -326,25 +326,22 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			t.logger.Debug("Refreshing OIDC metadata")
-			metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
-			if err != nil {
-				t.logger.Errorf("Failed to refresh metadata: %v", err)
-				continue
-			}
+	for range ticker.C {
+		t.logger.Debug("Refreshing OIDC metadata")
+		metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+		if err != nil {
+			t.logger.Errorf("Failed to refresh metadata: %v", err)
+			continue
+		}
 
-			if metadata != nil {
-				t.jwksURL = metadata.JWKSURL
-				t.authURL = metadata.AuthURL
-				t.tokenURL = metadata.TokenURL
-				t.issuerURL = metadata.Issuer
-				t.revocationURL = metadata.RevokeURL
-				t.endSessionURL = metadata.EndSessionURL
-				t.logger.Debug("Successfully refreshed metadata")
-			}
+		if metadata != nil {
+			t.jwksURL = metadata.JWKSURL
+			t.authURL = metadata.AuthURL
+			t.tokenURL = metadata.TokenURL
+			t.issuerURL = metadata.Issuer
+			t.revocationURL = metadata.RevokeURL
+			t.endSessionURL = metadata.EndSessionURL
+			t.logger.Debug("Successfully refreshed metadata")
 		}
 	}
 }
@@ -719,39 +716,34 @@ func (t *TraefikOidc) startTokenCleanup() {
 		defer ticker.Stop()
 		defer cancel()
 		
-		for {
+		for range ticker.C {
+			t.logger.Debug("Starting token cleanup cycle")
+			
+			// Run cleanup in a separate goroutine with shorter timeout
+			cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
+			done := make(chan struct{})
+			
+			go func() {
+				defer close(done)
+				// Clean up in smaller batches to prevent long-running operations
+				t.tokenCache.Cleanup()
+				t.tokenBlacklist.Cleanup()
+				
+				// Force garbage collection after cleanup
+				runtime.GC()
+			}()
+			
+			// Wait for cleanup to complete or timeout
 			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				t.logger.Debug("Starting token cleanup cycle")
-				
-				// Run cleanup in a separate goroutine with shorter timeout
-				cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
-				done := make(chan struct{})
-				
-				go func() {
-					defer close(done)
-					// Clean up in smaller batches to prevent long-running operations
-					t.tokenCache.Cleanup()
-					t.tokenBlacklist.Cleanup()
-					
-					// Force garbage collection after cleanup
-					runtime.GC()
-				}()
-				
-				// Wait for cleanup to complete or timeout
-				select {
-				case <-cleanupCtx.Done():
-					if cleanupCtx.Err() == context.DeadlineExceeded {
-						t.logger.Error("Token cleanup cycle timed out")
-					}
-				case <-done:
-					t.logger.Debug("Token cleanup cycle completed successfully")
+			case <-cleanupCtx.Done():
+				if cleanupCtx.Err() == context.DeadlineExceeded {
+					t.logger.Error("Token cleanup cycle timed out")
 				}
-				
-				cleanupCancel()
+			case <-done:
+				t.logger.Debug("Token cleanup cycle completed successfully")
 			}
+			
+			cleanupCancel()
 		}
 	}()
 }
