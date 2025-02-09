@@ -39,6 +39,7 @@ type TraefikOidc struct {
 	issuerURL                  string
 	revocationURL              string
 	jwkCache                   JWKCacheInterface
+	metadataCache              *MetadataCache
 	tokenBlacklist             *TokenBlacklist
 	jwksURL                    string
 	clientID                   string
@@ -253,6 +254,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		}(),
 		tokenBlacklist:        NewTokenBlacklist(),
 		jwkCache:              &JWKCache{},
+		metadataCache:         NewMetadataCache(),
 		clientID:              config.ClientID,
 		clientSecret:          config.ClientSecret,
 		forceHTTPS:            config.ForceHTTPS,
@@ -292,40 +294,58 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.logger.Debug("Starting provider metadata discovery")
 
-	// Keep retrying until successful
-	backoff := time.Second
-	maxBackoff := 30 * time.Second
+	// Get metadata from cache or fetch it
+	metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+	if err != nil {
+		t.logger.Errorf("Failed to get provider metadata: %v", err)
+		return
+	}
+
+	if metadata != nil {
+		t.logger.Debug("Successfully initialized provider metadata")
+		t.jwksURL = metadata.JWKSURL
+		t.authURL = metadata.AuthURL
+		t.tokenURL = metadata.TokenURL
+		t.issuerURL = metadata.Issuer
+		t.revocationURL = metadata.RevokeURL
+		t.endSessionURL = metadata.EndSessionURL
+
+		// Start metadata refresh goroutine
+		go t.startMetadataRefresh(providerURL)
+
+		// Only close channel on success
+		close(t.initComplete)
+		return
+	}
+
+	t.logger.Error("Received nil metadata")
+}
+
+// startMetadataRefresh periodically refreshes the OIDC metadata
+func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
 	for {
-		metadata, err := discoverProviderMetadata(providerURL, t.httpClient, t.logger)
-
-		if err != nil {
-			t.logger.Errorf("Failed to discover provider metadata: %v, retrying in %v", err, backoff)
-			time.Sleep(backoff)
-
-			// Exponential backoff with max
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
+		select {
+		case <-ticker.C:
+			t.logger.Debug("Refreshing OIDC metadata")
+			metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+			if err != nil {
+				t.logger.Errorf("Failed to refresh metadata: %v", err)
+				continue
 			}
-			continue
+
+			if metadata != nil {
+				t.jwksURL = metadata.JWKSURL
+				t.authURL = metadata.AuthURL
+				t.tokenURL = metadata.TokenURL
+				t.issuerURL = metadata.Issuer
+				t.revocationURL = metadata.RevokeURL
+				t.endSessionURL = metadata.EndSessionURL
+				t.logger.Debug("Successfully refreshed metadata")
+			}
 		}
-
-		if metadata != nil {
-			t.logger.Debug("Successfully initialized provider metadata")
-			t.jwksURL = metadata.JWKSURL
-			t.authURL = metadata.AuthURL
-			t.tokenURL = metadata.TokenURL
-			t.issuerURL = metadata.Issuer
-			t.revocationURL = metadata.RevokeURL
-			t.endSessionURL = metadata.EndSessionURL
-
-			// Only close channel on success
-			close(t.initComplete)
-			return
-		}
-
-		t.logger.Error("Received nil metadata, retrying")
-		time.Sleep(backoff)
 	}
 }
 
@@ -693,7 +713,7 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 // startTokenCleanup starts the token cleanup goroutine
 func (t *TraefikOidc) startTokenCleanup() {
 	ctx, cancel := context.WithCancel(context.Background())
-	ticker := time.NewTicker(30 * time.Second) // Increased frequency to prevent memory buildup
+	ticker := time.NewTicker(15 * time.Second) // More frequent cleanup
 	
 	go func() {
 		defer ticker.Stop()
@@ -706,14 +726,18 @@ func (t *TraefikOidc) startTokenCleanup() {
 			case <-ticker.C:
 				t.logger.Debug("Starting token cleanup cycle")
 				
-				// Run cleanup in a separate goroutine with timeout
-				cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 10*time.Second)
+				// Run cleanup in a separate goroutine with shorter timeout
+				cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
 				done := make(chan struct{})
 				
 				go func() {
 					defer close(done)
+					// Clean up in smaller batches to prevent long-running operations
 					t.tokenCache.Cleanup()
 					t.tokenBlacklist.Cleanup()
+					
+					// Force garbage collection after cleanup
+					runtime.GC()
 				}()
 				
 				// Wait for cleanup to complete or timeout
