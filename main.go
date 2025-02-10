@@ -709,43 +709,16 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 
 // startTokenCleanup starts the token cleanup goroutine
 func (t *TraefikOidc) startTokenCleanup() {
-	ctx, cancel := context.WithCancel(context.Background())
-	ticker := time.NewTicker(15 * time.Second) // More frequent cleanup
-	
-	go func() {
-		defer ticker.Stop()
-		defer cancel()
-		
-		for range ticker.C {
-			t.logger.Debug("Starting token cleanup cycle")
-			
-			// Run cleanup in a separate goroutine with shorter timeout
-			cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
-			done := make(chan struct{})
-			
-			go func() {
-				defer close(done)
-				// Clean up in smaller batches to prevent long-running operations
-				t.tokenCache.Cleanup()
-				t.tokenBlacklist.Cleanup()
-				
-				// Force garbage collection after cleanup
-				runtime.GC()
-			}()
-			
-			// Wait for cleanup to complete or timeout
-			select {
-			case <-cleanupCtx.Done():
-				if cleanupCtx.Err() == context.DeadlineExceeded {
-					t.logger.Error("Token cleanup cycle timed out")
-				}
-			case <-done:
-				t.logger.Debug("Token cleanup cycle completed successfully")
-			}
-			
-			cleanupCancel()
-		}
-	}()
+    ticker := time.NewTicker(1 * time.Minute) // Run cleanup every minute
+    go func() {
+        defer ticker.Stop()
+        for range ticker.C {
+            t.logger.Debug("Starting token cleanup cycle")
+            t.tokenCache.Cleanup()
+            t.tokenBlacklist.Cleanup()
+            // Removed runtime.GC() call
+        }
+    }()
 }
 
 // RevokeToken adds the token to the blacklist
