@@ -139,7 +139,7 @@ func (c *Cache) Cleanup() {
 func (c *Cache) evictOldest() {
 	now := time.Now()
 	elem := c.order.Front()
-	
+
 	// First try to find an expired item from the front
 	for elem != nil {
 		entry := elem.Value.(lruEntry)

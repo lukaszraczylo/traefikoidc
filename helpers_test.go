@@ -9,7 +9,7 @@ import (
 
 func TestTokenBlacklistSizeLimit(t *testing.T) {
 	tb := NewTokenBlacklist()
-	
+
 	// Add tokens up to maxSize
 	for i := 0; i < 1000; i++ {
 		tb.Add(fmt.Sprintf("token%d", i), time.Now().Add(time.Hour))
@@ -31,12 +31,12 @@ func TestTokenBlacklistSizeLimit(t *testing.T) {
 
 func TestTokenBlacklistExpiredCleanup(t *testing.T) {
 	tb := NewTokenBlacklist()
-	
+
 	// Add some expired tokens
 	for i := 0; i < 500; i++ {
 		tb.Add(fmt.Sprintf("expired%d", i), time.Now().Add(-time.Hour))
 	}
-	
+
 	// Add some valid tokens
 	for i := 0; i < 500; i++ {
 		tb.Add(fmt.Sprintf("valid%d", i), time.Now().Add(time.Hour))
@@ -62,14 +62,14 @@ func TestTokenBlacklistExpiredCleanup(t *testing.T) {
 
 func TestTokenBlacklistOldestEviction(t *testing.T) {
 	tb := NewTokenBlacklist()
-	
+
 	// Add tokens at capacity with different expiration times
 	baseTime := time.Now()
 	oldestToken := "oldest"
-	
+
 	// Add oldest token first
 	tb.Add(oldestToken, baseTime.Add(time.Hour))
-	
+
 	// Fill up to capacity with newer tokens
 	for i := 0; i < 999; i++ {
 		tb.Add(fmt.Sprintf("token%d", i), baseTime.Add(time.Hour*2))
@@ -96,7 +96,7 @@ func TestTokenBlacklistMemoryUsage(t *testing.T) {
 
 	// Force initial GC
 	runtime.GC()
-	
+
 	// Record initial memory stats
 	var m1, m2 runtime.MemStats
 	runtime.ReadMemStats(&m1)
@@ -105,12 +105,12 @@ func TestTokenBlacklistMemoryUsage(t *testing.T) {
 	for i := 0; i < iterations; i++ {
 		// Add new token
 		tb.Add(fmt.Sprintf("token%d", i), time.Now().Add(time.Hour))
-		
+
 		// Periodically check blacklisted status
 		if i%100 == 0 {
 			tb.IsBlacklisted(fmt.Sprintf("token%d", i-50))
 		}
-		
+
 		// Periodically cleanup
 		if i%1000 == 0 {
 			tb.Cleanup()
@@ -180,7 +180,7 @@ func TestTokenCacheMemoryUsage(t *testing.T) {
 
 	// Force initial GC
 	runtime.GC()
-	
+
 	// Record initial memory stats
 	var m1, m2 runtime.MemStats
 	runtime.ReadMemStats(&m1)
@@ -191,15 +191,15 @@ func TestTokenCacheMemoryUsage(t *testing.T) {
 			"sub": fmt.Sprintf("user%d", i),
 			"exp": time.Now().Add(time.Hour).Unix(),
 		}
-		
+
 		// Add to cache
 		tc.Set(fmt.Sprintf("token%d", i), claims, time.Hour)
-		
+
 		// Periodically retrieve
 		if i%100 == 0 {
 			tc.Get(fmt.Sprintf("token%d", i-50))
 		}
-		
+
 		// Periodically cleanup
 		if i%1000 == 0 {
 			tc.Cleanup()

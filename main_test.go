@@ -1782,7 +1782,7 @@ func TestBuildAuthURL(t *testing.T) {
 		issuerURL      string
 		redirectURL    string
 		state          string
-		nonce         string
+		nonce          string
 		expectedPrefix string
 	}{
 		{
@@ -1791,7 +1791,7 @@ func TestBuildAuthURL(t *testing.T) {
 			issuerURL:      "https://auth.example.com",
 			redirectURL:    "https://app.example.com/callback",
 			state:          "test-state",
-			nonce:         "test-nonce",
+			nonce:          "test-nonce",
 			expectedPrefix: "https://auth.example.com/oauth/authorize?",
 		},
 		{
@@ -1800,7 +1800,7 @@ func TestBuildAuthURL(t *testing.T) {
 			issuerURL:      "https://logto.example.com",
 			redirectURL:    "https://app.example.com/callback",
 			state:          "test-state",
-			nonce:         "test-nonce",
+			nonce:          "test-nonce",
 			expectedPrefix: "https://logto.example.com/oidc/auth?",
 		},
 		{
@@ -1809,7 +1809,7 @@ func TestBuildAuthURL(t *testing.T) {
 			issuerURL:      "https://auth.example.com:8443",
 			redirectURL:    "https://app.example.com/callback",
 			state:          "test-state",
-			nonce:         "test-nonce",
+			nonce:          "test-nonce",
 			expectedPrefix: "https://auth.example.com:8443/sign-in?",
 		},
 	}
