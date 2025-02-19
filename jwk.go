@@ -73,6 +73,7 @@ type JWKCache struct {
 // maintaining consistent behavior in the token verification process.
 type JWKCacheInterface interface {
 	GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error)
+	Cleanup() // Add Cleanup method to the interface
 }
 
 // GetJWKS retrieves the JSON Web Key Set, either from cache or by fetching it
@@ -109,6 +110,17 @@ func (c *JWKCache) GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, er
 	c.expiresAt = time.Now().Add(1 * time.Hour)
 
 	return jwks, nil
+}
+
+// Cleanup removes expired JWKs from the cache.
+func (c *JWKCache) Cleanup() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	now := time.Now()
+	if c.jwks != nil && now.After(c.expiresAt) {
+		c.jwks = nil
+	}
 }
 
 // fetchJWKS retrieves the JSON Web Key Set from the OIDC provider's JWKS endpoint.

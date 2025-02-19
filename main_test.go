@@ -135,6 +135,12 @@ func (m *MockJWKCache) GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet
 	return m.JWKS, m.Err
 }
 
+func (m *MockJWKCache) Cleanup() {
+	// Mock cleanup implementation
+	m.JWKS = nil
+	m.Err = nil
+}
+
 // Helper function to create a JWT token
 func createTestJWT(privateKey *rsa.PrivateKey, alg, kid string, claims map[string]interface{}) (string, error) {
 	header := map[string]interface{}{

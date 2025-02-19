@@ -714,8 +714,9 @@ func (t *TraefikOidc) startTokenCleanup() {
         defer ticker.Stop()
         for range ticker.C {
             t.logger.Debug("Starting token cleanup cycle")
-            t.tokenCache.Cleanup()
-            t.tokenBlacklist.Cleanup()
+t.tokenCache.Cleanup()
+t.tokenBlacklist.Cleanup()
+t.jwkCache.Cleanup() // Assuming jwkCache is the cache from cache.go
             // Removed runtime.GC() call
         }
     }()

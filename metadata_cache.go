@@ -19,6 +19,17 @@ func NewMetadataCache() *MetadataCache {
 	return &MetadataCache{}
 }
 
+// Cleanup removes expired metadata from the cache.
+func (c *MetadataCache) Cleanup() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	now := time.Now()
+	if c.metadata != nil && now.After(c.expiresAt) {
+		c.metadata = nil
+	}
+}
+
 // GetMetadata retrieves the metadata from cache or fetches it if expired
 func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client, logger *Logger) (*ProviderMetadata, error) {
 	c.mutex.RLock()
