@@ -59,7 +59,15 @@ func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client,
 	}
 
 	c.metadata = metadata
+	// Calculate expiration time based on usage patterns
+usageCount := 0 // This should be replaced with actual usage tracking logic
+if usageCount < 10 {
+	c.expiresAt = time.Now().Add(30 * time.Minute)
+} else if usageCount < 50 {
 	c.expiresAt = time.Now().Add(1 * time.Hour)
+} else {
+	c.expiresAt = time.Now().Add(2 * time.Hour)
+}
 
 	return metadata, nil
 }

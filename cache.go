@@ -40,7 +40,7 @@ type Cache struct {
 }
 
 // DefaultMaxSize is the default maximum number of items in the cache.
-const DefaultMaxSize = 1000
+const DefaultMaxSize = 500
 
 // NewCache creates a new empty cache instance that is ready for use.
 func NewCache() *Cache {
@@ -128,8 +128,8 @@ func (c *Cache) Cleanup() {
 
 	now := time.Now()
 	for key, item := range c.items {
-		// Only remove items that are already expired
-		if now.After(item.ExpiresAt) {
+		// Remove items that are expired or within 10% of expiration
+		if now.After(item.ExpiresAt) || now.Add(time.Duration(float64(item.ExpiresAt.Sub(now))*0.1)).After(item.ExpiresAt) {
 			c.removeItem(key)
 		}
 	}
