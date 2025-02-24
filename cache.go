@@ -178,16 +178,7 @@ func (c *Cache) removeItem(key string) {
 
 // startAutoCleanup initiates a goroutine that periodically cleans up expired cache items.
 func (c *Cache) startAutoCleanup() {
-	ticker := time.NewTicker(c.autoCleanupInterval)
-	for {
-		select {
-		case <-ticker.C:
-			c.Cleanup()
-		case <-c.stopCleanup:
-			ticker.Stop()
-			return
-		}
-	}
+	autoCleanupRoutine(c.autoCleanupInterval, c.stopCleanup, c.Cleanup)
 }
 
 // Close terminates the auto cleanup goroutine.

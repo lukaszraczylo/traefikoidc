@@ -34,11 +34,13 @@ func (c *MetadataCache) Cleanup() {
 		c.metadata = nil
 	}
 }
-
+func (c *MetadataCache) isCacheValid() bool {
+   return c.metadata != nil && time.Now().Before(c.expiresAt)
+}
 // GetMetadata retrieves the metadata from cache or fetches it if expired
 func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client, logger *Logger) (*ProviderMetadata, error) {
 	c.mutex.RLock()
-	if c.metadata != nil && time.Now().Before(c.expiresAt) {
+	if c.isCacheValid() {
 		defer c.mutex.RUnlock()
 		return c.metadata, nil
 	}
@@ -48,7 +50,7 @@ func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client,
 	defer c.mutex.Unlock()
 
 	// Double-check after acquiring write lock
-	if c.metadata != nil && time.Now().Before(c.expiresAt) {
+	if c.isCacheValid() {
 		return c.metadata, nil
 	}
 
@@ -79,16 +81,7 @@ func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client,
 }
 
 func (c *MetadataCache) startAutoCleanup() {
-	ticker := time.NewTicker(c.autoCleanupInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			c.Cleanup()
-		case <-c.stopCleanup:
-			return
-		}
-	}
+	autoCleanupRoutine(c.autoCleanupInterval, c.stopCleanup, c.Cleanup)
 }
 
 func (c *MetadataCache) Close() {
