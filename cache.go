@@ -37,6 +37,10 @@ type Cache struct {
 
 	// maxSize is the maximum number of items allowed in the cache.
 	maxSize int
+	// autoCleanupInterval defines how often Cleanup is called automatically.
+	autoCleanupInterval time.Duration
+	// stopCleanup channel to terminate the auto cleanup goroutine.
+	stopCleanup chan struct{}
 }
 
 // DefaultMaxSize is the default maximum number of items in the cache.
@@ -44,12 +48,16 @@ const DefaultMaxSize = 500
 
 // NewCache creates a new empty cache instance that is ready for use.
 func NewCache() *Cache {
-	return &Cache{
-		items:   make(map[string]CacheItem, DefaultMaxSize),
-		order:   list.New(),
-		elems:   make(map[string]*list.Element, DefaultMaxSize),
-		maxSize: DefaultMaxSize,
+	c := &Cache{
+		items:               make(map[string]CacheItem, DefaultMaxSize),
+		order:               list.New(),
+		elems:               make(map[string]*list.Element, DefaultMaxSize),
+		maxSize:             DefaultMaxSize,
+		autoCleanupInterval: 5 * time.Minute,
+		stopCleanup:         make(chan struct{}),
 	}
+	go c.startAutoCleanup()
+	return c
 }
 
 // Set adds or updates an item in the cache with the specified expiration duration.
@@ -166,4 +174,23 @@ func (c *Cache) removeItem(key string) {
 		c.order.Remove(elem)
 		delete(c.elems, key)
 	}
+}
+
+// startAutoCleanup initiates a goroutine that periodically cleans up expired cache items.
+func (c *Cache) startAutoCleanup() {
+	ticker := time.NewTicker(c.autoCleanupInterval)
+	for {
+		select {
+		case <-ticker.C:
+			c.Cleanup()
+		case <-c.stopCleanup:
+			ticker.Stop()
+			return
+		}
+	}
+}
+
+// Close terminates the auto cleanup goroutine.
+func (c *Cache) Close() {
+	close(c.stopCleanup)
 }

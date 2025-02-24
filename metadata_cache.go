@@ -7,16 +7,21 @@ import (
 	"time"
 )
 
-// MetadataCache provides thread-safe caching for OIDC provider metadata
 type MetadataCache struct {
-	metadata  *ProviderMetadata
-	expiresAt time.Time
-	mutex     sync.RWMutex
+	metadata            *ProviderMetadata
+	expiresAt           time.Time
+	mutex               sync.RWMutex
+	autoCleanupInterval time.Duration
+	stopCleanup         chan struct{}
 }
 
-// NewMetadataCache creates a new metadata cache instance
 func NewMetadataCache() *MetadataCache {
-	return &MetadataCache{}
+	c := &MetadataCache{
+		autoCleanupInterval: 5 * time.Minute,
+		stopCleanup:         make(chan struct{}),
+	}
+	go c.startAutoCleanup()
+	return c
 }
 
 // Cleanup removes expired metadata from the cache.
@@ -60,14 +65,32 @@ func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client,
 
 	c.metadata = metadata
 	// Calculate expiration time based on usage patterns
-usageCount := 0 // This should be replaced with actual usage tracking logic
-if usageCount < 10 {
-	c.expiresAt = time.Now().Add(30 * time.Minute)
-} else if usageCount < 50 {
-	c.expiresAt = time.Now().Add(1 * time.Hour)
-} else {
-	c.expiresAt = time.Now().Add(2 * time.Hour)
+	usageCount := 0 // This should be replaced with actual usage tracking logic
+	if usageCount < 10 {
+		c.expiresAt = time.Now().Add(30 * time.Minute)
+	} else if usageCount < 50 {
+		c.expiresAt = time.Now().Add(1 * time.Hour)
+	} else {
+		c.expiresAt = time.Now().Add(2 * time.Hour)
+	}
+
+	// End of GetMetadata
+	return metadata, nil
 }
 
-	return metadata, nil
+func (c *MetadataCache) startAutoCleanup() {
+	ticker := time.NewTicker(c.autoCleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			c.Cleanup()
+		case <-c.stopCleanup:
+			return
+		}
+	}
+}
+
+func (c *MetadataCache) Close() {
+	close(c.stopCleanup)
 }
