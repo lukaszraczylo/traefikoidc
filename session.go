@@ -326,6 +326,9 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 		err = sd.Save(r, w)
 	}
 
+	// Clear transient per-request fields.
+	sd.request = nil
+
 	// Return session to pool.
 	sd.manager.sessionPool.Put(sd)
 
