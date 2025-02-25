@@ -4,28 +4,229 @@ type: middleware
 import: github.com/lukaszraczylo/traefikoidc
 
 summary: |
-  Middleware adding OIDC authentication to traefik routes. Does what it says on the tin.
-  Middleware has been tested with Auth0 and Logto. It should work with any OIDC provider.
+  Middleware adding OpenID Connect (OIDC) authentication to Traefik routes.
+
+  This middleware replaces the need for forward-auth and oauth2-proxy when using Traefik as a reverse proxy.
+  It provides a complete OIDC authentication solution with features like domain restrictions,
+  role-based access control, token caching, and more.
+
+  The middleware has been tested with Auth0, Logto, Google, and other standard OIDC providers.
+  It supports various authentication scenarios including:
+
+  - Basic authentication with customizable callback and logout URLs
+  - Email domain restrictions to limit access to specific organizations
+  - Role and group-based access control
+  - Public URLs that bypass authentication
+  - Rate limiting to prevent brute force attacks
+  - Custom post-logout redirect behavior
+  - Secure session management with encrypted cookies
+  - Automatic token validation and refresh
 
 testData:
-  providerURL: https://accounts.google.com
-  clientID: 1234567890.apps.googleusercontent.com
-  clientSecret: secret
-  callbackURL: /oauth2/callback
-  logoutURL: /oauth2/logout
-  postLogoutRedirectURI: /oidc/different-logout # If not provided it will redirect to the "/" URL
-  scopes: # If not provided, default scopes will be used (openid, email, profile)
+  # Required parameters
+  providerURL: https://accounts.google.com # Base URL of the OIDC provider
+  clientID: 1234567890.apps.googleusercontent.com # OAuth 2.0 client identifier
+  clientSecret: secret # OAuth 2.0 client secret
+  callbackURL: /oauth2/callback # Path where the OIDC provider will redirect after authentication
+  sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long # Key used to encrypt session data (must be at least 32 bytes)
+
+  # Optional parameters with defaults
+  logoutURL: /oauth2/logout # Path for handling logout requests (if not provided, it will be set to callbackURL + "/logout")
+  postLogoutRedirectURI: /oidc/different-logout # URL to redirect to after logout (default: "/")
+
+  scopes: # OAuth 2.0 scopes to request (default: ["openid", "email", "profile"])
     - openid
     - email
     - profile
-  allowedUserDomains: # If not provided - will rely entirely on the OIDC yes/no
-    - raczylo.com
-  allowedRolesAndGroups:
+    - roles # Include this to get role information from the provider
+
+  allowedUserDomains: # Restricts access to specific email domains (if not provided, relies on OIDC provider)
+    - company.com
+    - subsidiary.com
+
+  allowedRolesAndGroups: # Restricts access to users with specific roles or groups (if not provided, no role/group restrictions)
     - guest-endpoints
-  sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
-  forceHTTPS: false
-  logLevel: debug # debug, info, warn, error
-  rateLimit: 100 # Simple rate limiter to prevent brute force attacks
-  excludedURLs: # Determines the list of URLs which are NOT a subject to authentication
+    - admin
+    - developer
+
+  forceHTTPS: false # Forces the use of HTTPS for all URLs (default: true for security)
+  logLevel: debug # Sets logging verbosity: debug, info, error (default: info)
+  rateLimit: 100 # Maximum number of requests per second (default: 100, minimum: 10)
+
+  excludedURLs: # Lists paths that bypass authentication
     - /login # covers /login, /login/me, /login/reminder etc.
-    - /my-public-data
+    - /public
+    - /health
+    - /metrics
+
+  # Advanced parameters (usually discovered automatically from provider metadata)
+  revocationURL: https://accounts.google.com/revoke # Endpoint for revoking tokens
+  oidcEndSessionURL: https://accounts.google.com/logout # Provider's end session endpoint
+
+# Configuration documentation
+configuration:
+  providerURL:
+    type: string
+    description: |
+      The base URL of the OIDC provider. This is the issuer URL that will be used to discover
+      OIDC endpoints like authorization, token, and JWKS URIs.
+
+      Examples:
+      - https://accounts.google.com
+      - https://login.microsoftonline.com/tenant-id/v2.0
+      - https://your-auth0-domain.auth0.com
+      - https://your-logto-instance.com/oidc
+    required: true
+
+  clientID:
+    type: string
+    description: |
+      The OAuth 2.0 client identifier obtained from your OIDC provider.
+      This is the public identifier for your application.
+    required: true
+
+  clientSecret:
+    type: string
+    description: |
+      The OAuth 2.0 client secret obtained from your OIDC provider.
+      This should be kept confidential and not exposed in client-side code.
+
+      For Kubernetes deployments, you can use the secret reference format:
+      urn:k8s:secret:namespace:secret-name:key
+    required: true
+
+  callbackURL:
+    type: string
+    description: |
+      The path where the OIDC provider will redirect after authentication.
+      This must match one of the redirect URIs configured in your OIDC provider.
+
+      The full redirect URI will be constructed as: 
+      [scheme]://[host][callbackURL]
+
+      Example: /oauth2/callback
+    required: true
+
+  sessionEncryptionKey:
+    type: string
+    description: |
+      Key used to encrypt session data stored in cookies.
+      Must be at least 32 bytes long for security.
+
+      Example: potato-secret-is-at-least-32-bytes-long
+    required: true
+
+  logoutURL:
+    type: string
+    description: |
+      The path for handling logout requests.
+      If not provided, it will be set to callbackURL + "/logout".
+
+      Example: /oauth2/logout
+    required: false
+
+  postLogoutRedirectURI:
+    type: string
+    description: |
+      The URL to redirect to after logout.
+      Default: "/"
+
+      Example: /logged-out-page
+    required: false
+
+  scopes:
+    type: array
+    description: |
+      The OAuth 2.0 scopes to request from the OIDC provider.
+      Default: ["openid", "profile", "email"]
+
+      Include "roles" or similar scope if you need role/group information.
+    required: false
+    items:
+      type: string
+
+  logLevel:
+    type: string
+    description: |
+      Sets the logging verbosity.
+      Valid values: "debug", "info", "error"
+      Default: "info"
+    required: false
+    enum:
+      - debug
+      - info
+      - error
+
+  forceHTTPS:
+    type: boolean
+    description: |
+      Forces the use of HTTPS for all URLs.
+      This is recommended for security in production environments.
+      Default: true
+    required: false
+
+  rateLimit:
+    type: integer
+    description: |
+      Sets the maximum number of requests per second.
+      This helps prevent brute force attacks.
+      Default: 100
+      Minimum: 10
+    required: false
+
+  excludedURLs:
+    type: array
+    description: |
+      Lists paths that bypass authentication.
+      These paths will be accessible without OIDC authentication.
+
+      The middleware uses prefix matching, so "/public" will match
+      "/public", "/public/page", "/public-data", etc.
+
+      Examples: ["/health", "/metrics", "/public"]
+    required: false
+    items:
+      type: string
+
+  allowedUserDomains:
+    type: array
+    description: |
+      Restricts access to users with email addresses from specific domains.
+      If not provided, the middleware relies entirely on the OIDC provider
+      for authentication decisions.
+
+      Examples: ["company.com", "subsidiary.com"]
+    required: false
+    items:
+      type: string
+
+  allowedRolesAndGroups:
+    type: array
+    description: |
+      Restricts access to users with specific roles or groups.
+      If not provided, no role/group restrictions are applied.
+
+      The middleware checks both the "roles" and "groups" claims in the ID token.
+
+      Examples: ["admin", "developer"]
+    required: false
+    items:
+      type: string
+
+  revocationURL:
+    type: string
+    description: |
+      The endpoint for revoking tokens.
+      If not provided, it will be discovered from provider metadata.
+
+      Example: https://accounts.google.com/revoke
+    required: false
+
+  oidcEndSessionURL:
+    type: string
+    description: |
+      The provider's end session endpoint.
+      If not provided, it will be discovered from provider metadata.
+
+      Example: https://accounts.google.com/logout
+    required: false
