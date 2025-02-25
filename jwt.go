@@ -4,44 +4,41 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
-	"math/big"
-	"strings"
-
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-
+	"math/big"
+	"strings"
+	"sync"
 	"time"
 )
 
+var replayCacheMu sync.Mutex
+var replayCache = make(map[string]time.Time)
+
+func cleanupReplayCache() {
+	now := time.Now()
+	for token, expiry := range replayCache {
+		if expiry.Before(now) {
+			delete(replayCache, token)
+		}
+	}
+}
+
+// ClockSkewTolerance is configurable to adjust time-based validations.
+var ClockSkewTolerance = 2 * time.Minute
+
 // JWT represents a JSON Web Token as defined in RFC 7519.
-// It contains the three parts of a JWT: header, claims (payload),
-// and signature, along with the original token string.
 type JWT struct {
-	// Header contains the token metadata (algorithm, key ID, etc.)
-	Header map[string]interface{}
-
-	// Claims contains the token claims (subject, expiration, etc.)
-	Claims map[string]interface{}
-
-	// Signature contains the raw signature bytes
+	Header    map[string]interface{}
+	Claims    map[string]interface{}
 	Signature []byte
-
-	// Token is the original JWT string
-	Token string
+	Token     string
 }
 
 // parseJWT parses a JWT token string into a JWT struct.
-// It validates the token format and decodes the three parts
-// (header, claims, signature) using base64url decoding.
-// Parameters:
-//   - tokenString: The raw JWT token string
-//
-// Returns:
-//   - A parsed JWT struct
-//   - An error if the token format is invalid or parsing fails
 func parseJWT(tokenString string) (*JWT, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
@@ -52,7 +49,6 @@ func parseJWT(tokenString string) (*JWT, error) {
 		Token: tokenString,
 	}
 
-	// Decode and unmarshal the header
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode header: %v", err)
@@ -61,7 +57,6 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal header: %v", err)
 	}
 
-	// Decode and unmarshal the claims
 	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode claims: %v", err)
@@ -70,7 +65,6 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal claims: %v", err)
 	}
 
-	// Decode the signature
 	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode signature: %v", err)
@@ -81,28 +75,13 @@ func parseJWT(tokenString string) (*JWT, error) {
 }
 
 // Verify validates the standard JWT claims as defined in RFC 7519.
-// It checks:
-//   - issuer (iss) matches the expected issuer URL
-//   - audience (aud) includes the client ID
-//   - expiration time (exp) is in the future (with clock skew tolerance)
-//   - issued at time (iat) is in the past (with clock skew tolerance)
-//   - not before time (nbf) is in the past (with clock skew tolerance)
-//   - subject (sub) is present and not empty
-//   - algorithm matches expected value to prevent algorithm switching attacks
-//
-// Returns an error if any validation fails.
+// Verify validates the standard JWT claims as defined in RFC 7519.
 func (j *JWT) Verify(issuerURL, clientID string) error {
-	// Debug logging of validation parameters
-	fmt.Printf("Validating token against:\nIssuer: %s\nClient ID: %s\n", issuerURL, clientID)
-	// Debug logging of token header
-	fmt.Printf("Token header: %+v\n", j.Header)
-
 	// Validate algorithm to prevent algorithm switching attacks
 	alg, ok := j.Header["alg"].(string)
 	if !ok {
 		return fmt.Errorf("missing 'alg' header")
 	}
-	// List of supported algorithms - should match those in verifySignature
 	supportedAlgs := map[string]bool{
 		"RS256": true, "RS384": true, "RS512": true,
 		"PS256": true, "PS384": true, "PS512": true,
@@ -113,9 +92,6 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 	}
 
 	claims := j.Claims
-
-	// Debug logging of all claims
-	fmt.Printf("Token claims: %+v\n", claims)
 
 	iss, ok := claims["iss"].(string)
 	if !ok {
@@ -149,17 +125,36 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 		return err
 	}
 
-	// Validate nbf (not before) claim if present
 	if nbf, ok := claims["nbf"].(float64); ok {
 		if err := verifyNotBefore(nbf); err != nil {
 			return err
 		}
 	}
 
-	// Validate jti (JWT ID) claim if present
+	// Implement replay protection by checking the jti (JWT ID)
 	if jti, ok := claims["jti"].(string); ok {
-		// Could add replay detection here if needed
-		_ = jti
+		// Skip replay detection for tokens that are being verified from the cache
+		if j.Token == "" {
+			// This is a parsed JWT without the original token string,
+			// which means it's likely from a cached token verification
+			return nil
+		}
+
+		replayCacheMu.Lock()
+		cleanupReplayCache()
+		if _, exists := replayCache[jti]; exists {
+			replayCacheMu.Unlock()
+			return fmt.Errorf("token replay detected")
+		}
+		expFloat, ok := claims["exp"].(float64)
+		var expTime time.Time
+		if ok {
+			expTime = time.Unix(int64(expFloat), 0)
+		} else {
+			expTime = time.Now().Add(10 * time.Minute)
+		}
+		replayCache[jti] = expTime
+		replayCacheMu.Unlock()
 	}
 
 	sub, ok := claims["sub"].(string)
@@ -169,20 +164,7 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 
 	return nil
 }
-
-// verifyAudience validates the token's audience claim.
-// The audience can be either a single string or an array of strings.
-// For array audiences, the expected audience must match any one value.
-// Parameters:
-//   - tokenAudience: The audience claim from the token
-//   - expectedAudience: The expected audience value
-//
-// Returns an error if validation fails.
 func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
-	// Debug logging
-	fmt.Printf("Verifying audience:\nToken aud: %+v\nExpected: %s\n",
-		tokenAudience, expectedAudience)
-
 	switch aud := tokenAudience.(type) {
 	case string:
 		if aud != expectedAudience {
@@ -205,165 +187,80 @@ func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 	return nil
 }
 
-// verifyIssuer validates the token's issuer claim.
-// The issuer URL must exactly match the expected issuer.
-// Parameters:
-//   - tokenIssuer: The issuer claim from the token
-//   - expectedIssuer: The expected issuer URL
-//
-// Returns an error if validation fails.
 func verifyIssuer(tokenIssuer, expectedIssuer string) error {
-	// Debug logging
-	fmt.Printf("Verifying issuer:\nToken iss: %s\nExpected: %s\n",
-		tokenIssuer, expectedIssuer)
-
 	if tokenIssuer != expectedIssuer {
-		return fmt.Errorf("invalid issuer (token: %s, expected: %s)",
-			tokenIssuer, expectedIssuer)
+		return fmt.Errorf("invalid issuer (token: %s, expected: %s)", tokenIssuer, expectedIssuer)
 	}
 	return nil
 }
 
-// Clock skew tolerance for time-based validations
-const clockSkewTolerance = 2 * time.Minute
+// verifyTimeConstraint is a generic function to verify time-based claims
+func verifyTimeConstraint(unixTime float64, claimName string, future bool) error {
+	claimTime := time.Unix(int64(unixTime), 0)
+	now := time.Now().Truncate(time.Second)
 
-// verifyExpiration checks if the token's expiration time has passed.
-// The expiration time is compared against the current time with clock skew tolerance.
-// Parameters:
-//   - expiration: The expiration timestamp from the token
-//
-// Returns an error if the token has expired.
+	// For expiration (future=true), we add skew to now (making now later)
+	// For iat/nbf (future=false), we subtract skew from now (making now earlier)
+	skewDirection := 1
+	if !future {
+		skewDirection = -1
+	}
+	skewedNow := now.Add(time.Duration(skewDirection) * ClockSkewTolerance)
+
+	if claimTime.Equal(now) {
+		return nil
+	}
+
+	// For expiration: if skewedNow (later) is after expiration, token expired
+	// For iat/nbf: if skewedNow (earlier) is before claim time, token not yet valid
+	if (future && skewedNow.After(claimTime)) || (!future && skewedNow.Before(claimTime)) {
+		var reason string
+		if future {
+			reason = "has expired"
+		} else {
+			if claimName == "iat" {
+				reason = "used before issued"
+			} else {
+				reason = "not yet valid"
+			}
+		}
+		return fmt.Errorf("token %s (%s: %v, now: %v)", reason, claimName, claimTime.UTC(), now.UTC())
+	}
+
+	return nil
+}
+
 func verifyExpiration(expiration float64) error {
-	expirationTime := time.Unix(int64(expiration), 0)
-	// Truncate current time to seconds for consistent comparison
-	now := time.Now().Truncate(time.Second)
-	skewedNow := now.Add(clockSkewTolerance)
-
-	// Debug logging
-	fmt.Printf("Token exp: %v\nCurrent time: %v\nSkewed time: %v\nSkew: %v\n",
-		expirationTime.UTC(),
-		now.UTC(),
-		skewedNow.UTC(),
-		clockSkewTolerance)
-
-	// Allow tokens that expire exactly now
-	if expirationTime.Equal(now) {
-		return nil
-	}
-
-	if skewedNow.After(expirationTime) {
-		return fmt.Errorf("token has expired (exp: %v, now: %v)",
-			expirationTime.UTC(), now.UTC())
-	}
-	return nil
+	return verifyTimeConstraint(expiration, "exp", true)
 }
 
-// verifyIssuedAt validates the token's issued-at time.
-// Ensures the token wasn't issued in the future, accounting for clock skew.
-// Parameters:
-//   - issuedAt: The issued-at timestamp from the token
-//
-// Returns an error if the token was issued in the future.
 func verifyIssuedAt(issuedAt float64) error {
-	issuedAtTime := time.Unix(int64(issuedAt), 0)
-	// Truncate current time to seconds for consistent comparison
-	now := time.Now().Truncate(time.Second)
-	skewedNow := now.Add(-clockSkewTolerance)
-
-	// Debug logging
-	fmt.Printf("Token iat: %v\nCurrent time: %v\nSkewed time: %v\nSkew: %v\n",
-		issuedAtTime.UTC(),
-		now.UTC(),
-		skewedNow.UTC(),
-		clockSkewTolerance)
-
-	// Allow tokens issued in the same second as current time
-	if issuedAtTime.Equal(now) {
-		return nil
-	}
-
-	if skewedNow.Before(issuedAtTime) {
-		return fmt.Errorf("token used before issued (iat: %v, now: %v)",
-			issuedAtTime.UTC(), now.UTC())
-	}
-	return nil
+	return verifyTimeConstraint(issuedAt, "iat", false)
 }
 
-// verifyNotBefore validates the token's not-before time if present.
-// Ensures the token is not used before its valid time period, accounting for clock skew.
-// Parameters:
-//   - notBefore: The not-before timestamp from the token
-//
-// Returns an error if the token is not yet valid.
 func verifyNotBefore(notBefore float64) error {
-	notBeforeTime := time.Unix(int64(notBefore), 0)
-	// Truncate current time to seconds for consistent comparison
-	now := time.Now().Truncate(time.Second)
-	skewedNow := now.Add(-clockSkewTolerance)
-
-	// Debug logging
-	fmt.Printf("Token nbf: %v\nCurrent time: %v\nSkewed time: %v\nSkew: %v\n",
-		notBeforeTime.UTC(),
-		now.UTC(),
-		skewedNow.UTC(),
-		clockSkewTolerance)
-
-	// Allow tokens that become valid exactly now
-	if notBeforeTime.Equal(now) {
-		return nil
-	}
-
-	if skewedNow.Before(notBeforeTime) {
-		return fmt.Errorf("token not yet valid (nbf: %v, now: %v)",
-			notBeforeTime.UTC(), now.UTC())
-	}
-	return nil
+	return verifyTimeConstraint(notBefore, "nbf", false)
 }
 
-// verifySignature validates the token's cryptographic signature.
-// Supports multiple signature algorithms:
-//   - RSA: RS256, RS384, RS512 (PKCS#1 v1.5)
-//   - RSA-PSS: PS256, PS384, PS512
-//   - ECDSA: ES256, ES384, ES512
-//
-// Parameters:
-//   - tokenString: The complete JWT token string
-//   - publicKeyPEM: The PEM-encoded public key for verification
-//   - alg: The signature algorithm identifier
-//
-// Returns an error if signature verification fails.
 func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error {
-	// Debug logging
-	fmt.Printf("Verifying signature with algorithm: %s\n", alg)
-
-	// Split the token into its three parts
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return fmt.Errorf("invalid token format")
 	}
 	signedContent := parts[0] + "." + parts[1]
-
-	// Decode the signature from the token
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %w", err)
 	}
-
-	// Decode the PEM-encoded public key
 	block, _ := pem.Decode(publicKeyPEM)
 	if block == nil {
 		return fmt.Errorf("failed to parse PEM block containing the public key")
 	}
-
-	// Parse the public key
 	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
 		return fmt.Errorf("failed to parse public key: %w", err)
 	}
-
-	// Determine the hash function to use based on the algorithm
 	var hashFunc crypto.Hash
-
 	switch alg {
 	case "RS256", "PS256", "ES256":
 		hashFunc = crypto.SHA256
@@ -374,27 +271,20 @@ func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error 
 	default:
 		return fmt.Errorf("unsupported algorithm: %s", alg)
 	}
-
-	// Hash the signed content
 	h := hashFunc.New()
 	h.Write([]byte(signedContent))
 	hashed := h.Sum(nil)
-
-	// Verify the signature based on the key type and algorithm
 	switch pubKey := pubKey.(type) {
 	case *rsa.PublicKey:
 		if strings.HasPrefix(alg, "RS") {
-			// RSA PKCS#1 v1.5 signature
 			return rsa.VerifyPKCS1v15(pubKey, hashFunc, hashed, signature)
 		} else if strings.HasPrefix(alg, "PS") {
-			// RSA PSS signature
 			return rsa.VerifyPSS(pubKey, hashFunc, hashed, signature, nil)
 		} else {
 			return fmt.Errorf("unexpected key type for algorithm %s", alg)
 		}
 	case *ecdsa.PublicKey:
 		if strings.HasPrefix(alg, "ES") {
-			// ECDSA signature
 			var r, s big.Int
 			sigLen := len(signature)
 			if sigLen%2 != 0 {

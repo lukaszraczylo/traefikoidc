@@ -35,8 +35,9 @@ func (c *MetadataCache) Cleanup() {
 	}
 }
 func (c *MetadataCache) isCacheValid() bool {
-   return c.metadata != nil && time.Now().Before(c.expiresAt)
+	return c.metadata != nil && time.Now().Before(c.expiresAt)
 }
+
 // GetMetadata retrieves the metadata from cache or fetches it if expired
 func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client, logger *Logger) (*ProviderMetadata, error) {
 	c.mutex.RLock()

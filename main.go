@@ -18,6 +18,40 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// createDefaultHTTPClient creates an HTTP client with optimized settings for OIDC
+func createDefaultHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialer := &net.Dialer{
+				Timeout:   15 * time.Second, // Reduced timeout
+				KeepAlive: 15 * time.Second, // Reduced keepalive
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   5 * time.Second, // Reduced from 10s
+		ExpectContinueTimeout: 0,
+		MaxIdleConns:          30,               // Reduced from 100
+		MaxIdleConnsPerHost:   10,               // Reduced from 100
+		IdleConnTimeout:       30 * time.Second, // Reduced from 90s
+		DisableKeepAlives:     false,            // Enable connection reuse
+		MaxConnsPerHost:       50,               // Limit max connections
+	}
+
+	return &http.Client{
+		Timeout:   time.Second * 15, // Reduced timeout
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Always follow redirects for OIDC endpoints
+			if len(via) >= 50 {
+				return fmt.Errorf("stopped after 50 redirects")
+			}
+			return nil
+		},
+	}
+}
+
 const ConstSessionTimeout = 86400 // Session timeout in seconds
 
 // TokenVerifier interface for token verification
@@ -82,11 +116,40 @@ var defaultExcludedURLs = map[string]struct{}{
 	"/favicon": {},
 }
 
-// VerifyToken verifies the provided JWT token
 func (t *TraefikOidc) VerifyToken(token string) error {
+	// Check cache first
+	if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
+		t.logger.Debugf("Token found in cache with valid claims; skipping verification")
+		return nil
+	}
+
 	t.logger.Debugf("Verifying token")
 
-	// Rate limiting
+	// Perform pre-verification checks
+	if err := t.performPreVerificationChecks(token); err != nil {
+		return err
+	}
+
+	// Parse the JWT
+	jwt, err := parseJWT(token)
+	if err != nil {
+		return fmt.Errorf("failed to parse JWT: %w", err)
+	}
+
+	// Verify JWT signature and standard claims
+	if err := t.VerifyJWTSignatureAndClaims(jwt, token); err != nil {
+		return err
+	}
+
+	// Cache the verified token
+	t.cacheVerifiedToken(token, jwt.Claims)
+
+	return nil
+}
+
+// performPreVerificationChecks performs rate limiting and blacklist checks
+func (t *TraefikOidc) performPreVerificationChecks(token string) error {
+	// Enforce rate limiting
 	if !t.limiter.Allow() {
 		return fmt.Errorf("rate limit exceeded")
 	}
@@ -96,30 +159,15 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		return fmt.Errorf("token is blacklisted")
 	}
 
-	// Check if token is cached
-	if _, exists := t.tokenCache.Get(token); exists {
-		t.logger.Debugf("Token is valid and cached")
-		return nil // Token is valid and cached
-	}
+	return nil
+}
 
-	// Parse the JWT
-	jwt, err := parseJWT(token)
-	if err != nil {
-		return fmt.Errorf("failed to parse JWT: %w", err)
-	}
-
-	// Verify JWT signature and claims
-	if err := t.VerifyJWTSignatureAndClaims(jwt, token); err != nil {
-		return err
-	}
-
-	// Cache the token until it expires
-	expirationTime := time.Unix(int64(jwt.Claims["exp"].(float64)), 0)
+// cacheVerifiedToken caches a verified token until its expiration time
+func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interface{}) {
+	expirationTime := time.Unix(int64(claims["exp"].(float64)), 0)
 	now := time.Now()
 	duration := expirationTime.Sub(now)
-	t.tokenCache.Set(token, jwt.Claims, duration)
-
-	return nil
+	t.tokenCache.Set(token, claims, duration)
 }
 
 // VerifyJWTSignatureAndClaims verifies the JWT signature and standard claims
@@ -127,7 +175,7 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	t.logger.Debugf("Verifying JWT signature and claims")
 
 	// Get JWKS
-	jwks, err := t.jwkCache.GetJWKS(t.jwksURL, t.httpClient)
+	jwks, err := t.jwkCache.GetJWKS(context.Background(), t.jwksURL, t.httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to get JWKS: %w", err)
 	}
@@ -187,7 +235,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	// Initialize logger
 	logger := NewLogger(config.LogLevel)
-
 	// Ensure key meets minimum length requirement
 	if len(config.SessionEncryptionKey) < minEncryptionKeyLength {
 		if runtime.Compiler == "yaegi" {
@@ -198,42 +245,12 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
 		}
 	}
-
 	// Setup HTTP client
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dialer := &net.Dialer{
-				Timeout:   15 * time.Second, // Reduced timeout
-				KeepAlive: 15 * time.Second, // Reduced keepalive
-			}
-			return dialer.DialContext(ctx, network, addr)
-		},
-		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   5 * time.Second, // Reduced from 10s
-		ExpectContinueTimeout: 0,
-		MaxIdleConns:          30,               // Reduced from 100
-		MaxIdleConnsPerHost:   10,               // Reduced from 100
-		IdleConnTimeout:       30 * time.Second, // Reduced from 90s
-		DisableKeepAlives:     false,            // Enable connection reuse
-		MaxConnsPerHost:       50,               // Limit max connections
-	}
-
 	var httpClient *http.Client
 	if config.HTTPClient != nil {
 		httpClient = config.HTTPClient
 	} else {
-		httpClient = &http.Client{
-			Timeout:   time.Second * 15, // Reduced timeout
-			Transport: transport,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				// Always follow redirects for OIDC endpoints
-				if len(via) >= 50 {
-					return fmt.Errorf("stopped after 50 redirects")
-				}
-				return nil
-			},
-		}
+		httpClient = createDefaultHTTPClient()
 	}
 
 	t := &TraefikOidc{
@@ -303,12 +320,7 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 
 	if metadata != nil {
 		t.logger.Debug("Successfully initialized provider metadata")
-		t.jwksURL = metadata.JWKSURL
-		t.authURL = metadata.AuthURL
-		t.tokenURL = metadata.TokenURL
-		t.issuerURL = metadata.Issuer
-		t.revocationURL = metadata.RevokeURL
-		t.endSessionURL = metadata.EndSessionURL
+		t.updateMetadataEndpoints(metadata)
 
 		// Start metadata refresh goroutine
 		go t.startMetadataRefresh(providerURL)
@@ -319,6 +331,16 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	}
 
 	t.logger.Error("Received nil metadata")
+}
+
+// updateMetadataEndpoints updates the middleware with metadata endpoints
+func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
+	t.jwksURL = metadata.JWKSURL
+	t.authURL = metadata.AuthURL
+	t.tokenURL = metadata.TokenURL
+	t.issuerURL = metadata.Issuer
+	t.revocationURL = metadata.RevokeURL
+	t.endSessionURL = metadata.EndSessionURL
 }
 
 // startMetadataRefresh periodically refreshes the OIDC metadata
@@ -335,12 +357,7 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 		}
 
 		if metadata != nil {
-			t.jwksURL = metadata.JWKSURL
-			t.authURL = metadata.AuthURL
-			t.tokenURL = metadata.TokenURL
-			t.issuerURL = metadata.Issuer
-			t.revocationURL = metadata.RevokeURL
-			t.endSessionURL = metadata.EndSessionURL
+			t.updateMetadataEndpoints(metadata)
 			t.logger.Debug("Successfully refreshed metadata")
 		}
 	}
@@ -692,19 +709,24 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
 		params.Set("scope", strings.Join(t.scopes, " "))
 	}
 
-	// Ensure authURL is absolute
-	if !strings.HasPrefix(t.authURL, "http://") && !strings.HasPrefix(t.authURL, "https://") {
+	return t.buildURLWithParams(t.authURL, params)
+}
+
+// buildURLWithParams ensures a URL is absolute and appends query parameters
+func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) string {
+	// Ensure URL is absolute
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		// Extract issuer base URL
 		issuerURL, err := url.Parse(t.issuerURL)
 		if err == nil {
 			return fmt.Sprintf("%s://%s%s?%s",
 				issuerURL.Scheme,
 				issuerURL.Host,
-				t.authURL,
+				baseURL,
 				params.Encode())
 		}
 	}
-	return t.authURL + "?" + params.Encode()
+	return baseURL + "?" + params.Encode()
 }
 
 // startTokenCleanup starts the token cleanup goroutine

@@ -131,7 +131,7 @@ type MockJWKCache struct {
 	Err  error
 }
 
-func (m *MockJWKCache) GetJWKS(jwksURL string, httpClient *http.Client) (*JWKSet, error) {
+func (m *MockJWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	return m.JWKS, m.Err
 }
 
@@ -227,7 +227,7 @@ func TestVerifyToken(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Reset token blacklist and cache
+			// Reset token blacklist and cache for each test
 			ts.tOidc.tokenBlacklist = NewTokenBlacklist()
 			ts.tOidc.tokenCache = NewTokenCache()
 			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
@@ -243,9 +243,20 @@ func TestVerifyToken(t *testing.T) {
 			}
 
 			if tc.cacheToken {
+				// Use more realistic claims for cached token
 				ts.tOidc.tokenCache.Set(tc.token, map[string]interface{}{
-					"empty": "claim",
-				}, 60)
+					"iss": "https://test-issuer.com",
+					"sub": "test-subject",
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"jti": generateRandomString(16), // Add a JTI claim to prevent replay detection
+				}, time.Minute)
+
+				// Verify the token is actually in the cache
+				if claims, exists := ts.tOidc.tokenCache.Get(tc.token); exists {
+					t.Logf("Token found in cache with claims: %v", claims)
+				} else {
+					t.Logf("Token NOT found in cache despite cacheToken=true")
+				}
 			}
 
 			err := ts.tOidc.VerifyToken(tc.token)
