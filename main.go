@@ -93,7 +93,7 @@ type TraefikOidc struct {
 	allowedUserDomains         map[string]struct{}
 	allowedRolesAndGroups      map[string]struct{}
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
-	exchangeCodeForTokenFunc   func(code string, redirectURL string) (*TokenResponse, error)
+	exchangeCodeForTokenFunc   func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error)
 	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
 	initComplete               chan struct{}
 	endSessionURL              string
@@ -732,12 +732,23 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		return
 	}
 
+	// Generate PKCE code verifier
+	codeVerifier, err := generateCodeVerifier()
+	if err != nil {
+		http.Error(rw, "Failed to generate code verifier", http.StatusInternalServerError)
+		return
+	}
+	
+	// Derive code challenge from verifier
+	codeChallenge := deriveCodeChallenge(codeVerifier)
+
 	// Clear any existing session data to avoid stale state causing redirect loops
 	session.Clear(req, rw)
 
 	// Set new session values
 	session.SetCSRF(csrfToken)
 	session.SetNonce(nonce)
+	session.SetCodeVerifier(codeVerifier)
 	session.SetIncomingPath(req.URL.RequestURI())
 
 	// Save the session
@@ -748,7 +759,7 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	}
 
 	// Build and redirect to authentication URL
-	authURL := t.buildAuthURL(redirectURL, csrfToken, nonce)
+	authURL := t.buildAuthURL(redirectURL, csrfToken, nonce, codeChallenge)
 	http.Redirect(rw, req, authURL, http.StatusFound)
 }
 
@@ -760,14 +771,19 @@ func (t *TraefikOidc) verifyToken(token string) error {
 	return t.tokenVerifier.VerifyToken(token)
 }
 
-// buildAuthURL constructs the authentication URL
-func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce string) string {
+// buildAuthURL constructs the authentication URL with PKCE support
+func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge string) string {
 	params := url.Values{}
 	params.Set("client_id", t.clientID)
 	params.Set("response_type", "code")
 	params.Set("redirect_uri", redirectURL)
 	params.Set("state", state)
 	params.Set("nonce", nonce)
+	
+	// Add PKCE parameters
+	params.Set("code_challenge", codeChallenge)
+	params.Set("code_challenge_method", "S256")
+	
 	if len(t.scopes) > 0 {
 		params.Set("scope", strings.Join(t.scopes, " "))
 	}
