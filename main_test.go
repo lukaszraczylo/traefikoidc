@@ -1957,12 +1957,12 @@ func TestExchangeCodeForToken(t *testing.T) {
 					if err := r.ParseForm(); err != nil {
 						t.Fatalf("Failed to parse form: %v", err)
 					}
-					
+
 					// Verify code_verifier is included
 					if codeVerifier := r.Form.Get("code_verifier"); codeVerifier != "test-code-verifier" {
 						t.Errorf("Expected code_verifier=test-code-verifier, got %s", codeVerifier)
 					}
-					
+
 					// Return successful token response
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(TokenResponse{
@@ -1984,12 +1984,12 @@ func TestExchangeCodeForToken(t *testing.T) {
 					if err := r.ParseForm(); err != nil {
 						t.Fatalf("Failed to parse form: %v", err)
 					}
-					
+
 					// Verify code_verifier is NOT included
 					if codeVerifier := r.Form.Get("code_verifier"); codeVerifier != "" {
 						t.Errorf("Expected no code_verifier, got %s", codeVerifier)
 					}
-					
+
 					// Return successful token response
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(TokenResponse{
@@ -2011,12 +2011,12 @@ func TestExchangeCodeForToken(t *testing.T) {
 					if err := r.ParseForm(); err != nil {
 						t.Fatalf("Failed to parse form: %v", err)
 					}
-					
+
 					// Verify code_verifier is NOT included
 					if codeVerifier := r.Form.Get("code_verifier"); codeVerifier != "" {
 						t.Errorf("Expected no code_verifier, got %s", codeVerifier)
 					}
-					
+
 					// Return successful token response
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(TokenResponse{

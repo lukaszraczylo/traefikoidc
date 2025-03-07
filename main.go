@@ -741,7 +741,7 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 			http.Error(rw, "Failed to generate code verifier", http.StatusInternalServerError)
 			return
 		}
-		
+
 		// Derive code challenge from verifier
 		codeChallenge = deriveCodeChallenge(codeVerifier)
 	}
@@ -752,12 +752,12 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	// Set new session values
 	session.SetCSRF(csrfToken)
 	session.SetNonce(nonce)
-	
+
 	// Only set code verifier if PKCE is enabled
 	if t.enablePKCE {
 		session.SetCodeVerifier(codeVerifier)
 	}
-	
+
 	session.SetIncomingPath(req.URL.RequestURI())
 
 	// Save the session
@@ -788,13 +788,13 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	params.Set("redirect_uri", redirectURL)
 	params.Set("state", state)
 	params.Set("nonce", nonce)
-	
+
 	// Add PKCE parameters only if PKCE is enabled and we have a code challenge
 	if t.enablePKCE && codeChallenge != "" {
 		params.Set("code_challenge", codeChallenge)
 		params.Set("code_challenge_method", "S256")
 	}
-	
+
 	if len(t.scopes) > 0 {
 		params.Set("scope", strings.Join(t.scopes, " "))
 	}

@@ -48,7 +48,7 @@ func deriveCodeChallenge(codeVerifier string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(codeVerifier))
 	hash := hasher.Sum(nil)
-	
+
 	// Base64url encode the hash to get the code challenge
 	return base64.RawURLEncoding.EncodeToString(hash)
 }
@@ -72,6 +72,7 @@ type TokenResponse struct {
 	// TokenType is the type of token, typically "Bearer"
 	TokenType string `json:"token_type"`
 }
+
 // exchangeTokens performs the OAuth 2.0 token exchange with the OIDC provider.
 // It supports both authorization code and refresh token grant types.
 // Parameters:
@@ -90,7 +91,7 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType, codeOrToken
 	if grantType == "authorization_code" {
 		data.Set("code", codeOrToken)
 		data.Set("redirect_uri", redirectURL)
-		
+
 		// Add code_verifier if PKCE is being used
 		if codeVerifier != "" {
 			data.Set("code_verifier", codeVerifier)
@@ -365,13 +366,13 @@ func (tc *TokenCache) Cleanup() {
 // The code verifier is only included in the token request if PKCE is enabled.
 func (t *TraefikOidc) exchangeCodeForToken(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 	ctx := context.Background()
-	
+
 	// Only include code verifier if PKCE is enabled
 	effectiveCodeVerifier := ""
 	if t.enablePKCE && codeVerifier != "" {
 		effectiveCodeVerifier = codeVerifier
 	}
-	
+
 	tokenResponse, err := t.exchangeTokens(ctx, "authorization_code", code, redirectURL, effectiveCodeVerifier)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code for token: %w", err)

@@ -21,7 +21,7 @@ type Config struct {
 	// RevocationURL is the endpoint for revoking tokens (optional)
 	// If not provided, it will be discovered from provider metadata
 	RevocationURL string `json:"revocationURL"`
-	
+
 	// EnablePKCE enables Proof Key for Code Exchange (PKCE) for the authorization code flow (optional)
 	// This enhances security but might not be supported by all OIDC providers
 	// Default: false
@@ -114,7 +114,7 @@ func CreateConfig() *Config {
 		Scopes:     []string{"openid", "profile", "email"},
 		LogLevel:   DefaultLogLevel,
 		RateLimit:  DefaultRateLimit,
-		ForceHTTPS: true, // Secure by default
+		ForceHTTPS: true,  // Secure by default
 		EnablePKCE: false, // PKCE is opt-in
 	}
 
