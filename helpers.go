@@ -361,9 +361,18 @@ func (tc *TokenCache) Cleanup() {
 }
 
 // exchangeCodeForToken exchanges an authorization code for tokens.
+// It handles PKCE (Proof Key for Code Exchange) based on middleware configuration.
+// The code verifier is only included in the token request if PKCE is enabled.
 func (t *TraefikOidc) exchangeCodeForToken(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 	ctx := context.Background()
-	tokenResponse, err := t.exchangeTokens(ctx, "authorization_code", code, redirectURL, codeVerifier)
+	
+	// Only include code verifier if PKCE is enabled
+	effectiveCodeVerifier := ""
+	if t.enablePKCE && codeVerifier != "" {
+		effectiveCodeVerifier = codeVerifier
+	}
+	
+	tokenResponse, err := t.exchangeTokens(ctx, "authorization_code", code, redirectURL, effectiveCodeVerifier)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code for token: %w", err)
 	}

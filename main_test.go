@@ -1664,6 +1664,17 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 }
 
 // Helper function to compare string slices
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // TestExchangeTokensWithRedirects tests the token exchange process with redirects
 func TestExchangeTokensWithRedirects(t *testing.T) {
@@ -1770,18 +1781,6 @@ func TestExchangeTokensWithRedirects(t *testing.T) {
 	}
 }
 
-func stringSliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // TestBuildAuthURL tests the buildAuthURL function with various URL scenarios
 func TestBuildAuthURL(t *testing.T) {
 	ts := &TestSuite{t: t}
@@ -1794,7 +1793,10 @@ func TestBuildAuthURL(t *testing.T) {
 		redirectURL    string
 		state          string
 		nonce          string
+		enablePKCE     bool
+		codeChallenge  string
 		expectedPrefix string
+		checkPKCE      bool
 	}{
 		{
 			name:           "Absolute Auth URL",
@@ -1803,7 +1805,10 @@ func TestBuildAuthURL(t *testing.T) {
 			redirectURL:    "https://app.example.com/callback",
 			state:          "test-state",
 			nonce:          "test-nonce",
+			enablePKCE:     false,
+			codeChallenge:  "",
 			expectedPrefix: "https://auth.example.com/oauth/authorize?",
+			checkPKCE:      false,
 		},
 		{
 			name:           "Relative Auth URL",
@@ -1812,7 +1817,10 @@ func TestBuildAuthURL(t *testing.T) {
 			redirectURL:    "https://app.example.com/callback",
 			state:          "test-state",
 			nonce:          "test-nonce",
+			enablePKCE:     false,
+			codeChallenge:  "",
 			expectedPrefix: "https://logto.example.com/oidc/auth?",
+			checkPKCE:      false,
 		},
 		{
 			name:           "Relative Auth URL with Different Issuer",
@@ -1821,7 +1829,46 @@ func TestBuildAuthURL(t *testing.T) {
 			redirectURL:    "https://app.example.com/callback",
 			state:          "test-state",
 			nonce:          "test-nonce",
+			enablePKCE:     false,
+			codeChallenge:  "",
 			expectedPrefix: "https://auth.example.com:8443/sign-in?",
+			checkPKCE:      false,
+		},
+		{
+			name:           "With PKCE Enabled",
+			authURL:        "https://auth.example.com/oauth/authorize",
+			issuerURL:      "https://auth.example.com",
+			redirectURL:    "https://app.example.com/callback",
+			state:          "test-state",
+			nonce:          "test-nonce",
+			enablePKCE:     true,
+			codeChallenge:  "test-code-challenge",
+			expectedPrefix: "https://auth.example.com/oauth/authorize?",
+			checkPKCE:      true,
+		},
+		{
+			name:           "With PKCE Enabled but No Challenge",
+			authURL:        "https://auth.example.com/oauth/authorize",
+			issuerURL:      "https://auth.example.com",
+			redirectURL:    "https://app.example.com/callback",
+			state:          "test-state",
+			nonce:          "test-nonce",
+			enablePKCE:     true,
+			codeChallenge:  "",
+			expectedPrefix: "https://auth.example.com/oauth/authorize?",
+			checkPKCE:      false,
+		},
+		{
+			name:           "With PKCE Disabled but Challenge Provided",
+			authURL:        "https://auth.example.com/oauth/authorize",
+			issuerURL:      "https://auth.example.com",
+			redirectURL:    "https://app.example.com/callback",
+			state:          "test-state",
+			nonce:          "test-nonce",
+			enablePKCE:     false,
+			codeChallenge:  "test-code-challenge",
+			expectedPrefix: "https://auth.example.com/oauth/authorize?",
+			checkPKCE:      false,
 		},
 	}
 
@@ -1831,9 +1878,10 @@ func TestBuildAuthURL(t *testing.T) {
 			tOidc := ts.tOidc
 			tOidc.authURL = tc.authURL
 			tOidc.issuerURL = tc.issuerURL
+			tOidc.enablePKCE = tc.enablePKCE
 
 			// Call buildAuthURL with code challenge
-			result := tOidc.buildAuthURL(tc.redirectURL, tc.state, tc.nonce, "test-code-challenge")
+			result := tOidc.buildAuthURL(tc.redirectURL, tc.state, tc.nonce, tc.codeChallenge)
 
 			// Verify the URL starts with the expected prefix
 			if !strings.HasPrefix(result, tc.expectedPrefix) {
@@ -1861,12 +1909,148 @@ func TestBuildAuthURL(t *testing.T) {
 				}
 			}
 
+			// Verify PKCE parameters
+			if tc.checkPKCE {
+				if got := query.Get("code_challenge"); got != tc.codeChallenge {
+					t.Errorf("Expected code_challenge=%q, got %q", tc.codeChallenge, got)
+				}
+				if got := query.Get("code_challenge_method"); got != "S256" {
+					t.Errorf("Expected code_challenge_method=%q, got %q", "S256", got)
+				}
+			} else {
+				if got := query.Get("code_challenge"); got != "" {
+					t.Errorf("Expected no code_challenge, but got %q", got)
+				}
+				if got := query.Get("code_challenge_method"); got != "" {
+					t.Errorf("Expected no code_challenge_method, but got %q", got)
+				}
+			}
+
 			// Verify scopes are present and correct
 			if len(tOidc.scopes) > 0 {
 				expectedScopes := strings.Join(tOidc.scopes, " ")
 				if got := query.Get("scope"); got != expectedScopes {
 					t.Errorf("Expected scope=%q, got %q", expectedScopes, got)
 				}
+			}
+		})
+	}
+}
+
+// TestExchangeCodeForToken tests the exchangeCodeForToken function with PKCE support
+func TestExchangeCodeForToken(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	tests := []struct {
+		name         string
+		enablePKCE   bool
+		codeVerifier string
+		setupMock    func(t *testing.T) *httptest.Server
+	}{
+		{
+			name:         "With PKCE Enabled and Code Verifier",
+			enablePKCE:   true,
+			codeVerifier: "test-code-verifier",
+			setupMock: func(t *testing.T) *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if err := r.ParseForm(); err != nil {
+						t.Fatalf("Failed to parse form: %v", err)
+					}
+					
+					// Verify code_verifier is included
+					if codeVerifier := r.Form.Get("code_verifier"); codeVerifier != "test-code-verifier" {
+						t.Errorf("Expected code_verifier=test-code-verifier, got %s", codeVerifier)
+					}
+					
+					// Return successful token response
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(TokenResponse{
+						IDToken:      "test.id.token",
+						AccessToken:  "test-access-token",
+						TokenType:    "Bearer",
+						ExpiresIn:    3600,
+						RefreshToken: "test-refresh-token",
+					})
+				}))
+			},
+		},
+		{
+			name:         "With PKCE Disabled but Code Verifier Provided",
+			enablePKCE:   false,
+			codeVerifier: "test-code-verifier",
+			setupMock: func(t *testing.T) *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if err := r.ParseForm(); err != nil {
+						t.Fatalf("Failed to parse form: %v", err)
+					}
+					
+					// Verify code_verifier is NOT included
+					if codeVerifier := r.Form.Get("code_verifier"); codeVerifier != "" {
+						t.Errorf("Expected no code_verifier, got %s", codeVerifier)
+					}
+					
+					// Return successful token response
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(TokenResponse{
+						IDToken:      "test.id.token",
+						AccessToken:  "test-access-token",
+						TokenType:    "Bearer",
+						ExpiresIn:    3600,
+						RefreshToken: "test-refresh-token",
+					})
+				}))
+			},
+		},
+		{
+			name:         "With PKCE Enabled but No Code Verifier",
+			enablePKCE:   true,
+			codeVerifier: "",
+			setupMock: func(t *testing.T) *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if err := r.ParseForm(); err != nil {
+						t.Fatalf("Failed to parse form: %v", err)
+					}
+					
+					// Verify code_verifier is NOT included
+					if codeVerifier := r.Form.Get("code_verifier"); codeVerifier != "" {
+						t.Errorf("Expected no code_verifier, got %s", codeVerifier)
+					}
+					
+					// Return successful token response
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(TokenResponse{
+						IDToken:      "test.id.token",
+						AccessToken:  "test-access-token",
+						TokenType:    "Bearer",
+						ExpiresIn:    3600,
+						RefreshToken: "test-refresh-token",
+					})
+				}))
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := tc.setupMock(t)
+			defer server.Close()
+
+			// Configure the test instance
+			tOidc := ts.tOidc
+			tOidc.tokenURL = server.URL
+			tOidc.enablePKCE = tc.enablePKCE
+
+			// Test exchangeCodeForToken
+			response, err := tOidc.exchangeCodeForToken("test-code", "http://callback", tc.codeVerifier)
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+			if response == nil {
+				t.Error("Expected token response but got nil")
+			} else if response.IDToken != "test.id.token" {
+				t.Errorf("Expected ID token %q, got %q", "test.id.token", response.IDToken)
 			}
 		})
 	}
@@ -1879,7 +2063,7 @@ func TestDefaultInitiateAuthentication_PreservesQueryParameters(t *testing.T) {
 
 	// Create a request with query parameters
 	req := httptest.NewRequest("GET", "/protected/resource?param1=value1&param2=value2", nil)
-	rw := httptest.NewRecorder()
+	responseRecorder := httptest.NewRecorder()
 
 	// Get session
 	session, err := ts.sessionManager.GetSession(req)
@@ -1889,7 +2073,7 @@ func TestDefaultInitiateAuthentication_PreservesQueryParameters(t *testing.T) {
 
 	// Call defaultInitiateAuthentication
 	redirectURL := "http://example.com/callback"
-	ts.tOidc.defaultInitiateAuthentication(rw, req, session, redirectURL)
+	ts.tOidc.defaultInitiateAuthentication(responseRecorder, req, session, redirectURL)
 
 	// Verify that the incoming path includes query parameters
 	incomingPath := session.GetIncomingPath()

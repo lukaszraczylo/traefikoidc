@@ -83,6 +83,7 @@ type TraefikOidc struct {
 	scopes                     []string
 	limiter                    *rate.Limiter
 	forceHTTPS                 bool
+	enablePKCE                 bool
 	scheme                     string
 	tokenCache                 *TokenCache
 	httpClient                 *http.Client
@@ -279,7 +280,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	} else {
 		httpClient = createDefaultHTTPClient()
 	}
-
 	t := &TraefikOidc{
 		next:         next,
 		name:         name,
@@ -302,6 +302,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		clientID:              config.ClientID,
 		clientSecret:          config.ClientSecret,
 		forceHTTPS:            config.ForceHTTPS,
+		enablePKCE:            config.EnablePKCE,
 		scopes:                config.Scopes,
 		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:            NewTokenCache(),
@@ -310,9 +311,8 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
 		allowedRolesAndGroups: createStringMap(config.AllowedRolesAndGroups),
 		initComplete:          make(chan struct{}),
+		logger:                logger,
 	}
-	// Assign the initialized logger
-	t.logger = logger
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
 	t.extractClaimsFunc = extractClaims
@@ -732,15 +732,19 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		return
 	}
 
-	// Generate PKCE code verifier
-	codeVerifier, err := generateCodeVerifier()
-	if err != nil {
-		http.Error(rw, "Failed to generate code verifier", http.StatusInternalServerError)
-		return
+	// Generate PKCE code verifier and challenge if PKCE is enabled
+	var codeVerifier, codeChallenge string
+	if t.enablePKCE {
+		var err error
+		codeVerifier, err = generateCodeVerifier()
+		if err != nil {
+			http.Error(rw, "Failed to generate code verifier", http.StatusInternalServerError)
+			return
+		}
+		
+		// Derive code challenge from verifier
+		codeChallenge = deriveCodeChallenge(codeVerifier)
 	}
-	
-	// Derive code challenge from verifier
-	codeChallenge := deriveCodeChallenge(codeVerifier)
 
 	// Clear any existing session data to avoid stale state causing redirect loops
 	session.Clear(req, rw)
@@ -748,7 +752,12 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	// Set new session values
 	session.SetCSRF(csrfToken)
 	session.SetNonce(nonce)
-	session.SetCodeVerifier(codeVerifier)
+	
+	// Only set code verifier if PKCE is enabled
+	if t.enablePKCE {
+		session.SetCodeVerifier(codeVerifier)
+	}
+	
 	session.SetIncomingPath(req.URL.RequestURI())
 
 	// Save the session
@@ -771,7 +780,7 @@ func (t *TraefikOidc) verifyToken(token string) error {
 	return t.tokenVerifier.VerifyToken(token)
 }
 
-// buildAuthURL constructs the authentication URL with PKCE support
+// buildAuthURL constructs the authentication URL with optional PKCE support
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge string) string {
 	params := url.Values{}
 	params.Set("client_id", t.clientID)
@@ -780,9 +789,11 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	params.Set("state", state)
 	params.Set("nonce", nonce)
 	
-	// Add PKCE parameters
-	params.Set("code_challenge", codeChallenge)
-	params.Set("code_challenge_method", "S256")
+	// Add PKCE parameters only if PKCE is enabled and we have a code challenge
+	if t.enablePKCE && codeChallenge != "" {
+		params.Set("code_challenge", codeChallenge)
+		params.Set("code_challenge_method", "S256")
+	}
 	
 	if len(t.scopes) > 0 {
 		params.Set("scope", strings.Join(t.scopes, " "))
