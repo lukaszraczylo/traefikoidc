@@ -286,18 +286,18 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		http.Error(rw, "Failed to save session", http.StatusInternalServerError)
 		return
 	}
-// Redirect to original path or root
-redirectPath := "/"
-if incomingPath := session.GetIncomingPath(); incomingPath != "" && incomingPath != t.redirURLPath {
-	redirectPath = incomingPath
-}
+	// Redirect to original path or root
+	redirectPath := "/"
+	if incomingPath := session.GetIncomingPath(); incomingPath != "" && incomingPath != t.redirURLPath {
+		redirectPath = incomingPath
+	}
 
-// For redirecting, we need to ensure URL fragments are preserved
-// To do this, we'll use a small JavaScript snippet that preserves any URL fragments
-// This is necessary because URL fragments are not sent to the server
-rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-rw.WriteHeader(http.StatusOK)
-fmt.Fprintf(rw, `<!DOCTYPE html>
+	// For redirecting, we need to ensure URL fragments are preserved
+	// To do this, we'll use a small JavaScript snippet that preserves any URL fragments
+	// This is necessary because URL fragments are not sent to the server
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	rw.WriteHeader(http.StatusOK)
+	fmt.Fprintf(rw, `<!DOCTYPE html>
 <html>
 <head>
 <title>Authentication Complete</title>

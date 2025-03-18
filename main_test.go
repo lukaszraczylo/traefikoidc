@@ -2132,11 +2132,11 @@ func TestHandleCallback_PreservesURLFragments(t *testing.T) {
 	if !strings.Contains(body, "/dashboard?param=value") {
 		t.Errorf("Response body doesn't contain the original redirect path")
 	}
-	
+
 	if !strings.Contains(body, "window.location.hash") {
 		t.Errorf("Response doesn't contain JavaScript logic to preserve URL fragments")
 	}
-	
+
 	if !strings.Contains(body, "redirectUrl.hash = window.location.hash") {
 		t.Errorf("Response doesn't contain logic to copy the fragment from current URL")
 	}
