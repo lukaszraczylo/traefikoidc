@@ -69,13 +69,14 @@ The middleware supports the following configuration options:
 | `postLogoutRedirectURI` | The URL to redirect to after logout | `/` | `/logged-out-page` |
 | `scopes` | The OAuth 2.0 scopes to request | `["openid", "profile", "email"]` | `["openid", "email", "profile", "roles"]` |
 | `logLevel` | Sets the logging verbosity | `info` | `debug`, `info`, `error` |
-| `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
-| `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
-| `excludedURLs` | Lists paths that bypass authentication | `["/favicon"]` | `["/health", "/metrics", "/public"]` |
-| `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
-| `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
-| `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |
-| `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
+| | `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
+| | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
+| | `excludedURLs` | Lists paths that bypass authentication | `["/favicon"]` | `["/health", "/metrics", "/public"]` |
+| | `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
+| | `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
+| | `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |
+| | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
+| | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
 
 ## Usage Examples
 
@@ -233,6 +234,30 @@ spec:
         - profile
 ```
 
+### With PKCE Enabled
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-with-pkce
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: 1234567890.apps.googleusercontent.com
+      clientSecret: your-client-secret
+      sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      enablePKCE: true  # Enables PKCE for added security
+      scopes:
+        - openid
+        - email
+        - profile
+```
+
 ### Keeping Secrets Secret in Kubernetes
 
 For Kubernetes environments, you can reference secrets instead of hardcoding sensitive values:
@@ -377,6 +402,17 @@ http:
 ### Session Management
 
 The middleware uses encrypted cookies to manage user sessions. The `sessionEncryptionKey` must be at least 32 bytes long and should be kept secret.
+
+### PKCE Support
+
+The middleware supports PKCE (Proof Key for Code Exchange), which is an extension to the authorization code flow to prevent authorization code interception attacks. When enabled via the `enablePKCE` option, the middleware will generate a code verifier for each authentication request and derive a code challenge from it. The code verifier is stored in the user's session and sent during the token exchange process.
+
+PKCE is recommended when:
+- Your OIDC provider supports it (most modern providers do)
+- You need an additional layer of security for the authorization code flow
+- You're concerned about potential authorization code interception attacks
+
+Note that not all OIDC providers support PKCE, so check your provider's documentation before enabling this feature.
 
 ### Token Caching and Blacklisting
 

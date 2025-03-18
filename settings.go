@@ -22,6 +22,11 @@ type Config struct {
 	// If not provided, it will be discovered from provider metadata
 	RevocationURL string `json:"revocationURL"`
 
+	// EnablePKCE enables Proof Key for Code Exchange (PKCE) for the authorization code flow (optional)
+	// This enhances security but might not be supported by all OIDC providers
+	// Default: false
+	EnablePKCE bool `json:"enablePKCE"`
+
 	// CallbackURL is the path where the OIDC provider will redirect after authentication (required)
 	// Example: /oauth2/callback
 	CallbackURL string `json:"callbackURL"`
@@ -103,12 +108,14 @@ const (
 //   - RateLimit: 100 requests per second
 //   - PostLogoutRedirectURI: "/"
 //   - ForceHTTPS: true (for security)
+//   - EnablePKCE: false (PKCE is opt-in)
 func CreateConfig() *Config {
 	c := &Config{
 		Scopes:     []string{"openid", "profile", "email"},
 		LogLevel:   DefaultLogLevel,
 		RateLimit:  DefaultRateLimit,
-		ForceHTTPS: true, // Secure by default
+		ForceHTTPS: true,  // Secure by default
+		EnablePKCE: false, // PKCE is opt-in
 	}
 
 	return c

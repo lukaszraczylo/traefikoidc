@@ -62,6 +62,7 @@ testData:
   # Advanced parameters (usually discovered automatically from provider metadata)
   revocationURL: https://accounts.google.com/revoke # Endpoint for revoking tokens
   oidcEndSessionURL: https://accounts.google.com/logout # Provider's end session endpoint
+  enablePKCE: false # Enables PKCE (Proof Key for Code Exchange) for additional security
 
 # Configuration documentation
 configuration:
@@ -229,4 +230,16 @@ configuration:
       If not provided, it will be discovered from provider metadata.
 
       Example: https://accounts.google.com/logout
+    required: false
+
+  enablePKCE:
+    type: boolean
+    description: |
+      Enables PKCE (Proof Key for Code Exchange) for the OAuth 2.0 authorization code flow.
+      PKCE adds an extra layer of security to protect against authorization code interception attacks.
+
+      Not all OIDC providers support PKCE, so this should only be enabled if your provider supports it.
+      If enabled, the middleware will generate and use a code verifier/challenge pair during authentication.
+
+      Default: false
     required: false

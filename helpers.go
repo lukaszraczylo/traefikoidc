@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,31 @@ func generateNonce() (string, error) {
 		return "", fmt.Errorf("could not generate nonce: %w", err)
 	}
 	return base64.URLEncoding.EncodeToString(nonceBytes), nil
+}
+
+// generateCodeVerifier creates a cryptographically secure random string
+// for use as a PKCE code verifier. The code verifier must be between 43 and 128
+// characters long, per the PKCE spec (RFC 7636).
+func generateCodeVerifier() (string, error) {
+	// Using 32 bytes (256 bits) will produce a 43 character base64url string
+	verifierBytes := make([]byte, 32)
+	_, err := rand.Read(verifierBytes)
+	if err != nil {
+		return "", fmt.Errorf("could not generate code verifier: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(verifierBytes), nil
+}
+
+// deriveCodeChallenge creates a code challenge from a code verifier
+// using the SHA-256 method as specified in the PKCE standard (RFC 7636).
+func deriveCodeChallenge(codeVerifier string) string {
+	// Calculate SHA-256 hash of the code verifier
+	hasher := sha256.New()
+	hasher.Write([]byte(codeVerifier))
+	hash := hasher.Sum(nil)
+
+	// Base64url encode the hash to get the code challenge
+	return base64.RawURLEncoding.EncodeToString(hash)
 }
 
 // TokenResponse represents the response from the OIDC token endpoint.
@@ -54,7 +80,8 @@ type TokenResponse struct {
 //   - grantType: The OAuth 2.0 grant type ("authorization_code" or "refresh_token")
 //   - codeOrToken: Either the authorization code or refresh token
 //   - redirectURL: The callback URL for authorization code grant
-func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType, codeOrToken, redirectURL string) (*TokenResponse, error) {
+//   - codeVerifier: Optional PKCE code verifier for authorization code grant
+func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType, codeOrToken, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 	data := url.Values{
 		"grant_type":    {grantType},
 		"client_id":     {t.clientID},
@@ -64,6 +91,11 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType, codeOrToken
 	if grantType == "authorization_code" {
 		data.Set("code", codeOrToken)
 		data.Set("redirect_uri", redirectURL)
+
+		// Add code_verifier if PKCE is being used
+		if codeVerifier != "" {
+			data.Set("code_verifier", codeVerifier)
+		}
 	} else if grantType == "refresh_token" {
 		data.Set("refresh_token", codeOrToken)
 	}
@@ -112,7 +144,7 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType, codeOrToken
 // This is used to refresh access tokens before they expire.
 func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error) {
 	ctx := context.Background()
-	tokenResponse, err := t.exchangeTokens(ctx, "refresh_token", refreshToken, "")
+	tokenResponse, err := t.exchangeTokens(ctx, "refresh_token", refreshToken, "", "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to refresh token: %w", err)
 	}
@@ -190,7 +222,10 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		return
 	}
 
-	tokenResponse, err := t.exchangeCodeForTokenFunc(code, redirectURL)
+	// Get the code verifier from the session for PKCE flow
+	codeVerifier := session.GetCodeVerifier()
+
+	tokenResponse, err := t.exchangeCodeForTokenFunc(code, redirectURL, codeVerifier)
 	if err != nil {
 		t.logger.Errorf("Failed to exchange code for token: %v", err)
 		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
@@ -327,9 +362,18 @@ func (tc *TokenCache) Cleanup() {
 }
 
 // exchangeCodeForToken exchanges an authorization code for tokens.
-func (t *TraefikOidc) exchangeCodeForToken(code string, redirectURL string) (*TokenResponse, error) {
+// It handles PKCE (Proof Key for Code Exchange) based on middleware configuration.
+// The code verifier is only included in the token request if PKCE is enabled.
+func (t *TraefikOidc) exchangeCodeForToken(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 	ctx := context.Background()
-	tokenResponse, err := t.exchangeTokens(ctx, "authorization_code", code, redirectURL)
+
+	// Only include code verifier if PKCE is enabled
+	effectiveCodeVerifier := ""
+	if t.enablePKCE && codeVerifier != "" {
+		effectiveCodeVerifier = codeVerifier
+	}
+
+	tokenResponse, err := t.exchangeTokens(ctx, "authorization_code", code, redirectURL, effectiveCodeVerifier)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code for token: %w", err)
 	}

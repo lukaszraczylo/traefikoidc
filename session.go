@@ -576,6 +576,17 @@ func (sd *SessionData) SetNonce(nonce string) {
 	sd.mainSession.Values["nonce"] = nonce
 }
 
+// GetCodeVerifier retrieves the PKCE code verifier from the session.
+func (sd *SessionData) GetCodeVerifier() string {
+	codeVerifier, _ := sd.mainSession.Values["code_verifier"].(string)
+	return codeVerifier
+}
+
+// SetCodeVerifier stores the PKCE code verifier in the session.
+func (sd *SessionData) SetCodeVerifier(codeVerifier string) {
+	sd.mainSession.Values["code_verifier"] = codeVerifier
+}
+
 // GetEmail retrieves the authenticated user's email address from the session.
 func (sd *SessionData) GetEmail() string {
 	email, _ := sd.mainSession.Values["email"].(string)
