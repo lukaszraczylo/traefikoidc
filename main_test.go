@@ -513,7 +513,7 @@ func TestHandleCallback(t *testing.T) {
 				session.SetCSRF("test-csrf-token")
 				session.SetNonce("test-nonce")
 			},
-			expectedStatus: http.StatusFound,
+			expectedStatus: http.StatusOK, // Changed from StatusFound since we now return HTML instead of redirect
 		},
 		{
 			name:        "Missing Code",
@@ -2053,6 +2053,92 @@ func TestExchangeCodeForToken(t *testing.T) {
 				t.Errorf("Expected ID token %q, got %q", "test.id.token", response.IDToken)
 			}
 		})
+	}
+}
+
+// TestHandleCallback_PreservesURLFragments tests that URL fragments (anchors) are preserved during the authentication callback process.
+func TestHandleCallback_PreservesURLFragments(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	// Create a new instance for this specific test
+	logger := NewLogger("info")
+	sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+
+	tOidc := &TraefikOidc{
+		allowedUserDomains: map[string]struct{}{"example.com": {}},
+		logger:             logger,
+		tokenVerifier:      ts.tOidc.tokenVerifier,
+		jwtVerifier:        ts.tOidc.jwtVerifier,
+		sessionManager:     sessionManager,
+		redirURLPath:       "/callback",
+		extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+			return map[string]interface{}{
+				"email": "user@example.com",
+				"nonce": "test-nonce",
+			}, nil
+		},
+		exchangeCodeForTokenFunc: func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
+			return &TokenResponse{
+				IDToken:      ts.token,
+				RefreshToken: "test-refresh-token",
+			}, nil
+		},
+	}
+
+	// Create a request with the callback URL
+	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-csrf-token", nil)
+	rr := httptest.NewRecorder()
+
+	// Create session with an incoming path that contains a URL fragment
+	session, err := sessionManager.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+
+	// Set up the session with necessary values and an incoming path with a fragment
+	session.SetCSRF("test-csrf-token")
+	session.SetNonce("test-nonce")
+	session.SetIncomingPath("/dashboard?param=value") // The fragment will be client-side only
+
+	if err := session.Save(req, rr); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	// Copy cookies to the request
+	for _, cookie := range rr.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+
+	// Reset response recorder
+	rr = httptest.NewRecorder()
+
+	// Call handleCallback
+	tOidc.handleCallback(rr, req, "http://example.com/callback")
+
+	// The response should be OK (200) since we're returning HTML, not a redirect
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	// Verify that the response is HTML and contains our JavaScript for preserving fragments
+	contentType := rr.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/html") {
+		t.Errorf("Expected Content-Type to contain 'text/html', got %s", contentType)
+	}
+
+	// Verify the response contains the redirect path and JavaScript for preserving fragments
+	body := rr.Body.String()
+	if !strings.Contains(body, "/dashboard?param=value") {
+		t.Errorf("Response body doesn't contain the original redirect path")
+	}
+
+	if !strings.Contains(body, "window.location.hash") {
+		t.Errorf("Response doesn't contain JavaScript logic to preserve URL fragments")
+	}
+
+	if !strings.Contains(body, "redirectUrl.hash = window.location.hash") {
+		t.Errorf("Response doesn't contain logic to copy the fragment from current URL")
 	}
 }
 
