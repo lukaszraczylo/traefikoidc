@@ -9,10 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"time"
-
-	"runtime"
 
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
@@ -52,7 +51,10 @@ func createDefaultHTTPClient() *http.Client {
 	}
 }
 
-const ConstSessionTimeout = 86400 // Session timeout in seconds
+const (
+	ConstSessionTimeout      = 86400          // Session timeout in seconds
+	defaultBlacklistDuration = 24 * time.Hour // Default duration to blacklist a JTI
+)
 
 // TokenVerifier interface for token verification
 type TokenVerifier interface {
@@ -62,6 +64,13 @@ type TokenVerifier interface {
 // JWTVerifier interface for JWT verification
 type JWTVerifier interface {
 	VerifyJWTSignatureAndClaims(jwt *JWT, token string) error
+}
+
+// TokenExchanger defines methods for OIDC token operations
+type TokenExchanger interface {
+	ExchangeCodeForToken(ctx context.Context, grantType string, codeOrToken string, redirectURL string, codeVerifier string) (*TokenResponse, error)
+	GetNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error)
+	RevokeTokenWithProvider(token, tokenType string) error
 }
 
 // TraefikOidc is the main struct for the OIDC middleware
@@ -94,12 +103,13 @@ type TraefikOidc struct {
 	allowedUserDomains         map[string]struct{}
 	allowedRolesAndGroups      map[string]struct{}
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
-	exchangeCodeForTokenFunc   func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error)
-	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
-	initComplete               chan struct{}
-	endSessionURL              string
-	postLogoutRedirectURI      string
-	sessionManager             *SessionManager
+	// exchangeCodeForTokenFunc   func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) // Replaced by interface
+	extractClaimsFunc     func(tokenString string) (map[string]interface{}, error)
+	initComplete          chan struct{}
+	endSessionURL         string
+	postLogoutRedirectURI string
+	sessionManager        *SessionManager
+	tokenExchanger        TokenExchanger // Added field for mocking
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -155,6 +165,28 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 	// Cache the verified token
 	t.cacheVerifiedToken(token, jwt.Claims)
 
+	// Add JTI to blacklist AFTER successful verification to prevent replay
+	if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" {
+		// Calculate expiry based on 'exp' claim if available, otherwise use default
+		expiry := time.Now().Add(defaultBlacklistDuration)
+		if expClaim, expOk := jwt.Claims["exp"].(float64); expOk {
+			expTime := time.Unix(int64(expClaim), 0)
+			tokenDuration := time.Until(expTime)
+			// Use token expiry if longer than default, capped at a reasonable max (e.g., 24h)
+			if tokenDuration > defaultBlacklistDuration && tokenDuration < (24*time.Hour) {
+				expiry = expTime
+			} else if tokenDuration <= 0 {
+				// If token already expired but somehow passed verification, use default
+				expiry = time.Now().Add(defaultBlacklistDuration)
+			} else {
+				// Use default if token expiry is shorter or excessively long
+				expiry = time.Now().Add(defaultBlacklistDuration)
+			}
+		}
+		t.tokenBlacklist.Add(jti, expiry)
+		t.logger.Debugf("Added JTI %s to blacklist", jti)
+	}
+
 	return nil
 }
 
@@ -165,10 +197,21 @@ func (t *TraefikOidc) performPreVerificationChecks(token string) error {
 		return fmt.Errorf("rate limit exceeded")
 	}
 
-	// Check if token is blacklisted
+	// Check if the raw token string itself is blacklisted (e.g., via explicit revocation)
 	if t.tokenBlacklist.IsBlacklisted(token) {
-		return fmt.Errorf("token is blacklisted")
+		return fmt.Errorf("token is blacklisted (raw string)")
 	}
+
+	// Also check if the JTI claim is blacklisted (replay detection)
+	claims, err := extractClaims(token) // Use existing helper
+	if err == nil {                     // Only check JTI if claims could be extracted
+		if jti, ok := claims["jti"].(string); ok && jti != "" {
+			if t.tokenBlacklist.IsBlacklisted(jti) {
+				// Use a specific error message for replay
+				return fmt.Errorf("token replay detected (jti: %s)", jti)
+			}
+		}
+	} // If claims extraction fails, proceed; full validation will catch token issues later.
 
 	return nil
 }
@@ -316,7 +359,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
 	t.extractClaimsFunc = extractClaims
-	t.exchangeCodeForTokenFunc = t.exchangeCodeForToken
+	// t.exchangeCodeForTokenFunc = t.exchangeCodeForToken // Removed, using interface now
 	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 	}
@@ -329,6 +372,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	t.tokenVerifier = t
 	t.jwtVerifier = t
 	t.startTokenCleanup()
+	t.tokenExchanger = t // Initialize the interface field to self
 	go t.initializeMetadata(config.ProviderURL)
 
 	return t, nil
@@ -532,15 +576,19 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if !authenticated {
+		// Original logic: Always initiate authentication if not authenticated
+		t.logger.Debug("User not authenticated, initiating OIDC flow")
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
-		return
+		return // Stop processing
 	}
 
 	if needsRefresh {
 		refreshed := t.refreshToken(rw, req, session)
 		if !refreshed {
+			// Original logic: Always handle failed refresh as an expired token
+			t.logger.Debug("Token refresh failed, handling as expired token")
 			t.handleExpiredToken(rw, req, session, redirectURL)
-			return
+			return // Stop processing
 		}
 	}
 
@@ -621,6 +669,151 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	t.next.ServeHTTP(rw, req)
 }
 
+// handleExpiredToken manages token expiration by clearing the session
+// and initiating a new authentication flow.
+func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
+	// Clear authentication data but preserve CSRF state
+	session.SetAuthenticated(false)
+	session.SetAccessToken("")
+	session.SetRefreshToken("")
+	session.SetEmail("")
+
+	// Save the cleared session state
+	if err := session.Save(req, rw); err != nil {
+		t.logger.Errorf("Failed to save cleared session: %v", err)
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+}
+
+// handleCallback processes the authentication callback from the OIDC provider.
+// It validates the callback parameters, exchanges the authorization code for
+// tokens, verifies the tokens, and establishes the user's session.
+func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, redirectURL string) {
+	session, err := t.sessionManager.GetSession(req)
+	if err != nil {
+		t.logger.Errorf("Session error: %v", err)
+		http.Error(rw, "Session error", http.StatusInternalServerError)
+		return
+	}
+
+	t.logger.Debugf("Handling callback, URL: %s", req.URL.String())
+
+	// Check for errors in the callback
+	if req.URL.Query().Get("error") != "" {
+		errorDescription := req.URL.Query().Get("error_description")
+		t.logger.Errorf("Authentication error: %s - %s", req.URL.Query().Get("error"), errorDescription)
+		http.Error(rw, fmt.Sprintf("Authentication error: %s", errorDescription), http.StatusBadRequest)
+		return
+	}
+
+	// Validate CSRF state
+	state := req.URL.Query().Get("state")
+	if state == "" {
+		t.logger.Error("No state in callback")
+		http.Error(rw, "State parameter missing in callback", http.StatusBadRequest)
+		return
+	}
+
+	csrfToken := session.GetCSRF()
+	if csrfToken == "" {
+		t.logger.Error("CSRF token missing in session")
+		http.Error(rw, "CSRF token missing", http.StatusBadRequest)
+		return
+	}
+
+	if state != csrfToken {
+		t.logger.Error("State parameter does not match CSRF token in session")
+		http.Error(rw, "Invalid state parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Exchange code for tokens
+	code := req.URL.Query().Get("code")
+	if code == "" {
+		t.logger.Error("No code in callback")
+		http.Error(rw, "No code in callback", http.StatusBadRequest)
+		return
+	}
+
+	// Get the code verifier from the session for PKCE flow
+	codeVerifier := session.GetCodeVerifier()
+
+	tokenResponse, err := t.tokenExchanger.ExchangeCodeForToken(req.Context(), "authorization_code", code, redirectURL, codeVerifier)
+	if err != nil {
+		t.logger.Errorf("Failed to exchange code for token: %v", err)
+		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify tokens and claims
+	// Use the exported VerifyToken method now that handleCallback is in main.go
+	if err := t.VerifyToken(tokenResponse.IDToken); err != nil {
+		t.logger.Errorf("Failed to verify id_token: %v", err)
+		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
+		return
+	}
+
+	claims, err := t.extractClaimsFunc(tokenResponse.IDToken)
+	if err != nil {
+		t.logger.Errorf("Failed to extract claims: %v", err)
+		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify nonce to prevent replay attacks
+	nonceClaim, ok := claims["nonce"].(string)
+	if !ok || nonceClaim == "" {
+		t.logger.Error("Nonce claim missing in id_token")
+		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
+		return
+	}
+
+	sessionNonce := session.GetNonce()
+	if sessionNonce == "" {
+		t.logger.Error("Nonce not found in session")
+		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
+		return
+	}
+
+	if nonceClaim != sessionNonce {
+		t.logger.Error("Nonce claim does not match session nonce")
+		http.Error(rw, "Authentication failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Validate user's email domain
+	// Use the unexported isAllowedDomain method now that handleCallback is in main.go
+	email, _ := claims["email"].(string)
+	if email == "" || !t.isAllowedDomain(email) {
+		t.logger.Errorf("Invalid or disallowed email: %s", email)
+		http.Error(rw, "Authentication failed: Invalid or disallowed email", http.StatusForbidden)
+		return
+	}
+
+	// Update session with authentication data
+	session.SetAuthenticated(true)
+	session.SetEmail(email)
+	session.SetAccessToken(tokenResponse.IDToken)
+	session.SetRefreshToken(tokenResponse.RefreshToken)
+
+	if err := session.Save(req, rw); err != nil {
+		t.logger.Errorf("Failed to save session: %v", err)
+		http.Error(rw, "Failed to save session", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect to original path or root
+	redirectPath := "/"
+	if incomingPath := session.GetIncomingPath(); incomingPath != "" && incomingPath != t.redirURLPath {
+		redirectPath = incomingPath
+	}
+
+	http.Redirect(rw, req, redirectPath, http.StatusFound)
+}
+
 // determineExcludedURL checks if the current request URL is in the excluded list
 func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 	for excludedURL := range t.excludedURLs {
@@ -675,17 +868,26 @@ func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, boo
 		return false, false, true // Session is invalid, consider it expired
 	}
 
-	// Verify the token
-	if err := t.verifyToken(accessToken); err != nil {
-		t.logger.Errorf("Token verification failed: %v", err)
-		return false, false, true // Token is invalid, consider it expired
+	// Verify the token structure and signature first
+	jwt, err := parseJWT(accessToken)
+	if err != nil {
+		t.logger.Errorf("Failed to parse JWT during auth check: %v", err)
+		return false, false, true // Invalid format, treat as expired/invalid
+	}
+	if err := t.VerifyJWTSignatureAndClaims(jwt, accessToken); err != nil {
+		// Check if the error is specifically about expiration
+		if strings.Contains(err.Error(), "token has expired") {
+			t.logger.Debugf("Token signature/claims valid but token expired, attempting refresh")
+			// Token is expired but otherwise valid, signal for refresh
+			return true, true, false // Authenticated=true (was valid), NeedsRefresh=true, Expired=false (because refresh is possible)
+		}
+		// Other verification error (signature, issuer, audience etc.)
+		t.logger.Errorf("Token verification failed (non-expiration): %v", err)
+		return false, false, true // Token is invalid for other reasons
 	}
 
-	claims, err := extractClaims(accessToken)
-	if err != nil {
-		t.logger.Errorf("Failed to extract claims: %v", err)
-		return false, false, true
-	}
+	// Claims already parsed within VerifyJWTSignatureAndClaims if it didn't error early
+	claims := jwt.Claims
 
 	expClaim, ok := claims["exp"].(float64)
 	if !ok {
@@ -696,17 +898,18 @@ func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, boo
 	now := time.Now().Unix()
 	expTime := int64(expClaim)
 
-	if now > expTime {
-		t.logger.Debug("Token has expired")
-		return false, false, true
+	// Expiration check is now handled within VerifyJWTSignatureAndClaims logic above
+	// We only get here if the token is valid and not expired
+
+	// Check if token is nearing expiration (needs refresh proactively)
+	// Define a grace period, e.g., 5 minutes before actual expiry
+	refreshGracePeriod := int64(5 * 60)
+	if expTime-now < refreshGracePeriod {
+		t.logger.Debugf("Token nearing expiration (within %d seconds), scheduling refresh", refreshGracePeriod)
+		return true, true, false // Needs proactive refresh
 	}
 
-	gracePeriod := time.Minute * 5
-	if now+int64(gracePeriod.Seconds()) > expTime {
-		t.logger.Debug("Token will expire soon")
-		return true, true, false // Token will expire soon, needs refresh
-	}
-
+	// Token is valid, not expired, and not nearing expiration
 	return true, false, false
 }
 
@@ -890,7 +1093,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		return false
 	}
 
-	newToken, err := t.getNewTokenWithRefreshToken(refreshToken)
+	newToken, err := t.tokenExchanger.GetNewTokenWithRefreshToken(refreshToken)
 	if err != nil {
 		t.logger.Errorf("Failed to refresh token: %v", err)
 		return false
@@ -985,4 +1188,20 @@ func buildFullURL(scheme, host, path string) string {
 	}
 
 	return fmt.Sprintf("%s://%s%s", scheme, host, path)
+}
+
+// --- TokenExchanger Interface Implementation ---
+
+// ExchangeCodeForToken implements the TokenExchanger interface.
+// It calls the existing exchangeTokens helper function.
+func (t *TraefikOidc) ExchangeCodeForToken(ctx context.Context, grantType string, codeOrToken string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
+	// Note: The original exchangeTokens helper is defined in helpers.go and is already a method on *TraefikOidc
+	return t.exchangeTokens(ctx, grantType, codeOrToken, redirectURL, codeVerifier)
+}
+
+// GetNewTokenWithRefreshToken implements the TokenExchanger interface.
+// It calls the existing getNewTokenWithRefreshToken helper function.
+func (t *TraefikOidc) GetNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error) {
+	// Note: The original getNewTokenWithRefreshToken helper is defined in helpers.go and is already a method on *TraefikOidc
+	return t.getNewTokenWithRefreshToken(refreshToken)
 }
