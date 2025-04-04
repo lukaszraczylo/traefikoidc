@@ -529,6 +529,15 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// Check if URL is excluded
 	if t.determineExcludedURL(req.URL.Path) {
+		t.logger.Debugf("Request path %s excluded by configuration, bypassing OIDC", req.URL.Path)
+		t.next.ServeHTTP(rw, req)
+		return
+	}
+
+	// Check if the request expects Server-Sent Events
+	acceptHeader := req.Header.Get("Accept")
+	if strings.Contains(acceptHeader, "text/event-stream") {
+		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
 		t.next.ServeHTTP(rw, req)
 		return
 	}
