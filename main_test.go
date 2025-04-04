@@ -101,7 +101,7 @@ func (ts *TestSuite) Setup() {
 		jwksURL:            "https://test-jwks-url.com",
 		revocationURL:      "https://revocation-endpoint.com",
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
-		tokenBlacklist:     NewTokenBlacklist(),
+		tokenBlacklist:     NewCache(), // Use generic cache for blacklist
 		tokenCache:         NewTokenCache(),
 		logger:             logger,
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
@@ -274,13 +274,14 @@ func TestVerifyToken(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset token blacklist and cache for each test
-			ts.tOidc.tokenBlacklist = NewTokenBlacklist()
+			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
 			ts.tOidc.tokenCache = NewTokenCache()
 			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
 
 			// Set up the test case
 			if tc.blacklist {
-				ts.tOidc.tokenBlacklist.Add(tc.token, time.Now().Add(1*time.Hour))
+				// Use Set with a duration. Value 'true' is arbitrary.
+				ts.tOidc.tokenBlacklist.Set(tc.token, true, 1*time.Hour)
 			}
 
 			if tc.rateLimit {
@@ -841,7 +842,7 @@ func TestHandleCallback(t *testing.T) {
 			// Explicitly clear the shared blacklist at the start of each sub-test
 			// to ensure no state leaks, even though we expect the local one to be used.
 			// Note: This line might be redundant now that the verifier is local, but keep for safety.
-			ts.tOidc.tokenBlacklist = NewTokenBlacklist()
+			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
 
 			logger := NewLogger("info")
 			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
@@ -873,7 +874,7 @@ func TestHandleCallback(t *testing.T) {
 				},
 				tokenCache:     NewTokenCache(),              // Initialize token cache
 				limiter:        rate.NewLimiter(rate.Inf, 0), // Initialize rate limiter
-				tokenBlacklist: NewTokenBlacklist(),          // Initialize token blacklist
+				tokenBlacklist: NewCache(),                   // Initialize token blacklist cache
 
 				// Add potentially missing fields based on New() comparison
 				clientID:     ts.tOidc.clientID,
@@ -1076,13 +1077,14 @@ func TestOIDCHandler(t *testing.T) {
 		tc := tc // Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset token blacklist and cache
-			ts.tOidc.tokenBlacklist = NewTokenBlacklist()
+			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
 			ts.tOidc.tokenCache = NewTokenCache()
 			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
 
 			// Set up the test case
 			if tc.blacklist {
-				ts.tOidc.tokenBlacklist.Add(ts.token, time.Now().Add(1*time.Hour))
+				// Use Set with a duration. Value 'true' is arbitrary.
+				ts.tOidc.tokenBlacklist.Set(ts.token, true, 1*time.Hour)
 			}
 
 			if tc.rateLimit {
@@ -1185,7 +1187,7 @@ func TestHandleLogout(t *testing.T) {
 				endSessionURL:  tc.endSessionURL,
 				scheme:         "http",
 				logger:         logger,
-				tokenBlacklist: NewTokenBlacklist(),
+				tokenBlacklist: NewCache(), // Use generic cache for blacklist
 				httpClient:     &http.Client{},
 				clientID:       "test-client-id",
 				clientSecret:   "test-client-secret",
@@ -1255,13 +1257,13 @@ func TestHandleLogout(t *testing.T) {
 
 			// Check token blacklist
 			if token := session.GetAccessToken(); token != "" {
-				if !tOidc.tokenBlacklist.IsBlacklisted(token) {
-					t.Error("Access token was not blacklisted")
+				if _, exists := tOidc.tokenBlacklist.Get(token); !exists {
+					t.Error("Access token was not blacklisted in cache")
 				}
 			}
 			if token := session.GetRefreshToken(); token != "" {
-				if !tOidc.tokenBlacklist.IsBlacklisted(token) {
-					t.Error("Refresh token was not blacklisted")
+				if _, exists := tOidc.tokenBlacklist.Get(token); !exists {
+					t.Error("Refresh token was not blacklisted in cache")
 				}
 			}
 		})
@@ -1358,7 +1360,7 @@ func TestRevokeToken(t *testing.T) {
 	t.Run("Token revocation", func(t *testing.T) {
 		// Create a new instance for this specific test
 		tOidc := &TraefikOidc{
-			tokenBlacklist: NewTokenBlacklist(),
+			tokenBlacklist: NewCache(), // Use generic cache for blacklist
 			tokenCache:     NewTokenCache(),
 		}
 
@@ -1373,8 +1375,8 @@ func TestRevokeToken(t *testing.T) {
 			t.Error("Token was not removed from cache")
 		}
 
-		// Verify token was added to blacklist
-		if !tOidc.tokenBlacklist.IsBlacklisted(token) {
+		// Verify token was added to blacklist cache
+		if _, exists := tOidc.tokenBlacklist.Get(token); !exists {
 			t.Error("Token was not added to blacklist")
 		}
 	})

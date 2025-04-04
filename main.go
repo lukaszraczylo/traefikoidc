@@ -83,7 +83,7 @@ type TraefikOidc struct {
 	revocationURL              string
 	jwkCache                   JWKCacheInterface
 	metadataCache              *MetadataCache
-	tokenBlacklist             *TokenBlacklist
+	tokenBlacklist             *Cache // Replaced TokenBlacklist with generic Cache
 	jwksURL                    string
 	clientID                   string
 	clientSecret               string
@@ -183,8 +183,9 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 				expiry = time.Now().Add(defaultBlacklistDuration)
 			}
 		}
-		t.tokenBlacklist.Add(jti, expiry)
-		t.logger.Debugf("Added JTI %s to blacklist", jti)
+		// Use Set with a duration. Value 'true' is arbitrary, we only care about existence.
+		t.tokenBlacklist.Set(jti, true, time.Until(expiry))
+		t.logger.Debugf("Added JTI %s to blacklist cache", jti)
 	}
 
 	return nil
@@ -198,17 +199,17 @@ func (t *TraefikOidc) performPreVerificationChecks(token string) error {
 	}
 
 	// Check if the raw token string itself is blacklisted (e.g., via explicit revocation)
-	if t.tokenBlacklist.IsBlacklisted(token) {
-		return fmt.Errorf("token is blacklisted (raw string)")
+	if _, exists := t.tokenBlacklist.Get(token); exists {
+		return fmt.Errorf("token is blacklisted (raw string) in cache")
 	}
 
 	// Also check if the JTI claim is blacklisted (replay detection)
 	claims, err := extractClaims(token) // Use existing helper
 	if err == nil {                     // Only check JTI if claims could be extracted
 		if jti, ok := claims["jti"].(string); ok && jti != "" {
-			if t.tokenBlacklist.IsBlacklisted(jti) {
+			if _, exists := t.tokenBlacklist.Get(jti); exists {
 				// Use a specific error message for replay
-				return fmt.Errorf("token replay detected (jti: %s)", jti)
+				return fmt.Errorf("token replay detected (jti: %s) in cache", jti)
 			}
 		}
 	} // If claims extraction fails, proceed; full validation will catch token issues later.
@@ -339,7 +340,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			}
 			return config.PostLogoutRedirectURI
 		}(),
-		tokenBlacklist:        NewTokenBlacklist(),
+		tokenBlacklist:        NewCache(), // Use generic cache for blacklist
 		jwkCache:              &JWKCache{},
 		metadataCache:         NewMetadataCache(),
 		clientID:              config.ClientID,
@@ -1030,7 +1031,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 		for range ticker.C {
 			t.logger.Debug("Starting token cleanup cycle")
 			t.tokenCache.Cleanup()
-			t.tokenBlacklist.Cleanup()
+			// t.tokenBlacklist.Cleanup() // Removed: Generic Cache handles its own cleanup
 			t.jwkCache.Cleanup() // Assuming jwkCache is the cache from cache.go
 			// Removed runtime.GC() call
 		}
@@ -1044,7 +1045,8 @@ func (t *TraefikOidc) RevokeToken(token string) {
 
 	// Add to blacklist with default expiration
 	expiry := time.Now().Add(24 * time.Hour) // or other appropriate duration
-	t.tokenBlacklist.Add(token, expiry)
+	// Use Set with a duration. Value 'true' is arbitrary, we only care about existence.
+	t.tokenBlacklist.Set(token, true, time.Until(expiry))
 }
 
 // RevokeTokenWithProvider revokes the token with the provider
