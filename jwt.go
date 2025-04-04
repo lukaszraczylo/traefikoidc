@@ -15,8 +15,10 @@ import (
 	"time"
 )
 
-var replayCacheMu sync.Mutex
-var replayCache = make(map[string]time.Time)
+var (
+	replayCacheMu sync.Mutex
+	replayCache   = make(map[string]time.Time)
+)
 
 func cleanupReplayCache() {
 	now := time.Now()
@@ -164,6 +166,7 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 
 	return nil
 }
+
 func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 	switch aud := tokenAudience.(type) {
 	case string:
