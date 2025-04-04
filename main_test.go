@@ -101,29 +101,47 @@ func (ts *TestSuite) Setup() {
 		jwksURL:            "https://test-jwks-url.com",
 		revocationURL:      "https://revocation-endpoint.com",
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
-		tokenBlacklist:     NewTokenBlacklist(),
+		tokenBlacklist:     NewCache(), // Use generic cache for blacklist
 		tokenCache:         NewTokenCache(),
 		logger:             logger,
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
 		excludedURLs:       map[string]struct{}{"/favicon": {}},
 		httpClient:         &http.Client{},
-		extractClaimsFunc:  extractClaims,
-		initComplete:       make(chan struct{}),
-		sessionManager:     ts.sessionManager,
+		// Explicitly set paths as New() is bypassed
+		redirURLPath:      "/callback",                     // Assume default callback path for tests
+		logoutURLPath:     "/callback/logout",              // Assume default logout path for tests
+		tokenURL:          "https://test-issuer.com/token", // Explicitly set for refresh tests
+		extractClaimsFunc: extractClaims,
+		initComplete:      make(chan struct{}),
+		sessionManager:    ts.sessionManager,
 	}
 	close(ts.tOidc.initComplete)
-	ts.tOidc.exchangeCodeForTokenFunc = ts.exchangeCodeForTokenFunc
+	// ts.tOidc.exchangeCodeForTokenFunc = ts.exchangeCodeForTokenFunc // Removed
 	ts.tOidc.tokenVerifier = ts.tOidc
 	ts.tOidc.jwtVerifier = ts.tOidc
+	// Set default mock exchanger
+	ts.tOidc.tokenExchanger = &MockTokenExchanger{
+		ExchangeCodeFunc: func(ctx context.Context, grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error) {
+			// Default mock behavior for code exchange
+			return &TokenResponse{
+				IDToken:      ts.token, // Use the valid token from setup
+				AccessToken:  ts.token,
+				RefreshToken: "default-refresh-token",
+				ExpiresIn:    3600,
+			}, nil
+		},
+		RefreshTokenFunc: func(refreshToken string) (*TokenResponse, error) {
+			// Default mock behavior for refresh (can be overridden in tests)
+			return nil, fmt.Errorf("default mock: refresh not expected")
+		},
+		RevokeTokenFunc: func(token, tokenType string) error {
+			// Default mock behavior for revoke
+			return nil
+		},
+	}
 }
 
-// Helper functions used by TraefikOidc
-func (ts *TestSuite) exchangeCodeForTokenFunc(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
-	return &TokenResponse{
-		IDToken:      ts.token,
-		RefreshToken: "test-refresh-token",
-	}, nil
-}
+// Helper function exchangeCodeForTokenFunc removed as it's unused after refactoring to TokenExchanger interface.
 
 // MockJWKCache implements JWKCacheInterface
 type MockJWKCache struct {
@@ -139,6 +157,34 @@ func (m *MockJWKCache) Cleanup() {
 	// Mock cleanup implementation
 	m.JWKS = nil
 	m.Err = nil
+}
+
+// MockTokenExchanger implements TokenExchanger for testing
+type MockTokenExchanger struct {
+	ExchangeCodeFunc func(ctx context.Context, grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error)
+	RefreshTokenFunc func(refreshToken string) (*TokenResponse, error)
+	RevokeTokenFunc  func(token, tokenType string) error
+}
+
+func (m *MockTokenExchanger) ExchangeCodeForToken(ctx context.Context, grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error) {
+	if m.ExchangeCodeFunc != nil {
+		return m.ExchangeCodeFunc(ctx, grantType, codeOrToken, redirectURL, codeVerifier)
+	}
+	return nil, fmt.Errorf("ExchangeCodeFunc not implemented in mock")
+}
+
+func (m *MockTokenExchanger) GetNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error) {
+	if m.RefreshTokenFunc != nil {
+		return m.RefreshTokenFunc(refreshToken)
+	}
+	return nil, fmt.Errorf("RefreshTokenFunc not implemented in mock")
+}
+
+func (m *MockTokenExchanger) RevokeTokenWithProvider(token, tokenType string) error {
+	if m.RevokeTokenFunc != nil {
+		return m.RevokeTokenFunc(token, tokenType)
+	}
+	return fmt.Errorf("RevokeTokenFunc not implemented in mock")
 }
 
 // Helper function to create a JWT token
@@ -228,13 +274,14 @@ func TestVerifyToken(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset token blacklist and cache for each test
-			ts.tOidc.tokenBlacklist = NewTokenBlacklist()
+			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
 			ts.tOidc.tokenCache = NewTokenCache()
 			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
 
 			// Set up the test case
 			if tc.blacklist {
-				ts.tOidc.tokenBlacklist.Add(tc.token, time.Now().Add(1*time.Hour))
+				// Use Set with a duration. Value 'true' is arbitrary.
+				ts.tOidc.tokenBlacklist.Set(tc.token, true, 1*time.Hour)
 			}
 
 			if tc.rateLimit {
@@ -282,13 +329,53 @@ func TestServeHTTP(t *testing.T) {
 	ts.tOidc.next = nextHandler
 	ts.tOidc.name = "test"
 
+	// Helper to create an expired token
+	createExpiredToken := func() string {
+		exp := time.Now().Add(-1 * time.Hour).Unix() // Expired 1 hour ago
+		iat := time.Now().Add(-2 * time.Hour).Unix()
+		nbf := time.Now().Add(-2 * time.Hour).Unix()
+		expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+			"iss":   "https://test-issuer.com",
+			"aud":   "test-client-id",
+			"exp":   exp,
+			"iat":   iat,
+			"nbf":   nbf,
+			"sub":   "test-subject",
+			"email": "user@example.com",
+			"nonce": "test-nonce-expired", // Different nonce for clarity
+			"jti":   generateRandomString(16),
+		})
+		return expiredToken
+	}
+
+	// Helper to create a new valid token (simulating refresh)
+	createNewValidToken := func() string {
+		exp := time.Now().Add(1 * time.Hour).Unix() // Valid for 1 hour
+		iat := time.Now().Unix()
+		nbf := time.Now().Unix()
+		newToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+			"iss":   "https://test-issuer.com",
+			"aud":   "test-client-id",
+			"exp":   exp,
+			"iat":   iat,
+			"nbf":   nbf,
+			"sub":   "test-subject",
+			"email": "user@example.com",
+			// "nonce": "test-nonce-new", // Nonce is typically not included/validated in refreshed tokens
+			"jti": generateRandomString(16),
+		})
+		return newToken
+	}
+
 	tests := []struct {
-		name           string
-		requestPath    string
-		sessionValues  map[interface{}]interface{}
-		expectedStatus int
-		expectedBody   string
-		setupSession   func(*SessionData)
+		name                      string
+		requestPath               string
+		sessionValues             map[interface{}]interface{}
+		expectedStatus            int
+		expectedBody              string
+		setupSession              func(*SessionData)
+		mockRefreshTokenFunc      func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error)
+		assertSessionAfterRequest func(t *testing.T, rr *httptest.ResponseRecorder, req *http.Request, sessionManager *SessionManager) // Added for post-request checks
 	}{
 		{
 			name:           "Excluded URL",
@@ -299,28 +386,77 @@ func TestServeHTTP(t *testing.T) {
 		{
 			name:           "Unauthenticated request to protected URL",
 			requestPath:    "/protected",
-			expectedStatus: http.StatusFound,
+			expectedStatus: http.StatusFound, // Expect redirect to OIDC
 		},
 		{
-			name:        "Authenticated request to protected URL",
+			name:        "Authenticated request to protected URL (Valid Token)",
 			requestPath: "/protected",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(ts.token)
+				session.SetAccessToken(ts.token) // Use the valid token generated in Setup
+				session.SetRefreshToken("valid-refresh-token")
 			},
 			expectedStatus: http.StatusOK,
 			expectedBody:   "OK",
 		},
 		{
+			name:        "Authenticated request with expired token and successful refresh",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true) // Still marked authenticated initially
+				session.SetEmail("user@example.com")
+				session.SetAccessToken(createExpiredToken())   // Set expired token
+				session.SetRefreshToken("valid-refresh-token") // Set valid refresh token
+			},
+			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
+				return func(refreshToken string) (*TokenResponse, error) {
+					if refreshToken != "valid-refresh-token" {
+						return nil, fmt.Errorf("mock error: expected 'valid-refresh-token', got '%s'", refreshToken)
+					}
+					// Simulate successful refresh
+					newToken := createNewValidToken()
+					return &TokenResponse{
+						IDToken:      newToken, // Return new valid token
+						AccessToken:  newToken, // Often the same as ID token in tests
+						RefreshToken: "new-refresh-token",
+						ExpiresIn:    3600,
+					}, nil
+				}
+			},
+			expectedStatus: http.StatusOK, // Expect success after refresh
+			expectedBody:   "OK",
+			assertSessionAfterRequest: func(t *testing.T, rr *httptest.ResponseRecorder, req *http.Request, sessionManager *SessionManager) {
+				// Create a new request to read the cookies set by the response recorder
+				reqForCookieRead := httptest.NewRequest("GET", "/protected", nil)
+				for _, cookie := range rr.Result().Cookies() {
+					reqForCookieRead.AddCookie(cookie)
+				}
+				// Get session based on response cookies
+				session, err := sessionManager.GetSession(reqForCookieRead)
+				if err != nil {
+					t.Fatalf("Failed to get session after request: %v", err)
+				}
+				// Assert new tokens are in the session
+				// Direct comparison with createNewValidToken() is flawed as it generates a new token each time.
+				// Instead, check if the token was updated (not empty) and verify the refresh token.
+				if session.GetAccessToken() == "" {
+					t.Errorf("Expected access token to be updated in session, but it was empty")
+				}
+				if session.GetRefreshToken() != "new-refresh-token" {
+					t.Errorf("Expected refresh token to be updated to 'new-refresh-token', got '%s'", session.GetRefreshToken())
+				}
+			},
+		},
+		{
 			name:        "Logout URL",
-			requestPath: "/logout",
+			requestPath: "/logout", // Assuming logout path is configured or defaulted correctly
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@example.com")
 				session.SetAccessToken(ts.token)
 			},
-			expectedStatus: http.StatusOK,
+			expectedStatus: http.StatusFound, // Expect redirect after logout
 			expectedBody:   "",
 		},
 	}
@@ -328,39 +464,78 @@ func TestServeHTTP(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", tc.requestPath, nil)
-			req.Header.Set("X-Forwarded-Proto", "http")
-			req.Header.Set("X-Forwarded-Host", "localhost")
+			// Set common headers needed by the logic (determineScheme, determineHost)
+			req.Header.Set("X-Forwarded-Proto", "http") // Or https if testing that
+			req.Header.Set("X-Forwarded-Host", "testhost.com")
+			req.Host = "testhost.com" // Also set Host header
+
 			rr := httptest.NewRecorder()
 
 			// Setup session if needed
 			session, err := ts.tOidc.sessionManager.GetSession(req)
 			if err != nil {
-				t.Fatalf("Failed to get session: %v", err)
+				t.Fatalf("Test %s: Failed to get initial session: %v", tc.name, err)
 			}
 			if tc.setupSession != nil {
 				tc.setupSession(session)
-				if err := session.Save(req, rr); err != nil {
-					t.Fatalf("Failed to save session: %v", err)
+				// Save session to recorder to get cookies
+				saveRecorder := httptest.NewRecorder()
+				if err := session.Save(req, saveRecorder); err != nil {
+					t.Fatalf("Test %s: Failed to save initial session: %v", tc.name, err)
 				}
-
-				// Copy cookies to the new request
-				for _, cookie := range rr.Result().Cookies() {
+				// Copy cookies from save recorder to the actual request
+				for _, cookie := range saveRecorder.Result().Cookies() {
 					req.AddCookie(cookie)
 				}
-				rr = httptest.NewRecorder()
+			}
+
+			// Mocking setup for TokenExchanger
+			originalExchanger := ts.tOidc.tokenExchanger // Store original
+			mockExchanger, isMock := originalExchanger.(*MockTokenExchanger)
+			if !isMock {
+				// This case should ideally not happen if Setup correctly assigns the mock,
+				// but handle it defensively.
+				t.Logf("Warning: Default exchanger was not the mock. Creating a temporary mock.")
+				mockExchanger = &MockTokenExchanger{
+					ExchangeCodeFunc: originalExchanger.ExchangeCodeForToken,
+					RefreshTokenFunc: originalExchanger.GetNewTokenWithRefreshToken,
+					RevokeTokenFunc:  originalExchanger.RevokeTokenWithProvider,
+				}
+				ts.tOidc.tokenExchanger = mockExchanger // Temporarily assign mock
+			}
+
+			// Override specific mock methods if needed for the test case
+			originalMockRefreshFunc := mockExchanger.RefreshTokenFunc // Store current mock func
+			if tc.mockRefreshTokenFunc != nil {
+				// Assign the test case specific mock function
+				mockExchanger.RefreshTokenFunc = tc.mockRefreshTokenFunc(originalExchanger.GetNewTokenWithRefreshToken)
 			}
 
 			// Call ServeHTTP
 			ts.tOidc.ServeHTTP(rr, req)
 
-			// Check response
-			if rr.Code != tc.expectedStatus {
-				t.Errorf("Expected status %d, got %d", tc.expectedStatus, rr.Code)
+			// Restore original exchanger and mock function state
+			ts.tOidc.tokenExchanger = originalExchanger
+			if tc.mockRefreshTokenFunc != nil && mockExchanger != nil {
+				// Restore the previous mock function if we overrode it
+				mockExchanger.RefreshTokenFunc = originalMockRefreshFunc
 			}
+
+			// Check response status
+			if rr.Code != tc.expectedStatus {
+				t.Errorf("Test %s: Expected status %d, got %d. Body: %s", tc.name, tc.expectedStatus, rr.Code, rr.Body.String())
+			}
+
+			// Check response body if expected
 			if tc.expectedBody != "" {
 				if body := strings.TrimSpace(rr.Body.String()); body != tc.expectedBody {
-					t.Errorf("Expected body %q, got %q", tc.expectedBody, body)
+					t.Errorf("Test %s: Expected body %q, got %q", tc.name, tc.expectedBody, body)
 				}
+			}
+
+			// Perform post-request session assertions if defined
+			if tc.assertSessionAfterRequest != nil {
+				tc.assertSessionAfterRequest(t, rr, req, ts.tOidc.sessionManager)
 			}
 		})
 	}
@@ -552,17 +727,39 @@ func TestHandleCallback(t *testing.T) {
 			name:        "Disallowed Email",
 			queryParams: "?code=test-code&state=test-csrf-token",
 			exchangeCodeForToken: func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
+				// Generate a unique token for this test case to avoid replay issues
+				// Use claims relevant to this test (disallowed email)
+				now := time.Now()
+				exp := now.Add(1 * time.Hour).Unix()
+				iat := now.Unix()
+				nbf := now.Unix()
+				disallowedToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss":   "https://test-issuer.com",
+					"aud":   "test-client-id",
+					"exp":   exp,
+					"iat":   iat,
+					"nbf":   nbf,
+					"sub":   "test-subject-disallowed",
+					"email": "user@disallowed.com",    // The disallowed email for this test
+					"nonce": "test-nonce",             // Match the nonce set in sessionSetupFunc
+					"jti":   generateRandomString(16), // Unique JTI
+				})
+				if err != nil {
+					return nil, fmt.Errorf("failed to create disallowed token for test: %w", err)
+				}
 				return &TokenResponse{
-					IDToken:      ts.token,
-					RefreshToken: "test-refresh-token",
+					IDToken:      disallowedToken,
+					RefreshToken: "test-refresh-token-disallowed",
 				}, nil
 			},
-			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
-				return map[string]interface{}{
-					"email": "user@disallowed.com",
-					"nonce": "test-nonce",
-				}, nil
-			},
+			// Remove mock extractClaimsFunc - let the real one parse the disallowedToken
+			// The test should still fail correctly on the email check later.
+			// extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+			// 	return map[string]interface{}{
+			// 		"email": "user@disallowed.com",
+			// 		"nonce": "test-nonce",
+			// 	}, nil
+			// },
 			sessionSetupFunc: func(session *SessionData) {
 				session.SetCSRF("test-csrf-token")
 				session.SetNonce("test-nonce")
@@ -635,20 +832,61 @@ func TestHandleCallback(t *testing.T) {
 	}
 
 	for _, tc := range tests {
+		tc := tc // Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
+			// Clear the global replay cache before each test run
+			replayCacheMu.Lock()
+			replayCache = make(map[string]time.Time) // Reset the global cache
+			replayCacheMu.Unlock()
+
+			// Explicitly clear the shared blacklist at the start of each sub-test
+			// to ensure no state leaks, even though we expect the local one to be used.
+			// Note: This line might be redundant now that the verifier is local, but keep for safety.
+			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
+
 			logger := NewLogger("info")
 			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
 
 			// Create a new instance for each test to avoid state carryover
-			tOidc := &TraefikOidc{
-				allowedUserDomains:       map[string]struct{}{"example.com": {}},
-				logger:                   logger,
-				exchangeCodeForTokenFunc: tc.exchangeCodeForToken,
-				extractClaimsFunc:        tc.extractClaimsFunc,
-				tokenVerifier:            ts.tOidc.tokenVerifier,
-				jwtVerifier:              ts.tOidc.jwtVerifier,
-				sessionManager:           sessionManager,
+			instanceExtractClaimsFunc := tc.extractClaimsFunc
+			if instanceExtractClaimsFunc == nil {
+				instanceExtractClaimsFunc = extractClaims // Default to the real function if not provided by test case
 			}
+			tOidc := &TraefikOidc{
+				allowedUserDomains: map[string]struct{}{"example.com": {}},
+				logger:             logger,
+				// exchangeCodeForTokenFunc: tc.exchangeCodeForToken, // Removed field
+				extractClaimsFunc: instanceExtractClaimsFunc, // Use the potentially defaulted function
+				tokenVerifier:     nil,                       // Will be set to self below
+				jwtVerifier:       nil,                       // Temporarily nil, will be set below
+				sessionManager:    sessionManager,
+				tokenExchanger: &MockTokenExchanger{ // Create a new mock exchanger for this specific test run
+					ExchangeCodeFunc: func(ctx context.Context, grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error) {
+						// Wrap the test case function to match the required signature
+						if tc.exchangeCodeForToken != nil {
+							// Only call if the test case provided a function
+							return tc.exchangeCodeForToken(codeOrToken, redirectURL, codeVerifier)
+						}
+						// Provide a default behavior or error if no mock was provided for this test case
+						return nil, fmt.Errorf("mock ExchangeCodeFunc not implemented for this test case")
+					},
+					// Keep other mock funcs nil or provide defaults if needed by other parts of handleCallback
+				},
+				tokenCache:     NewTokenCache(),              // Initialize token cache
+				limiter:        rate.NewLimiter(rate.Inf, 0), // Initialize rate limiter
+				tokenBlacklist: NewCache(),                   // Initialize token blacklist cache
+
+				// Add potentially missing fields based on New() comparison
+				clientID:     ts.tOidc.clientID,
+				issuerURL:    ts.tOidc.issuerURL,
+				jwkCache:     ts.tOidc.jwkCache, // Use the mock cache from TestSuite
+				httpClient:   ts.tOidc.httpClient,
+				initComplete: make(chan struct{}), // Initialize the channel
+				// Setting other fields like paths, enablePKCE etc. if needed
+			}
+			tOidc.tokenVerifier = tOidc // Point tokenVerifier to the local instance NOW
+			tOidc.jwtVerifier = tOidc   // Point jwtVerifier to the local instance NOW
+			close(tOidc.initComplete)   // Mark this test instance as initialized
 
 			// Create request and response recorder
 			req := httptest.NewRequest("GET", "/callback"+tc.queryParams, nil)
@@ -839,13 +1077,14 @@ func TestOIDCHandler(t *testing.T) {
 		tc := tc // Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset token blacklist and cache
-			ts.tOidc.tokenBlacklist = NewTokenBlacklist()
+			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
 			ts.tOidc.tokenCache = NewTokenCache()
 			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
 
 			// Set up the test case
 			if tc.blacklist {
-				ts.tOidc.tokenBlacklist.Add(ts.token, time.Now().Add(1*time.Hour))
+				// Use Set with a duration. Value 'true' is arbitrary.
+				ts.tOidc.tokenBlacklist.Set(ts.token, true, 1*time.Hour)
 			}
 
 			if tc.rateLimit {
@@ -948,7 +1187,7 @@ func TestHandleLogout(t *testing.T) {
 				endSessionURL:  tc.endSessionURL,
 				scheme:         "http",
 				logger:         logger,
-				tokenBlacklist: NewTokenBlacklist(),
+				tokenBlacklist: NewCache(), // Use generic cache for blacklist
 				httpClient:     &http.Client{},
 				clientID:       "test-client-id",
 				clientSecret:   "test-client-secret",
@@ -1018,13 +1257,13 @@ func TestHandleLogout(t *testing.T) {
 
 			// Check token blacklist
 			if token := session.GetAccessToken(); token != "" {
-				if !tOidc.tokenBlacklist.IsBlacklisted(token) {
-					t.Error("Access token was not blacklisted")
+				if _, exists := tOidc.tokenBlacklist.Get(token); !exists {
+					t.Error("Access token was not blacklisted in cache")
 				}
 			}
 			if token := session.GetRefreshToken(); token != "" {
-				if !tOidc.tokenBlacklist.IsBlacklisted(token) {
-					t.Error("Refresh token was not blacklisted")
+				if _, exists := tOidc.tokenBlacklist.Get(token); !exists {
+					t.Error("Refresh token was not blacklisted in cache")
 				}
 			}
 		})
@@ -1121,7 +1360,7 @@ func TestRevokeToken(t *testing.T) {
 	t.Run("Token revocation", func(t *testing.T) {
 		// Create a new instance for this specific test
 		tOidc := &TraefikOidc{
-			tokenBlacklist: NewTokenBlacklist(),
+			tokenBlacklist: NewCache(), // Use generic cache for blacklist
 			tokenCache:     NewTokenCache(),
 		}
 
@@ -1136,8 +1375,8 @@ func TestRevokeToken(t *testing.T) {
 			t.Error("Token was not removed from cache")
 		}
 
-		// Verify token was added to blacklist
-		if !tOidc.tokenBlacklist.IsBlacklisted(token) {
+		// Verify token was added to blacklist cache
+		if _, exists := tOidc.tokenBlacklist.Get(token); !exists {
 			t.Error("Token was not added to blacklist")
 		}
 	})
@@ -1404,7 +1643,6 @@ func TestMultipleMiddlewareInstances(t *testing.T) {
 		middleware, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}), config, "test")
-
 		if err != nil {
 			t.Fatalf("Failed to create middleware for route %s: %v", route, err)
 		}
@@ -2043,7 +2281,6 @@ func TestExchangeCodeForToken(t *testing.T) {
 
 			// Test exchangeCodeForToken
 			response, err := tOidc.exchangeCodeForToken("test-code", "http://callback", tc.codeVerifier)
-
 			if err != nil {
 				t.Errorf("Unexpected error: %v", err)
 			}

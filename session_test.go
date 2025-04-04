@@ -1,7 +1,9 @@
 package traefikoidc
 
 import (
-	"math/rand"
+	"crypto/rand"
+	"fmt"
+	"math/big"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -12,7 +14,12 @@ func generateRandomString(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, length)
 	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
+		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			// Handle error appropriately in a real application, maybe panic in test helper
+			panic(fmt.Sprintf("crypto/rand failed: %v", err))
+		}
+		b[i] = charset[num.Int64()]
 	}
 	return string(b)
 }
