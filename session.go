@@ -128,10 +128,12 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 
 	// Initialize session pool.
 	sm.sessionPool.New = func() interface{} {
+		// Initialize SessionData with necessary fields and the mutex.
 		return &SessionData{
 			manager:            sm,
 			accessTokenChunks:  make(map[int]*sessions.Session),
 			refreshTokenChunks: make(map[int]*sessions.Session),
+			refreshMutex:       sync.Mutex{}, // Initialize the mutex
 		}
 	}
 
@@ -251,6 +253,9 @@ type SessionData struct {
 	// refreshTokenChunks stores additional chunks of the refresh token
 	// when it exceeds the maximum cookie size.
 	refreshTokenChunks map[int]*sessions.Session
+
+	// refreshMutex protects refresh token operations within this session instance.
+	refreshMutex sync.Mutex
 }
 
 // Save persists all session data to cookies in the HTTP response.

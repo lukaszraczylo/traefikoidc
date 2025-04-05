@@ -29,8 +29,16 @@ func cleanupReplayCache() {
 	}
 }
 
-// ClockSkewTolerance is configurable to adjust time-based validations.
-var ClockSkewTolerance = 2 * time.Minute
+// ClockSkewToleranceFuture defines the tolerance for future-based claims like 'exp'.
+// Allows for more leniency with expiration checks.
+var ClockSkewToleranceFuture = 2 * time.Minute
+
+// ClockSkewTolerancePast defines the tolerance for past-based claims like 'iat' and 'nbf'.
+// A smaller tolerance is typically used here to prevent accepting tokens issued too far in the future.
+var (
+	ClockSkewTolerancePast = 10 * time.Second
+	ClockSkewTolerance     = 2 * time.Minute
+)
 
 // JWT represents a JSON Web Token as defined in RFC 7519.
 type JWT struct {
@@ -202,13 +210,16 @@ func verifyTimeConstraint(unixTime float64, claimName string, future bool) error
 	claimTime := time.Unix(int64(unixTime), 0)
 	now := time.Now().Truncate(time.Second)
 
-	// For expiration (future=true), we add skew to now (making now later)
-	// For iat/nbf (future=false), we subtract skew from now (making now earlier)
-	skewDirection := 1
-	if !future {
-		skewDirection = -1
+	var skewedNow time.Time
+	if future {
+		// For expiration (future=true), add skew to now (making now later)
+		// Use the larger tolerance for future checks (exp)
+		skewedNow = now.Add(ClockSkewToleranceFuture)
+	} else {
+		// For iat/nbf (future=false), subtract skew from now (making now earlier)
+		// Use the smaller, specific tolerance for past checks (iat, nbf)
+		skewedNow = now.Add(-ClockSkewTolerancePast) // Subtract the past tolerance
 	}
-	skewedNow := now.Add(time.Duration(skewDirection) * ClockSkewTolerance)
 
 	if claimTime.Equal(now) {
 		return nil

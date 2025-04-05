@@ -84,6 +84,11 @@ type Config struct {
 
 	// HTTPClient allows customizing the HTTP client used for OIDC operations (optional)
 	HTTPClient *http.Client
+
+	// RefreshGracePeriodSeconds defines how many seconds before a token expires
+	// the plugin should attempt to refresh it proactively (optional)
+	// Default: 60
+	RefreshGracePeriodSeconds int `json:"refreshGracePeriodSeconds"`
 }
 
 const (
@@ -111,11 +116,12 @@ const (
 //   - EnablePKCE: false (PKCE is opt-in)
 func CreateConfig() *Config {
 	c := &Config{
-		Scopes:     []string{"openid", "profile", "email"},
-		LogLevel:   DefaultLogLevel,
-		RateLimit:  DefaultRateLimit,
-		ForceHTTPS: true,  // Secure by default
-		EnablePKCE: false, // PKCE is opt-in
+		Scopes:                    []string{"openid", "profile", "email"},
+		LogLevel:                  DefaultLogLevel,
+		RateLimit:                 DefaultRateLimit,
+		ForceHTTPS:                true,  // Secure by default
+		EnablePKCE:                false, // PKCE is opt-in
+		RefreshGracePeriodSeconds: 60,    // Default grace period of 60 seconds
 	}
 
 	return c
@@ -195,6 +201,11 @@ func (c *Config) Validate() error {
 	// Validate rate limit
 	if c.RateLimit < MinRateLimit {
 		return fmt.Errorf("rateLimit must be at least %d", MinRateLimit)
+	}
+
+	// Validate refresh grace period
+	if c.RefreshGracePeriodSeconds < 0 {
+		return fmt.Errorf("refreshGracePeriodSeconds cannot be negative")
 	}
 
 	return nil
