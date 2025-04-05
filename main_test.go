@@ -385,9 +385,52 @@ func TestServeHTTP(t *testing.T) {
 			expectedBody:   "OK",
 		},
 		{
-			name:           "Unauthenticated request to protected URL",
-			requestPath:    "/protected",
-			expectedStatus: http.StatusFound, // Expect redirect to OIDC
+			name:        "Unauthenticated request (no refresh token) to protected URL",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				// Ensure no tokens are set
+				session.SetAuthenticated(false)
+				session.SetAccessToken("")
+				session.SetRefreshToken("")
+			},
+			expectedStatus: http.StatusFound, // Expect redirect to OIDC as there's no refresh token
+		},
+		{
+			name:        "Unauthenticated request (with refresh token) to protected URL - Expect Refresh Attempt",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(false)                                // Not authenticated
+				session.SetAccessToken("")                                     // No access token
+				session.SetRefreshToken("valid-refresh-token-for-unauth-test") // BUT has refresh token
+			},
+			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
+				return func(refreshToken string) (*TokenResponse, error) {
+					if refreshToken != "valid-refresh-token-for-unauth-test" {
+						return nil, fmt.Errorf("mock error: unexpected refresh token '%s'", refreshToken)
+					}
+					// Simulate successful refresh
+					newToken := createNewValidToken() // Use helper from TestServeHTTP
+					return &TokenResponse{IDToken: newToken, AccessToken: newToken, RefreshToken: "new-refresh-token-unauth", ExpiresIn: 3600}, nil
+				}
+			},
+			expectedStatus: http.StatusOK, // Expect OK after successful refresh
+			expectedBody:   "OK",
+		},
+		{
+			name:        "Unauthenticated request (with refresh token) to protected URL - Refresh Fails",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(false)                                  // Not authenticated
+				session.SetAccessToken("")                                       // No access token
+				session.SetRefreshToken("invalid-refresh-token-for-unauth-test") // Invalid refresh token
+			},
+			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
+				return func(refreshToken string) (*TokenResponse, error) {
+					// Simulate failed refresh
+					return nil, fmt.Errorf("mock error: refresh token invalid")
+				}
+			},
+			expectedStatus: http.StatusFound, // Expect redirect to OIDC after failed refresh
 		},
 		{
 			name:        "Authenticated request to protected URL (Valid Token)",
@@ -407,11 +450,15 @@ func TestServeHTTP(t *testing.T) {
 			expectedStatus: http.StatusOK,
 			expectedBody:   "OK",
 		},
+		// This test case remains valid as the logic should still attempt refresh when expired token + refresh token exist
 		{
 			name:        "Authenticated request with expired token and successful refresh",
 			requestPath: "/protected",
 			setupSession: func(session *SessionData) {
-				session.SetAuthenticated(true) // Still marked authenticated initially
+				// NOTE: isUserAuthenticated now returns authenticated=false if access token is expired,
+				// even if session.SetAuthenticated(true) was called.
+				// We rely on needsRefresh=true and the presence of the refresh token to trigger the refresh attempt.
+				session.SetAuthenticated(true) // Set flag initially, though isUserAuthenticated will override based on token
 				session.SetEmail("user@example.com")
 				session.SetAccessToken(createExpiredToken())   // Set expired token
 				session.SetRefreshToken("valid-refresh-token") // Set valid refresh token
@@ -445,16 +492,19 @@ func TestServeHTTP(t *testing.T) {
 					t.Fatalf("Failed to get session after request: %v", err)
 				}
 				// Assert new tokens are in the session
-				// Direct comparison with createNewValidToken() is flawed as it generates a new token each time.
-				// Instead, check if the token was updated (not empty) and verify the refresh token.
-				if session.GetAccessToken() == "" {
-					t.Errorf("Expected access token to be updated in session, but it was empty")
+				if session.GetAccessToken() == "" || session.GetAccessToken() == createExpiredToken() {
+					t.Errorf("Expected access token to be updated in session, but it was empty or still the expired one")
 				}
 				if session.GetRefreshToken() != "new-refresh-token" {
 					t.Errorf("Expected refresh token to be updated to 'new-refresh-token', got '%s'", session.GetRefreshToken())
 				}
+				// Also check authenticated flag is now true
+				if !session.GetAuthenticated() {
+					t.Errorf("Expected session to be marked authenticated after successful refresh")
+				}
 			},
 		},
+		// This test case remains valid as the logic should still return 401 for API clients on refresh failure
 		{
 			name:        "Logout URL",
 			requestPath: "/callback/logout", // Match the default logout path set in TestSuite.Setup
@@ -477,10 +527,10 @@ func TestServeHTTP(t *testing.T) {
 			name:        "Authenticated request with expired token and FAILED refresh (Accept: JSON)",
 			requestPath: "/protected",
 			setupSession: func(session *SessionData) {
-				session.SetAuthenticated(true)
+				session.SetAuthenticated(true) // Set flag initially
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(createExpiredToken())
-				session.SetRefreshToken("valid-refresh-token")
+				session.SetAccessToken(createExpiredToken())   // Expired access token
+				session.SetRefreshToken("valid-refresh-token") // Valid refresh token
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
 				return func(refreshToken string) (*TokenResponse, error) {
@@ -491,17 +541,18 @@ func TestServeHTTP(t *testing.T) {
 			requestHeaders: map[string]string{
 				"Accept": "application/json",
 			},
-			expectedStatus: http.StatusUnauthorized, // Expect 401 for API client
+			expectedStatus: http.StatusUnauthorized, // Expect 401 for API client after failed refresh attempt
 			expectedBody:   `{"error":"unauthorized","message":"Token refresh failed"}`,
 		},
+		// This test case remains valid as the logic should still redirect browser clients on refresh failure
 		{
 			name:        "Authenticated request with expired token and FAILED refresh (Accept: HTML)",
 			requestPath: "/protected",
 			setupSession: func(session *SessionData) {
-				session.SetAuthenticated(true)
+				session.SetAuthenticated(true) // Set flag initially
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(createExpiredToken())
-				session.SetRefreshToken("valid-refresh-token")
+				session.SetAccessToken(createExpiredToken())   // Expired access token
+				session.SetRefreshToken("valid-refresh-token") // Valid refresh token
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
 				return func(refreshToken string) (*TokenResponse, error) {
@@ -512,8 +563,9 @@ func TestServeHTTP(t *testing.T) {
 			requestHeaders: map[string]string{
 				"Accept": "text/html", // Browser client
 			},
-			expectedStatus: http.StatusFound, // Expect redirect for browser client
+			expectedStatus: http.StatusFound, // Expect redirect to OIDC for browser client after failed refresh attempt
 		},
+		// This test case remains valid as proactive refresh should still be attempted
 		{
 			name:        "Authenticated request with token nearing expiry (needs refresh)",
 			requestPath: "/protected",
@@ -529,7 +581,7 @@ func TestServeHTTP(t *testing.T) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@example.com")
 				session.SetAccessToken(nearExpiryToken)
-				session.SetRefreshToken("valid-refresh-token-for-near-expiry")
+				session.SetRefreshToken("valid-refresh-token-for-near-expiry") // Refresh token MUST exist for proactive refresh
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
 				return func(refreshToken string) (*TokenResponse, error) {
@@ -544,6 +596,7 @@ func TestServeHTTP(t *testing.T) {
 			expectedStatus: http.StatusOK, // Expect success after proactive refresh
 			expectedBody:   "OK",
 		},
+		// This test case remains valid as no refresh should be attempted
 		{
 			name:        "Authenticated request with token valid (outside grace period)",
 			requestPath: "/protected",
@@ -1531,6 +1584,7 @@ func TestRevokeToken(t *testing.T) {
 		tOidc := &TraefikOidc{
 			tokenBlacklist: NewCache(), // Use generic cache for blacklist
 			tokenCache:     NewTokenCache(),
+			logger:         NewLogger("info"), // Initialize the logger
 		}
 
 		// Cache the token
