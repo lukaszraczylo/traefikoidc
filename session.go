@@ -16,8 +16,15 @@ import (
 	"github.com/gorilla/sessions"
 )
 
-// generateSecureRandomString creates a cryptographically secure random string of specified length.
-// It returns the generated string or an error if random generation fails.
+// generateSecureRandomString creates a cryptographically secure, hex-encoded random string.
+// It reads the specified number of bytes from crypto/rand and encodes them as a hexadecimal string.
+//
+// Parameters:
+//   - length: The number of random bytes to generate (the resulting hex string will be twice this length).
+//
+// Returns:
+//   - A hex-encoded random string.
+//   - An error if reading random bytes fails.
 func generateSecureRandomString(length int) (string, error) {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
@@ -56,7 +63,14 @@ const (
 	minEncryptionKeyLength = 32
 )
 
-// compressToken compresses a token using gzip and base64 encodes it.
+// compressToken compresses the input string using gzip and then encodes the result using standard base64 encoding.
+// If any error occurs during compression, it returns the original uncompressed token as a fallback.
+//
+// Parameters:
+//   - token: The string to compress.
+//
+// Returns:
+//   - The base64 encoded, gzipped string, or the original string if compression fails.
 func compressToken(token string) string {
 	var b bytes.Buffer
 	gz := gzip.NewWriter(&b)
@@ -69,7 +83,15 @@ func compressToken(token string) string {
 	return base64.StdEncoding.EncodeToString(b.Bytes())
 }
 
-// decompressToken decompresses a base64 encoded gzipped token.
+// decompressToken decodes a standard base64 encoded string and then decompresses the result using gzip.
+// If base64 decoding or gzip decompression fails, it returns the original input string as a fallback,
+// assuming it might not have been compressed.
+//
+// Parameters:
+//   - compressed: The base64 encoded, gzipped string.
+//
+// Returns:
+//   - The decompressed original string, or the input string if decompression fails.
 func decompressToken(compressed string) string {
 	data, err := base64.StdEncoding.DecodeString(compressed)
 	if err != nil {
@@ -140,15 +162,15 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 	return sm, nil
 }
 
-// getSessionOptions returns secure session options configured for the current request.
-// Parameters:
-//   - isSecure: Whether the current request is using HTTPS.
+// getSessionOptions returns a sessions.Options struct configured with security best practices.
+// It sets HttpOnly to true, Secure based on the request scheme or forceHTTPS setting,
+// SameSite to LaxMode, MaxAge to the absoluteSessionTimeout, and Path to "/".
 //
-// The options ensure cookies are:
-//   - HTTP-only (not accessible via JavaScript)
-//   - Secure when using HTTPS or when forceHTTPS is enabled
-//   - Using SameSite=Lax for CSRF protection
-//   - Set with appropriate timeout and path settings
+// Parameters:
+//   - isSecure: A boolean indicating if the current request context is secure (HTTPS).
+//
+// Returns:
+//   - A pointer to a configured sessions.Options struct.
 func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 	return &sessions.Options{
 		HttpOnly: true,
@@ -210,11 +232,14 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	return sessionData, nil
 }
 
-// getTokenChunkSessions retrieves all session chunks for a given token type.
+// getTokenChunkSessions retrieves all cookie chunks associated with a large token (access or refresh).
+// It iteratively attempts to load cookies named "{baseName}_0", "{baseName}_1", etc., until
+// a cookie is not found or returns an error. The loaded sessions are stored in the provided chunks map.
+//
 // Parameters:
-//   - r: The HTTP request
-//   - baseName: The base name for the token's session cookies
-//   - chunks: Map to store the chunks in
+//   - r: The incoming HTTP request containing the cookies.
+//   - baseName: The base name of the cookie (e.g., accessTokenCookie).
+//   - chunks: The map (typically SessionData.accessTokenChunks or SessionData.refreshTokenChunks) to populate with the found session chunks.
 func (sm *SessionManager) getTokenChunkSessions(r *http.Request, baseName string, chunks map[int]*sessions.Session) {
 	for i := 0; ; i++ {
 		sessionName := fmt.Sprintf("%s_%d", baseName, i)
@@ -258,10 +283,16 @@ type SessionData struct {
 	refreshMutex sync.Mutex
 }
 
-// Save persists all session data to cookies in the HTTP response.
-// It saves the main session, token sessions, and any token chunks,
-// applying appropriate security options to each cookie. All cookies
-// are saved with consistent security settings based on the request scheme.
+// Save persists all parts of the session (main, access token, refresh token, and any chunks)
+// back to the client as cookies in the HTTP response. It applies secure cookie options
+// obtained via getSessionOptions based on the request's security context.
+//
+// Parameters:
+//   - r: The original HTTP request (used to determine security context for cookie options).
+//   - w: The HTTP response writer to which the Set-Cookie headers will be added.
+//
+// Returns:
+//   - An error if saving any of the session components fails.
 func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	isSecure := strings.HasPrefix(r.URL.Scheme, "https") || sd.manager.forceHTTPS
 
@@ -305,7 +336,19 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	return nil
 }
 
-// Clear removes all session data by expiring all cookies and clearing their values.
+// Clear removes all session data associated with this SessionData instance.
+// It clears the values map of the main, access, and refresh sessions, sets their MaxAge to -1
+// to expire the cookies immediately, and clears any associated token chunk cookies.
+// If a ResponseWriter is provided, it attempts to save the expired sessions to send the
+// expiring Set-Cookie headers. Finally, it clears internal fields and returns the SessionData
+// object to the pool.
+//
+// Parameters:
+//   - r: The HTTP request (required by the underlying session store).
+//   - w: The HTTP response writer (optional). If provided, expiring Set-Cookie headers will be sent.
+//
+// Returns:
+//   - An error if saving the expired sessions fails (only if w is not nil).
 func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	// Clear and expire all sessions.
 	sd.mainSession.Options.MaxAge = -1
@@ -340,7 +383,12 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	return err
 }
 
-// clearTokenChunks removes all session chunks for a given token type.
+// clearTokenChunks iterates through a map of session chunks, clears their values,
+// and sets their MaxAge to -1 to expire them. This is used internally by Clear.
+//
+// Parameters:
+//   - r: The HTTP request (required by the underlying session store, though not directly used here).
+//   - chunks: The map of session chunks (e.g., sd.accessTokenChunks) to clear and expire.
 func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*sessions.Session) {
 	for _, session := range chunks {
 		session.Options.MaxAge = -1
@@ -350,7 +398,12 @@ func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*session
 	}
 }
 
-// GetAuthenticated returns whether the current session is authenticated.
+// GetAuthenticated checks if the session is marked as authenticated and has not exceeded
+// the absolute session timeout.
+//
+// Returns:
+//   - true if the "authenticated" flag is set to true and the session creation time is within the allowed timeout.
+//   - false otherwise.
 func (sd *SessionData) GetAuthenticated() bool {
 	auth, _ := sd.mainSession.Values["authenticated"].(bool)
 	if !auth {
@@ -365,8 +418,15 @@ func (sd *SessionData) GetAuthenticated() bool {
 	return time.Since(time.Unix(createdAt, 0)) <= absoluteSessionTimeout
 }
 
-// SetAuthenticated updates the session's authentication status and rotates session ID.
-// Returns an error if generating a new session ID fails.
+// SetAuthenticated sets the authentication status of the session.
+// If setting to true, it generates a new secure session ID for the main session
+// to prevent session fixation attacks and records the current time as the creation time.
+//
+// Parameters:
+//   - value: The boolean authentication status (true for authenticated, false otherwise).
+//
+// Returns:
+//   - An error if generating a new session ID fails when setting value to true.
 func (sd *SessionData) SetAuthenticated(value bool) error {
 	if value {
 		id, err := generateSecureRandomString(32)
@@ -380,7 +440,12 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 	return nil
 }
 
-// GetAccessToken retrieves the complete access token from the session.
+// GetAccessToken retrieves the access token stored in the session.
+// It handles reassembling the token from multiple cookie chunks if necessary
+// and decompresses it if it was stored compressed.
+//
+// Returns:
+//   - The complete, decompressed access token string, or an empty string if not found.
 func (sd *SessionData) GetAccessToken() string {
 	token, _ := sd.accessSession.Values["token"].(string)
 	if token != "" {
@@ -414,7 +479,14 @@ func (sd *SessionData) GetAccessToken() string {
 	return token
 }
 
-// SetAccessToken stores the access token in the session.
+// SetAccessToken stores the provided access token in the session.
+// It first expires any existing access token chunk cookies.
+// It then compresses the token. If the compressed token fits within a single cookie (maxCookieSize),
+// it's stored directly in the primary access token session. Otherwise, the compressed token
+// is split into chunks, and each chunk is stored in a separate numbered cookie (_oidc_raczylo_a_0, _oidc_raczylo_a_1, etc.).
+//
+// Parameters:
+//   - token: The access token string to store.
 func (sd *SessionData) SetAccessToken(token string) {
 	// Expire any existing chunk cookies first.
 	if sd.request != nil {
@@ -444,7 +516,12 @@ func (sd *SessionData) SetAccessToken(token string) {
 	}
 }
 
-// GetRefreshToken retrieves the complete refresh token from the session.
+// GetRefreshToken retrieves the refresh token stored in the session.
+// It handles reassembling the token from multiple cookie chunks if necessary
+// and decompresses it if it was stored compressed.
+//
+// Returns:
+//   - The complete, decompressed refresh token string, or an empty string if not found.
 func (sd *SessionData) GetRefreshToken() string {
 	token, _ := sd.refreshSession.Values["token"].(string)
 	if token != "" {
@@ -478,7 +555,14 @@ func (sd *SessionData) GetRefreshToken() string {
 	return token
 }
 
-// SetRefreshToken stores the refresh token in the session.
+// SetRefreshToken stores the provided refresh token in the session.
+// It first expires any existing refresh token chunk cookies.
+// It then compresses the token. If the compressed token fits within a single cookie (maxCookieSize),
+// it's stored directly in the primary refresh token session. Otherwise, the compressed token
+// is split into chunks, and each chunk is stored in a separate numbered cookie (_oidc_raczylo_r_0, _oidc_raczylo_r_1, etc.).
+//
+// Parameters:
+//   - token: The refresh token string to store.
 func (sd *SessionData) SetRefreshToken(token string) {
 	// Expire any existing chunk cookies first.
 	if sd.request != nil {
@@ -508,7 +592,13 @@ func (sd *SessionData) SetRefreshToken(token string) {
 	}
 }
 
-// expireAccessTokenChunks expires any existing access token chunk cookies.
+// expireAccessTokenChunks finds all existing access token chunk cookies (_oidc_raczylo_a_N)
+// associated with the current request, clears their values, and sets their MaxAge to -1.
+// If a ResponseWriter is provided, it attempts to save the expired chunk sessions to send
+// the expiring Set-Cookie headers. This is used internally when setting a new access token.
+//
+// Parameters:
+//   - w: The HTTP response writer (optional). If provided, expiring Set-Cookie headers will be sent.
 func (sd *SessionData) expireAccessTokenChunks(w http.ResponseWriter) {
 	for i := 0; ; i++ {
 		sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
@@ -526,7 +616,13 @@ func (sd *SessionData) expireAccessTokenChunks(w http.ResponseWriter) {
 	}
 }
 
-// expireRefreshTokenChunks expires any existing refresh token chunk cookies.
+// expireRefreshTokenChunks finds all existing refresh token chunk cookies (_oidc_raczylo_r_N)
+// associated with the current request, clears their values, and sets their MaxAge to -1.
+// If a ResponseWriter is provided, it attempts to save the expired chunk sessions to send
+// the expiring Set-Cookie headers. This is used internally when setting a new refresh token.
+//
+// Parameters:
+//   - w: The HTTP response writer (optional). If provided, expiring Set-Cookie headers will be sent.
 func (sd *SessionData) expireRefreshTokenChunks(w http.ResponseWriter) {
 	for i := 0; ; i++ {
 		sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
@@ -544,7 +640,15 @@ func (sd *SessionData) expireRefreshTokenChunks(w http.ResponseWriter) {
 	}
 }
 
-// splitIntoChunks splits a string into chunks of specified size.
+// splitIntoChunks divides a string `s` into a slice of strings, where each element
+// has a maximum length of `chunkSize`.
+//
+// Parameters:
+//   - s: The string to split.
+//   - chunkSize: The maximum size of each chunk.
+//
+// Returns:
+//   - A slice of strings representing the chunks.
 func splitIntoChunks(s string, chunkSize int) []string {
 	var chunks []string
 	for len(s) > 0 {
@@ -559,57 +663,97 @@ func splitIntoChunks(s string, chunkSize int) []string {
 	return chunks
 }
 
-// GetCSRF retrieves the CSRF token from the session.
+// GetCSRF retrieves the Cross-Site Request Forgery (CSRF) token stored in the main session.
+//
+// Returns:
+//   - The CSRF token string, or an empty string if not set.
 func (sd *SessionData) GetCSRF() string {
 	csrf, _ := sd.mainSession.Values["csrf"].(string)
 	return csrf
 }
 
-// SetCSRF stores a new CSRF token in the session.
+// SetCSRF stores the provided CSRF token string in the main session.
+// This token is typically generated at the start of the authentication flow.
+//
+// Parameters:
+//   - token: The CSRF token to store.
 func (sd *SessionData) SetCSRF(token string) {
 	sd.mainSession.Values["csrf"] = token
 }
 
-// GetNonce retrieves the nonce value from the session.
+// GetNonce retrieves the OIDC nonce value stored in the main session.
+// The nonce is used to associate an ID token with the specific authentication request.
+//
+// Returns:
+//   - The nonce string, or an empty string if not set.
 func (sd *SessionData) GetNonce() string {
 	nonce, _ := sd.mainSession.Values["nonce"].(string)
 	return nonce
 }
 
-// SetNonce stores a new nonce value in the session.
+// SetNonce stores the provided OIDC nonce string in the main session.
+// This nonce is typically generated at the start of the authentication flow.
+//
+// Parameters:
+//   - nonce: The nonce string to store.
 func (sd *SessionData) SetNonce(nonce string) {
 	sd.mainSession.Values["nonce"] = nonce
 }
 
-// GetCodeVerifier retrieves the PKCE code verifier from the session.
+// GetCodeVerifier retrieves the PKCE (Proof Key for Code Exchange) code verifier
+// stored in the main session. This is only relevant if PKCE is enabled.
+//
+// Returns:
+//   - The code verifier string, or an empty string if not set or PKCE is disabled.
 func (sd *SessionData) GetCodeVerifier() string {
 	codeVerifier, _ := sd.mainSession.Values["code_verifier"].(string)
 	return codeVerifier
 }
 
-// SetCodeVerifier stores the PKCE code verifier in the session.
+// SetCodeVerifier stores the provided PKCE code verifier string in the main session.
+// This is typically called at the start of the authentication flow if PKCE is enabled.
+//
+// Parameters:
+//   - codeVerifier: The PKCE code verifier string to store.
 func (sd *SessionData) SetCodeVerifier(codeVerifier string) {
 	sd.mainSession.Values["code_verifier"] = codeVerifier
 }
 
-// GetEmail retrieves the authenticated user's email address from the session.
+// GetEmail retrieves the authenticated user's email address stored in the main session.
+// This is typically extracted from the ID token claims after successful authentication.
+//
+// Returns:
+//   - The user's email address string, or an empty string if not set.
 func (sd *SessionData) GetEmail() string {
 	email, _ := sd.mainSession.Values["email"].(string)
 	return email
 }
 
-// SetEmail stores the user's email address in the session.
+// SetEmail stores the provided user email address string in the main session.
+// This is typically called after successful authentication and claim extraction.
+//
+// Parameters:
+//   - email: The user's email address to store.
 func (sd *SessionData) SetEmail(email string) {
 	sd.mainSession.Values["email"] = email
 }
 
-// GetIncomingPath retrieves the original request path that triggered the authentication flow.
+// GetIncomingPath retrieves the original request URI (including query parameters)
+// that the user was trying to access before being redirected for authentication.
+// This is stored in the main session to allow redirection back after successful login.
+//
+// Returns:
+//   - The original request URI string, or an empty string if not set.
 func (sd *SessionData) GetIncomingPath() string {
 	path, _ := sd.mainSession.Values["incoming_path"].(string)
 	return path
 }
 
-// SetIncomingPath stores the original request path that triggered the authentication flow.
+// SetIncomingPath stores the original request URI (path and query parameters)
+// in the main session. This is typically called at the start of the authentication flow.
+//
+// Parameters:
+//   - path: The original request URI string (e.g., "/protected/resource?id=123").
 func (sd *SessionData) SetIncomingPath(path string) {
 	sd.mainSession.Values["incoming_path"] = path
 }

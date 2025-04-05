@@ -114,6 +114,14 @@ const (
 //   - PostLogoutRedirectURI: "/"
 //   - ForceHTTPS: true (for security)
 //   - EnablePKCE: false (PKCE is opt-in)
+//
+// CreateConfig initializes a new Config struct with default values for optional fields.
+// It sets default scopes, log level, rate limit, enables ForceHTTPS, and sets the
+// default refresh grace period. Required fields like ProviderURL, ClientID, ClientSecret,
+// CallbackURL, and SessionEncryptionKey must be set explicitly after creation.
+//
+// Returns:
+//   - A pointer to a new Config struct with default settings applied.
 func CreateConfig() *Config {
 	c := &Config{
 		Scopes:                    []string{"openid", "profile", "email"},
@@ -127,9 +135,14 @@ func CreateConfig() *Config {
 	return c
 }
 
-// Validate performs validation checks on the Config.
-// It ensures all required fields are set and have valid values.
-// Returns an error if any validation check fails.
+// Validate checks the configuration settings for validity.
+// It ensures that required fields (ProviderURL, CallbackURL, ClientID, ClientSecret, SessionEncryptionKey)
+// are present and that URLs are well-formed (HTTPS where required). It also validates
+// the session key length, log level, rate limit, and refresh grace period.
+//
+// Returns:
+//   - nil if the configuration is valid.
+//   - An error describing the first validation failure encountered.
 func (c *Config) Validate() error {
 	// Validate provider URL
 	if c.ProviderURL == "" {
@@ -211,13 +224,26 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// isValidSecureURL checks if the provided string is a valid HTTPS URL
+// isValidSecureURL checks if a given string represents a valid, absolute HTTPS URL.
+// It uses url.Parse and checks for a nil error, an "https" scheme, and a non-empty host.
+//
+// Parameters:
+//   - s: The URL string to validate.
+//
+// Returns:
+//   - true if the string is a valid HTTPS URL, false otherwise.
 func isValidSecureURL(s string) bool {
 	u, err := url.Parse(s)
 	return err == nil && u.Scheme == "https" && u.Host != ""
 }
 
-// isValidLogLevel checks if the provided log level is valid
+// isValidLogLevel checks if the provided log level string is one of the supported values ("debug", "info", "error").
+//
+// Parameters:
+//   - level: The log level string to validate.
+//
+// Returns:
+//   - true if the log level is valid, false otherwise.
 func isValidLogLevel(level string) bool {
 	return level == "debug" || level == "info" || level == "error"
 }
@@ -234,14 +260,20 @@ type Logger struct {
 	logDebug *log.Logger
 }
 
-// NewLogger creates a new Logger with the specified log level.
-// The log level determines which messages are output:
-//   - "debug": Outputs all messages (debug, info, error)
-//   - "info": Outputs info and error messages
-//   - "error": Outputs only error messages
+// NewLogger creates and configures a new Logger instance based on the provided log level.
+// It initializes loggers for ERROR (stderr), INFO (stdout), and DEBUG (stdout) levels,
+// enabling output based on the specified level:
+//   - "error": Only ERROR messages are output.
+//   - "info": INFO and ERROR messages are output.
+//   - "debug": DEBUG, INFO, and ERROR messages are output.
 //
-// Error messages are always written to stderr, while info and debug
-// messages are written to stdout when enabled.
+// If an invalid level is provided, it defaults to behavior similar to "error".
+//
+// Parameters:
+//   - logLevel: The desired logging level ("debug", "info", or "error").
+//
+// Returns:
+//   - A pointer to the configured Logger instance.
 func NewLogger(logLevel string) *Logger {
 	logError := log.New(io.Discard, "ERROR: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
 	logInfo := log.New(io.Discard, "INFO: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
@@ -263,51 +295,77 @@ func NewLogger(logLevel string) *Logger {
 	}
 }
 
-// Info logs an informational message.
-// These messages are intended for general operational information
-// and are written to stdout.
+// Info logs a message at the INFO level using Printf style formatting.
+// Output is directed to stdout if the configured log level is "info" or "debug".
+//
+// Parameters:
+//   - format: The format string (as in fmt.Printf).
+//   - args: The arguments for the format string.
 func (l *Logger) Info(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
-// Debug logs a debug message.
-// These messages are only output when debug level logging is enabled
-// and are intended for detailed troubleshooting information.
+// Debug logs a message at the DEBUG level using Printf style formatting.
+// Output is directed to stdout only if the configured log level is "debug".
+//
+// Parameters:
+//   - format: The format string (as in fmt.Printf).
+//   - args: The arguments for the format string.
 func (l *Logger) Debug(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
 
-// Error logs an error message.
-// These messages indicate problems that need attention and are
-// always written to stderr regardless of the log level.
+// Error logs a message at the ERROR level using Printf style formatting.
+// Output is always directed to stderr, regardless of the configured log level.
+//
+// Parameters:
+//   - format: The format string (as in fmt.Printf).
+//   - args: The arguments for the format string.
 func (l *Logger) Error(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
 
-// Infof logs an informational message using Printf formatting.
-// These messages are intended for general operational information
-// and are written to stdout.
+// Infof logs a message at the INFO level using Printf style formatting.
+// Equivalent to calling l.Info(format, args...).
+// Output is directed to stdout if the configured log level is "info" or "debug".
+//
+// Parameters:
+//   - format: The format string (as in fmt.Printf).
+//   - args: The arguments for the format string.
 func (l *Logger) Infof(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
-// Debugf logs a debug message using Printf formatting.
-// These messages are only output when debug level logging is enabled
-// and are intended for detailed troubleshooting information.
+// Debugf logs a message at the DEBUG level using Printf style formatting.
+// Equivalent to calling l.Debug(format, args...).
+// Output is directed to stdout only if the configured log level is "debug".
+//
+// Parameters:
+//   - format: The format string (as in fmt.Printf).
+//   - args: The arguments for the format string.
 func (l *Logger) Debugf(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
 
-// Errorf logs an error message using Printf formatting.
-// These messages indicate problems that need attention and are
-// always written to stderr regardless of the log level.
+// Errorf logs a message at the ERROR level using Printf style formatting.
+// Equivalent to calling l.Error(format, args...).
+// Output is always directed to stderr, regardless of the configured log level.
+//
+// Parameters:
+//   - format: The format string (as in fmt.Printf).
+//   - args: The arguments for the format string.
 func (l *Logger) Errorf(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
 
-// handleError writes an error message to both the HTTP response and the error log.
-// It ensures consistent error handling across the middleware by logging the error
-// and sending an appropriate HTTP response to the client.
+// handleError logs an error message using the provided logger and sends an HTTP error
+// response to the client with the specified message and status code.
+//
+// Parameters:
+//   - w: The http.ResponseWriter to send the error response to.
+//   - message: The error message string.
+//   - code: The HTTP status code for the response.
+//   - logger: The Logger instance to use for logging the error.
 func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
 	logger.Error(message)
 	http.Error(w, message, code)

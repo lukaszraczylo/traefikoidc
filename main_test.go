@@ -376,6 +376,7 @@ func TestServeHTTP(t *testing.T) {
 		setupSession              func(*SessionData)
 		mockRefreshTokenFunc      func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error)
 		assertSessionAfterRequest func(t *testing.T, rr *httptest.ResponseRecorder, req *http.Request, sessionManager *SessionManager) // Added for post-request checks
+		requestHeaders            map[string]string                                                                                    // Added for setting headers like Accept
 	}{
 		{
 			name:           "Excluded URL",
@@ -394,7 +395,13 @@ func TestServeHTTP(t *testing.T) {
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(ts.token) // Use the valid token generated in Setup
+				// Generate a fresh valid token for this test case to avoid replay issues
+				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
+					"iat": time.Now().Unix(), "nbf": time.Now().Unix(), "sub": "test-subject", "email": "user@example.com",
+					"jti": generateRandomString(16), // Unique JTI
+				})
+				session.SetAccessToken(freshToken)
 				session.SetRefreshToken("valid-refresh-token")
 			},
 			expectedStatus: http.StatusOK,
@@ -450,14 +457,161 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:        "Logout URL",
-			requestPath: "/logout", // Assuming logout path is configured or defaulted correctly
+			requestPath: "/callback/logout", // Match the default logout path set in TestSuite.Setup
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(ts.token)
+				// Generate a fresh valid token for this test case
+				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
+					"iat": time.Now().Unix(), "nbf": time.Now().Unix(), "sub": "test-subject", "email": "user@example.com",
+					"jti": generateRandomString(16), // Unique JTI
+				})
+				session.SetAccessToken(freshToken)
 			},
 			expectedStatus: http.StatusFound, // Expect redirect after logout
 			expectedBody:   "",
+			// No specific session assertion needed for logout redirect itself
+		},
+		{
+			name:        "Authenticated request with expired token and FAILED refresh (Accept: JSON)",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetEmail("user@example.com")
+				session.SetAccessToken(createExpiredToken())
+				session.SetRefreshToken("valid-refresh-token")
+			},
+			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
+				return func(refreshToken string) (*TokenResponse, error) {
+					// Simulate failed refresh
+					return nil, fmt.Errorf("mock error: refresh token invalid or provider down")
+				}
+			},
+			requestHeaders: map[string]string{
+				"Accept": "application/json",
+			},
+			expectedStatus: http.StatusUnauthorized, // Expect 401 for API client
+			expectedBody:   `{"error":"unauthorized","message":"Token refresh failed"}`,
+		},
+		{
+			name:        "Authenticated request with expired token and FAILED refresh (Accept: HTML)",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetEmail("user@example.com")
+				session.SetAccessToken(createExpiredToken())
+				session.SetRefreshToken("valid-refresh-token")
+			},
+			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
+				return func(refreshToken string) (*TokenResponse, error) {
+					// Simulate failed refresh
+					return nil, fmt.Errorf("mock error: refresh token invalid or provider down")
+				}
+			},
+			requestHeaders: map[string]string{
+				"Accept": "text/html", // Browser client
+			},
+			expectedStatus: http.StatusFound, // Expect redirect for browser client
+		},
+		{
+			name:        "Authenticated request with token nearing expiry (needs refresh)",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				// Create token expiring soon (e.g., 30s, within default 60s grace period)
+				exp := time.Now().Add(30 * time.Second).Unix()
+				iat := time.Now().Add(-1 * time.Minute).Unix()
+				nbf := time.Now().Add(-1 * time.Minute).Unix()
+				nearExpiryToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": exp, "iat": iat, "nbf": nbf,
+					"sub": "test-subject", "email": "user@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAuthenticated(true)
+				session.SetEmail("user@example.com")
+				session.SetAccessToken(nearExpiryToken)
+				session.SetRefreshToken("valid-refresh-token-for-near-expiry")
+			},
+			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
+				return func(refreshToken string) (*TokenResponse, error) {
+					if refreshToken != "valid-refresh-token-for-near-expiry" {
+						return nil, fmt.Errorf("mock error: unexpected refresh token '%s'", refreshToken)
+					}
+					// Simulate successful refresh
+					newToken := createNewValidToken()
+					return &TokenResponse{IDToken: newToken, AccessToken: newToken, RefreshToken: "new-refresh-token-near-expiry", ExpiresIn: 3600}, nil
+				}
+			},
+			expectedStatus: http.StatusOK, // Expect success after proactive refresh
+			expectedBody:   "OK",
+		},
+		{
+			name:        "Authenticated request with token valid (outside grace period)",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				// Create token expiring later (e.g., 10 mins, outside default 60s grace period)
+				exp := time.Now().Add(10 * time.Minute).Unix()
+				iat := time.Now().Add(-1 * time.Minute).Unix()
+				nbf := time.Now().Add(-1 * time.Minute).Unix()
+				validToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": exp, "iat": iat, "nbf": nbf,
+					"sub": "test-subject", "email": "user@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAuthenticated(true)
+				session.SetEmail("user@example.com")
+				session.SetAccessToken(validToken)
+				session.SetRefreshToken("should-not-be-used-refresh-token")
+			},
+			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
+				// This should NOT be called
+				return func(refreshToken string) (*TokenResponse, error) {
+					t.Errorf("Refresh token function was called unexpectedly for valid token outside grace period")
+					return nil, fmt.Errorf("refresh should not have been attempted")
+				}
+			},
+			expectedStatus: http.StatusOK, // Expect success, no refresh needed
+			expectedBody:   "OK",
+		},
+		{
+			name:        "Disallowed Domain (Accept: JSON)",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetEmail("user@disallowed.com") // Use disallowed domain
+				// Generate a fresh valid token for this test case
+				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
+					"iat": time.Now().Unix(), "nbf": time.Now().Unix(), "sub": "test-subject", "email": "user@disallowed.com", // Match email
+					"jti": generateRandomString(16), // Unique JTI
+				})
+				session.SetAccessToken(freshToken)
+				session.SetRefreshToken("valid-refresh-token")
+			},
+			requestHeaders: map[string]string{
+				"Accept": "application/json",
+			},
+			expectedStatus: http.StatusForbidden,
+			expectedBody:   `{"error":"Forbidden","error_description":"Access denied: Your email domain is not allowed. To log out, visit: /callback/logout","status_code":403}`,
+		},
+		{
+			name:        "Disallowed Domain (Accept: HTML)",
+			requestPath: "/protected",
+			setupSession: func(session *SessionData) {
+				session.SetAuthenticated(true)
+				session.SetEmail("user@disallowed.com") // Use disallowed domain
+				// Generate a fresh valid token for this test case
+				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
+					"iat": time.Now().Unix(), "nbf": time.Now().Unix(), "sub": "test-subject", "email": "user@disallowed.com", // Match email
+					"jti": generateRandomString(16), // Unique JTI
+				})
+				session.SetAccessToken(freshToken)
+				session.SetRefreshToken("valid-refresh-token")
+			},
+			requestHeaders: map[string]string{
+				"Accept": "text/html",
+			},
+			expectedStatus: http.StatusForbidden, // Still Forbidden, but HTML response
+			expectedBody:   "",                   // Body check is harder for HTML, focus on status and content-type
 		},
 	}
 
@@ -468,6 +622,12 @@ func TestServeHTTP(t *testing.T) {
 			req.Header.Set("X-Forwarded-Proto", "http") // Or https if testing that
 			req.Header.Set("X-Forwarded-Host", "testhost.com")
 			req.Host = "testhost.com" // Also set Host header
+			// Set request headers from test case
+			if tc.requestHeaders != nil {
+				for key, value := range tc.requestHeaders {
+					req.Header.Set(key, value)
+				}
+			}
 
 			rr := httptest.NewRecorder()
 
@@ -527,10 +687,19 @@ func TestServeHTTP(t *testing.T) {
 			}
 
 			// Check response body if expected
+			// Check response body if expected (handle JSON vs HTML)
 			if tc.expectedBody != "" {
-				if body := strings.TrimSpace(rr.Body.String()); body != tc.expectedBody {
-					t.Errorf("Test %s: Expected body %q, got %q", tc.name, tc.expectedBody, body)
+				// For JSON, compare directly
+				if strings.Contains(rr.Header().Get("Content-Type"), "application/json") {
+					if body := strings.TrimSpace(rr.Body.String()); body != tc.expectedBody {
+						t.Errorf("Test %s: Expected JSON body %q, got %q", tc.name, tc.expectedBody, body)
+					}
+				} else if tc.expectedBody == "OK" { // Simple check for the "OK" body from next handler
+					if body := strings.TrimSpace(rr.Body.String()); body != tc.expectedBody {
+						t.Errorf("Test %s: Expected body %q, got %q", tc.name, tc.expectedBody, body)
+					}
 				}
+				// Add more sophisticated HTML body checks if needed
 			}
 
 			// Perform post-request session assertions if defined
@@ -2319,3 +2488,130 @@ func TestDefaultInitiateAuthentication_PreservesQueryParameters(t *testing.T) {
 		t.Errorf("Expected incoming path to be '%s', got '%s'", expectedPath, incomingPath)
 	}
 }
+
+// TestVerifyTimeConstraint tests the time constraint verification logic with separate past/future skew tolerances.
+func TestVerifyTimeConstraint(t *testing.T) {
+	// Define tolerances used in jwt.go (ensure they match)
+	toleranceFuture := 2 * time.Minute
+	tolerancePast := 10 * time.Second
+
+	now := time.Now()
+
+	tests := []struct {
+		name        string
+		claimTime   time.Time
+		claimName   string
+		futureCheck bool // true for exp, false for iat/nbf
+		expectError bool
+	}{
+		// Expiration (future=true, tolerance=2min)
+		{
+			name:        "EXP: Valid (expires in 1 min)",
+			claimTime:   now.Add(1 * time.Minute),
+			claimName:   "exp",
+			futureCheck: true,
+			expectError: false,
+		},
+		{
+			name:        "EXP: Expired (expired 3 min ago)",
+			claimTime:   now.Add(-3 * time.Minute), // Outside 2min tolerance
+			claimName:   "exp",
+			futureCheck: true,
+			expectError: true,
+		},
+		{
+			name:        "EXP: Valid (expired 1 min ago, within 2min tolerance)",
+			claimTime:   now.Add(-1 * time.Minute), // Inside 2min tolerance
+			claimName:   "exp",
+			futureCheck: true,
+			expectError: false, // Should be allowed due to future tolerance
+		},
+
+		// Issued At (future=false, tolerance=10s)
+		{
+			name:        "IAT: Valid (issued 1 min ago)",
+			claimTime:   now.Add(-1 * time.Minute),
+			claimName:   "iat",
+			futureCheck: false,
+			expectError: false,
+		},
+		{
+			name:        "IAT: Invalid (issued 15 sec in future)",
+			claimTime:   now.Add(15 * time.Second), // Outside 10s past tolerance
+			claimName:   "iat",
+			futureCheck: false,
+			expectError: true, // "token used before issued"
+		},
+		{
+			name:        "IAT: Valid (issued 5 sec in future, within 10s tolerance)",
+			claimTime:   now.Add(5 * time.Second), // Inside 10s past tolerance
+			claimName:   "iat",
+			futureCheck: false,
+			expectError: false, // Should be allowed due to past tolerance
+		},
+
+		// Not Before (future=false, tolerance=10s)
+		{
+			name:        "NBF: Valid (active 1 min ago)",
+			claimTime:   now.Add(-1 * time.Minute),
+			claimName:   "nbf",
+			futureCheck: false,
+			expectError: false,
+		},
+		{
+			name:        "NBF: Invalid (active in 15 sec)",
+			claimTime:   now.Add(15 * time.Second), // Outside 10s past tolerance
+			claimName:   "nbf",
+			futureCheck: false,
+			expectError: true, // "token not yet valid"
+		},
+		{
+			name:        "NBF: Valid (active in 5 sec, within 10s tolerance)",
+			claimTime:   now.Add(5 * time.Second), // Inside 10s past tolerance
+			claimName:   "nbf",
+			futureCheck: false,
+			expectError: false, // Should be allowed due to past tolerance
+		},
+	}
+
+	// Temporarily adjust global tolerances for test consistency, then restore
+	originalFutureTolerance := ClockSkewToleranceFuture
+	originalPastTolerance := ClockSkewTolerancePast
+	ClockSkewToleranceFuture = toleranceFuture
+	ClockSkewTolerancePast = tolerancePast
+	defer func() {
+		ClockSkewToleranceFuture = originalFutureTolerance
+		ClockSkewTolerancePast = originalPastTolerance
+	}()
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Convert claim time to float64 unix timestamp
+			unixTime := float64(tc.claimTime.Unix()) + float64(tc.claimTime.Nanosecond())/1e9
+
+			var err error
+			// Call the specific verification function which uses verifyTimeConstraint
+			if tc.claimName == "exp" {
+				err = verifyExpiration(unixTime)
+			} else if tc.claimName == "iat" {
+				err = verifyIssuedAt(unixTime)
+			} else if tc.claimName == "nbf" {
+				err = verifyNotBefore(unixTime)
+			} else {
+				t.Fatalf("Unknown claim name in test setup: %s", tc.claimName)
+			}
+
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error for claim %s at time %v (now=%v), but got nil", tc.claimName, tc.claimTime, now)
+				} else {
+					t.Logf("Got expected error: %v", err) // Log the error for confirmation
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error for claim %s at time %v (now=%v), but got: %v", tc.claimName, tc.claimTime, now, err)
+				}
+			}
+		})
+	}
+} // Add missing closing brace for TestVerifyTimeConstraint

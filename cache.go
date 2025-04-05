@@ -46,7 +46,9 @@ type Cache struct {
 // DefaultMaxSize is the default maximum number of items in the cache.
 const DefaultMaxSize = 500
 
-// NewCache creates a new empty cache instance that is ready for use.
+// NewCache creates a new empty cache instance with default settings.
+// It initializes the internal maps and list, sets the default maximum size,
+// and starts the automatic cleanup goroutine.
 func NewCache() *Cache {
 	c := &Cache{
 		items:               make(map[string]CacheItem, DefaultMaxSize),
@@ -60,8 +62,12 @@ func NewCache() *Cache {
 	return c
 }
 
-// Set adds or updates an item in the cache with the specified expiration duration.
-// It moves the item to the most recently used position.
+// Set adds or updates an item in the cache with the specified key, value, and expiration duration.
+// If the key already exists, its value and expiration time are updated, and it's moved
+// to the most recently used position in the LRU list.
+// If the key does not exist and the cache is full, the least recently used item is evicted
+// before adding the new item.
+// The expiration duration is relative to the time Set is called.
 func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -95,8 +101,11 @@ func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 	c.elems[key] = elem
 }
 
-// Get retrieves an item from the cache if it exists and hasn't expired.
-// Moving the accessed item to the most recently used position.
+// Get retrieves an item from the cache by its key.
+// If the item exists and has not expired, its value and true are returned.
+// Accessing an item moves it to the most recently used position in the LRU list.
+// If the item does not exist or has expired, nil and false are returned, and the
+// expired item is removed from the cache.
 func (c *Cache) Get(key string) (interface{}, bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -120,7 +129,9 @@ func (c *Cache) Get(key string) (interface{}, bool) {
 	return item.Value, true
 }
 
-// Delete removes an item from the cache.
+// Delete removes an item from the cache by its key.
+// If the key exists, the corresponding item is removed from the cache storage
+// and the LRU list.
 func (c *Cache) Delete(key string) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -128,8 +139,10 @@ func (c *Cache) Delete(key string) {
 	c.removeItem(key)
 }
 
-// Cleanup removes all expired items from the cache. This should be called periodically
-// to prevent memory bloat from expired entries.
+// Cleanup iterates through the cache and removes all items that have expired.
+// An item is considered expired if the current time is after its ExpiresAt timestamp.
+// This method is called automatically by the auto-cleanup goroutine, but can also
+// be called manually.
 func (c *Cache) Cleanup() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -143,7 +156,11 @@ func (c *Cache) Cleanup() {
 	}
 }
 
-// evictOldest removes the least recently used item from the cache.
+// evictOldest removes the least recently used (oldest) item from the cache.
+// It first attempts to find and remove an expired item from the front of the LRU list.
+// If no expired items are found at the front, it removes the absolute oldest item (front of the list).
+// This method is called internally by Set when the cache reaches its maximum size.
+// Note: This function assumes the write lock is already held.
 func (c *Cache) evictOldest() {
 	now := time.Now()
 	elem := c.order.Front()
@@ -167,7 +184,9 @@ func (c *Cache) evictOldest() {
 	}
 }
 
-// removeItem removes an item from both the cache and the LRU tracking structures.
+// removeItem removes an item specified by the key from the cache's internal storage (items map)
+// and its corresponding entry from the LRU list (order list and elems map).
+// Note: This function assumes the write lock is already held.
 func (c *Cache) removeItem(key string) {
 	delete(c.items, key)
 	if elem, ok := c.elems[key]; ok {
@@ -176,12 +195,15 @@ func (c *Cache) removeItem(key string) {
 	}
 }
 
-// startAutoCleanup initiates a goroutine that periodically cleans up expired cache items.
+// startAutoCleanup starts the background goroutine that automatically calls the Cleanup method
+// at the interval specified by c.autoCleanupInterval.
+// It uses the autoCleanupRoutine helper function.
 func (c *Cache) startAutoCleanup() {
 	autoCleanupRoutine(c.autoCleanupInterval, c.stopCleanup, c.Cleanup)
 }
 
-// Close terminates the auto cleanup goroutine.
+// Close stops the automatic cleanup goroutine associated with this cache instance.
+// It should be called when the cache is no longer needed to prevent resource leaks.
 func (c *Cache) Close() {
 	close(c.stopCleanup)
 }

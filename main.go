@@ -17,7 +17,13 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// createDefaultHTTPClient creates an HTTP client with optimized settings for OIDC
+// createDefaultHTTPClient creates a new http.Client with settings optimized for OIDC communication.
+// It configures the transport with specific timeouts (dial, keepalive, TLS handshake, idle connection),
+// connection limits (max idle, max per host), enables HTTP/2, and sets a default request timeout.
+// It also configures redirect handling to follow redirects up to a limit.
+//
+// Returns:
+//   - A pointer to the configured http.Client.
 func createDefaultHTTPClient() *http.Client {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -128,16 +134,20 @@ var defaultExcludedURLs = map[string]struct{}{
 	"/favicon": {},
 }
 
-// VerifyToken implements the TokenVerifier interface to verify an OIDC token.
-// It performs a complete verification process including:
-// 1. Checking the token cache to avoid redundant verifications
-// 2. Performing rate limiting and blacklist checks
-// 3. Parsing the JWT structure
-// 4. Verifying the JWT signature against the JWKS from the provider
-// 5. Validating standard JWT claims (iss, aud, exp, etc.)
-// 6. Caching the verified token for future requests
+// VerifyToken implements the TokenVerifier interface. It performs a comprehensive validation of an ID token:
+// 1. Checks the token cache; returns nil immediately if a valid cached entry exists.
+// 2. Performs pre-verification checks (rate limiting, blacklist).
+// 3. Parses the raw token string into a JWT struct.
+// 4. Verifies the JWT signature and standard claims (iss, aud, exp, iat, nbf, sub) using VerifyJWTSignatureAndClaims.
+// 5. If verification succeeds, caches the token claims until the token's expiration time.
+// 6. If verification succeeds and the token has a JTI claim, adds the JTI to the blacklist cache to prevent replay attacks.
 //
-// Returns nil if the token is valid, or an error describing the validation failure.
+// Parameters:
+//   - token: The raw ID token string to verify.
+//
+// Returns:
+//   - nil if the token is valid according to all checks.
+//   - An error describing the reason for validation failure (e.g., rate limit, blacklisted, parsing error, signature error, claim error).
 func (t *TraefikOidc) VerifyToken(token string) error {
 	// Check cache first
 	if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
@@ -192,7 +202,16 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 	return nil
 }
 
-// performPreVerificationChecks performs rate limiting and blacklist checks
+// performPreVerificationChecks executes preliminary checks before attempting full token validation.
+// It enforces rate limiting using the configured limiter and checks if the raw token string
+// or its JTI (if extractable) exists in the blacklist cache.
+//
+// Parameters:
+//   - token: The raw token string being verified.
+//
+// Returns:
+//   - nil if all pre-verification checks pass.
+//   - An error if the rate limit is exceeded or the token/JTI is blacklisted.
 func (t *TraefikOidc) performPreVerificationChecks(token string) error {
 	// Enforce rate limiting
 	if !t.limiter.Allow() {
@@ -218,7 +237,13 @@ func (t *TraefikOidc) performPreVerificationChecks(token string) error {
 	return nil
 }
 
-// cacheVerifiedToken caches a verified token until its expiration time
+// cacheVerifiedToken adds the claims of a successfully verified token to the token cache.
+// It calculates the remaining duration until the token's 'exp' claim and uses that
+// duration for the cache entry's lifetime.
+//
+// Parameters:
+//   - token: The raw token string (used as the cache key).
+//   - claims: The map of claims extracted from the verified token.
 func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interface{}) {
 	expirationTime := time.Unix(int64(claims["exp"].(float64)), 0)
 	now := time.Now()
@@ -226,7 +251,18 @@ func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interfa
 	t.tokenCache.Set(token, claims, duration)
 }
 
-// VerifyJWTSignatureAndClaims verifies the JWT signature and standard claims
+// VerifyJWTSignatureAndClaims implements the JWTVerifier interface. It verifies the signature
+// of a parsed JWT against the provider's public keys obtained from the JWKS endpoint,
+// and then validates the standard JWT claims (iss, aud, exp, iat, nbf, sub, jti replay).
+//
+// Parameters:
+//   - jwt: A pointer to the parsed JWT struct containing header and claims.
+//   - token: The original raw token string (used for signature verification).
+//
+// Returns:
+//   - nil if both the signature and all standard claims are valid.
+//   - An error describing the validation failure (e.g., failed to get JWKS, missing kid/alg,
+//     no matching key, signature verification failed, standard claim validation failed).
 func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error {
 	t.logger.Debugf("Verifying JWT signature and claims")
 
@@ -277,24 +313,28 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	return nil
 }
 
-// New creates a new instance of the OIDC middleware.
-// This is the main entry point for the middleware and is called by Traefik when loading the plugin.
-// It initializes all components needed for OIDC authentication:
-//   - Session management for storing user state
-//   - Token caching and blacklisting
-//   - JWK caching for signature verification
-//   - Rate limiting to prevent abuse
-//   - Metadata discovery for OIDC provider endpoints
+// New is the constructor for the TraefikOidc middleware plugin.
+// It is called by Traefik during plugin initialization. It performs the following steps:
+//  1. Creates a default configuration if none is provided.
+//  2. Validates the session encryption key length.
+//  3. Initializes the logger based on the configured log level.
+//  4. Sets up the HTTP client (using defaults if none provided in config).
+//  5. Creates the main TraefikOidc struct, populating fields from the config
+//     (paths, client details, PKCE/HTTPS flags, scopes, rate limiter, caches, allowed lists).
+//  6. Initializes the SessionManager.
+//  7. Sets up internal function pointers/interfaces (extractClaimsFunc, initiateAuthenticationFunc, tokenVerifier, jwtVerifier, tokenExchanger).
+//  8. Adds default excluded URLs.
+//  9. Starts background goroutines for token cache cleanup and OIDC provider metadata initialization/refresh.
 //
 // Parameters:
-//   - ctx: Context for initialization operations
-//   - next: The next handler in the middleware chain
-//   - config: Configuration options for the middleware
-//   - name: Identifier for this middleware instance
+//   - ctx: The context provided by Traefik for initialization.
+//   - next: The next http.Handler in the Traefik middleware chain.
+//   - config: The plugin configuration provided by the user in Traefik static/dynamic configuration.
+//   - name: The name assigned to this middleware instance by Traefik.
 //
 // Returns:
-//   - An http.Handler that implements the middleware
-//   - An error if initialization fails
+//   - An http.Handler (the TraefikOidc instance itself, which implements ServeHTTP).
+//   - An error if essential configuration is missing or invalid (e.g., short encryption key).
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	if config == nil {
 		config = CreateConfig()
@@ -386,7 +426,15 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	return t, nil
 }
 
-// initializeMetadata discovers and initializes the provider metadata
+// initializeMetadata asynchronously fetches and caches the OIDC provider metadata.
+// It uses the MetadataCache to retrieve potentially cached data or fetch fresh data
+// via discoverProviderMetadata. On successful retrieval, it updates the middleware's
+// endpoint URLs (auth, token, jwks, etc.), starts the periodic metadata refresh goroutine,
+// and signals completion by closing the initComplete channel. If fetching fails initially,
+// it logs an error and the middleware might remain uninitialized until a successful refresh.
+//
+// Parameters:
+//   - providerURL: The base URL of the OIDC provider.
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.logger.Debug("Starting provider metadata discovery")
 
@@ -412,7 +460,12 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.logger.Error("Received nil metadata")
 }
 
-// updateMetadataEndpoints updates the middleware with metadata endpoints
+// updateMetadataEndpoints updates the relevant endpoint URL fields (jwksURL, authURL, tokenURL, etc.)
+// within the TraefikOidc instance based on the discovered provider metadata.
+// This is called after successfully fetching or refreshing the metadata.
+//
+// Parameters:
+//   - metadata: A pointer to the ProviderMetadata struct containing the discovered endpoints.
 func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	t.jwksURL = metadata.JWKSURL
 	t.authURL = metadata.AuthURL
@@ -422,7 +475,13 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	t.endSessionURL = metadata.EndSessionURL
 }
 
-// startMetadataRefresh periodically refreshes the OIDC metadata
+// startMetadataRefresh starts a background goroutine that periodically attempts to refresh
+// the OIDC provider metadata by calling GetMetadata on the metadataCache.
+// It runs on a fixed ticker (currently 1 hour). Successful refreshes update the
+// middleware's endpoint URLs via updateMetadataEndpoints. Fetch errors are logged.
+//
+// Parameters:
+//   - providerURL: The base URL of the OIDC provider, used for subsequent refresh attempts.
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
@@ -442,7 +501,19 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	}
 }
 
-// discoverProviderMetadata fetches the OIDC provider metadata
+// discoverProviderMetadata attempts to fetch the OIDC provider's configuration from its
+// well-known discovery endpoint (".well-known/openid-configuration").
+// It implements an exponential backoff retry mechanism in case of transient network errors
+// or provider unavailability during startup.
+//
+// Parameters:
+//   - providerURL: The base URL of the OIDC provider.
+//   - httpClient: The HTTP client to use for the request.
+//   - l: The logger instance for recording retries and errors.
+//
+// Returns:
+//   - A pointer to the fetched ProviderMetadata struct.
+//   - An error if fetching fails after all retries or if a timeout is exceeded.
 func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Logger) (*ProviderMetadata, error) {
 	wellKnownURL := strings.TrimSuffix(providerURL, "/") + "/.well-known/openid-configuration"
 
@@ -481,7 +552,16 @@ func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Lo
 	return nil, fmt.Errorf("max retries exceeded while fetching provider metadata: %w", lastErr)
 }
 
-// fetchMetadata fetches metadata from the well-known OIDC configuration endpoint
+// fetchMetadata performs a single attempt to fetch and decode the OIDC provider metadata
+// from the specified well-known configuration URL.
+//
+// Parameters:
+//   - wellKnownURL: The full URL to the ".well-known/openid-configuration" endpoint.
+//   - httpClient: The HTTP client to use for the GET request.
+//
+// Returns:
+//   - A pointer to the decoded ProviderMetadata struct.
+//   - An error if the GET request fails, the status code is not 200 OK, or JSON decoding fails.
 func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetadata, error) {
 	resp, err := httpClient.Get(wellKnownURL)
 	if err != nil {
@@ -504,18 +584,22 @@ func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetad
 	return &metadata, nil
 }
 
-// ServeHTTP is the main handler for the middleware that processes all HTTP requests.
-// It implements the http.Handler interface and performs the following operations:
-// 1. Waits for OIDC provider metadata initialization to complete
-// 2. Checks if the requested URL is in the excluded list (bypassing authentication)
-// 3. Retrieves or creates a user session
-// 4. Handles special paths like callback and logout URLs
-// 5. Verifies authentication status and token validity
-// 6. Refreshes tokens that are about to expire
-// 7. Validates user email domains, roles, and groups against configured restrictions
-// 8. Sets appropriate headers for downstream services
-// 9. Applies security headers to responses
-// 10. Forwards the authenticated request to the next handler
+// ServeHTTP is the main entry point for incoming requests to the middleware.
+// It orchestrates the OIDC authentication flow:
+//  1. Waits for initial OIDC metadata discovery to complete (with timeout).
+//  2. Checks if the request path is excluded from authentication.
+//  3. Checks if the request is for Server-Sent Events and bypasses if so.
+//  4. Retrieves the user's session; initiates authentication if the session is invalid/missing.
+//  5. Handles specific paths for OIDC callback (/callback) and logout (/logout).
+//  6. Checks the user's authentication status using isUserAuthenticated (verifies token, checks expiry).
+//  7. If the token is expired, handles it (initiates re-auth).
+//  8. If the user is not authenticated, initiates authentication.
+//  9. If the token needs proactive refresh (nearing expiry), attempts refreshToken. Handles refresh failure
+//     by returning 401 for API clients or initiating re-auth for browsers.
+//  10. If authenticated and token is valid, performs authorization checks (allowed domain, roles/groups).
+//  11. If authorized, sets user/token information in request headers (X-Forwarded-User, X-Auth-Request-*)
+//     and adds security headers (X-Frame-Options, etc.) to the response.
+//  12. Forwards the request to the next handler in the chain.
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	select {
 	case <-t.initComplete:
@@ -698,8 +782,17 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	t.next.ServeHTTP(rw, req)
 }
 
-// handleExpiredToken manages token expiration by clearing the session
-// and initiating a new authentication flow.
+// handleExpiredToken is called when a user's session contains an expired token or
+// when a token refresh attempt fails for a browser client.
+// It clears the authentication-related data (tokens, email, authenticated flag) from the session,
+// saves the cleared session, and then initiates a new authentication flow by calling
+// defaultInitiateAuthentication, redirecting the user to the OIDC provider.
+//
+// Parameters:
+//   - rw: The HTTP response writer.
+//   - req: The HTTP request.
+//   - session: The user's session data containing the expired token information.
+//   - redirectURL: The callback URL to be used in the new authentication flow.
 func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 	// Clear authentication data but preserve CSRF state
 	session.SetAuthenticated(false)
@@ -717,9 +810,27 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 }
 
-// handleCallback processes the authentication callback from the OIDC provider.
-// It validates the callback parameters, exchanges the authorization code for
-// tokens, verifies the tokens, and establishes the user's session.
+// handleCallback handles the request received at the OIDC callback URL (redirect_uri).
+// It performs the following steps:
+// 1. Retrieves the user session associated with the callback request.
+// 2. Checks for error parameters returned by the OIDC provider.
+// 3. Validates the 'state' parameter against the CSRF token stored in the session.
+// 4. Extracts the authorization 'code' from the query parameters.
+// 5. Retrieves the PKCE 'code_verifier' from the session (if PKCE is enabled).
+// 6. Exchanges the authorization code for tokens using the TokenExchanger interface.
+// 7. Verifies the received ID token's signature and standard claims using VerifyToken.
+// 8. Extracts claims from the verified ID token.
+// 9. Verifies the 'nonce' claim against the nonce stored in the session.
+// 10. Validates the user's email domain against the allowed list.
+// 11. If all checks pass, updates the session with authentication details (status, email, tokens).
+// 12. Saves the updated session.
+// 13. Redirects the user back to their original requested path (stored in session) or the root path.
+// If any step fails, it sends an appropriate error response using sendErrorResponse.
+//
+// Parameters:
+//   - rw: The HTTP response writer.
+//   - req: The incoming HTTP request to the callback URL.
+//   - redirectURL: The fully qualified callback URL (used in the token exchange request).
 func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, redirectURL string) {
 	session, err := t.sessionManager.GetSession(req)
 	if err != nil {
@@ -846,7 +957,14 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	http.Redirect(rw, req, redirectPath, http.StatusFound)
 }
 
-// determineExcludedURL checks if the current request URL is in the excluded list
+// determineExcludedURL checks if the provided request path matches any of the configured excluded URL prefixes.
+//
+// Parameters:
+//   - currentRequest: The path part of the incoming request URL.
+//
+// Returns:
+//   - true if the path starts with any of the prefixes in the t.excludedURLs map.
+//   - false otherwise.
 func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 	for excludedURL := range t.excludedURLs {
 		if strings.HasPrefix(currentRequest, excludedURL) {
@@ -858,7 +976,15 @@ func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 	return false
 }
 
-// determineScheme determines the scheme (http or https) of the request
+// determineScheme determines the request scheme (http or https).
+// It prioritizes the X-Forwarded-Proto header if present, otherwise checks
+// the TLS property of the request. Defaults to "http".
+//
+// Parameters:
+//   - req: The incoming HTTP request.
+//
+// Returns:
+//   - "https" or "http".
 func (t *TraefikOidc) determineScheme(req *http.Request) string {
 	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
 		return scheme
@@ -869,7 +995,14 @@ func (t *TraefikOidc) determineScheme(req *http.Request) string {
 	return "http"
 }
 
-// determineHost determines the host of the request
+// determineHost determines the request host.
+// It prioritizes the X-Forwarded-Host header if present, otherwise uses the req.Host value.
+//
+// Parameters:
+//   - req: The incoming HTTP request.
+//
+// Returns:
+//   - The determined host string (e.g., "example.com:8080").
 func (t *TraefikOidc) determineHost(req *http.Request) string {
 	if host := req.Header.Get("X-Forwarded-Host"); host != "" {
 		return host
@@ -877,17 +1010,18 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 	return req.Host
 }
 
-// isUserAuthenticated checks if the user is authenticated by validating their session and token.
-// It performs a comprehensive check of the authentication state including:
-// 1. Verifying the session's authenticated flag
-// 2. Checking for the presence of an access token
-// 3. Validating the token's signature and claims
-// 4. Checking the token's expiration time
+// isUserAuthenticated checks the authentication status based on the provided session data.
+// It verifies the session's authenticated flag, the presence and validity of the access token (ID token),
+// including signature and standard claims (using VerifyJWTSignatureAndClaims). It also checks if the
+// token is within the configured refreshGracePeriod before its actual expiration.
 //
-// Returns three boolean values:
-//   - authenticated: Whether the user is currently authenticated
-//   - needsRefresh: Whether the token is valid but will expire soon (within grace period)
-//   - expired: Whether the token has expired or is otherwise invalid
+// Parameters:
+//   - session: The SessionData object for the current user.
+//
+// Returns:
+//   - authenticated (bool): True if the session is marked authenticated and the token is present and valid (signature/claims ok, not expired beyond grace).
+//   - needsRefresh (bool): True if the token is valid but nearing expiration (within refreshGracePeriod) OR if VerifyJWTSignatureAndClaims failed specifically due to expiration (meaning refresh might be possible).
+//   - expired (bool): True if the session is unauthenticated, the token is missing, or the token verification failed for reasons other than nearing/actual expiration (e.g., invalid signature, invalid claims).
 func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, bool) {
 	if !session.GetAuthenticated() {
 		t.logger.Debug("User is not authenticated according to session")
@@ -945,19 +1079,18 @@ func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, boo
 	return true, false, false
 }
 
-// defaultInitiateAuthentication initiates the OIDC authentication process.
-// This function prepares and starts a new authentication flow by:
-// 1. Generating security tokens (CSRF token and nonce) to prevent attacks
-// 2. Clearing any existing session data to avoid state conflicts
-// 3. Storing the original request path to redirect back after authentication
-// 4. Building the authorization URL with all required OIDC parameters
-// 5. Redirecting the user to the OIDC provider's authorization endpoint
+// defaultInitiateAuthentication handles the process of starting an OIDC authentication flow.
+// It generates necessary security values (CSRF token, nonce, PKCE verifier/challenge if enabled),
+// clears any potentially stale data from the current session, stores the new security values
+// and the original request URI in the session, saves the session (setting cookies),
+// builds the OIDC authorization endpoint URL with required parameters, and finally
+// redirects the user's browser to that URL.
 //
 // Parameters:
-//   - rw: The HTTP response writer for sending the redirect
-//   - req: The original HTTP request that triggered authentication
-//   - session: The user's session data for storing authentication state
-//   - redirectURL: The callback URL where the OIDC provider will redirect after authentication
+//   - rw: The HTTP response writer used to send the redirect response.
+//   - req: The original incoming HTTP request that requires authentication.
+//   - session: The user's SessionData object (potentially new or cleared).
+//   - redirectURL: The pre-calculated callback URL (redirect_uri) for this middleware instance.
 func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 	// Generate CSRF token and nonce
 	csrfToken := uuid.NewString()
@@ -1007,15 +1140,33 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	http.Redirect(rw, req, authURL, http.StatusFound)
 }
 
-// verifyToken verifies the token using the token verifier interface.
-// This function delegates to the configured token verifier implementation,
-// which by default is the TraefikOidc instance itself (implementing the VerifyToken method).
-// This design allows for easy mocking in tests and potential future extension.
+// verifyToken is a wrapper method that calls the VerifyToken method of the configured
+// TokenVerifier interface (which defaults to the TraefikOidc instance itself).
+// This primarily exists to facilitate testing and potential future extensions where
+// token verification logic might be delegated differently.
+//
+// Parameters:
+//   - token: The raw token string to verify.
+//
+// Returns:
+//   - The result of calling t.tokenVerifier.VerifyToken(token).
 func (t *TraefikOidc) verifyToken(token string) error {
 	return t.tokenVerifier.VerifyToken(token)
 }
 
-// buildAuthURL constructs the authentication URL with optional PKCE support
+// buildAuthURL constructs the OIDC authorization endpoint URL with all necessary query parameters
+// for initiating the authorization code flow. It includes client_id, response_type, redirect_uri,
+// state, nonce, and optionally PKCE parameters (code_challenge, code_challenge_method) if enabled
+// and a challenge is provided. It also includes configured scopes.
+//
+// Parameters:
+//   - redirectURL: The callback URL (redirect_uri).
+//   - state: The CSRF token.
+//   - nonce: The OIDC nonce.
+//   - codeChallenge: The PKCE code challenge (can be empty if PKCE is disabled or not used).
+//
+// Returns:
+//   - The fully constructed authorization URL string.
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge string) string {
 	params := url.Values{}
 	params.Set("client_id", t.clientID)
@@ -1037,7 +1188,16 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	return t.buildURLWithParams(t.authURL, params)
 }
 
-// buildURLWithParams ensures a URL is absolute and appends query parameters
+// buildURLWithParams takes a base URL and query parameters and constructs a full URL string.
+// If the baseURL is relative (doesn't start with http/https), it prepends the scheme and host
+// from the configured issuerURL. It then appends the encoded query parameters.
+//
+// Parameters:
+//   - baseURL: The base URL (can be absolute or relative to the issuer).
+//   - params: A url.Values map containing the query parameters to append.
+//
+// Returns:
+//   - The fully constructed URL string with appended query parameters.
 func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) string {
 	// Ensure URL is absolute
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
@@ -1054,7 +1214,8 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 	return baseURL + "?" + params.Encode()
 }
 
-// startTokenCleanup starts the token cleanup goroutine
+// startTokenCleanup starts background goroutines for periodically cleaning up
+// the token cache, token blacklist cache, and JWK cache using the autoCleanupRoutine helper.
 func (t *TraefikOidc) startTokenCleanup() {
 	ticker := time.NewTicker(1 * time.Minute) // Run cleanup every minute
 	go func() {
@@ -1069,7 +1230,14 @@ func (t *TraefikOidc) startTokenCleanup() {
 	}()
 }
 
-// RevokeToken adds the token to the blacklist
+// RevokeToken handles local revocation of a token.
+// It removes the token from the validation cache (tokenCache) and adds the raw
+// token string to the blacklist cache (tokenBlacklist) with a default expiration (24h).
+// This prevents the token from being validated successfully even if it hasn't expired yet.
+// Note: This does *not* revoke the token with the OIDC provider.
+//
+// Parameters:
+//   - token: The raw token string to revoke locally.
 func (t *TraefikOidc) RevokeToken(token string) {
 	// Remove from cache
 	t.tokenCache.Delete(token)
@@ -1080,7 +1248,17 @@ func (t *TraefikOidc) RevokeToken(token string) {
 	t.tokenBlacklist.Set(token, true, time.Until(expiry))
 }
 
-// RevokeTokenWithProvider revokes the token with the provider
+// RevokeTokenWithProvider attempts to revoke a token directly with the OIDC provider
+// using the revocation endpoint specified in the provider metadata or configuration.
+// It sends a POST request with the token, token_type_hint, client_id, and client_secret.
+//
+// Parameters:
+//   - token: The token (e.g., refresh token or access token) to revoke.
+//   - tokenType: The type hint for the token being revoked (e.g., "refresh_token").
+//
+// Returns:
+//   - nil if the revocation request is successful (provider returns 200 OK).
+//   - An error if the request fails or the provider returns a non-OK status.
 func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	t.logger.Debugf("Revoking token with provider")
 
@@ -1117,7 +1295,20 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	return nil
 }
 
-// refreshToken refreshes the user's token, protected by a mutex within the session.
+// refreshToken attempts to use the refresh token stored in the session to obtain a new set of tokens.
+// It acquires a mutex associated with the session to prevent concurrent refresh attempts for the same session.
+// It retrieves the refresh token, calls the TokenExchanger's GetNewTokenWithRefreshToken method,
+// verifies the newly obtained ID token using verifyToken, updates the session with the new tokens,
+// and saves the session.
+//
+// Parameters:
+//   - rw: The HTTP response writer (needed for saving the updated session).
+//   - req: The HTTP request (needed for saving the updated session).
+//   - session: The user's SessionData object containing the refresh token.
+//
+// Returns:
+//   - true if the token refresh was successful and the session was updated.
+//   - false if no refresh token was found, the refresh exchange failed, the new token failed verification, or saving the session failed.
 func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, session *SessionData) bool {
 	// Lock the mutex specific to this session instance before attempting refresh
 	session.refreshMutex.Lock()
@@ -1159,7 +1350,16 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	return true
 }
 
-// isAllowedDomain checks if the user's email domain is allowed
+// isAllowedDomain checks if the domain part of the provided email address is present
+// in the configured list of allowed domains (t.allowedUserDomains).
+// If the allowed domains list is empty, all domains are considered allowed.
+//
+// Parameters:
+//   - email: The email address to check.
+//
+// Returns:
+//   - true if the domain is allowed or if no domain restrictions are configured.
+//   - false if the email format is invalid or the domain is not in the allowed list.
 func (t *TraefikOidc) isAllowedDomain(email string) bool {
 	if len(t.allowedUserDomains) == 0 {
 		return true // If no domains are specified, all are allowed
@@ -1175,7 +1375,18 @@ func (t *TraefikOidc) isAllowedDomain(email string) bool {
 	return ok
 }
 
-// extractGroupsAndRoles extracts groups and roles from the id_token
+// extractGroupsAndRoles attempts to extract 'groups' and 'roles' claims from a decoded ID token.
+// It expects these claims, if present, to be arrays of strings.
+// It uses the configured extractClaimsFunc (which defaults to the package-level extractClaims)
+// to get the claims map from the token string.
+//
+// Parameters:
+//   - idToken: The raw ID token string.
+//
+// Returns:
+//   - A slice of strings containing the groups found in the 'groups' claim.
+//   - A slice of strings containing the roles found in the 'roles' claim.
+//   - An error if claim extraction fails or if the 'groups' or 'roles' claims are present but not arrays of strings.
 func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string, error) {
 	claims, err := t.extractClaimsFunc(idToken)
 	if err != nil {
@@ -1216,7 +1427,17 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 	return groups, roles, nil
 }
 
-// buildFullURL constructs a full URL from scheme, host and path
+// buildFullURL constructs an absolute URL string from its components.
+// If the provided path already starts with "http://" or "https://", it's returned directly.
+// Otherwise, it combines the scheme, host, and path, ensuring the path starts with a '/'.
+//
+// Parameters:
+//   - scheme: The URL scheme ("http" or "https").
+//   - host: The host part of the URL (e.g., "example.com:8080").
+//   - path: The path part of the URL (e.g., "/resource").
+//
+// Returns:
+//   - The combined absolute URL string (e.g., "https://example.com:8080/resource").
 func buildFullURL(scheme, host, path string) string {
 	// If the path is already a full URL, return it as-is
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
@@ -1233,21 +1454,35 @@ func buildFullURL(scheme, host, path string) string {
 
 // --- TokenExchanger Interface Implementation ---
 
-// ExchangeCodeForToken implements the TokenExchanger interface.
-// It calls the existing exchangeTokens helper function.
+// ExchangeCodeForToken provides the implementation for the TokenExchanger interface method.
+// It directly calls the internal exchangeTokens method, passing through the arguments.
+// This allows the TraefikOidc struct to act as its own default TokenExchanger, while
+// still allowing mocking for tests.
 func (t *TraefikOidc) ExchangeCodeForToken(ctx context.Context, grantType string, codeOrToken string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 	// Note: The original exchangeTokens helper is defined in helpers.go and is already a method on *TraefikOidc
 	return t.exchangeTokens(ctx, grantType, codeOrToken, redirectURL, codeVerifier)
 }
 
-// GetNewTokenWithRefreshToken implements the TokenExchanger interface.
-// It calls the existing getNewTokenWithRefreshToken helper function.
+// GetNewTokenWithRefreshToken provides the implementation for the TokenExchanger interface method.
+// It directly calls the internal getNewTokenWithRefreshToken helper method.
+// This allows the TraefikOidc struct to act as its own default TokenExchanger, while
+// still allowing mocking for tests.
 func (t *TraefikOidc) GetNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error) {
 	// Note: The original getNewTokenWithRefreshToken helper is defined in helpers.go and is already a method on *TraefikOidc
 	return t.getNewTokenWithRefreshToken(refreshToken)
 }
 
-// sendErrorResponse sends an error response, adapting to the client's Accept header.
+// sendErrorResponse sends an error response to the client, adapting the format based
+// on the request's Accept header. If the client prefers "application/json", it sends
+// a JSON object with "error", "error_description", and "status_code" fields.
+// Otherwise, it sends a basic HTML error page containing the message and a link
+// back to the application root or the original incoming path (if available from the session).
+//
+// Parameters:
+//   - rw: The HTTP response writer.
+//   - req: The HTTP request (used to check Accept header and potentially get session).
+//   - message: The error message to display/include in the response.
+//   - code: The HTTP status code to set for the response.
 func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Request, message string, code int) {
 	acceptHeader := req.Header.Get("Accept")
 

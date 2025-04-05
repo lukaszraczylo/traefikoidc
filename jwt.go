@@ -20,6 +20,10 @@ var (
 	replayCache   = make(map[string]time.Time)
 )
 
+// cleanupReplayCache iterates through the replay cache and removes entries
+// whose expiration time is before the current time. This function should be
+// called periodically to prevent the cache from growing indefinitely.
+// It acquires a mutex to ensure thread safety during cleanup.
 func cleanupReplayCache() {
 	now := time.Now()
 	for token, expiry := range replayCache {
@@ -48,7 +52,18 @@ type JWT struct {
 	Token     string
 }
 
-// parseJWT parses a JWT token string into a JWT struct.
+// parseJWT decodes a raw JWT string into its constituent parts: header, claims, and signature.
+// It splits the token string by '.', decodes each part using base64 URL decoding,
+// and unmarshals the header and claims JSON into maps. The raw signature bytes are stored.
+// It performs basic format validation (expecting 3 parts).
+// Note: This function does *not* validate the signature or the claims.
+//
+// Parameters:
+//   - tokenString: The raw JWT string.
+//
+// Returns:
+//   - A pointer to a JWT struct containing the decoded parts.
+//   - An error if the token format is invalid or decoding/unmarshaling fails.
 func parseJWT(tokenString string) (*JWT, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
@@ -84,8 +99,24 @@ func parseJWT(tokenString string) (*JWT, error) {
 	return jwt, nil
 }
 
-// Verify validates the standard JWT claims as defined in RFC 7519.
-// Verify validates the standard JWT claims as defined in RFC 7519.
+// Verify performs standard claim validation on the JWT according to RFC 7519.
+// It checks the following:
+// - Algorithm ('alg') is supported.
+// - Issuer ('iss') matches the expected issuerURL.
+// - Audience ('aud') contains the expected clientID.
+// - Expiration time ('exp') is in the future (within tolerance).
+// - Issued at time ('iat') is in the past (within tolerance).
+// - Not before time ('nbf'), if present, is in the past (within tolerance).
+// - Subject ('sub') claim exists and is not empty.
+// - JWT ID ('jti'), if present, is checked against a replay cache to prevent token reuse.
+//
+// Parameters:
+//   - issuerURL: The expected issuer URL (e.g., "https://accounts.google.com").
+//   - clientID: The expected audience value (the client ID of this application).
+//
+// Returns:
+//   - nil if all standard claims are valid.
+//   - An error describing the first validation failure encountered.
 func (j *JWT) Verify(issuerURL, clientID string) error {
 	// Validate algorithm to prevent algorithm switching attacks
 	alg, ok := j.Header["alg"].(string)
@@ -175,6 +206,16 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 	return nil
 }
 
+// verifyAudience checks if the expected audience is present in the token's 'aud' claim.
+// The 'aud' claim can be a single string or an array of strings.
+//
+// Parameters:
+//   - tokenAudience: The 'aud' claim value extracted from the token (can be string or []interface{}).
+//   - expectedAudience: The audience value expected for this application (client ID).
+//
+// Returns:
+//   - nil if the expected audience is found.
+//   - An error if the claim type is invalid or the expected audience is not present.
 func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 	switch aud := tokenAudience.(type) {
 	case string:
@@ -198,6 +239,15 @@ func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 	return nil
 }
 
+// verifyIssuer checks if the token's 'iss' claim matches the expected issuer URL.
+//
+// Parameters:
+//   - tokenIssuer: The 'iss' claim value from the token.
+//   - expectedIssuer: The expected issuer URL configured for the OIDC provider.
+//
+// Returns:
+//   - nil if the issuers match.
+//   - An error if the issuers do not match.
 func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 	if tokenIssuer != expectedIssuer {
 		return fmt.Errorf("invalid issuer (token: %s, expected: %s)", tokenIssuer, expectedIssuer)
@@ -205,57 +255,76 @@ func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 	return nil
 }
 
-// verifyTimeConstraint is a generic function to verify time-based claims
+// verifyTimeConstraint checks time-based claims ('exp', 'iat', 'nbf') against the current time,
+// allowing for configurable clock skew. It uses different tolerances for past and future checks.
+//
+// Parameters:
+//   - unixTime: The timestamp value from the claim (as a float64 Unix time).
+//   - claimName: The name of the claim being verified ("exp", "iat", "nbf").
+//   - future: A boolean indicating the direction of the check (true for 'exp', false for 'iat'/'nbf').
+//
+// Returns:
+//   - nil if the time constraint is met within the allowed tolerance.
+//   - An error describing the failure (e.g., "token has expired", "token used before issued").
 func verifyTimeConstraint(unixTime float64, claimName string, future bool) error {
 	claimTime := time.Unix(int64(unixTime), 0)
-	now := time.Now().Truncate(time.Second)
+	now := time.Now() // Use current time without truncation
 
-	var skewedNow time.Time
-	if future {
-		// For expiration (future=true), add skew to now (making now later)
-		// Use the larger tolerance for future checks (exp)
-		skewedNow = now.Add(ClockSkewToleranceFuture)
-	} else {
-		// For iat/nbf (future=false), subtract skew from now (making now earlier)
-		// Use the smaller, specific tolerance for past checks (iat, nbf)
-		skewedNow = now.Add(-ClockSkewTolerancePast) // Subtract the past tolerance
-	}
-
-	if claimTime.Equal(now) {
-		return nil
-	}
-
-	// For expiration: if skewedNow (later) is after expiration, token expired
-	// For iat/nbf: if skewedNow (earlier) is before claim time, token not yet valid
-	if (future && skewedNow.After(claimTime)) || (!future && skewedNow.Before(claimTime)) {
-		var reason string
-		if future {
-			reason = "has expired"
-		} else {
+	var err error
+	if future { // 'exp' check
+		// Token is expired if Now is after (ClaimTime + FutureTolerance)
+		allowedExpiry := claimTime.Add(ClockSkewToleranceFuture)
+		if now.After(allowedExpiry) {
+			err = fmt.Errorf("token has expired (exp: %v, now: %v, allowed_until: %v)", claimTime.UTC(), now.UTC(), allowedExpiry.UTC())
+		}
+	} else { // 'iat' or 'nbf' check
+		// Token is invalid if Now is before (ClaimTime - PastTolerance)
+		allowedStart := claimTime.Add(-ClockSkewTolerancePast)
+		if now.Before(allowedStart) {
+			reason := "not yet valid"
 			if claimName == "iat" {
 				reason = "used before issued"
-			} else {
-				reason = "not yet valid"
 			}
+			err = fmt.Errorf("token %s (%s: %v, now: %v, allowed_from: %v)", reason, claimName, claimTime.UTC(), now.UTC(), allowedStart.UTC())
 		}
-		return fmt.Errorf("token %s (%s: %v, now: %v)", reason, claimName, claimTime.UTC(), now.UTC())
 	}
 
-	return nil
+	return err
 }
 
+// verifyExpiration checks the 'exp' (Expiration Time) claim.
+// It calls verifyTimeConstraint with future=true.
 func verifyExpiration(expiration float64) error {
 	return verifyTimeConstraint(expiration, "exp", true)
 }
 
+// verifyIssuedAt checks the 'iat' (Issued At) claim.
+// It calls verifyTimeConstraint with future=false.
 func verifyIssuedAt(issuedAt float64) error {
 	return verifyTimeConstraint(issuedAt, "iat", false)
 }
 
+// verifyNotBefore checks the 'nbf' (Not Before) claim.
+// It calls verifyTimeConstraint with future=false.
 func verifyNotBefore(notBefore float64) error {
 	return verifyTimeConstraint(notBefore, "nbf", false)
 }
 
+// verifySignature validates the JWT's signature using the provided public key.
+// It parses the public key from PEM format, selects the appropriate hashing algorithm
+// based on the 'alg' parameter (SHA256/384/512), hashes the token's signing input
+// (header + "." + payload), and then verifies the signature against the hash using
+// the corresponding RSA (PKCS1v15 or PSS) or ECDSA verification method.
+//
+// Parameters:
+//   - tokenString: The raw, complete JWT string.
+//   - publicKeyPEM: The public key corresponding to the private key used for signing, in PEM format.
+//   - alg: The algorithm specified in the JWT header (e.g., "RS256", "ES384").
+//
+// Returns:
+//   - nil if the signature is valid.
+//   - An error if the token format is invalid, decoding fails, key parsing fails,
+//     the algorithm is unsupported, or the signature verification fails.
 func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
