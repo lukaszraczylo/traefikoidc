@@ -69,14 +69,15 @@ The middleware supports the following configuration options:
 | `postLogoutRedirectURI` | The URL to redirect to after logout | `/` | `/logged-out-page` |
 | `scopes` | The OAuth 2.0 scopes to request | `["openid", "profile", "email"]` | `["openid", "email", "profile", "roles"]` |
 | `logLevel` | Sets the logging verbosity | `info` | `debug`, `info`, `error` |
-| | `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
-| | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
-| | `excludedURLs` | Lists paths that bypass authentication | `["/favicon"]` | `["/health", "/metrics", "/public"]` |
-| | `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
-| | `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
-| | `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |
-| | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
-| | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
+| `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
+| `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
+| `excludedURLs` | Lists paths that bypass authentication | none | `["/health", "/metrics", "/public"]` |
+| `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
+| `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
+| `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |
+| `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
+| `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
+| `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
 
 ## Usage Examples
 
