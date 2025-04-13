@@ -1,6 +1,7 @@
 package traefikoidc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"runtime"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/google/uuid"
@@ -115,8 +117,9 @@ type TraefikOidc struct {
 	endSessionURL         string
 	postLogoutRedirectURI string
 	sessionManager        *SessionManager
-	tokenExchanger        TokenExchanger // Added field for mocking
-	refreshGracePeriod    time.Duration  // Configurable grace period for proactive refresh
+	tokenExchanger        TokenExchanger                // Added field for mocking
+	refreshGracePeriod    time.Duration                 // Configurable grace period for proactive refresh
+	headerTemplates       map[string]*template.Template // Parsed templates for custom headers
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -421,6 +424,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	t.jwtVerifier = t
 	t.startTokenCleanup()
 	t.tokenExchanger = t // Initialize the interface field to self
+
+	// Initialize and parse header templates
+	t.headerTemplates = make(map[string]*template.Template)
+	for _, header := range config.Headers {
+		tmpl, err := template.New(header.Name).Parse(header.Value)
+		if err != nil {
+			logger.Errorf("Failed to parse header template for %s: %v", header.Name, err)
+			continue
+		}
+		t.headerTemplates[header.Name] = tmpl
+		logger.Debugf("Parsed template for header %s: %s", header.Name, header.Value)
+	}
+
 	go t.initializeMetadata(config.ProviderURL)
 
 	return t, nil
@@ -791,6 +807,43 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 	req.Header.Set("X-Auth-Request-User", email)
 	if idToken := session.GetAccessToken(); idToken != "" {
 		req.Header.Set("X-Auth-Request-Token", idToken)
+	}
+
+	// Execute and set templated headers if configured
+	if len(t.headerTemplates) > 0 {
+		accessToken := session.GetAccessToken()
+		refreshToken := session.GetRefreshToken()
+		claims, err := t.extractClaimsFunc(accessToken)
+		if err != nil {
+			t.logger.Errorf("Failed to extract claims for template headers: %v", err)
+		} else {
+			// Create template data context with available tokens and claims
+			// Fields must be exported (uppercase) to be accessible in templates
+			templateData := struct {
+				// These fields need to be exported (uppercase) for template access
+				AccessToken  string
+				IdToken      string
+				RefreshToken string
+				Claims       map[string]interface{}
+			}{
+				AccessToken:  accessToken,
+				IdToken:      accessToken, // Using access token as ID token
+				RefreshToken: refreshToken,
+				Claims:       claims,
+			}
+
+			// Execute each template and set the resulting header
+			for headerName, tmpl := range t.headerTemplates {
+				var buf bytes.Buffer
+				if err := tmpl.Execute(&buf, templateData); err != nil {
+					t.logger.Errorf("Failed to execute template for header %s: %v", headerName, err)
+					continue
+				}
+				headerValue := buf.String()
+				req.Header.Set(headerName, headerValue)
+				t.logger.Debugf("Set templated header %s = %s", headerName, headerValue)
+			}
+		}
 	}
 
 	// Set security headers

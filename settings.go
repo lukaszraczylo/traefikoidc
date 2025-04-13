@@ -10,6 +10,18 @@ import (
 	"strings"
 )
 
+// TemplatedHeader represents a custom HTTP header with a templated value.
+// The value can contain template expressions that will be evaluated for each
+// authenticated request, such as {{.claims.email}} or {{.accessToken}}.
+type TemplatedHeader struct {
+	// Name is the HTTP header name to set (e.g., "X-Forwarded-Email")
+	Name string `json:"name"`
+
+	// Value is the template string for the header value
+	// Example: "{{.claims.email}}", "Bearer {{.accessToken}}"
+	Value string `json:"value"`
+}
+
 // Config holds the configuration for the OIDC middleware.
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
@@ -89,6 +101,17 @@ type Config struct {
 	// the plugin should attempt to refresh it proactively (optional)
 	// Default: 60
 	RefreshGracePeriodSeconds int `json:"refreshGracePeriodSeconds"`
+	// Headers defines custom HTTP headers to set with templated values (optional)
+	// Values can reference tokens and claims using Go templates with the following variables:
+	// - {{.AccessToken}} - The access token (ID token)
+	// - {{.IdToken}} - Same as AccessToken (for consistency)
+	// - {{.RefreshToken}} - The refresh token
+	// - {{.Claims.email}} - Access token claims (use proper case for claim names)
+	// Examples:
+	//
+	//	[{Name: "X-Forwarded-Email", Value: "{{.Claims.email}}"}]
+	//	[{Name: "Authorization", Value: "Bearer {{.AccessToken}}"}]
+	Headers []TemplatedHeader `json:"headers"`
 }
 
 const (
@@ -219,6 +242,33 @@ func (c *Config) Validate() error {
 	// Validate refresh grace period
 	if c.RefreshGracePeriodSeconds < 0 {
 		return fmt.Errorf("refreshGracePeriodSeconds cannot be negative")
+	}
+
+	// Validate headers configuration
+	for _, header := range c.Headers {
+		if header.Name == "" {
+			return fmt.Errorf("header name cannot be empty")
+		}
+		if header.Value == "" {
+			return fmt.Errorf("header value template cannot be empty")
+		}
+		if !strings.Contains(header.Value, "{{") || !strings.Contains(header.Value, "}}") {
+			return fmt.Errorf("header value '%s' does not appear to be a valid template (missing {{ }})", header.Value)
+		}
+
+		// Provide more helpful guidance for common template errors
+		if strings.Contains(header.Value, "{{.claims") {
+			return fmt.Errorf("header template '%s' appears to use lowercase 'claims' - use '{{.Claims...' instead (case sensitive)", header.Value)
+		}
+		if strings.Contains(header.Value, "{{.accessToken") {
+			return fmt.Errorf("header template '%s' appears to use lowercase 'accessToken' - use '{{.AccessToken...' instead (case sensitive)", header.Value)
+		}
+		if strings.Contains(header.Value, "{{.idToken") {
+			return fmt.Errorf("header template '%s' appears to use lowercase 'idToken' - use '{{.IdToken...' instead (case sensitive)", header.Value)
+		}
+		if strings.Contains(header.Value, "{{.refreshToken") {
+			return fmt.Errorf("header template '%s' appears to use lowercase 'refreshToken' - use '{{.RefreshToken...' instead (case sensitive)", header.Value)
+		}
 	}
 
 	return nil
