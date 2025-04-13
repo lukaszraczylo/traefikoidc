@@ -17,14 +17,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// min returns the smaller of x or y.
-func min(x, y int) int {
-	if x > y {
-		return y
-	}
-	return x
-}
-
 // createDefaultHTTPClient creates a new http.Client with settings optimized for OIDC communication.
 // It configures the transport with specific timeouts (dial, keepalive, TLS handshake, idle connection),
 // connection limits (max idle, max per host), enables HTTP/2, and sets a default request timeout.
@@ -1288,8 +1280,34 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		params.Set("code_challenge_method", "S256")
 	}
 
-	if len(t.scopes) > 0 {
-		params.Set("scope", strings.Join(t.scopes, " "))
+	// Handle scopes - ensure offline_access is included for refresh tokens
+	scopes := make([]string, len(t.scopes))
+	copy(scopes, t.scopes)
+
+	// Check if we're dealing with a Google OIDC provider
+	isGoogleProvider := strings.Contains(t.issuerURL, "google") || strings.Contains(t.issuerURL, "accounts.google.com")
+
+	// Add offline_access scope if it's missing
+	hasOfflineAccess := false
+	for _, scope := range scopes {
+		if scope == "offline_access" {
+			hasOfflineAccess = true
+			break
+		}
+	}
+
+	if !hasOfflineAccess {
+		scopes = append(scopes, "offline_access")
+	}
+
+	if len(scopes) > 0 {
+		params.Set("scope", strings.Join(scopes, " "))
+	}
+
+	// Add prompt=consent for Google to ensure refresh token is issued
+	if isGoogleProvider {
+		params.Set("prompt", "consent")
+		t.logger.Debug("Google OIDC provider detected, added prompt=consent to ensure refresh tokens")
 	}
 
 	// Use buildURLWithParams which handles potential relative authURL from metadata
@@ -1450,21 +1468,55 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		return false
 	}
 
-	// Store the initial token for later comparison
-	t.logger.Debugf("Attempting refresh with token starting with %s...", initialRefreshToken[:min(len(initialRefreshToken), 10)])
+	// Detect if we're using Google's OIDC provider
+	isGoogleProvider := strings.Contains(t.issuerURL, "google") || strings.Contains(t.issuerURL, "accounts.google.com")
+	if isGoogleProvider {
+		t.logger.Debug("Google OIDC provider detected for token refresh operation")
+	}
 
+	// Log the attempt with a truncated token for security
+	tokenPrefix := initialRefreshToken
+	if len(initialRefreshToken) > 10 {
+		tokenPrefix = initialRefreshToken[:10]
+	}
+	t.logger.Debugf("Attempting refresh with token starting with %s...", tokenPrefix)
+
+	// Attempt to refresh the token
 	newToken, err := t.tokenExchanger.GetNewTokenWithRefreshToken(initialRefreshToken)
 	if err != nil {
-		// Log the error more explicitly before returning false
-		truncatedToken := initialRefreshToken[:min(len(initialRefreshToken), 10)] // Log first 10 chars
-		t.logger.Errorf("refreshToken failed: Error from tokenExchanger.GetNewTokenWithRefreshToken for token starting with %s...: %v", truncatedToken, err)
-		// No need to clear token here, as the session might be cleared by another request anyway
+		// Log detailed error information
+		t.logger.Errorf("refreshToken failed: Error from token refresh operation: %v", err)
+
+		// Check for specific error patterns
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "invalid_grant") || strings.Contains(errMsg, "token expired") {
+			t.logger.Errorf("Refresh token appears to be expired or revoked: %v", err)
+			// Don't keep trying with an invalid refresh token
+			session.SetRefreshToken("")
+			if err := session.Save(req, rw); err != nil {
+				t.logger.Errorf("Failed to remove invalid refresh token from session: %v", err)
+			}
+		} else if strings.Contains(errMsg, "invalid_client") {
+			t.logger.Errorf("Client credentials rejected: %v - check client_id and client_secret configuration", err)
+		} else if isGoogleProvider && strings.Contains(errMsg, "invalid_request") {
+			t.logger.Errorf("Google OIDC provider error: %v - check scope configuration includes 'offline_access' and prompt=consent is used during authentication", err)
+		}
+
+		return false
+	}
+
+	// Handle potentially missing tokens in the response
+	if newToken.IDToken == "" {
+		t.logger.Errorf("refreshToken failed: Provider did not return a new ID token")
 		return false
 	}
 
 	// Verify the new access token (ID token)
 	if err := t.verifyToken(newToken.IDToken); err != nil {
-		truncatedNewToken := newToken.IDToken[:min(len(newToken.IDToken), 10)] // Log first 10 chars
+		truncatedNewToken := newToken.IDToken
+		if len(newToken.IDToken) > 10 {
+			truncatedNewToken = newToken.IDToken[:10]
+		}
 		t.logger.Errorf("refreshToken failed: Failed to verify newly obtained ID token starting with %s...: %v", truncatedNewToken, err)
 		return false
 	}
@@ -1475,7 +1527,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	currentRefreshToken := session.GetRefreshToken() // Get token again *after* the potentially long exchange
 	if initialRefreshToken != currentRefreshToken {
 		// Use Infof as Warnf doesn't exist
-		t.logger.Infof("refreshToken aborted: Session refresh token changed concurrently during refresh attempt. Initial token prefix: %s..., Current token prefix: %s...", initialRefreshToken[:min(len(initialRefreshToken), 10)], currentRefreshToken[:min(len(currentRefreshToken), 10)])
+		t.logger.Infof("refreshToken aborted: Session refresh token changed concurrently during refresh attempt.")
 		// Do not save the new tokens, as the session state is likely invalid/cleared.
 		return false // Indicate refresh failure due to concurrency conflict
 	}
@@ -1497,24 +1549,39 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	}
 	session.SetEmail(email) // Update email in session
 
+	// Get token expiry information for logging
+	var expiryTime time.Time
+	if expClaim, ok := claims["exp"].(float64); ok {
+		expiryTime = time.Unix(int64(expClaim), 0)
+		t.logger.Debugf("New token expires at: %v (in %v)", expiryTime, time.Until(expiryTime))
+	}
+
+	// Set the new access token
 	session.SetAccessToken(newToken.IDToken)
-	// Ensure the new refresh token is actually set, even if it's the same as the old one
-	// Also handle cases where the provider might not return a new refresh token
+
+	// Handle the refresh token
 	if newToken.RefreshToken != "" {
+		t.logger.Debug("Received new refresh token from provider")
 		session.SetRefreshToken(newToken.RefreshToken)
 	} else {
 		// If no new refresh token is returned, keep the existing one
+		t.logger.Debug("Provider did not return a new refresh token, keeping the existing one")
 		session.SetRefreshToken(initialRefreshToken)
-		t.logger.Debugf("Provider did not return a new refresh token, keeping the existing one.")
+	}
+
+	// Ensure authenticated flag is set
+	if err := session.SetAuthenticated(true); err != nil {
+		t.logger.Errorf("refreshToken warning: Failed to set authenticated flag: %v", err)
+		// Continue anyway since we have valid tokens
 	}
 
 	// Save the session
 	if err := session.Save(req, rw); err != nil {
-		t.logger.Errorf("refreshToken failed: Failed to save session after successful token refresh and concurrency check: %v", err)
+		t.logger.Errorf("refreshToken failed: Failed to save session after successful token refresh: %v", err)
 		return false
 	}
 
-	t.logger.Debugf("Token refresh successful and session saved.")
+	t.logger.Debugf("Token refresh successful and session saved")
 	return true
 }
 
