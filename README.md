@@ -78,6 +78,7 @@ The middleware supports the following configuration options:
 | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
+| `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 
 ## Usage Examples
 
@@ -233,6 +234,41 @@ spec:
         - openid
         - email
         - profile
+```
+
+### With Templated Headers
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-with-headers
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: 1234567890.apps.googleusercontent.com
+      clientSecret: your-client-secret
+      sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - openid
+        - email
+        - profile
+        - roles
+      headers:
+        - name: "X-User-Email"
+          value: "{{.Claims.email}}"
+        - name: "X-User-ID"
+          value: "{{.Claims.sub}}"
+        - name: "Authorization"
+          value: "Bearer {{.AccessToken}}"
+        - name: "X-User-Roles"
+          value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+        - name: "X-Is-Admin"
+          value: "{{if eq .Claims.role \"admin\"}}true{{else}}false{{end}}"
 ```
 
 ### With PKCE Enabled
@@ -424,6 +460,15 @@ http:
             - /public
             - /health
             - /metrics
+          headers:
+            - name: "X-User-Email"
+              value: "{{.Claims.email}}"
+            - name: "X-User-ID"
+              value: "{{.Claims.sub}}"
+            - name: "Authorization"
+              value: "Bearer {{.AccessToken}}"
+            - name: "X-User-Roles"
+              value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
 ```
 
 ## Advanced Configuration
@@ -463,8 +508,52 @@ This middleware aims to provide long-lived user sessions, typically up to 24 hou
 ### Token Caching and Blacklisting
 
 The middleware automatically caches validated tokens to improve performance and maintains a blacklist of revoked tokens.
+### Templated Headers
 
-### Headers Set for Downstream Services
+The middleware supports setting custom HTTP headers with values templated from OIDC claims and tokens. This allows you to pass authentication information to downstream services in a flexible, customized format.
+
+Templates can access the following variables:
+- `{{.Claims.field}}` - Access individual claims from the ID token (e.g., `{{.Claims.email}}`, `{{.Claims.sub}}`)
+- `{{.AccessToken}}` - The raw access token string
+- `{{.IdToken}}` - The raw ID token string (same as AccessToken in most configurations)
+- `{{.RefreshToken}}` - The raw refresh token string
+
+**Example configuration:**
+```yaml
+headers:
+  - name: "X-User-Email"
+    value: "{{.Claims.email}}"
+  - name: "X-User-ID"
+    value: "{{.Claims.sub}}"
+  - name: "Authorization"
+    value: "Bearer {{.AccessToken}}"
+  - name: "X-User-Name"
+    value: "{{.Claims.given_name}} {{.Claims.family_name}}"
+```
+
+**Advanced template examples:**
+
+Conditional logic:
+```yaml
+headers:
+  - name: "X-Is-Admin"
+    value: "{{if eq .Claims.role \"admin\"}}true{{else}}false{{end}}"
+```
+
+Array handling:
+```yaml
+headers:
+  - name: "X-User-Roles"
+    value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+```
+
+**Notes:**
+- Variable names are case-sensitive (use `.Claims`, not `.claims`)
+- Missing claims will result in `<no value>` in the header value
+- The middleware validates templates during startup and logs errors for invalid templates
+
+### Default Headers Set for Downstream Services
+
 
 When a user is authenticated, the middleware sets the following headers for downstream services:
 
