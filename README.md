@@ -259,6 +259,34 @@ spec:
         - profile
 ```
 
+### Google OIDC Configuration Example
+
+This example shows a configuration specifically tailored for Google OIDC, including necessary scopes for session extension:
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-google
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: your-google-client-id.apps.googleusercontent.com # Replace with your Client ID
+      clientSecret: your-google-client-secret                     # Replace with your Client Secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars # Replace with your key
+      callbackURL: /oauth2/callback                             # Adjust if needed
+      logoutURL: /oauth2/logout                                 # Optional: Adjust if needed
+      scopes:
+        - openid
+        - email
+        - profile
+        - offline_access # Required for refresh tokens / long sessions with Google
+      refreshGracePeriodSeconds: 300  # Optional: Start refresh 5 min before expiry (default 60)
+      # Other optional parameters like allowedUserDomains, etc. can be added here
+```
+
 ### Keeping Secrets Secret in Kubernetes
 
 For Kubernetes environments, you can reference secrets instead of hardcoding sensitive values:
@@ -415,6 +443,23 @@ PKCE is recommended when:
 
 Note that not all OIDC providers support PKCE, so check your provider's documentation before enabling this feature.
 
+### Session Duration and Token Refresh
+
+This middleware aims to provide long-lived user sessions, typically up to 24 hours, by utilizing OIDC refresh tokens.
+
+**How it works:**
+- When a user authenticates, the middleware requests an access token and, if available, a refresh token from the OIDC provider.
+- The access token usually has a short lifespan (e.g., 1 hour).
+- Before the access token expires (controlled by `refreshGracePeriodSeconds`), the middleware uses the refresh token to obtain a new access token from the provider without requiring the user to log in again.
+- This process repeats, allowing the session to remain valid for as long as the refresh token is valid (often 24 hours or more, depending on the provider).
+
+**Provider-Specific Considerations (e.g., Google):**
+- Some providers, like Google, issue short-lived access tokens (e.g., 1 hour) and require specific configurations for long-term sessions.
+- To enable session extension beyond the initial token expiry with Google and similar providers, the middleware automatically includes the `offline_access` scope in the authentication request. This scope is necessary to obtain a refresh token.
+- For Google specifically, the middleware also adds the `prompt=consent` parameter to the initial authorization request. This ensures Google issues a refresh token, which is crucial for extending the session.
+- If a refresh attempt fails (e.g., the refresh token is revoked or expired), the user will be required to re-authenticate. The middleware includes enhanced error handling and logging for these scenarios.
+- Ensure your OIDC provider is configured to issue refresh tokens and allows their use for extending sessions. Check your provider's documentation for details on refresh token validity periods.
+
 ### Token Caching and Blacklisting
 
 The middleware automatically caches validated tokens to improve performance and maintains a blacklist of revoked tokens.
@@ -456,6 +501,10 @@ logLevel: debug
 3. **No matching public key found**: The JWKS endpoint might be unavailable or the token's key ID (kid) doesn't match any key in the JWKS.
 4. **Access denied: Your email domain is not allowed**: The user's email domain is not in the `allowedUserDomains` list.
 5. **Access denied: You do not have any of the allowed roles or groups**: The user doesn't have any of the roles or groups specified in `allowedRolesAndGroups`.
+6. **Google sessions expire after ~1 hour**: If using Google as the OIDC provider and sessions expire prematurely (around 1 hour instead of longer), ensure:
+   - The `offline_access` scope is included in your configuration (the middleware adds this automatically now, but verify if manually configured).
+   - Your Google Cloud OAuth consent screen is set to "External" and "Production" mode. "Testing" mode often limits refresh token validity.
+   - The fix involving automatic `offline_access` scope and `prompt=consent` for Google is active in your middleware version. Check the plugin version corresponds to when this fix was implemented. Enhanced logging around refresh token failures can provide more clues if issues persist.
 
 ## Contributing
 
