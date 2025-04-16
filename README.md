@@ -597,4 +597,4 @@ logLevel: debug
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit a Pull Request and it'll be reviewed as soon as possible.
