@@ -108,6 +108,7 @@ type TraefikOidc struct {
 	tokenVerifier              TokenVerifier
 	jwtVerifier                JWTVerifier
 	excludedURLs               map[string]struct{}
+	includedURLs               map[string]struct{}
 	allowedUserDomains         map[string]struct{}
 	allowedRolesAndGroups      map[string]struct{}
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
@@ -396,6 +397,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		tokenCache:            NewTokenCache(),
 		httpClient:            httpClient,
 		excludedURLs:          createStringMap(config.ExcludedURLs),
+		includedURLs:          createStringMap(config.IncludedURLs),
 		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
 		allowedRolesAndGroups: createStringMap(config.AllowedRolesAndGroups),
 		initComplete:          make(chan struct{}),
@@ -416,8 +418,10 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	// Add default excluded URLs
-	for k, v := range defaultExcludedURLs {
-		t.excludedURLs[k] = v
+	if len(t.includedURLs) <= 0 {
+		for k, v := range defaultExcludedURLs {
+			t.excludedURLs[k] = v
+		}
 	}
 
 	t.tokenVerifier = t
@@ -632,12 +636,19 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// --- Excluded Paths & SSE Check ---
-	if t.determineExcludedURL(req.URL.Path) {
+	// --- Excluded Paths Check ---
+	if len(t.excludedURLs) > 0 && t.determineExcludedURL(req.URL.Path) {
 		t.logger.Debugf("Request path %s excluded by configuration, bypassing OIDC", req.URL.Path)
 		t.next.ServeHTTP(rw, req)
 		return
 	}
+	// --- Included Paths Check ---
+	if len(t.includedURLs) > 0 && !t.determineIncludedURL(req.URL.Path) {
+		t.logger.Debugf("Request path %s not included by configuration, bypassing OIDC", req.URL.Path)
+		t.next.ServeHTTP(rw, req)
+		return
+	}
+	// --- SSE Check ---
 	acceptHeader := req.Header.Get("Accept")
 	if strings.Contains(acceptHeader, "text/event-stream") {
 		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
@@ -1081,6 +1092,25 @@ func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 		}
 	}
 	// t.logger.Debugf("URL is not excluded - got %s", currentRequest) // Too verbose for every request
+	return false
+}
+
+// determineIncludedURL checks if the provided request path matches any of the configured included URL prefixes.
+//
+// Parameters:
+//   - currentRequest: The path part of the incoming request URL.
+//
+// Returns:
+//   - true if the path starts with any of the prefixes in the t.includedURLs map.
+//   - false otherwise.
+func (t *TraefikOidc) determineIncludedURL(currentRequest string) bool {
+	for includedURL := range t.includedURLs {
+		if strings.HasPrefix(currentRequest, includedURL) {
+			t.logger.Debugf("URL is included - got %s / included hit: %s", currentRequest, includedURL)
+			return true
+		}
+	}
+	// t.logger.Debugf("URL is not included - got %s", currentRequest) // Too verbose for every request
 	return false
 }
 

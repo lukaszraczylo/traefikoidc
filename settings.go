@@ -75,8 +75,14 @@ type Config struct {
 	RateLimit int `json:"rateLimit"`
 
 	// ExcludedURLs lists paths that bypass authentication (optional)
+	// Cannot be used together with IncludedURLs
 	// Example: ["/health", "/metrics"]
 	ExcludedURLs []string `json:"excludedURLs"`
+
+	// IncludedURLs lists paths that has authentication (optional)
+	// Cannot be used together with ExcludedURLs
+	// Example: ["/private", "/admin"]
+	IncludedURLs []string `json:"includedURLs"`
 
 	// AllowedUserDomains restricts access to specific email domains (optional)
 	// Example: ["company.com", "subsidiary.com"]
@@ -204,16 +210,21 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("logLevel must be one of: debug, info, error")
 	}
 
-	// Validate excluded URLs
-	for _, url := range c.ExcludedURLs {
+	// Validate only one of excludedURLs or includedURLs is set
+	if len(c.ExcludedURLs) > 0 && len(c.IncludedURLs) > 0 {
+		return fmt.Errorf("excludedURLs and includedURLs cannot be used together")
+	}
+
+	// Validate excluded and included URLs
+	for _, url := range append(c.ExcludedURLs, c.IncludedURLs...) {
 		if !strings.HasPrefix(url, "/") {
-			return fmt.Errorf("excluded URL must start with /: %s", url)
+			return fmt.Errorf("excluded and included URL must start with /: %s", url)
 		}
 		if strings.Contains(url, "..") {
-			return fmt.Errorf("excluded URL must not contain path traversal: %s", url)
+			return fmt.Errorf("excluded and included URL must not contain path traversal: %s", url)
 		}
 		if strings.Contains(url, "*") {
-			return fmt.Errorf("excluded URL must not contain wildcards: %s", url)
+			return fmt.Errorf("excluded and included URL must not contain wildcards: %s", url)
 		}
 	}
 

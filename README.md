@@ -11,7 +11,7 @@ The Traefik OIDC middleware provides a complete OIDC authentication solution wit
 - Role-based access control
 - Token caching and blacklisting
 - Rate limiting
-- Excluded paths (public URLs)
+- Excluded or included paths (public URLs)
 
 The middleware has been tested with Auth0 and Logto, but should work with any standard OIDC provider.
 
@@ -71,7 +71,8 @@ The middleware supports the following configuration options:
 | `logLevel` | Sets the logging verbosity | `info` | `debug`, `info`, `error` |
 | `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
 | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
-| `excludedURLs` | Lists paths that bypass authentication | none | `["/health", "/metrics", "/public"]` |
+| `excludedURLs` | Lists paths that bypass authentication. Cannot be used with includedURLs | none | `["/health", "/metrics", "/public"]` |
+| `includedURLs` | Lists paths that require authentication. Cannot be used with excludedURLs | none | `["/private"]` |
 | `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
 | `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
 | `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |

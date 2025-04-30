@@ -58,6 +58,10 @@ testData:
     - /public
     - /health
     - /metrics
+
+  includedURLs: # Lists paths that enforces authentication
+    - /private # covers /private, /private/me, /private/reminder etc.
+    - /admin
     
   headers: # Custom headers to set with templated values from claims and tokens
     - name: "X-User-Email"
@@ -195,6 +199,20 @@ configuration:
       "/public", "/public/page", "/public-data", etc.
 
       Examples: ["/health", "/metrics", "/public"]
+    required: false
+    items:
+      type: string
+
+  includedURLs:
+    type: array
+    description: |
+      Lists paths that enforces authentication.
+      Only these paths will be promted with OIDC authentication.
+
+      The middleware uses prefix matching, so "/private" will match
+      "/private", "/private/page", "/private-data", etc.
+
+      Examples: ["/private", "/admin"]
     required: false
     items:
       type: string

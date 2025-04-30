@@ -106,6 +106,7 @@ func (ts *TestSuite) Setup() {
 		logger:             logger,
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
 		excludedURLs:       map[string]struct{}{"/favicon": {}},
+		includedURLs:       map[string]struct{}{"/private": {}},
 		httpClient:         &http.Client{},
 		// Explicitly set paths as New() is bypassed
 		redirURLPath:      "/callback",                     // Assume default callback path for tests
@@ -381,6 +382,12 @@ func TestServeHTTP(t *testing.T) {
 		{
 			name:           "Excluded URL",
 			requestPath:    "/favicon.ico",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "OK",
+		},
+		{
+			name:           "Included URL",
+			requestPath:    "/private/resource",
 			expectedStatus: http.StatusOK,
 			expectedBody:   "OK",
 		},
