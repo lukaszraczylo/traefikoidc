@@ -712,7 +712,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if needsRefresh && authenticated {
 			t.logger.Debug("Session token needs proactive refresh, attempting refresh")
 		} else if needsRefresh && !authenticated {
-			t.logger.Debug("Access token invalid/expired, but refresh token found. Attempting refresh.")
+			t.logger.Debug("ID token invalid/expired, but refresh token found. Attempting refresh.")
 		}
 
 		refreshed := t.refreshToken(rw, req, session)
@@ -769,9 +769,9 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		return
 	}
 
-	groups, roles, err := t.extractGroupsAndRoles(session.GetAccessToken()) // Using the actual access token
+	groups, roles, err := t.extractGroupsAndRoles(session.GetIDToken()) // Using ID token for claims like groups/roles
 	if err != nil {
-		t.logger.Errorf("Failed to extract groups and roles: %v", err)
+		t.logger.Errorf("Failed to extract groups and roles from ID Token: %v", err)
 		// Continue without group/role headers if extraction fails
 	} else {
 		if len(groups) > 0 {
@@ -811,11 +811,11 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 
 	// Execute and set templated headers if configured
 	if len(t.headerTemplates) > 0 {
-		accessToken := session.GetAccessToken()
-		refreshToken := session.GetRefreshToken()
-		claims, err := t.extractClaimsFunc(accessToken)
+		// Claims for templates could come from ID token or Access token depending on config/needs
+		// For now, using ID token claims for consistency, adjust if AccessTokenField implies otherwise for headers
+		claims, err := t.extractClaimsFunc(session.GetIDToken())
 		if err != nil {
-			t.logger.Errorf("Failed to extract claims for template headers: %v", err)
+			t.logger.Errorf("Failed to extract claims from ID Token for template headers: %v", err)
 		} else {
 			// Create template data context with available tokens and claims
 			// Fields must be exported (uppercase) to be accessible in templates
@@ -826,9 +826,9 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 				RefreshToken string
 				Claims       map[string]interface{}
 			}{
-				AccessToken:  session.GetAccessToken(),
+				AccessToken:  session.GetAccessToken(), // Provide AccessToken for templates if needed
 				IdToken:      session.GetIDToken(),
-				RefreshToken: refreshToken,
+				RefreshToken: session.GetRefreshToken(),
 				Claims:       claims,
 			}
 
@@ -1040,9 +1040,8 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		return
 	}
 	session.SetEmail(email)
-	session.SetIDToken(tokenResponse.IDToken)
-	session.SetAccessToken(tokenResponse.AccessToken)
-	session.SetRefreshToken(tokenResponse.RefreshToken)
+	session.SetIDToken(tokenResponse.IDToken)         // Store the raw ID token
+	session.SetAccessToken(tokenResponse.AccessToken) // Store the Access Token separately
 
 	// Clear CSRF, Nonce, CodeVerifier after use
 	session.SetCSRF("")
@@ -1121,7 +1120,7 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 }
 
 // isUserAuthenticated checks the authentication status based on the provided session data.
-// It verifies the session's authenticated flag, the presence and validity of the access token (ID token),
+// It verifies the session's authenticated flag, the presence and validity of the ID token,
 // including signature and standard claims (using VerifyJWTSignatureAndClaims). It also checks if the
 // token is within the configured refreshGracePeriod before its actual expiration.
 //
@@ -1143,47 +1142,47 @@ func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, boo
 		return false, false, false // Not authenticated, no refresh token, definitely not expired (just unauth)
 	}
 
-	accessToken := session.GetAccessToken()
-	if accessToken == "" {
-		t.logger.Debug("Authenticated flag set, but no access token found in session")
+	idToken := session.GetIDToken() // Use ID Token for authentication
+	if idToken == "" {
+		t.logger.Debug("Authenticated flag set, but no ID token found in session")
 		// If authenticated flag is true but token is missing, treat as expired/invalid session state
 		// Check for refresh token before declaring fully expired
 		if session.GetRefreshToken() != "" {
-			t.logger.Debug("Authenticated flag set, access token missing, but refresh token exists. Signaling need for refresh.")
-			return false, true, false // Not authenticated (no access token), NeedsRefresh=true, Expired=false
+			t.logger.Debug("Authenticated flag set, ID token missing, but refresh token exists. Signaling need for refresh.")
+			return false, true, false // Not authenticated (no ID token), NeedsRefresh=true, Expired=false
 		}
-		return false, false, true // No access or refresh token, treat as expired
+		return false, false, true // No ID or refresh token, treat as expired
 	}
 
 	// Verify the token structure and signature first
-	jwt, err := parseJWT(accessToken)
+	jwt, err := parseJWT(idToken)
 	if err != nil {
-		t.logger.Errorf("Failed to parse JWT during auth check: %v", err)
+		t.logger.Errorf("Failed to parse JWT (ID Token) during auth check: %v", err)
 		// Check for refresh token before declaring fully expired
 		if session.GetRefreshToken() != "" {
-			t.logger.Debug("Access token parsing failed, but refresh token exists. Signaling need for refresh.")
-			return false, true, false // Not authenticated (bad access token), NeedsRefresh=true, Expired=false
+			t.logger.Debug("ID Token parsing failed, but refresh token exists. Signaling need for refresh.")
+			return false, true, false // Not authenticated (bad ID token), NeedsRefresh=true, Expired=false
 		}
 		return false, false, true // Invalid format, no refresh token, treat as expired/invalid
 	}
-	if err := t.VerifyJWTSignatureAndClaims(jwt, accessToken); err != nil {
+	if err := t.VerifyJWTSignatureAndClaims(jwt, idToken); err != nil {
 		// Check if the error is specifically about expiration
 		if strings.Contains(err.Error(), "token has expired") {
-			t.logger.Debugf("Access token signature/claims valid but token expired, needs refresh")
+			t.logger.Debugf("ID token signature/claims valid but token expired, needs refresh")
 			// Token is expired but otherwise valid, signal for refresh
 			// Return authenticated=false because the current token is unusable
 			// NeedsRefresh is true only if a refresh token exists
 			if session.GetRefreshToken() != "" {
 				return false, true, false // Not authenticated (current token unusable), NeedsRefresh=true, Expired=false (because refresh might fix it)
 			}
-			return false, false, true // Expired access token, no refresh token, treat as expired
+			return false, false, true // Expired ID token, no refresh token, treat as expired
 		}
 		// Other verification error (signature, issuer, audience etc.)
-		t.logger.Errorf("Access token verification failed (non-expiration): %v", err)
+		t.logger.Errorf("ID token verification failed (non-expiration): %v", err)
 		// Check for refresh token before declaring fully expired
 		if session.GetRefreshToken() != "" {
-			t.logger.Debug("Access token verification failed, but refresh token exists. Signaling need for refresh.")
-			return false, true, false // Not authenticated (bad access token), NeedsRefresh=true, Expired=false
+			t.logger.Debug("ID token verification failed, but refresh token exists. Signaling need for refresh.")
+			return false, true, false // Not authenticated (bad ID token), NeedsRefresh=true, Expired=false
 		}
 		return false, false, true // Token is invalid for other reasons, no refresh token, treat as expired/invalid session
 	}
@@ -1196,8 +1195,8 @@ func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, boo
 		t.logger.Error("Failed to get expiration time ('exp' claim) from verified token")
 		// Check for refresh token before declaring fully expired
 		if session.GetRefreshToken() != "" {
-			t.logger.Debug("Access token missing 'exp' claim, but refresh token exists. Signaling need for refresh.")
-			return false, true, false // Not authenticated (bad access token), NeedsRefresh=true, Expired=false
+			t.logger.Debug("ID token missing 'exp' claim, but refresh token exists. Signaling need for refresh.")
+			return false, true, false // Not authenticated (bad ID token), NeedsRefresh=true, Expired=false
 		}
 		return false, false, true // Treat as invalid if 'exp' is missing and no refresh token
 	}
@@ -1212,7 +1211,7 @@ func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, boo
 	if time.Unix(expTime, 0).Before(time.Now().Add(t.refreshGracePeriod)) {
 		// Recalculate remaining seconds for logging clarity if needed, using the configured duration
 		remainingSeconds := int64(time.Until(time.Unix(expTime, 0)).Seconds())
-		t.logger.Debugf("Access token nearing expiration (expires in %d seconds, grace period %s), scheduling proactive refresh", remainingSeconds, t.refreshGracePeriod)
+		t.logger.Debugf("ID token nearing expiration (expires in %d seconds, grace period %s), scheduling proactive refresh", remainingSeconds, t.refreshGracePeriod)
 		// Token is still valid, but we should refresh it soon
 		// NeedsRefresh is true only if a refresh token exists
 		if session.GetRefreshToken() != "" {
