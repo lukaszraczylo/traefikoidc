@@ -1340,27 +1340,32 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	// Check if we're dealing with a Google OIDC provider
 	isGoogleProvider := strings.Contains(t.issuerURL, "google") || strings.Contains(t.issuerURL, "accounts.google.com")
 
-	// Add offline_access scope if it's missing
-	hasOfflineAccess := false
-	for _, scope := range scopes {
-		if scope == "offline_access" {
-			hasOfflineAccess = true
-			break
-		}
-	}
+	// Handle offline access differently for Google vs other providers
+	if isGoogleProvider {
+		// For Google, use access_type=offline parameter instead of offline_access scope
+		params.Set("access_type", "offline")
+		t.logger.Debug("Google OIDC provider detected, added access_type=offline for refresh tokens")
 
-	if !hasOfflineAccess {
-		scopes = append(scopes, "offline_access")
+		// Add prompt=consent for Google to ensure refresh token is issued
+		params.Set("prompt", "consent")
+		t.logger.Debug("Google OIDC provider detected, added prompt=consent to ensure refresh tokens")
+	} else {
+		// For non-Google providers, use the offline_access scope
+		hasOfflineAccess := false
+		for _, scope := range scopes {
+			if scope == "offline_access" {
+				hasOfflineAccess = true
+				break
+			}
+		}
+
+		if !hasOfflineAccess {
+			scopes = append(scopes, "offline_access")
+		}
 	}
 
 	if len(scopes) > 0 {
 		params.Set("scope", strings.Join(scopes, " "))
-	}
-
-	// Add prompt=consent for Google to ensure refresh token is issued
-	if isGoogleProvider {
-		params.Set("prompt", "consent")
-		t.logger.Debug("Google OIDC provider detected, added prompt=consent to ensure refresh tokens")
 	}
 
 	// Use buildURLWithParams which handles potential relative authURL from metadata

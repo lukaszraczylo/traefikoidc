@@ -11,6 +11,7 @@ summary: |
   role-based access control, token caching, and more.
 
   The middleware has been tested with Auth0, Logto, Google, and other standard OIDC providers.
+  It includes special handling for Google's OAuth implementation to ensure compatibility.
   It supports various authentication scenarios including:
 
   - Basic authentication with customizable callback and logout URLs
@@ -152,6 +153,10 @@ configuration:
       Default: ["openid", "profile", "email"]
 
       Include "roles" or similar scope if you need role/group information.
+|       
+|       Note: For Google OAuth, the middleware automatically handles the 
+|       proper authentication parameters and does NOT require the "offline_access" 
+|       scope (which Google rejects as invalid). See documentation for details.
     required: false
     items:
       type: string

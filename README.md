@@ -13,7 +13,7 @@ The Traefik OIDC middleware provides a complete OIDC authentication solution wit
 - Rate limiting
 - Excluded paths (public URLs)
 
-The middleware has been tested with Auth0 and Logto, but should work with any standard OIDC provider.
+The middleware has been tested with Auth0, Logto, Google and other standard OIDC providers. It includes special handling for Google's OAuth implementation.
 
 ## Traefik Version Compatibility
 
@@ -297,7 +297,7 @@ spec:
 
 ### Google OIDC Configuration Example
 
-This example shows a configuration specifically tailored for Google OIDC, including necessary scopes for session extension:
+This example shows a configuration specifically tailored for Google OIDC:
 
 ```yaml
 apiVersion: traefik.io/v1alpha1
@@ -318,10 +318,13 @@ spec:
         - openid
         - email
         - profile
-        - offline_access # Required for refresh tokens / long sessions with Google
+        # Note: DO NOT manually add offline_access scope for Google
+        # The middleware automatically handles Google-specific requirements
       refreshGracePeriodSeconds: 300  # Optional: Start refresh 5 min before expiry (default 60)
       # Other optional parameters like allowedUserDomains, etc. can be added here
 ```
+
+The middleware automatically detects Google as the provider and applies the necessary adjustments to ensure proper authentication and token refresh. See the [Google OAuth Fix](#google-oauth-compatibility-fix) section for details.
 
 ### Keeping Secrets Secret in Kubernetes
 
@@ -505,6 +508,21 @@ This middleware aims to provide long-lived user sessions, typically up to 24 hou
 - If a refresh attempt fails (e.g., the refresh token is revoked or expired), the user will be required to re-authenticate. The middleware includes enhanced error handling and logging for these scenarios.
 - Ensure your OIDC provider is configured to issue refresh tokens and allows their use for extending sessions. Check your provider's documentation for details on refresh token validity periods.
 
+### Google OAuth Compatibility Fix
+
+The middleware includes a specific fix for Google's OAuth implementation, which differs from the standard OIDC specification in how it handles refresh tokens:
+
+- **Issue**: Google does not support the standard `offline_access` scope for requesting refresh tokens and instead requires special parameters.
+  
+- **Automatic Solution**: The middleware detects Google as the provider based on the issuer URL and:
+  - Uses `access_type=offline` query parameter instead of the `offline_access` scope
+  - Adds `prompt=consent` to ensure refresh tokens are consistently issued
+  - Properly handles token refresh with Google's implementation
+
+You do not need any special configuration to use Google OAuth - just set `providerURL` to `https://accounts.google.com` and the middleware will automatically apply the proper parameters.
+
+For detailed information on the Google OAuth fix, see the [dedicated documentation](docs/google-oauth-fix.md).
+
 ### Token Caching and Blacklisting
 
 The middleware automatically caches validated tokens to improve performance and maintains a blacklist of revoked tokens.
@@ -591,9 +609,11 @@ logLevel: debug
 4. **Access denied: Your email domain is not allowed**: The user's email domain is not in the `allowedUserDomains` list.
 5. **Access denied: You do not have any of the allowed roles or groups**: The user doesn't have any of the roles or groups specified in `allowedRolesAndGroups`.
 6. **Google sessions expire after ~1 hour**: If using Google as the OIDC provider and sessions expire prematurely (around 1 hour instead of longer), ensure:
-   - The `offline_access` scope is included in your configuration (the middleware adds this automatically now, but verify if manually configured).
+   - Do NOT manually add the `offline_access` scope. Google rejects this scope as invalid.
+   - The middleware automatically applies the required Google parameters (`access_type=offline` and `prompt=consent`).
    - Your Google Cloud OAuth consent screen is set to "External" and "Production" mode. "Testing" mode often limits refresh token validity.
-   - The fix involving automatic `offline_access` scope and `prompt=consent` for Google is active in your middleware version. Check the plugin version corresponds to when this fix was implemented. Enhanced logging around refresh token failures can provide more clues if issues persist.
+   - Verify you're using a version of the middleware that includes the Google OAuth compatibility fix.
+   - For more details, see the [Google OAuth Compatibility Fix](#google-oauth-compatibility-fix) section or the [detailed documentation](docs/google-oauth-fix.md).
 
 ## Contributing
 
