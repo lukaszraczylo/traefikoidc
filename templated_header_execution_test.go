@@ -192,14 +192,14 @@ func TestTemplateExecutionContext(t *testing.T) {
 		expectedValue string
 	}{
 		{
-			name:         "Access and ID token identity",
+			name:         "Access and ID token distinction",
 			templateText: "Access: {{.AccessToken}} ID: {{.IdToken}}",
 			data: templateData{
-				AccessToken: "access-token",
-				IdToken:     "access-token", // Same as AccessToken in processAuthorizedRequest
+				AccessToken: "access-token-value",
+				IdToken:     "id-token-value", // Now these should be distinct values
 				Claims:      map[string]interface{}{},
 			},
-			expectedValue: "Access: access-token ID: access-token",
+			expectedValue: "Access: access-token-value ID: id-token-value",
 		},
 		{
 			name:         "Combining tokens and claims",

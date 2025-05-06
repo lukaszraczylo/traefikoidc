@@ -161,9 +161,14 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 				session.GetRefreshToken())
 		}
 
-		// Check that the access token was updated
-		if session.GetAccessToken() != "new-id-token-from-google" {
-			t.Errorf("Access token not updated: got %s, expected 'new-id-token-from-google'",
+		// Check that the tokens were updated correctly
+		if session.GetIDToken() != "new-id-token-from-google" {
+			t.Errorf("ID token not updated: got %s, expected 'new-id-token-from-google'",
+				session.GetIDToken())
+		}
+
+		if session.GetAccessToken() != "new-access-token-from-google" {
+			t.Errorf("Access token not updated: got %s, expected 'new-access-token-from-google'",
 				session.GetAccessToken())
 		}
 	})
@@ -445,7 +450,7 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 				// Return a successful token response with a proper JWT
 				return &TokenResponse{
 					IDToken:      initialIDToken,
-					AccessToken:  "google_access_token",
+					AccessToken:  initialIDToken, // Use a valid JWT as the access token too
 					RefreshToken: "google_refresh_token",
 					ExpiresIn:    3600,
 				}, nil
@@ -459,8 +464,8 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 				// Return a successful refresh response with a proper JWT
 				return &TokenResponse{
 					IDToken:      refreshedIDToken,
-					AccessToken:  "new_google_access_token",
-					RefreshToken: "", // Google doesn't always return a new refresh token
+					AccessToken:  refreshedIDToken, // Use a valid JWT as the access token
+					RefreshToken: "",               // Google doesn't always return a new refresh token
 					ExpiresIn:    3600,
 				}, nil
 			},

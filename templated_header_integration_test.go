@@ -67,6 +67,28 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			},
 		},
 		{
+			name: "ID Token Header",
+			headers: []TemplatedHeader{
+				{Name: "X-ID-Token", Value: "{{.IdToken}}"},
+			},
+			expectedHeaders: map[string]string{
+				// We'll update this dynamically after generating the token
+				"X-ID-Token": "",
+			},
+		},
+		{
+			name: "Both Token Types",
+			headers: []TemplatedHeader{
+				{Name: "X-Access-Token", Value: "{{.AccessToken}}"},
+				{Name: "X-ID-Token", Value: "{{.IdToken}}"},
+			},
+			expectedHeaders: map[string]string{
+				// We'll update these dynamically after generating the tokens
+				"X-Access-Token": "",
+				"X-ID-Token":     "",
+			},
+		},
+		{
 			name: "Missing Claim",
 			headers: []TemplatedHeader{
 				{Name: "X-User-Role", Value: "{{.Claims.role}}"},
@@ -210,8 +232,77 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			// Setup the session with authentication data
 			session.SetAuthenticated(true)
 			session.SetEmail("user@example.com")
+			// For most tests, set the same token for both ID and Access token for backward compatibility
+			session.SetIDToken(token)
 			session.SetAccessToken(token)
 			session.SetRefreshToken("test-refresh-token")
+
+			// For tests specifically testing token distinction, set different tokens
+			if tc.name == "ID Token Header" || tc.name == "Both Token Types" {
+				// Both tokens need to use the same key ID to avoid verification issues
+				idToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss":   "https://test-issuer.com",
+					"aud":   "test-client-id",
+					"exp":   float64(3000000000),
+					"iat":   float64(1000000000),
+					"nbf":   float64(1000000000),
+					"sub":   "test-subject",
+					"nonce": "test-nonce",
+					"jti":   generateRandomString(16),
+					"type":  "id_token",
+					"email": "user@example.com", // Use the standard test email directly
+				})
+				if err != nil {
+					t.Fatalf("Failed to create test ID JWT: %v", err)
+				}
+
+				accessToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss":   "https://test-issuer.com",
+					"aud":   "test-client-id",
+					"exp":   float64(3000000000),
+					"iat":   float64(1000000000),
+					"nbf":   float64(1000000000),
+					"sub":   "test-subject",
+					"jti":   generateRandomString(16),
+					"type":  "access_token",
+					"scope": "openid email profile",
+					"email": "user@example.com", // Include email in access token too
+				})
+				if err != nil {
+					t.Fatalf("Failed to create test access JWT: %v", err)
+				}
+
+				// Create a proper token exchanger that won't cause nil pointer issues
+				tOidc.tokenExchanger = &MockTokenExchanger{
+					RefreshTokenFunc: func(refreshToken string) (*TokenResponse, error) {
+						return &TokenResponse{
+							IDToken:      idToken,
+							AccessToken:  accessToken,
+							RefreshToken: refreshToken,
+							ExpiresIn:    3600,
+						}, nil
+					},
+				}
+
+				// Also add a mock token verifier to skip verification
+				tOidc.tokenVerifier = &MockTokenVerifier{
+					VerifyFunc: func(token string) error {
+						return nil
+					},
+				}
+
+				// Set both tokens in the session
+				session.SetIDToken(idToken)
+				session.SetAccessToken(accessToken)
+
+				// Update expectedHeaders for the token tests
+				if tc.name == "ID Token Header" {
+					tc.expectedHeaders["X-ID-Token"] = idToken
+				} else if tc.name == "Both Token Types" {
+					tc.expectedHeaders["X-ID-Token"] = idToken
+					tc.expectedHeaders["X-Access-Token"] = accessToken
+				}
+			}
 
 			if err := session.Save(req, rr); err != nil {
 				t.Fatalf("Failed to save session: %v", err)
@@ -361,8 +452,22 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 			// Setup the session with authentication data
 			session.SetAuthenticated(true)
 			session.SetEmail("user@example.com")
-			session.SetAccessToken(token)
+			session.SetIDToken(token)     // Use the new method
+			session.SetAccessToken(token) // Also set access token to match
 			session.SetRefreshToken("test-refresh-token")
+
+			// Make sure these properties are set so refreshToken won't panic
+			tOidc.extractClaimsFunc = extractClaims     // Ensure claims extraction works
+			tOidc.tokenExchanger = &MockTokenExchanger{ // Add a mock token exchanger
+				RefreshTokenFunc: func(refreshToken string) (*TokenResponse, error) {
+					return &TokenResponse{
+						IDToken:      token,
+						AccessToken:  token,
+						RefreshToken: refreshToken,
+						ExpiresIn:    3600,
+					}, nil
+				},
+			}
 
 			if err := session.Save(req, rr); err != nil {
 				t.Fatalf("Failed to save session: %v", err)

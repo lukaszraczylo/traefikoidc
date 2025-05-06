@@ -757,3 +757,39 @@ func (sd *SessionData) GetIncomingPath() string {
 func (sd *SessionData) SetIncomingPath(path string) {
 	sd.mainSession.Values["incoming_path"] = path
 }
+
+// GetIDToken retrieves the ID token stored in the session.
+// It handles reassembling the token from multiple cookie chunks if necessary
+// and decompresses it if it was stored compressed.
+//
+// Returns:
+//   - The complete, decompressed ID token string, or an empty string if not found.
+func (sd *SessionData) GetIDToken() string {
+	token, _ := sd.mainSession.Values["id_token"].(string)
+	if token != "" {
+		compressed, _ := sd.mainSession.Values["id_token_compressed"].(bool)
+		if compressed {
+			return decompressToken(token)
+		}
+		return token
+	}
+	return ""
+}
+
+// SetIDToken stores the provided ID token in the session.
+//
+// Parameters:
+//   - token: The ID token string to store.
+func (sd *SessionData) SetIDToken(token string) {
+	if token == "" {
+		sd.mainSession.Values["id_token"] = ""
+		sd.mainSession.Values["id_token_compressed"] = false
+		return
+	}
+
+	// Compress token
+	compressed := compressToken(token)
+
+	sd.mainSession.Values["id_token"] = compressed
+	sd.mainSession.Values["id_token_compressed"] = true
+}

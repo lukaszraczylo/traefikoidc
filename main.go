@@ -769,7 +769,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		return
 	}
 
-	groups, roles, err := t.extractGroupsAndRoles(session.GetAccessToken())
+	groups, roles, err := t.extractGroupsAndRoles(session.GetAccessToken()) // Using the actual access token
 	if err != nil {
 		t.logger.Errorf("Failed to extract groups and roles: %v", err)
 		// Continue without group/role headers if extraction fails
@@ -805,7 +805,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 	// Set OIDC-specific headers
 	req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
 	req.Header.Set("X-Auth-Request-User", email)
-	if idToken := session.GetAccessToken(); idToken != "" {
+	if idToken := session.GetIDToken(); idToken != "" {
 		req.Header.Set("X-Auth-Request-Token", idToken)
 	}
 
@@ -826,8 +826,8 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 				RefreshToken string
 				Claims       map[string]interface{}
 			}{
-				AccessToken:  accessToken,
-				IdToken:      accessToken, // Using access token as ID token
+				AccessToken:  session.GetAccessToken(),
+				IdToken:      session.GetIDToken(),
 				RefreshToken: refreshToken,
 				Claims:       claims,
 			}
@@ -887,6 +887,7 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	t.logger.Debug("Handling expired token: Clearing session and initiating re-authentication.")
 	// Clear authentication data but preserve CSRF state if possible (though Clear might remove it)
 	session.SetAuthenticated(false)
+	session.SetIDToken("")
 	session.SetAccessToken("")
 	session.SetRefreshToken("")
 	session.SetEmail("")
@@ -983,7 +984,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		return
 	}
 
-	// Verify tokens and claims
+	// Verify ID token and claims
 	if err := t.VerifyToken(tokenResponse.IDToken); err != nil {
 		t.logger.Errorf("Failed to verify id_token during callback: %v", err)
 		t.sendErrorResponse(rw, req, "Authentication failed: Could not verify ID token", http.StatusInternalServerError)
@@ -1039,7 +1040,8 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		return
 	}
 	session.SetEmail(email)
-	session.SetAccessToken(tokenResponse.IDToken)
+	session.SetIDToken(tokenResponse.IDToken)
+	session.SetAccessToken(tokenResponse.AccessToken)
 	session.SetRefreshToken(tokenResponse.RefreshToken)
 
 	// Clear CSRF, Nonce, CodeVerifier after use
@@ -1569,13 +1571,13 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		return false
 	}
 
-	// Verify the new access token (ID token)
+	// Verify the new ID token
 	if err := t.verifyToken(newToken.IDToken); err != nil {
-		truncatedNewToken := newToken.IDToken
+		truncatedToken := newToken.IDToken
 		if len(newToken.IDToken) > 10 {
-			truncatedNewToken = newToken.IDToken[:10]
+			truncatedToken = newToken.IDToken[:10]
 		}
-		t.logger.Errorf("refreshToken failed: Failed to verify newly obtained ID token starting with %s...: %v", truncatedNewToken, err)
+		t.logger.Errorf("refreshToken failed: Failed to verify newly obtained ID token starting with %s...: %v", truncatedToken, err)
 		return false
 	}
 
@@ -1614,8 +1616,9 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		t.logger.Debugf("New token expires at: %v (in %v)", expiryTime, time.Until(expiryTime))
 	}
 
-	// Set the new access token
-	session.SetAccessToken(newToken.IDToken)
+	// Set the new tokens
+	session.SetIDToken(newToken.IDToken)
+	session.SetAccessToken(newToken.AccessToken)
 
 	// Handle the refresh token
 	if newToken.RefreshToken != "" {
