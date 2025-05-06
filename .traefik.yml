@@ -152,9 +152,9 @@ configuration:
       The OAuth 2.0 scopes to request from the OIDC provider.
       Default: ["openid", "profile", "email"]
 
-      Include "roles" or similar scope if you need role/group information.       
+      Include "roles" or similar scope if you need role/group information.
       Note: For Google OAuth, the middleware automatically handles the 
-      proper authentication parameters and does NOT require the "offline_access" 
+      proper authentication parameters and does NOT require the "offline_access"
       scope (which Google rejects as invalid). See documentation for details.
     required: false
     items:
