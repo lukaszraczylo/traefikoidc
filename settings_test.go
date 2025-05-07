@@ -188,6 +188,19 @@ func TestConfigValidate(t *testing.T) {
 			expectedError: "oidcEndSessionURL must be a valid HTTPS URL",
 		},
 		{
+			name: "ExcludedURLs and IncludedURLs",
+			config: &Config{
+				ProviderURL:          "https://provider.com",
+				CallbackURL:          "/callback",
+				ClientID:             "client-id",
+				ClientSecret:         "client-secret",
+				SessionEncryptionKey: "this-is-a-long-enough-encryption-key",
+				ExcludedURLs:         []string{"/excluded"},
+				IncludedURLs:         []string{"/included"},
+			},
+			expectedError: "excludedURLs and includedURLs cannot be used together",
+		},
+		{
 			name: "Valid Config",
 			config: &Config{
 				ProviderURL:          "https://provider.com",
