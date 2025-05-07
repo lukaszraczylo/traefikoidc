@@ -919,15 +919,22 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 				req.Header.Set(headerName, headerValue)
 				t.logger.Debugf("Set templated header %s = %s", headerName, headerValue)
 			}
+			// Mark session as dirty after processing templated headers to ensure cookie is re-issued
+			session.MarkDirty()
+			t.logger.Debugf("Session marked dirty after templated header processing.")
 		}
 	}
 
 	// Always save session after processing claims and before proceeding
 	// This is especially important for opaque tokens where we need to ensure
 	// authentication state and user information are preserved
-	if err := session.Save(req, rw); err != nil {
-		t.logger.Errorf("Failed to save session after processing headers: %v", err)
-		// Continue anyway since we have valid tokens
+	if session.IsDirty() {
+		if err := session.Save(req, rw); err != nil {
+			t.logger.Errorf("Failed to save session after processing headers: %v", err)
+			// Continue anyway since we have valid tokens
+		}
+	} else {
+		t.logger.Debug("Session not dirty, skipping save in processAuthorizedRequest")
 	}
 
 	// Set security headers
