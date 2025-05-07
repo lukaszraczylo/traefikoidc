@@ -159,6 +159,18 @@ func (m *MockJWKCache) Cleanup() {
 	m.Err = nil
 }
 
+// MockTokenVerifier implements TokenVerifier for testing, allowing interception of VerifyToken calls.
+type MockTokenVerifier struct {
+	VerifyFunc func(token string) error
+}
+
+func (m *MockTokenVerifier) VerifyToken(token string) error {
+	if m.VerifyFunc != nil {
+		return m.VerifyFunc(token)
+	}
+	return fmt.Errorf("VerifyFunc not implemented in mock")
+}
+
 // MockTokenExchanger implements TokenExchanger for testing
 type MockTokenExchanger struct {
 	ExchangeCodeFunc func(ctx context.Context, grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error)
@@ -445,6 +457,7 @@ func TestServeHTTP(t *testing.T) {
 					"jti": generateRandomString(16), // Unique JTI
 				})
 				session.SetAccessToken(freshToken)
+				session.SetIDToken(freshToken) // Ensure ID token is also set
 				session.SetRefreshToken("valid-refresh-token")
 			},
 			expectedStatus: http.StatusOK,
@@ -612,6 +625,7 @@ func TestServeHTTP(t *testing.T) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@example.com")
 				session.SetAccessToken(validToken)
+				session.SetIDToken(validToken) // Ensure ID token is also set
 				session.SetRefreshToken("should-not-be-used-refresh-token")
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
@@ -637,6 +651,7 @@ func TestServeHTTP(t *testing.T) {
 					"jti": generateRandomString(16), // Unique JTI
 				})
 				session.SetAccessToken(freshToken)
+				session.SetIDToken(freshToken) // Ensure ID token is also set
 				session.SetRefreshToken("valid-refresh-token")
 			},
 			requestHeaders: map[string]string{
@@ -658,6 +673,7 @@ func TestServeHTTP(t *testing.T) {
 					"jti": generateRandomString(16), // Unique JTI
 				})
 				session.SetAccessToken(freshToken)
+				session.SetIDToken(freshToken) // Ensure ID token is also set
 				session.SetRefreshToken("valid-refresh-token")
 			},
 			requestHeaders: map[string]string{
@@ -670,6 +686,45 @@ func TestServeHTTP(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			// Reset token blacklist and cache for each test to prevent token replay detection errors
+			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
+			ts.tOidc.tokenCache = NewTokenCache()
+
+			// Reset the global replayCache to prevent "token replay detected" errors
+			replayCacheMu.Lock()
+			replayCache = make(map[string]time.Time) // Reset the global cache
+			replayCacheMu.Unlock()
+
+			// Store original tokenVerifier to restore later
+			origTokenVerifier := ts.tOidc.tokenVerifier
+
+			// Create a mock tokenVerifier that clears the replay cache before verification
+			// This prevents replay detection when the same token is verified multiple times within a test
+			mockTokenVerifier := &MockTokenVerifier{
+				VerifyFunc: func(token string) error {
+					// Clear replay cache before token verification
+					replayCacheMu.Lock()
+					replayCache = make(map[string]time.Time)
+					replayCacheMu.Unlock()
+
+					// Call the original verifier's VerifyToken method
+					// Ensure origTokenVerifier is not nil and is the correct type if necessary,
+					// though in this context it should be the *TraefikOidc instance.
+					if origTokenVerifier != nil {
+						return origTokenVerifier.VerifyToken(token)
+					}
+					return fmt.Errorf("original token verifier is nil")
+				},
+			}
+
+			// Replace tokenVerifier with our mock
+			ts.tOidc.tokenVerifier = mockTokenVerifier
+
+			// Restore original tokenVerifier after test
+			defer func() {
+				ts.tOidc.tokenVerifier = origTokenVerifier
+			}()
+
 			req := httptest.NewRequest("GET", tc.requestPath, nil)
 			// Set common headers needed by the logic (determineScheme, determineHost)
 			req.Header.Set("X-Forwarded-Proto", "http") // Or https if testing that

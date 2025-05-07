@@ -16,11 +16,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// MockTokenVerifier implements the TokenVerifier interface for testing
-type MockTokenVerifier struct {
-	VerifyFunc func(token string) error
-}
-
 // MockJWTVerifier implements the JWTVerifier interface for testing
 type MockJWTVerifier struct {
 	VerifyJWTFunc func(jwt *JWT, token string) error
@@ -29,13 +24,6 @@ type MockJWTVerifier struct {
 func (m *MockJWTVerifier) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error {
 	if m.VerifyJWTFunc != nil {
 		return m.VerifyJWTFunc(jwt, token)
-	}
-	return nil
-}
-
-func (m *MockTokenVerifier) VerifyToken(token string) error {
-	if m.VerifyFunc != nil {
-		return m.VerifyFunc(token)
 	}
 	return nil
 }

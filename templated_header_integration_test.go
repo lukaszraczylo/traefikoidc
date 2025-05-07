@@ -228,6 +228,9 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 				// Default to true, which means PopulateSessionWithIdTokenClaims is true
 				// UseIdTokenForSession: true, // Explicitly can be set if needed
 			}
+			tOidc.tokenVerifier = tOidc
+			tOidc.jwtVerifier = tOidc
+			tOidc.tokenExchanger = tOidc
 
 			// Initialize and parse header templates
 			for _, header := range tc.headers {
@@ -502,6 +505,8 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 				extractClaimsFunc:  extractClaims,
 				headerTemplates:    make(map[string]*template.Template),
 			}
+			tOidc.tokenVerifier = tOidc
+			tOidc.jwtVerifier = tOidc
 
 			// Initialize and parse header templates
 			for _, header := range tc.headers {

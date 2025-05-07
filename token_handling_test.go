@@ -164,6 +164,8 @@ func TestTokenTypeIntegration(t *testing.T) {
 		extractClaimsFunc:  extractClaims,
 		headerTemplates:    make(map[string]*template.Template),
 	}
+	tOidc.tokenVerifier = tOidc
+	tOidc.jwtVerifier = tOidc
 
 	// Initialize and parse header templates
 	for _, header := range headers {
