@@ -28,7 +28,7 @@ type TestSuite struct {
 	rsaPrivateKey  *rsa.PrivateKey
 	rsaPublicKey   *rsa.PublicKey
 	ecPrivateKey   *ecdsa.PrivateKey
-	tOidc          *TraefikOidc
+	tOidc          []*TraefikOidc
 	mockJWKCache   *MockJWKCache
 	token          string
 	sessionManager *SessionManager
@@ -92,53 +92,107 @@ func (ts *TestSuite) Setup() {
 	logger := NewLogger("info")
 	ts.sessionManager, _ = NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
 
-	// Common TraefikOidc instance
-	ts.tOidc = &TraefikOidc{
-		issuerURL:          "https://test-issuer.com",
-		clientID:           "test-client-id",
-		clientSecret:       "test-client-secret",
-		jwkCache:           ts.mockJWKCache,
-		jwksURL:            "https://test-jwks-url.com",
-		revocationURL:      "https://revocation-endpoint.com",
-		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
-		tokenBlacklist:     NewCache(), // Use generic cache for blacklist
-		tokenCache:         NewTokenCache(),
-		logger:             logger,
-		allowedUserDomains: map[string]struct{}{"example.com": {}},
-		excludedURLs:       map[string]struct{}{"/favicon": {}},
-		includedURLs:       map[string]struct{}{"/private": {}},
-		httpClient:         &http.Client{},
-		// Explicitly set paths as New() is bypassed
-		redirURLPath:      "/callback",                     // Assume default callback path for tests
-		logoutURLPath:     "/callback/logout",              // Assume default logout path for tests
-		tokenURL:          "https://test-issuer.com/token", // Explicitly set for refresh tests
-		extractClaimsFunc: extractClaims,
-		initComplete:      make(chan struct{}),
-		sessionManager:    ts.sessionManager,
-	}
-	close(ts.tOidc.initComplete)
-	// ts.tOidc.exchangeCodeForTokenFunc = ts.exchangeCodeForTokenFunc // Removed
-	ts.tOidc.tokenVerifier = ts.tOidc
-	ts.tOidc.jwtVerifier = ts.tOidc
-	// Set default mock exchanger
-	ts.tOidc.tokenExchanger = &MockTokenExchanger{
-		ExchangeCodeFunc: func(ctx context.Context, grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error) {
-			// Default mock behavior for code exchange
-			return &TokenResponse{
-				IDToken:      ts.token, // Use the valid token from setup
-				AccessToken:  ts.token,
-				RefreshToken: "default-refresh-token",
-				ExpiresIn:    3600,
-			}, nil
+	// TraefikOidc instances
+	// Tests will always default to [0] if no instances are specified by index.
+	//
+	// Common instance
+	ts.tOidc = append(ts.tOidc, 
+		&TraefikOidc{
+			issuerURL:          "https://test-issuer.com",
+			clientID:           "test-client-id",
+			clientSecret:       "test-client-secret",
+			jwkCache:           ts.mockJWKCache,
+			jwksURL:            "https://test-jwks-url.com",
+			revocationURL:      "https://revocation-endpoint.com",
+			limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
+			tokenBlacklist:     NewCache(), // Use generic cache for blacklist
+			tokenCache:         NewTokenCache(),
+			logger:             logger,
+			allowedUserDomains: map[string]struct{}{"example.com": {}},
+			excludedURLs:       map[string]struct{}{"/favicon": {}},
+			httpClient:         &http.Client{},
+			// Explicitly set paths as New() is bypassed
+			redirURLPath:      "/callback",                     // Assume default callback path for tests
+			logoutURLPath:     "/callback/logout",              // Assume default logout path for tests
+			tokenURL:          "https://test-issuer.com/token", // Explicitly set for refresh tests
+			extractClaimsFunc: extractClaims,
+			initComplete:      make(chan struct{}),
+			sessionManager:    ts.sessionManager,
 		},
-		RefreshTokenFunc: func(refreshToken string) (*TokenResponse, error) {
-			// Default mock behavior for refresh (can be overridden in tests)
-			return nil, fmt.Errorf("default mock: refresh not expected")
+		// Instance with IncludedURLs
+		&TraefikOidc{
+			issuerURL:          "https://test-issuer.com",
+			clientID:           "test-client-id",
+			clientSecret:       "test-client-secret",
+			jwkCache:           ts.mockJWKCache,
+			jwksURL:            "https://test-jwks-url.com",
+			revocationURL:      "https://revocation-endpoint.com",
+			limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
+			tokenBlacklist:     NewCache(), // Use generic cache for blacklist
+			tokenCache:         NewTokenCache(),
+			logger:             logger,
+			allowedUserDomains: map[string]struct{}{"example.com": {}},
+			includedURLs:       map[string]struct{}{"/private": {}},
+			httpClient:         &http.Client{},
+			// Explicitly set paths as New() is bypassed
+			redirURLPath:      "/callback",                     // Assume default callback path for tests
+			logoutURLPath:     "/callback/logout",              // Assume default logout path for tests
+			tokenURL:          "https://test-issuer.com/token", // Explicitly set for refresh tests
+			extractClaimsFunc: extractClaims,
+			initComplete:      make(chan struct{}),
+			sessionManager:    ts.sessionManager,
 		},
-		RevokeTokenFunc: func(token, tokenType string) error {
-			// Default mock behavior for revoke
-			return nil
+		// Instance with ExcludedURLs and IncludedURLs
+		&TraefikOidc{
+			issuerURL:          "https://test-issuer.com",
+			clientID:           "test-client-id",
+			clientSecret:       "test-client-secret",
+			jwkCache:           ts.mockJWKCache,
+			jwksURL:            "https://test-jwks-url.com",
+			revocationURL:      "https://revocation-endpoint.com",
+			limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
+			tokenBlacklist:     NewCache(), // Use generic cache for blacklist
+			tokenCache:         NewTokenCache(),
+			logger:             logger,
+			allowedUserDomains: map[string]struct{}{"example.com": {}},
+			excludedURLs:       map[string]struct{}{"/favicon": {}},
+			includedURLs:       map[string]struct{}{"/private": {}},
+			httpClient:         &http.Client{},
+			// Explicitly set paths as New() is bypassed
+			redirURLPath:      "/callback",                     // Assume default callback path for tests
+			logoutURLPath:     "/callback/logout",              // Assume default logout path for tests
+			tokenURL:          "https://test-issuer.com/token", // Explicitly set for refresh tests
+			extractClaimsFunc: extractClaims,
+			initComplete:      make(chan struct{}),
+			sessionManager:    ts.sessionManager,
 		},
+		// Instance with IncludedURLs
+	)
+	for _, tOidc := range ts.tOidc {
+		close(tOidc.initComplete)
+		// tOidc.exchangeCodeForTokenFunc = exchangeCodeForTokenFunc // Removed
+		tOidc.tokenVerifier = tOidc
+		tOidc.jwtVerifier = tOidc
+		// Set default mock exchanger
+		tOidc.tokenExchanger = &MockTokenExchanger{
+			ExchangeCodeFunc: func(ctx context.Context, grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error) {
+				// Default mock behavior for code exchange
+				return &TokenResponse{
+					IDToken:      ts.token, // Use the valid token from setup
+					AccessToken:  ts.token,
+					RefreshToken: "default-refresh-token",
+					ExpiresIn:    3600,
+				}, nil
+			},
+			RefreshTokenFunc: func(refreshToken string) (*TokenResponse, error) {
+				// Default mock behavior for refresh (can be overridden in tests)
+				return nil, fmt.Errorf("default mock: refresh not expected")
+			},
+			RevokeTokenFunc: func(token, tokenType string) error {
+				// Default mock behavior for revoke
+				return nil
+			},
+		}
 	}
 }
 
@@ -274,25 +328,27 @@ func TestVerifyToken(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			tOidc := getCommonTraefikOidc(ts)
+
 			// Reset token blacklist and cache for each test
-			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
-			ts.tOidc.tokenCache = NewTokenCache()
-			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
+			tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
+			tOidc.tokenCache = NewTokenCache()
+			tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
 
 			// Set up the test case
 			if tc.blacklist {
 				// Use Set with a duration. Value 'true' is arbitrary.
-				ts.tOidc.tokenBlacklist.Set(tc.token, true, 1*time.Hour)
+				tOidc.tokenBlacklist.Set(tc.token, true, 1*time.Hour)
 			}
 
 			if tc.rateLimit {
 				// Exceed rate limit
-				ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 0)
+				tOidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 0)
 			}
 
 			if tc.cacheToken {
 				// Use more realistic claims for cached token
-				ts.tOidc.tokenCache.Set(tc.token, map[string]interface{}{
+				tOidc.tokenCache.Set(tc.token, map[string]interface{}{
 					"iss": "https://test-issuer.com",
 					"sub": "test-subject",
 					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -300,14 +356,14 @@ func TestVerifyToken(t *testing.T) {
 				}, time.Minute)
 
 				// Verify the token is actually in the cache
-				if claims, exists := ts.tOidc.tokenCache.Get(tc.token); exists {
+				if claims, exists := tOidc.tokenCache.Get(tc.token); exists {
 					t.Logf("Token found in cache with claims: %v", claims)
 				} else {
 					t.Logf("Token NOT found in cache despite cacheToken=true")
 				}
 			}
 
-			err := ts.tOidc.VerifyToken(tc.token)
+			err := tOidc.VerifyToken(tc.token)
 			if tc.expectedError && err == nil {
 				t.Errorf("Test %s: expected error but got nil", tc.name)
 			}
@@ -323,12 +379,14 @@ func TestServeHTTP(t *testing.T) {
 	ts := &TestSuite{t: t}
 	ts.Setup()
 
+	tOidc := getCommonTraefikOidc(ts)
+
 	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
-	ts.tOidc.next = nextHandler
-	ts.tOidc.name = "test"
+	tOidc.next = nextHandler
+	tOidc.name = "test"
 
 	// Helper to create an expired token
 	createExpiredToken := func() string {
@@ -378,6 +436,7 @@ func TestServeHTTP(t *testing.T) {
 		mockRefreshTokenFunc      func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error)
 		assertSessionAfterRequest func(t *testing.T, rr *httptest.ResponseRecorder, req *http.Request, sessionManager *SessionManager) // Added for post-request checks
 		requestHeaders            map[string]string                                                                                    // Added for setting headers like Accept
+		traefikOIDCIndex          int                                                                                                  // Added for selecting specific TraefikOidc instance
 	}{
 		{
 			name:           "Excluded URL",
@@ -386,10 +445,18 @@ func TestServeHTTP(t *testing.T) {
 			expectedBody:   "OK",
 		},
 		{
-			name:           "Included URL",
-			requestPath:    "/private/resource",
-			expectedStatus: http.StatusOK,
-			expectedBody:   "OK",
+			name:           	"Included URL",
+			requestPath:    	"/private/resource",
+			expectedStatus: 	http.StatusFound,
+			expectedBody:   	"Found",
+			traefikOIDCIndex: 1,
+		},
+		{
+			name:           	"Excluded and Included URL",
+			requestPath:    	"/private/resource",
+			expectedStatus: 	http.StatusInternalServerError,
+			expectedBody:   	"Only one of excludedURLs or includedURLs should be set",
+			traefikOIDCIndex: 2,
 		},
 		{
 			name:        "Unauthenticated request (no refresh token) to protected URL",
@@ -691,8 +758,13 @@ func TestServeHTTP(t *testing.T) {
 
 			rr := httptest.NewRecorder()
 
+			tOidc := getCommonTraefikOidc(ts)
+			if tc.traefikOIDCIndex != 0 {
+				tOidc = ts.tOidc[tc.traefikOIDCIndex]
+			}
+
 			// Setup session if needed
-			session, err := ts.tOidc.sessionManager.GetSession(req)
+			session, err := tOidc.sessionManager.GetSession(req)
 			if err != nil {
 				t.Fatalf("Test %s: Failed to get initial session: %v", tc.name, err)
 			}
@@ -710,7 +782,7 @@ func TestServeHTTP(t *testing.T) {
 			}
 
 			// Mocking setup for TokenExchanger
-			originalExchanger := ts.tOidc.tokenExchanger // Store original
+			originalExchanger := tOidc.tokenExchanger // Store original
 			mockExchanger, isMock := originalExchanger.(*MockTokenExchanger)
 			if !isMock {
 				// This case should ideally not happen if Setup correctly assigns the mock,
@@ -721,7 +793,7 @@ func TestServeHTTP(t *testing.T) {
 					RefreshTokenFunc: originalExchanger.GetNewTokenWithRefreshToken,
 					RevokeTokenFunc:  originalExchanger.RevokeTokenWithProvider,
 				}
-				ts.tOidc.tokenExchanger = mockExchanger // Temporarily assign mock
+				tOidc.tokenExchanger = mockExchanger // Temporarily assign mock
 			}
 
 			// Override specific mock methods if needed for the test case
@@ -732,10 +804,10 @@ func TestServeHTTP(t *testing.T) {
 			}
 
 			// Call ServeHTTP
-			ts.tOidc.ServeHTTP(rr, req)
+			tOidc.ServeHTTP(rr, req)
 
 			// Restore original exchanger and mock function state
-			ts.tOidc.tokenExchanger = originalExchanger
+			tOidc.tokenExchanger = originalExchanger
 			if tc.mockRefreshTokenFunc != nil && mockExchanger != nil {
 				// Restore the previous mock function if we overrode it
 				mockExchanger.RefreshTokenFunc = originalMockRefreshFunc
@@ -764,7 +836,7 @@ func TestServeHTTP(t *testing.T) {
 
 			// Perform post-request session assertions if defined
 			if tc.assertSessionAfterRequest != nil {
-				tc.assertSessionAfterRequest(t, rr, req, ts.tOidc.sessionManager)
+				tc.assertSessionAfterRequest(t, rr, req, tOidc.sessionManager)
 			}
 		})
 	}
@@ -1068,10 +1140,12 @@ func TestHandleCallback(t *testing.T) {
 			replayCache = make(map[string]time.Time) // Reset the global cache
 			replayCacheMu.Unlock()
 
+			commonTOidc := getCommonTraefikOidc(ts)
+
 			// Explicitly clear the shared blacklist at the start of each sub-test
 			// to ensure no state leaks, even though we expect the local one to be used.
 			// Note: This line might be redundant now that the verifier is local, but keep for safety.
-			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
+			commonTOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
 
 			logger := NewLogger("info")
 			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
@@ -1106,10 +1180,10 @@ func TestHandleCallback(t *testing.T) {
 				tokenBlacklist: NewCache(),                   // Initialize token blacklist cache
 
 				// Add potentially missing fields based on New() comparison
-				clientID:     ts.tOidc.clientID,
-				issuerURL:    ts.tOidc.issuerURL,
-				jwkCache:     ts.tOidc.jwkCache, // Use the mock cache from TestSuite
-				httpClient:   ts.tOidc.httpClient,
+				clientID:     commonTOidc.clientID,
+				issuerURL:    commonTOidc.issuerURL,
+				jwkCache:     commonTOidc.jwkCache, // Use the mock cache from TestSuite
+				httpClient:   commonTOidc.httpClient,
 				initComplete: make(chan struct{}), // Initialize the channel
 				// Setting other fields like paths, enablePKCE etc. if needed
 			}
@@ -1180,7 +1254,8 @@ func TestIsAllowedDomain(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			allowed := ts.tOidc.isAllowedDomain(tc.email)
+			tOidc := getCommonTraefikOidc(ts)
+			allowed := tOidc.isAllowedDomain(tc.email)
 			if allowed != tc.allowed {
 				t.Errorf("Expected allowed=%v, got %v", tc.allowed, allowed)
 			}
@@ -1305,25 +1380,26 @@ func TestOIDCHandler(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc // Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
+			tOidc := getCommonTraefikOidc(ts)
 			// Reset token blacklist and cache
-			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
-			ts.tOidc.tokenCache = NewTokenCache()
-			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
+			tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
+			tOidc.tokenCache = NewTokenCache()
+			tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
 
 			// Set up the test case
 			if tc.blacklist {
 				// Use Set with a duration. Value 'true' is arbitrary.
-				ts.tOidc.tokenBlacklist.Set(ts.token, true, 1*time.Hour)
+				tOidc.tokenBlacklist.Set(ts.token, true, 1*time.Hour)
 			}
 
 			if tc.rateLimit {
 				// Exceed rate limit
-				ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 0)
+				tOidc.limiter = rate.NewLimiter(rate.Every(time.Hour), 0)
 			}
 
 			if tc.cacheToken {
 				// Cache the token with dummy claims
-				ts.tOidc.tokenCache.Set(ts.token, map[string]interface{}{
+				tOidc.tokenCache.Set(ts.token, map[string]interface{}{
 					"empty": "claim",
 				}, 60)
 			}
@@ -1529,6 +1605,8 @@ func TestRevokeTokenWithProvider(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			tOidc := getCommonTraefikOidc(ts)
+
 			// Create test server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Verify request method and content type
@@ -1549,11 +1627,11 @@ func TestRevokeTokenWithProvider(t *testing.T) {
 				if got := r.Form.Get("token_type_hint"); got != tc.tokenType {
 					t.Errorf("Expected token_type_hint %s, got %s", tc.tokenType, got)
 				}
-				if got := r.Form.Get("client_id"); got != ts.tOidc.clientID {
-					t.Errorf("Expected client_id %s, got %s", ts.tOidc.clientID, got)
+				if got := r.Form.Get("client_id"); got != tOidc.clientID {
+					t.Errorf("Expected client_id %s, got %s", tOidc.clientID, got)
 				}
-				if got := r.Form.Get("client_secret"); got != ts.tOidc.clientSecret {
-					t.Errorf("Expected client_secret %s, got %s", ts.tOidc.clientSecret, got)
+				if got := r.Form.Get("client_secret"); got != tOidc.clientSecret {
+					t.Errorf("Expected client_secret %s, got %s", tOidc.clientSecret, got)
 				}
 
 				w.WriteHeader(tc.statusCode)
@@ -1561,10 +1639,10 @@ func TestRevokeTokenWithProvider(t *testing.T) {
 			defer server.Close()
 
 			// Set revocation URL to test server
-			ts.tOidc.revocationURL = server.URL
+			tOidc.revocationURL = server.URL
 
 			// Test token revocation
-			err := ts.tOidc.RevokeTokenWithProvider(tc.token, tc.tokenType)
+			err := tOidc.RevokeTokenWithProvider(tc.token, tc.tokenType)
 			if tc.expectError && err == nil {
 				t.Error("Expected error but got nil")
 			}
@@ -1702,11 +1780,13 @@ func TestHandleExpiredToken(t *testing.T) {
 			logger := NewLogger("info")
 			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
 
+			commonTOidc := getCommonTraefikOidc(ts)
+
 			tOidc := &TraefikOidc{
 				sessionManager: sessionManager,
 				logger:         logger,
-				tokenVerifier:  ts.tOidc.tokenVerifier,
-				jwtVerifier:    ts.tOidc.jwtVerifier,
+				tokenVerifier:  commonTOidc.tokenVerifier,
+				jwtVerifier:    commonTOidc.jwtVerifier,
 				initComplete:   make(chan struct{}),
 				initiateAuthenticationFunc: func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 					http.Redirect(rw, req, "/login", http.StatusFound)
@@ -1807,13 +1887,15 @@ func TestExtractGroupsAndRoles(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			tOidc := getCommonTraefikOidc(ts)
+
 			// Create a test token with the claims
 			token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", tc.claims)
 			if err != nil {
 				t.Fatalf("Failed to create test token: %v", err)
 			}
 
-			groups, roles, err := ts.tOidc.extractGroupsAndRoles(token)
+			groups, roles, err := tOidc.extractGroupsAndRoles(token)
 
 			if tc.expectError {
 				if err == nil {
@@ -2082,7 +2164,7 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			})
 
 			// Configure OIDC middleware
-			tOidc := ts.tOidc
+			tOidc := getCommonTraefikOidc(ts)
 			tOidc.next = nextHandler
 			tOidc.allowedRolesAndGroups = tc.allowedRolesAndGroups
 
@@ -2142,6 +2224,11 @@ func stringSliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// Helper function to select and return the Common TraefikOidc instance used for most tests
+func getCommonTraefikOidc(ts *TestSuite) *TraefikOidc {
+	return ts.tOidc[0]
 }
 
 // TestExchangeTokensWithRedirects tests the token exchange process with redirects
@@ -2223,7 +2310,7 @@ func TestExchangeTokensWithRedirects(t *testing.T) {
 			defer server.Close()
 
 			// Configure the test instance
-			tOidc := ts.tOidc
+			tOidc := getCommonTraefikOidc(ts)
 			tOidc.tokenURL = server.URL
 
 			// Test token exchange
@@ -2343,7 +2430,7 @@ func TestBuildAuthURL(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Configure the test instance
-			tOidc := ts.tOidc
+			tOidc := getCommonTraefikOidc(ts)
 			tOidc.authURL = tc.authURL
 			tOidc.issuerURL = tc.issuerURL
 			tOidc.enablePKCE = tc.enablePKCE
@@ -2505,7 +2592,7 @@ func TestExchangeCodeForToken(t *testing.T) {
 			defer server.Close()
 
 			// Configure the test instance
-			tOidc := ts.tOidc
+			tOidc := getCommonTraefikOidc(ts)
 			tOidc.tokenURL = server.URL
 			tOidc.enablePKCE = tc.enablePKCE
 
@@ -2540,7 +2627,8 @@ func TestDefaultInitiateAuthentication_PreservesQueryParameters(t *testing.T) {
 
 	// Call defaultInitiateAuthentication
 	redirectURL := "http://example.com/callback"
-	ts.tOidc.defaultInitiateAuthentication(responseRecorder, req, session, redirectURL)
+	tOidc := getCommonTraefikOidc(ts)
+	tOidc.defaultInitiateAuthentication(responseRecorder, req, session, redirectURL)
 
 	// Verify that the incoming path includes query parameters
 	incomingPath := session.GetIncomingPath()

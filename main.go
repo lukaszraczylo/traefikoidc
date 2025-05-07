@@ -636,6 +636,11 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if len(t.excludedURLs) > 0 && len(t.includedURLs) > 0 {
+		t.logger.Error("Only one of excludedURLs or includedURLs should be set")
+		http.Error(rw, "Only one of excludedURLs or includedURLs should be set", http.StatusInternalServerError)
+		return
+	}
 	// --- Excluded Paths Check ---
 	if len(t.excludedURLs) > 0 && t.determineExcludedURL(req.URL.Path) {
 		t.logger.Debugf("Request path %s excluded by configuration, bypassing OIDC", req.URL.Path)

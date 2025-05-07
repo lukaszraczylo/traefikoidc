@@ -14,13 +14,15 @@ func BenchmarkOIDCMiddleware(b *testing.B) {
 	ts.Setup()
 	ts.token = "valid.jwt.token"
 
+	tOidc := getCommonTraefikOidc(ts)
+
 	// Define the handler with OIDC middleware
-	ts.tOidc.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tOidc.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
 	// Create test server
-	server := httptest.NewServer(ts.tOidc.next)
+	server := httptest.NewServer(tOidc.next)
 	defer server.Close()
 
 	// Prepare HTTP client
