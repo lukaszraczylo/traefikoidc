@@ -112,14 +112,16 @@ type TraefikOidc struct {
 	allowedRolesAndGroups      map[string]struct{}
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
 	// exchangeCodeForTokenFunc   func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) // Replaced by interface
-	extractClaimsFunc     func(tokenString string) (map[string]interface{}, error)
-	initComplete          chan struct{}
-	endSessionURL         string
-	postLogoutRedirectURI string
-	sessionManager        *SessionManager
-	tokenExchanger        TokenExchanger                // Added field for mocking
-	refreshGracePeriod    time.Duration                 // Configurable grace period for proactive refresh
-	headerTemplates       map[string]*template.Template // Parsed templates for custom headers
+	extractClaimsFunc       func(tokenString string) (map[string]interface{}, error)
+	initComplete            chan struct{}
+	endSessionURL           string
+	postLogoutRedirectURI   string
+	sessionManager          *SessionManager
+	tokenExchanger          TokenExchanger                // Added field for mocking
+	refreshGracePeriod      time.Duration                 // Configurable grace period for proactive refresh
+	headerTemplates         map[string]*template.Template // Parsed templates for custom headers
+	tokenCleanupStopChan    chan struct{}                 // Channel to stop token cleanup goroutine
+	metadataRefreshStopChan chan struct{}                 // Channel to stop metadata refresh goroutine
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -406,6 +408,8 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			}
 			return 60 * time.Second // Default to 60 seconds
 		}(),
+		tokenCleanupStopChan:    make(chan struct{}),
+		metadataRefreshStopChan: make(chan struct{}),
 	}
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
@@ -499,24 +503,31 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 // middleware's endpoint URLs via updateMetadataEndpoints. Fetch errors are logged.
 //
 // Parameters:
-//   - providerURL: The base URL of the OIDC provider, used for subsequent refresh attempts.
+//   - providerURL: The base URL of bogged OIDC provider, used for subsequent refresh attempts.
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
+	// No defer ticker.Stop() here, it's stopped in the select case
 
-	for range ticker.C {
-		t.logger.Debug("Refreshing OIDC metadata")
-		metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
-		if err != nil {
-			t.logger.Errorf("Failed to refresh metadata: %v", err)
-			continue
-		}
+	for {
+		select {
+		case <-ticker.C:
+			t.logger.Debug("Refreshing OIDC metadata")
+			metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+			if err != nil {
+				t.logger.Errorf("Failed to refresh metadata: %v", err)
+				continue
+			}
 
-		if metadata != nil {
-			t.updateMetadataEndpoints(metadata)
-			t.logger.Debug("Successfully refreshed metadata")
-		} else {
-			t.logger.Error("Received nil metadata during refresh")
+			if metadata != nil {
+				t.updateMetadataEndpoints(metadata)
+				t.logger.Debug("Successfully refreshed metadata")
+			} else {
+				t.logger.Error("Received nil metadata during refresh")
+			}
+		case <-t.metadataRefreshStopChan:
+			ticker.Stop()
+			t.logger.Debug("Metadata refresh goroutine stopped.")
+			return
 		}
 	}
 }
@@ -1541,17 +1552,34 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 }
 
 // startTokenCleanup starts background goroutines for periodically cleaning up
-// the token cache, token blacklist cache, and JWK cache using the autoCleanupRoutine helper.
+// the token cache, token blacklist cache, and JWK cache.
 func (t *TraefikOidc) startTokenCleanup() {
 	ticker := time.NewTicker(1 * time.Minute) // Run cleanup every minute
 	go func() {
-		defer ticker.Stop()
-		for range ticker.C {
-			t.logger.Debug("Starting token cleanup cycle")
-			t.tokenCache.Cleanup()
-			// t.tokenBlacklist.Cleanup() // Removed: Generic Cache handles its own cleanup
-			t.jwkCache.Cleanup() // Assuming jwkCache is the cache from cache.go
-			// Removed runtime.GC() call
+		// No defer ticker.Stop() here, it's stopped in the select case
+		for {
+			select {
+			case <-ticker.C:
+				t.logger.Debug("Starting token cleanup cycle")
+				if t.tokenCache != nil {
+					t.tokenCache.Cleanup()
+				}
+				// t.tokenBlacklist is a *Cache, its autoCleanupRoutine handles its own cleanup
+				// if t.tokenBlacklist != nil {
+				// t.tokenBlacklist.Cleanup()
+				// }
+				if t.jwkCache != nil {
+					// Assuming jwkCache is the cache from cache.go which has a Cleanup method
+					// If jwkCache is *cache.Cache, its autoCleanupRoutine handles its own cleanup
+					// If it's JWKCacheInterface, it needs a Cleanup method.
+					// Based on New(), t.jwkCache = &JWKCache{}, which has a Cleanup method.
+					t.jwkCache.Cleanup()
+				}
+			case <-t.tokenCleanupStopChan:
+				ticker.Stop()
+				t.logger.Debug("Token cleanup goroutine stopped.")
+				return
+			}
 		}
 	}()
 }
@@ -1984,4 +2012,46 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(code)
 	_, _ = rw.Write([]byte(htmlBody)) // Ignore write error as header is already sent
+}
+
+// Close stops all background goroutines and closes resources.
+func (t *TraefikOidc) Close() error {
+	t.logger.Debug("Closing TraefikOidc plugin instance")
+	// Signal and close tokenCleanupStopChan
+	if t.tokenCleanupStopChan != nil {
+		close(t.tokenCleanupStopChan)
+		t.logger.Debug("tokenCleanupStopChan closed")
+	}
+	// Signal and close metadataRefreshStopChan
+	if t.metadataRefreshStopChan != nil {
+		close(t.metadataRefreshStopChan)
+		t.logger.Debug("metadataRefreshStopChan closed")
+	}
+
+	// Close caches
+	// These Close methods should stop their respective autoCleanupRoutine goroutines
+	if t.tokenBlacklist != nil {
+		t.tokenBlacklist.Close() // This is *cache.Cache, which has Close()
+		t.logger.Debug("tokenBlacklist closed")
+	}
+	if t.metadataCache != nil {
+		t.metadataCache.Close() // This is *MetadataCache, which has Close()
+		t.logger.Debug("metadataCache closed")
+	}
+	if t.tokenCache != nil {
+		t.tokenCache.Close() // This is *TokenCache, which now has Close()
+		t.logger.Debug("tokenCache closed")
+	}
+
+	if t.jwkCache != nil {
+		// Reverting to the original explicit instruction to call t.jwkCache.Close().
+		// This will cause a compile error if JWKCacheInterface (and its implementation *JWKCache)
+		// is not updated in jwk.go to include and implement a Close() method
+		// that properly closes the internal *cache.Cache instance.
+		t.jwkCache.Close()
+		t.logger.Debug("t.jwkCache.Close() called as per original instruction.")
+	}
+
+	t.logger.Info("TraefikOidc plugin instance closed successfully.")
+	return nil
 }

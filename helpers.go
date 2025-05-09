@@ -278,6 +278,11 @@ func (tc *TokenCache) Cleanup() {
 	tc.cache.Cleanup()
 }
 
+// Close stops the cleanup goroutine in the underlying cache.
+func (tc *TokenCache) Close() {
+	tc.cache.Close()
+}
+
 // exchangeCodeForToken is a convenience function that wraps exchangeTokens specifically
 // for the "authorization_code" grant type. It handles the conditional inclusion of the
 // PKCE code verifier based on the middleware's configuration (t.enablePKCE).

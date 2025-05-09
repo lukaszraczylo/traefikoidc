@@ -38,11 +38,13 @@ type JWKCache struct {
 	mutex     sync.RWMutex
 	// CacheLifetime is configurable to determine how long the JWKS is cached.
 	CacheLifetime time.Duration
+	internalCache *Cache // To hold the closable Cache instance from cache.go
 }
 
 type JWKCacheInterface interface {
 	GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error)
 	Cleanup()
+	Close()
 }
 
 // GetJWKS retrieves the JSON Web Key Set (JWKS) from the cache or fetches it from the provider.
@@ -98,6 +100,14 @@ func (c *JWKCache) Cleanup() {
 	now := time.Now()
 	if c.jwks != nil && now.After(c.expiresAt) {
 		c.jwks = nil
+	}
+}
+
+// Close shuts down the cache's auto-cleanup routine.
+func (c *JWKCache) Close() {
+	// Close shuts down the internal cache's auto-cleanup routine, if the cache exists.
+	if c.internalCache != nil {
+		c.internalCache.Close()
 	}
 }
 

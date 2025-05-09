@@ -149,6 +149,11 @@ type MockJWKCache struct {
 	Err  error
 }
 
+// Close is a no-op for the mock.
+func (m *MockJWKCache) Close() {
+	// No operation needed for the mock.
+}
+
 func (m *MockJWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	return m.JWKS, m.Err
 }
