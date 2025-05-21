@@ -202,6 +202,20 @@ func TestConfigValidate(t *testing.T) {
 			},
 			expectedError: "",
 		},
+		{
+			name: "Valid Config With AllowedUsers",
+			config: &Config{
+				ProviderURL:          "https://provider.com",
+				CallbackURL:          "/callback",
+				ClientID:             "client-id",
+				ClientSecret:         "client-secret",
+				SessionEncryptionKey: "this-is-a-long-enough-encryption-key",
+				LogLevel:             "debug",
+				RateLimit:            100,
+				AllowedUsers:         []string{"user1@example.com", "user2@example.com"},
+			},
+			expectedError: "",
+		},
 	}
 
 	for _, tc := range tests {

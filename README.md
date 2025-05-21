@@ -73,6 +73,7 @@ The middleware supports the following configuration options:
 | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
 | `excludedURLs` | Lists paths that bypass authentication | none | `["/health", "/metrics", "/public"]` |
 | `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
+| `allowedUsers` | A list of specific email addresses that are allowed access | none | `["user1@example.com", "user2@another.org"]` |
 | `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
 | `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |
 | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
@@ -158,6 +159,67 @@ spec:
         - company.com
         - subsidiary.com
 ```
+
+### With Specific User Access
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-specific-users
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: 1234567890.apps.googleusercontent.com
+      clientSecret: your-client-secret
+      sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - openid
+        - email
+        - profile
+      allowedUsers:
+        - user1@example.com
+        - user2@another.org
+```
+
+### With Both Domain and Specific User Access
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-domain-and-users
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: 1234567890.apps.googleusercontent.com
+      clientSecret: your-client-secret
+      sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - openid
+        - email
+        - profile
+      allowedUserDomains:
+        - company.com
+      allowedUsers:
+        - special-user@gmail.com
+        - contractor@external.org
+```
+
+When configuring access control:
+- If only `allowedUsers` is set, only the specified email addresses will be granted access
+- If only `allowedUserDomains` is set, only users with email addresses from those domains will be granted access
+- If both are set, access is granted if the user's email is in `allowedUsers` OR their email's domain is in `allowedUserDomains`
+- If neither is set, any authenticated user will be granted access
+- Email matching is case-insensitive
 
 ### With Role-Based Access Control
 
@@ -452,6 +514,9 @@ http:
             - profile
           allowedUserDomains:
             - company.com
+          allowedUsers:
+            - special-user@gmail.com
+            - contractor@external.org
           allowedRolesAndGroups:
             - admin
             - developer

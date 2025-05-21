@@ -1210,30 +1210,79 @@ func TestIsAllowedDomain(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name    string
-		email   string
-		allowed bool
+		name              string
+		email             string
+		allowedDomains    map[string]struct{}
+		allowedUsers      map[string]struct{}
+		allowed           bool
+		expectedLogOutput string // For testing log messages
 	}{
 		{
-			name:    "Allowed domain",
-			email:   "user@example.com",
-			allowed: true,
+			name:           "Allowed domain",
+			email:          "user@example.com",
+			allowedDomains: map[string]struct{}{"example.com": {}},
+			allowedUsers:   map[string]struct{}{},
+			allowed:        true,
 		},
 		{
-			name:    "Disallowed domain",
-			email:   "user@notallowed.com",
-			allowed: false,
+			name:           "Disallowed domain",
+			email:          "user@notallowed.com",
+			allowedDomains: map[string]struct{}{"example.com": {}},
+			allowedUsers:   map[string]struct{}{},
+			allowed:        false,
 		},
 		{
-			name:    "Invalid email",
-			email:   "invalid-email",
-			allowed: false,
+			name:           "Invalid email",
+			email:          "invalid-email",
+			allowedDomains: map[string]struct{}{"example.com": {}},
+			allowedUsers:   map[string]struct{}{},
+			allowed:        false,
+		},
+		{
+			name:           "Specific user is allowed regardless of domain",
+			email:          "specific.user@otherdomain.com",
+			allowedDomains: map[string]struct{}{"example.com": {}},
+			allowedUsers:   map[string]struct{}{"specific.user@otherdomain.com": {}},
+			allowed:        true,
+		},
+		{
+			name:           "Case-insensitive email matching for specific user",
+			email:          "Specific.User@otherdomain.com", // Mixed case
+			allowedDomains: map[string]struct{}{"example.com": {}},
+			allowedUsers:   map[string]struct{}{"specific.user@otherdomain.com": {}}, // Lowercase
+			allowed:        true,
+		},
+		{
+			name:           "Only allowed users configured (no domains)",
+			email:          "specific.user@otherdomain.com",
+			allowedDomains: map[string]struct{}{}, // Empty allowed domains
+			allowedUsers:   map[string]struct{}{"specific.user@otherdomain.com": {}},
+			allowed:        true,
+		},
+		{
+			name:           "User not in allowed list when only specific users configured",
+			email:          "other.user@otherdomain.com",
+			allowedDomains: map[string]struct{}{}, // Empty allowed domains
+			allowedUsers:   map[string]struct{}{"specific.user@otherdomain.com": {}},
+			allowed:        false,
+		},
+		{
+			name:           "No restrictions (both empty)",
+			email:          "anyone@anydomain.com",
+			allowedDomains: map[string]struct{}{},
+			allowedUsers:   map[string]struct{}{},
+			allowed:        true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			allowed := ts.tOidc.isAllowedDomain(tc.email)
+			// Configure TraefikOidc instance for this test case
+			tOidc := ts.tOidc
+			tOidc.allowedUserDomains = tc.allowedDomains
+			tOidc.allowedUsers = tc.allowedUsers
+
+			allowed := tOidc.isAllowedDomain(tc.email)
 			if allowed != tc.allowed {
 				t.Errorf("Expected allowed=%v, got %v", tc.allowed, allowed)
 			}

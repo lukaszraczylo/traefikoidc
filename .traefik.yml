@@ -45,6 +45,10 @@ testData:
     - company.com
     - subsidiary.com
 
+  allowedUsers: # Restricts access to specific email addresses regardless of domain
+    - specific-user@company.com
+    - another-user@gmail.com
+
   allowedRolesAndGroups: # Restricts access to users with specific roles or groups (if not provided, no role/group restrictions)
     - guest-endpoints
     - admin
@@ -211,6 +215,21 @@ configuration:
       for authentication decisions.
 
       Examples: ["company.com", "subsidiary.com"]
+    required: false
+    items:
+      type: string
+
+  allowedUsers:
+    type: array
+    description: |
+      Restricts access to specific email addresses.
+      If provided, only users with these exact email addresses will be allowed access,
+      in addition to any domain-level restrictions set by allowedUserDomains.
+      
+      This provides fine-grained control over individual access and can be used
+      together with allowedUserDomains for flexible access control strategies.
+
+      Examples: ["user1@example.com", "admin@company.com"]
     required: false
     items:
       type: string

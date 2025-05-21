@@ -110,6 +110,7 @@ type TraefikOidc struct {
 	jwtVerifier                JWTVerifier
 	excludedURLs               map[string]struct{}
 	allowedUserDomains         map[string]struct{}
+	allowedUsers               map[string]struct{} // Map for case-insensitive lookup of allowed email addresses
 	allowedRolesAndGroups      map[string]struct{}
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
 	// exchangeCodeForTokenFunc   func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) // Replaced by interface
@@ -404,6 +405,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		httpClient:            httpClient,
 		excludedURLs:          createStringMap(config.ExcludedURLs),
 		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
+		allowedUsers:          createCaseInsensitiveStringMap(config.AllowedUsers),
 		allowedRolesAndGroups: createStringMap(config.AllowedRolesAndGroups),
 		initComplete:          make(chan struct{}),
 		logger:                logger,
@@ -1806,39 +1808,62 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	return true
 }
 
-// isAllowedDomain checks if the domain part of the provided email address is present
-// in the configured list of allowed domains (t.allowedUserDomains).
-// If the allowed domains list is empty, all domains are considered allowed.
+// isAllowedDomain checks if the provided email address is authorized based on combined
+// checks against the allowed users list and the allowed domains list.
+//
+// Authorization rules:
+// - If both allowedUsers and allowedUserDomains are empty, any user with a valid OIDC session is authorized.
+// - If allowedUsers is not empty, a user is authorized if their email address is present in the allowedUsers list.
+// - If allowedUserDomains is not empty, a user is authorized if their email's domain is present in the allowedUserDomains list.
+// - If both allowedUsers and allowedUserDomains are configured, a user is authorized if either condition is met.
 //
 // Parameters:
 //   - email: The email address to check.
 //
 // Returns:
-//   - true if the domain is allowed or if no domain restrictions are configured.
-//   - false if the email format is invalid or the domain is not in the allowed list.
+//   - true if the user is authorized based on the rules above.
+//   - false if the user is not authorized or if the email format is invalid.
 func (t *TraefikOidc) isAllowedDomain(email string) bool {
-	if len(t.allowedUserDomains) == 0 {
-		return true // If no domains are specified, all are allowed
+	// If both lists are empty, all users are allowed
+	if len(t.allowedUserDomains) == 0 && len(t.allowedUsers) == 0 {
+		return true
 	}
 
-	parts := strings.Split(email, "@")
-	if len(parts) != 2 {
-		t.logger.Errorf("Invalid email format encountered: %s", email)
-		return false // Invalid email format
+	// Check for specific user email (case-insensitive)
+	if len(t.allowedUsers) > 0 {
+		_, userAllowed := t.allowedUsers[strings.ToLower(email)]
+		if userAllowed {
+			t.logger.Debugf("Email %s is explicitly allowed in allowedUsers", email)
+			return true
+		}
 	}
 
-	domain := parts[1]
-	_, ok := t.allowedUserDomains[domain]
+	// Check domain if there are domain restrictions
+	if len(t.allowedUserDomains) > 0 {
+		parts := strings.Split(email, "@")
+		if len(parts) != 2 {
+			t.logger.Errorf("Invalid email format encountered: %s", email)
+			return false // Invalid email format
+		}
 
-	// Add explicit logging for better debugging
-	if ok {
-		t.logger.Debugf("Email domain %s is allowed", domain)
-	} else {
-		t.logger.Debugf("Email domain %s is NOT allowed. Allowed domains: %v",
-			domain, keysFromMap(t.allowedUserDomains))
+		domain := parts[1]
+		_, domainAllowed := t.allowedUserDomains[domain]
+
+		if domainAllowed {
+			t.logger.Debugf("Email domain %s is allowed", domain)
+			return true
+		} else {
+			t.logger.Debugf("Email domain %s is NOT allowed. Allowed domains: %v",
+				domain, keysFromMap(t.allowedUserDomains))
+		}
+	} else if len(t.allowedUsers) > 0 {
+		// If only specific users are allowed (no domains), and email wasn't in the list
+		t.logger.Debugf("Email %s is not in the allowed users list: %v",
+			email, keysFromMap(t.allowedUsers))
 	}
 
-	return ok
+	// If we reach here, the user is not authorized
+	return false
 }
 
 // Helper function to get keys from a map for logging
@@ -1848,6 +1873,16 @@ func keysFromMap(m map[string]struct{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// createCaseInsensitiveStringMap creates a map from a slice of strings where keys are lowercase
+// for case-insensitive matching of email addresses
+func createCaseInsensitiveStringMap(items []string) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, item := range items {
+		result[strings.ToLower(item)] = struct{}{}
+	}
+	return result
 }
 
 // extractGroupsAndRoles attempts to extract 'groups' and 'roles' claims from a decoded ID token.

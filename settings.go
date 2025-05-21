@@ -82,6 +82,10 @@ type Config struct {
 	// Example: ["company.com", "subsidiary.com"]
 	AllowedUserDomains []string `json:"allowedUserDomains"`
 
+	// AllowedUsers restricts access to specific email addresses (optional)
+	// Example: ["user1@example.com", "user2@example.com"]
+	AllowedUsers []string `json:"allowedUsers"`
+
 	// AllowedRolesAndGroups restricts access to users with specific roles or groups (optional)
 	// Example: ["admin", "developer"]
 	AllowedRolesAndGroups []string `json:"allowedRolesAndGroups"`
