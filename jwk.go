@@ -39,6 +39,7 @@ type JWKCache struct {
 	// CacheLifetime is configurable to determine how long the JWKS is cached.
 	CacheLifetime time.Duration
 	internalCache *Cache // To hold the closable Cache instance from cache.go
+	maxSize       int    // Maximum number of items in the cache
 }
 
 type JWKCacheInterface interface {
@@ -62,7 +63,23 @@ type JWKCacheInterface interface {
 // Returns:
 //   - A pointer to the JWKSet containing the keys.
 //   - An error if fetching fails or the response cannot be decoded.
+func NewJWKCache() *JWKCache {
+	cache := &JWKCache{
+		CacheLifetime: 1 * time.Hour,
+		maxSize:       100, // Default maximum size
+		internalCache: NewCache(),
+	}
+	return cache
+}
+
 func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error) {
+	// First check if we already have cached JWKS for this URL
+	if c.internalCache != nil {
+		if cachedJwks, found := c.internalCache.Get(jwksURL); found {
+			return cachedJwks.(*JWKSet), nil
+		}
+	}
+
 	c.mutex.RLock()
 	if c.jwks != nil && time.Now().Before(c.expiresAt) {
 		defer c.mutex.RUnlock()
@@ -88,6 +105,11 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 	}
 	c.expiresAt = time.Now().Add(lifetime)
 
+	// Also store in the internalCache
+	if c.internalCache != nil {
+		c.internalCache.Set(jwksURL, jwks, lifetime)
+	}
+
 	return jwks, nil
 }
 
@@ -108,6 +130,14 @@ func (c *JWKCache) Close() {
 	// Close shuts down the internal cache's auto-cleanup routine, if the cache exists.
 	if c.internalCache != nil {
 		c.internalCache.Close()
+	}
+}
+
+// SetMaxSize sets the maximum number of items in the cache
+func (c *JWKCache) SetMaxSize(size int) {
+	c.maxSize = size
+	if c.internalCache != nil {
+		c.internalCache.maxSize = size
 	}
 }
 

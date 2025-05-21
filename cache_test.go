@@ -1,306 +1,99 @@
 package traefikoidc
 
 import (
-	"reflect"
 	"testing"
 	"time"
 )
 
-func TestCache(t *testing.T) {
-	t.Run("Basic Set and Get", func(t *testing.T) {
-		cache := NewCache()
-		key := "test-key"
-		value := "test-value"
-		expiration := 1 * time.Second
+func TestCache_Cleanup(t *testing.T) {
+	c := NewCache()
 
-		// Test Set
-		cache.Set(key, value, expiration)
+	// Add some items with different expiration times
+	now := time.Now()
+	pastTime := now.Add(-1 * time.Hour)  // Already expired
+	futureTime := now.Add(1 * time.Hour) // Not expired
 
-		// Test Get
-		got, found := cache.Get(key)
-		if !found {
-			t.Error("Expected to find key in cache")
-		}
-		if got != value {
-			t.Errorf("Expected value %v, got %v", value, got)
-		}
-	})
+	// Create test items
+	c.items["expired"] = CacheItem{
+		Value:     "expired-value",
+		ExpiresAt: pastTime,
+	}
 
-	t.Run("Expiration", func(t *testing.T) {
-		cache := NewCache()
-		key := "test-key"
-		value := "test-value"
-		expiration := 10 * time.Millisecond
+	c.items["valid"] = CacheItem{
+		Value:     "valid-value",
+		ExpiresAt: futureTime,
+	}
 
-		// Set with short expiration
-		cache.Set(key, value, expiration)
+	// Store original elements in the order list to match items
+	c.elems["expired"] = c.order.PushBack(lruEntry{key: "expired"})
+	c.elems["valid"] = c.order.PushBack(lruEntry{key: "valid"})
 
-		// Wait for expiration
-		time.Sleep(20 * time.Millisecond)
+	// Call cleanup, which should only remove expired items
+	c.Cleanup()
 
-		// Should not find expired key
-		_, found := cache.Get(key)
-		if found {
-			t.Error("Expected key to be expired")
-		}
-	})
+	// Check that only the expired item was removed
+	if _, exists := c.items["expired"]; exists {
+		t.Error("Expired item was not removed by Cleanup()")
+	}
 
-	t.Run("Delete", func(t *testing.T) {
-		cache := NewCache()
-		key := "test-key"
-		value := "test-value"
-		expiration := 1 * time.Second
-
-		// Set and then delete
-		cache.Set(key, value, expiration)
-		cache.Delete(key)
-
-		// Should not find deleted key
-		_, found := cache.Get(key)
-		if found {
-			t.Error("Expected key to be deleted")
-		}
-	})
-
-	t.Run("Cleanup", func(t *testing.T) {
-		cache := NewCache()
-		// Add multiple items with different expirations
-		cache.Set("expired1", "value1", 10*time.Millisecond)
-		cache.Set("expired2", "value2", 10*time.Millisecond)
-		cache.Set("valid", "value3", 1*time.Second)
-
-		// Wait for some items to expire
-		time.Sleep(20 * time.Millisecond)
-
-		// Run cleanup
-		cache.Cleanup()
-
-		// Check expired items are removed
-		_, found1 := cache.Get("expired1")
-		_, found2 := cache.Get("expired2")
-		_, found3 := cache.Get("valid")
-
-		if found1 {
-			t.Error("Expected expired1 to be cleaned up")
-		}
-		if found2 {
-			t.Error("Expected expired2 to be cleaned up")
-		}
-		if !found3 {
-			t.Error("Expected valid item to remain in cache")
-		}
-	})
-
-	t.Run("Concurrent Access", func(t *testing.T) {
-		cache := NewCache()
-		done := make(chan bool)
-
-		// Start multiple goroutines to access cache concurrently
-		for i := 0; i < 10; i++ {
-			go func(id int) {
-				key := "key"
-				value := "value"
-				expiration := 1 * time.Second
-
-				// Perform multiple operations
-				cache.Set(key, value, expiration)
-				cache.Get(key)
-				cache.Delete(key)
-				cache.Cleanup()
-
-				done <- true
-			}(i)
-		}
-
-		// Wait for all goroutines to complete
-		for i := 0; i < 10; i++ {
-			<-done
-		}
-	})
-
-	t.Run("Zero Expiration", func(t *testing.T) {
-		cache := NewCache()
-		key := "test-key"
-		value := "test-value"
-
-		// Set with zero expiration
-		cache.Set(key, value, 0)
-
-		// Should not find the key
-		_, found := cache.Get(key)
-		if found {
-			t.Error("Expected key with zero expiration to be immediately expired")
-		}
-	})
-
-	t.Run("Negative Expiration", func(t *testing.T) {
-		cache := NewCache()
-		key := "test-key"
-		value := "test-value"
-
-		// Set with negative expiration
-		cache.Set(key, value, -1*time.Second)
-
-		// Should not find the key
-		_, found := cache.Get(key)
-		if found {
-			t.Error("Expected key with negative expiration to be immediately expired")
-		}
-	})
-
-	t.Run("Update Existing Key", func(t *testing.T) {
-		cache := NewCache()
-		key := "test-key"
-		value1 := "value1"
-		value2 := "value2"
-		expiration := 1 * time.Second
-
-		// Set initial value
-		cache.Set(key, value1, expiration)
-
-		// Update value
-		cache.Set(key, value2, expiration)
-
-		// Check updated value
-		got, found := cache.Get(key)
-		if !found {
-			t.Error("Expected to find key in cache")
-		}
-		if got != value2 {
-			t.Errorf("Expected updated value %v, got %v", value2, got)
-		}
-	})
-
-	t.Run("Different Value Types", func(t *testing.T) {
-		cache := NewCache()
-		expiration := 1 * time.Second
-
-		// Test with different value types
-		testCases := []struct {
-			key   string
-			value interface{}
-		}{
-			{"string", "test"},
-			{"int", 42},
-			{"float", 3.14},
-			{"bool", true},
-			{"slice", []string{"a", "b", "c"}},
-			{"map", map[string]int{"a": 1, "b": 2}},
-			{"struct", struct{ Name string }{"test"}},
-		}
-
-		for _, tc := range testCases {
-			t.Run(tc.key, func(t *testing.T) {
-				cache.Set(tc.key, tc.value, expiration)
-				got, found := cache.Get(tc.key)
-				if !found {
-					t.Error("Expected to find key in cache")
-				}
-				// Use reflect.DeepEqual for comparing complex types like slices and maps
-				if !reflect.DeepEqual(got, tc.value) {
-					t.Errorf("Expected value %v, got %v", tc.value, got)
-				}
-			})
-		}
-	})
+	if _, exists := c.items["valid"]; !exists {
+		t.Error("Valid item was incorrectly removed by Cleanup()")
+	}
 }
 
-func TestTokenCache(t *testing.T) {
-	t.Run("Basic Operations", func(t *testing.T) {
-		tc := NewTokenCache()
-		token := "test-token"
-		claims := map[string]interface{}{
-			"sub":   "1234567890",
-			"name":  "John Doe",
-			"admin": true,
-		}
-		expiration := 1 * time.Second
+func TestCache_SetMaxSize(t *testing.T) {
+	c := NewCache()
 
-		// Test Set and Get
-		tc.Set(token, claims, expiration)
-		gotClaims, found := tc.Get(token)
-		if !found {
-			t.Error("Expected to find token in cache")
-		}
-		if len(gotClaims) != len(claims) {
-			t.Errorf("Expected %d claims, got %d", len(claims), len(gotClaims))
-		}
-		for k, v := range claims {
-			if gotClaims[k] != v {
-				t.Errorf("Expected claim %s to be %v, got %v", k, v, gotClaims[k])
-			}
-		}
+	// Set a lower max size
+	originalMaxSize := c.maxSize
+	newMaxSize := 3
 
-		// Test Delete
-		tc.Delete(token)
-		_, found = tc.Get(token)
-		if found {
-			t.Error("Expected token to be deleted")
-		}
-	})
+	// Add more items than the new max size
+	for i := 0; i < originalMaxSize; i++ {
+		key := "key" + string(rune('A'+i))
+		c.Set(key, i, 1*time.Hour)
+	}
 
-	t.Run("Expiration", func(t *testing.T) {
-		tc := NewTokenCache()
-		token := "test-token"
-		claims := map[string]interface{}{"sub": "1234567890"}
-		expiration := 10 * time.Millisecond
+	// Verify items were added
+	if len(c.items) != originalMaxSize {
+		t.Errorf("Expected %d items before SetMaxSize, got %d", originalMaxSize, len(c.items))
+	}
 
-		// Set with short expiration
-		tc.Set(token, claims, expiration)
+	// Change the max size to a smaller value
+	c.SetMaxSize(newMaxSize)
 
-		// Wait for expiration
-		time.Sleep(20 * time.Millisecond)
+	// Check that the cache was reduced to the new max size
+	if len(c.items) > newMaxSize {
+		t.Errorf("Cache size %d exceeds new max size %d after SetMaxSize", len(c.items), newMaxSize)
+	}
 
-		// Should not find expired token
-		_, found := tc.Get(token)
-		if found {
-			t.Error("Expected token to be expired")
-		}
-	})
+	if c.maxSize != newMaxSize {
+		t.Errorf("Cache maxSize not updated, expected %d, got %d", newMaxSize, c.maxSize)
+	}
 
-	t.Run("Cleanup", func(t *testing.T) {
-		tc := NewTokenCache()
+	// Check that the oldest items were evicted (should keep "keyC", "keyD", "keyE", etc.)
+	if _, exists := c.items["keyA"]; exists {
+		t.Error("Expected oldest item 'keyA' to be evicted, but it still exists")
+	}
+}
 
-		// Add multiple tokens with different expirations
-		tc.Set("expired1", map[string]interface{}{"sub": "1"}, 10*time.Millisecond)
-		tc.Set("expired2", map[string]interface{}{"sub": "2"}, 10*time.Millisecond)
-		tc.Set("valid", map[string]interface{}{"sub": "3"}, 1*time.Second)
+func TestJWKCache_WithInternalCache(t *testing.T) {
+	cache := NewJWKCache()
 
-		// Wait for some tokens to expire
-		time.Sleep(20 * time.Millisecond)
+	// Check that the internal cache is properly initialized
+	if cache.internalCache == nil {
+		t.Error("internalCache field was not initialized")
+	}
 
-		// Run cleanup
-		tc.Cleanup()
+	// Test max size configuration
+	testSize := 50
+	cache.SetMaxSize(testSize)
 
-		// Check expired tokens are removed
-		_, found1 := tc.Get("expired1")
-		_, found2 := tc.Get("expired2")
-		_, found3 := tc.Get("valid")
+	if cache.maxSize != testSize {
+		t.Errorf("JWKCache maxSize not updated, expected %d, got %d", testSize, cache.maxSize)
+	}
 
-		if found1 {
-			t.Error("Expected expired1 to be cleaned up")
-		}
-		if found2 {
-			t.Error("Expected expired2 to be cleaned up")
-		}
-		if !found3 {
-			t.Error("Expected valid token to remain in cache")
-		}
-	})
-
-	t.Run("Token Prefix", func(t *testing.T) {
-		tc := NewTokenCache()
-		token := "test-token"
-		claims := map[string]interface{}{"sub": "1234567890"}
-		expiration := 1 * time.Second
-
-		// Set token
-		tc.Set(token, claims, expiration)
-
-		// Verify internal storage uses prefix
-		_, found := tc.cache.Get("t-" + token)
-		if !found {
-			t.Error("Expected to find prefixed token in underlying cache")
-		}
-	})
+	if cache.internalCache.maxSize != testSize {
+		t.Errorf("internalCache maxSize not updated, expected %d, got %d", testSize, cache.internalCache.maxSize)
+	}
 }

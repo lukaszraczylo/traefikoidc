@@ -62,6 +62,7 @@ func createDefaultHTTPClient() *http.Client {
 const (
 	ConstSessionTimeout      = 86400          // Session timeout in seconds
 	defaultBlacklistDuration = 24 * time.Hour // Default duration to blacklist a JTI
+	defaultMaxBlacklistSize  = 10000          // Default maximum size for token blacklist cache
 )
 
 // TokenVerifier interface for token verification
@@ -386,7 +387,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			}
 			return config.PostLogoutRedirectURI
 		}(),
-		tokenBlacklist:        NewCache(), // Use generic cache for blacklist
+		tokenBlacklist: func() *Cache {
+			c := NewCache()
+			c.SetMaxSize(defaultMaxBlacklistSize)
+			return c
+		}(), // Use generic cache for blacklist with size limit
 		jwkCache:              &JWKCache{},
 		metadataCache:         NewMetadataCache(),
 		clientID:              config.ClientID,

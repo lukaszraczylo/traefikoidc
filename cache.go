@@ -149,8 +149,8 @@ func (c *Cache) Cleanup() {
 
 	now := time.Now()
 	for key, item := range c.items {
-		// Remove items that are expired or within 10% of expiration
-		if now.After(item.ExpiresAt) || now.Add(time.Duration(float64(item.ExpiresAt.Sub(now))*0.1)).After(item.ExpiresAt) {
+		// Remove items that are expired
+		if now.After(item.ExpiresAt) {
 			c.removeItem(key)
 		}
 	}
@@ -181,6 +181,25 @@ func (c *Cache) evictOldest() {
 	if elem = c.order.Front(); elem != nil {
 		entry := elem.Value.(lruEntry)
 		c.removeItem(entry.key)
+	}
+}
+
+// SetMaxSize changes the maximum number of items the cache can hold.
+// If the new size is smaller than the current number of items in the cache,
+// oldest items will be evicted until the cache size is within the new limit.
+func (c *Cache) SetMaxSize(size int) {
+	if size <= 0 {
+		return // Invalid size, ignore
+	}
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.maxSize = size
+
+	// If cache exceeds the new max size, evict oldest items
+	for len(c.items) > c.maxSize {
+		c.evictOldest()
 	}
 }
 
