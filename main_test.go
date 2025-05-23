@@ -722,7 +722,8 @@ func TestServeHTTP(t *testing.T) {
 
 			// Reset the global replayCache to prevent "token replay detected" errors
 			replayCacheMu.Lock()
-			replayCache = make(map[string]time.Time) // Reset the global cache
+			replayCache = NewCache()
+			replayCache.SetMaxSize(10000)
 			replayCacheMu.Unlock()
 
 			// Store original tokenVerifier to restore later
@@ -734,7 +735,8 @@ func TestServeHTTP(t *testing.T) {
 				VerifyFunc: func(token string) error {
 					// Clear replay cache before token verification
 					replayCacheMu.Lock()
-					replayCache = make(map[string]time.Time)
+					replayCache = NewCache()
+					replayCache.SetMaxSize(10000)
 					replayCacheMu.Unlock()
 
 					// Call the original verifier's VerifyToken method
@@ -1143,7 +1145,8 @@ func TestHandleCallback(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Clear the global replay cache before each test run
 			replayCacheMu.Lock()
-			replayCache = make(map[string]time.Time) // Reset the global cache
+			replayCache = NewCache()
+			replayCache.SetMaxSize(10000)
 			replayCacheMu.Unlock()
 
 			// Explicitly clear the shared blacklist at the start of each sub-test

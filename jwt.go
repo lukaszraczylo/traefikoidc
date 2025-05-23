@@ -17,26 +17,14 @@ import (
 
 var (
 	replayCacheMu sync.Mutex
-	replayCache   = make(map[string]time.Time)
+	replayCache   *Cache // Replace unbounded map with bounded Cache
 )
 
-// cleanupReplayCache iterates through the replay cache and removes entries
-// whose expiration time is before the current time. This function should be
-// called periodically to prevent the cache from growing indefinitely.
-// It acquires a mutex to ensure thread safety during cleanup.
-// SECURITY FIX: Add proper locking protection for cleanupReplayCache
-func cleanupReplayCache() {
-	now := time.Now()
-	// SECURITY FIX: Use safe iteration with proper locking
-	toDelete := make([]string, 0)
-	for token, expiry := range replayCache {
-		if expiry.Before(now) {
-			toDelete = append(toDelete, token)
-		}
-	}
-	// Delete expired entries
-	for _, token := range toDelete {
-		delete(replayCache, token)
+// initReplayCache initializes the global replay cache with size limit
+func initReplayCache() {
+	if replayCache == nil {
+		replayCache = NewCache()
+		replayCache.SetMaxSize(10000) // Set size limit to 10,000 entries
 	}
 }
 
@@ -203,15 +191,15 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 			return nil
 		}
 
-		// SECURITY FIX: Implement thread-safe replay cache operations with proper locking
+		// SECURITY FIX: Use bounded Cache with thread-safe operations
 		replayCacheMu.Lock()
-		defer replayCacheMu.Unlock() // Ensure unlock happens even if panic occurs
+		defer replayCacheMu.Unlock()
 
-		// SECURITY FIX: Clean up expired entries safely
-		cleanupReplayCache()
+		// Initialize cache if not already done
+		initReplayCache()
 
-		// SECURITY FIX: Check for replay attack with atomic operation
-		if _, exists := replayCache[jti]; exists {
+		// SECURITY FIX: Check for replay attack using Cache API
+		if _, exists := replayCache.Get(jti); exists {
 			return fmt.Errorf("token replay detected")
 		}
 
@@ -224,8 +212,11 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 			expTime = time.Now().Add(10 * time.Minute)
 		}
 
-		// SECURITY FIX: Add to replay cache atomically
-		replayCache[jti] = expTime
+		// SECURITY FIX: Add to replay cache with expiration using Cache API
+		duration := time.Until(expTime)
+		if duration > 0 {
+			replayCache.Set(jti, true, duration)
+		}
 	}
 
 	sub, ok := claims["sub"].(string)

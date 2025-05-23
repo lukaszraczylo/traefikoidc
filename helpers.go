@@ -123,19 +123,24 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 		data.Set("refresh_token", codeOrToken)
 	}
 
-	// Create a cookie jar for this request to handle redirects with cookies
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{
-		Transport: t.httpClient.Transport,
-		Timeout:   t.httpClient.Timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// Always follow redirects for OIDC endpoints
-			if len(via) >= 50 {
-				return fmt.Errorf("stopped after 50 redirects")
-			}
-			return nil
-		},
-		Jar: jar,
+	// Use the reusable token HTTP client, fallback to creating one if not initialized
+	client := t.tokenHTTPClient
+	if client == nil {
+		// Fallback for tests or incomplete initialization - create a temporary client
+		// with the same behavior as the original implementation
+		jar, _ := cookiejar.New(nil)
+		client = &http.Client{
+			Transport: t.httpClient.Transport,
+			Timeout:   t.httpClient.Timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				// Always follow redirects for OIDC endpoints
+				if len(via) >= 50 {
+					return fmt.Errorf("stopped after 50 redirects")
+				}
+				return nil
+			},
+			Jar: jar,
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", t.tokenURL, strings.NewReader(data.Encode()))

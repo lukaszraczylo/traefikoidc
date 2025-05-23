@@ -36,6 +36,10 @@ type PerformanceMetrics struct {
 	// Resource metrics
 	memoryUsage    int64
 	goroutineCount int64
+	memoryPressure int64 // Memory pressure level (0-100)
+	gcPauseTime    int64 // Last GC pause time in nanoseconds
+	heapSize       int64 // Current heap size
+	heapInUse      int64 // Heap memory in use
 
 	// Error metrics (kept for backward compatibility)
 	verificationErrors int64
@@ -251,9 +255,36 @@ func (pm *PerformanceMetrics) collectSystemMetrics() {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	atomic.StoreInt64(&pm.memoryUsage, int64(m.Alloc))
+	atomic.StoreInt64(&pm.heapSize, int64(m.HeapSys))
+	atomic.StoreInt64(&pm.heapInUse, int64(m.HeapInuse))
+	atomic.StoreInt64(&pm.gcPauseTime, int64(m.PauseNs[(m.NumGC+255)%256]))
+
+	// Calculate memory pressure (0-100 scale)
+	// Based on heap utilization and GC frequency
+	heapUtilization := float64(m.HeapInuse) / float64(m.HeapSys)
+	gcFrequency := float64(m.NumGC) / time.Since(pm.startTime).Minutes()
+
+	// Memory pressure calculation
+	pressure := int64(heapUtilization * 50) // 0-50 based on heap utilization
+	if gcFrequency > 10 {                   // High GC frequency indicates pressure
+		pressure += int64((gcFrequency - 10) * 2) // Add up to 50 more
+	}
+	if pressure > 100 {
+		pressure = 100
+	}
+	atomic.StoreInt64(&pm.memoryPressure, pressure)
 
 	// Goroutine count
 	atomic.StoreInt64(&pm.goroutineCount, int64(runtime.NumGoroutine()))
+
+	// Log memory pressure warnings
+	if pressure > 80 {
+		pm.logger.Errorf("High memory pressure detected: %d%% (heap utilization: %.1f%%, GC frequency: %.1f/min)",
+			pressure, heapUtilization*100, gcFrequency)
+	} else if pressure > 60 {
+		pm.logger.Infof("Moderate memory pressure: %d%% (heap utilization: %.1f%%, GC frequency: %.1f/min)",
+			pressure, heapUtilization*100, gcFrequency)
+	}
 }
 
 // GetMetrics returns all current performance metrics
@@ -317,6 +348,10 @@ func (pm *PerformanceMetrics) GetMetrics() map[string]interface{} {
 
 		// Resource metrics
 		"memory_usage_bytes": atomic.LoadInt64(&pm.memoryUsage),
+		"memory_pressure":    atomic.LoadInt64(&pm.memoryPressure),
+		"heap_size_bytes":    atomic.LoadInt64(&pm.heapSize),
+		"heap_inuse_bytes":   atomic.LoadInt64(&pm.heapInUse),
+		"gc_pause_time_ns":   atomic.LoadInt64(&pm.gcPauseTime),
 		"goroutine_count":    atomic.LoadInt64(&pm.goroutineCount),
 
 		// Rate limiting metrics
@@ -414,6 +449,10 @@ type ResourceMonitor struct {
 	// Session limits
 	maxSessions int64
 
+	// Cache size tracking
+	cacheSizes map[string]int64
+	cacheMutex sync.RWMutex
+
 	// Monitoring state
 	alertThresholds map[string]float64
 	alerts          []ResourceAlert
@@ -441,11 +480,13 @@ func NewResourceMonitor(perfMetrics *PerformanceMetrics, logger *Logger) *Resour
 		maxMemoryBytes: 100 * 1024 * 1024, // 100MB default
 		maxCacheSize:   10000,             // 10k items default
 		maxSessions:    1000,              // 1k sessions default
+		cacheSizes:     make(map[string]int64),
 		alertThresholds: map[string]float64{
-			"memory_usage":  0.8,  // 80%
-			"cache_usage":   0.9,  // 90%
-			"session_usage": 0.85, // 85%
-			"error_rate":    0.1,  // 10%
+			"memory_usage":    0.8,  // 80%
+			"memory_pressure": 0.7,  // 70%
+			"cache_usage":     0.9,  // 90%
+			"session_usage":   0.85, // 85%
+			"error_rate":      0.1,  // 10%
 		},
 		alerts:      make([]ResourceAlert, 0),
 		perfMetrics: perfMetrics,
@@ -473,6 +514,25 @@ func (rm *ResourceMonitor) SetSessionLimit(count int64) {
 	rm.maxSessions = count
 }
 
+// UpdateCacheSize updates the size of a specific cache
+func (rm *ResourceMonitor) UpdateCacheSize(cacheName string, size int64) {
+	rm.cacheMutex.Lock()
+	defer rm.cacheMutex.Unlock()
+	rm.cacheSizes[cacheName] = size
+}
+
+// GetCacheSizes returns current cache sizes
+func (rm *ResourceMonitor) GetCacheSizes() map[string]int64 {
+	rm.cacheMutex.RLock()
+	defer rm.cacheMutex.RUnlock()
+
+	sizes := make(map[string]int64)
+	for name, size := range rm.cacheSizes {
+		sizes[name] = size
+	}
+	return sizes
+}
+
 // startMonitoring starts the background monitoring routine
 func (rm *ResourceMonitor) startMonitoring() {
 	ticker := time.NewTicker(10 * time.Second)
@@ -498,6 +558,21 @@ func (rm *ResourceMonitor) checkResourceUsage() {
 				CurrentValue: memUsageRatio,
 				Timestamp:    time.Now(),
 				Severity:     rm.getSeverity(memUsageRatio, rm.alertThresholds["memory_usage"]),
+			})
+		}
+	}
+
+	// Check memory pressure
+	if memPressure, ok := metrics["memory_pressure"].(int64); ok {
+		pressureRatio := float64(memPressure) / 100.0 // Convert to 0-1 scale
+		if pressureRatio > rm.alertThresholds["memory_pressure"] {
+			rm.addAlert(ResourceAlert{
+				Type:         "memory_pressure",
+				Message:      "Memory pressure exceeds threshold",
+				Threshold:    rm.alertThresholds["memory_pressure"],
+				CurrentValue: pressureRatio,
+				Timestamp:    time.Now(),
+				Severity:     rm.getSeverity(pressureRatio, rm.alertThresholds["memory_pressure"]),
 			})
 		}
 	}
@@ -592,6 +667,7 @@ func (rm *ResourceMonitor) GetAlerts() []ResourceAlert {
 // GetResourceStatus returns current resource status
 func (rm *ResourceMonitor) GetResourceStatus() map[string]interface{} {
 	metrics := rm.perfMetrics.GetMetrics()
+	cacheSizes := rm.GetCacheSizes()
 
 	status := map[string]interface{}{
 		"limits": map[string]interface{}{
@@ -599,8 +675,9 @@ func (rm *ResourceMonitor) GetResourceStatus() map[string]interface{} {
 			"max_cache_size":   rm.maxCacheSize,
 			"max_sessions":     rm.maxSessions,
 		},
-		"thresholds": rm.alertThresholds,
-		"current":    metrics,
+		"thresholds":  rm.alertThresholds,
+		"current":     metrics,
+		"cache_sizes": cacheSizes,
 		// Add expected keys for tests
 		"memory_limit":  uint64(rm.maxMemoryBytes),
 		"cache_limit":   int(rm.maxCacheSize),
@@ -611,12 +688,22 @@ func (rm *ResourceMonitor) GetResourceStatus() map[string]interface{} {
 	if memUsage, ok := metrics["memory_usage_bytes"].(int64); ok {
 		status["memory_usage_ratio"] = float64(memUsage) / float64(rm.maxMemoryBytes)
 	}
+	if memPressure, ok := metrics["memory_pressure"].(int64); ok {
+		status["memory_pressure_ratio"] = float64(memPressure) / 100.0
+	}
 	if cacheSize, ok := metrics["cache_size"].(int64); ok {
 		status["cache_usage_ratio"] = float64(cacheSize) / float64(rm.maxCacheSize)
 	}
 	if activeSessions, ok := metrics["active_sessions"].(int64); ok {
 		status["session_usage_ratio"] = float64(activeSessions) / float64(rm.maxSessions)
 	}
+
+	// Calculate total cache size across all caches
+	var totalCacheSize int64
+	for _, size := range cacheSizes {
+		totalCacheSize += size
+	}
+	status["total_cache_size"] = totalCacheSize
 
 	return status
 }

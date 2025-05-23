@@ -9,9 +9,11 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"runtime"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -56,6 +58,33 @@ func createDefaultHTTPClient() *http.Client {
 			}
 			return nil
 		},
+	}
+}
+
+// createTokenHTTPClient creates a specialized HTTP client for token operations.
+// It reuses the transport from the main HTTP client but adds cookie jar support
+// and optimized redirect handling for OIDC token endpoints.
+//
+// Parameters:
+//   - baseClient: The base HTTP client to derive transport settings from.
+//
+// Returns:
+//   - A pointer to the configured http.Client optimized for token operations.
+func createTokenHTTPClient(baseClient *http.Client) *http.Client {
+	// Create a cookie jar for handling redirects with cookies
+	jar, _ := cookiejar.New(nil)
+
+	return &http.Client{
+		Transport: baseClient.Transport, // Reuse the transport from base client
+		Timeout:   baseClient.Timeout,   // Reuse the timeout from base client
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Always follow redirects for OIDC endpoints
+			if len(via) >= 50 {
+				return fmt.Errorf("stopped after 50 redirects")
+			}
+			return nil
+		},
+		Jar: jar, // Add cookie jar for redirect handling
 	}
 }
 
@@ -105,6 +134,7 @@ type TraefikOidc struct {
 	scheme                     string
 	tokenCache                 *TokenCache
 	httpClient                 *http.Client
+	tokenHTTPClient            *http.Client // Reusable HTTP client for token operations
 	logger                     *Logger
 	tokenVerifier              TokenVerifier
 	jwtVerifier                JWTVerifier
@@ -124,6 +154,7 @@ type TraefikOidc struct {
 	headerTemplates         map[string]*template.Template // Parsed templates for custom headers
 	tokenCleanupStopChan    chan struct{}                 // Channel to stop token cleanup goroutine
 	metadataRefreshStopChan chan struct{}                 // Channel to stop metadata refresh goroutine
+	goroutineWG             sync.WaitGroup                // WaitGroup to track background goroutines
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -243,7 +274,14 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 
 		// Also update the global replayCache for backwards compatibility
 		replayCacheMu.Lock()
-		replayCache[jti] = expiry
+		// Initialize cache if not already done
+		if replayCache == nil {
+			initReplayCache()
+		}
+		duration := time.Until(expiry)
+		if duration > 0 {
+			replayCache.Set(jti, true, duration)
+		}
 		replayCacheMu.Unlock()
 	}
 
@@ -416,6 +454,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:            NewTokenCache(),
 		httpClient:            httpClient,
+		tokenHTTPClient:       createTokenHTTPClient(httpClient),
 		excludedURLs:          createStringMap(config.ExcludedURLs),
 		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
 		allowedUsers:          createCaseInsensitiveStringMap(config.AllowedUsers),
@@ -526,30 +565,34 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 //   - providerURL: The base URL of bogged OIDC provider, used for subsequent refresh attempts.
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	ticker := time.NewTicker(1 * time.Hour)
-	// No defer ticker.Stop() here, it's stopped in the select case
+	t.goroutineWG.Add(1) // Track this goroutine
 
-	for {
-		select {
-		case <-ticker.C:
-			t.logger.Debug("Refreshing OIDC metadata")
-			metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
-			if err != nil {
-				t.logger.Errorf("Failed to refresh metadata: %v", err)
-				continue
-			}
+	go func() {
+		defer t.goroutineWG.Done() // Signal completion when goroutine exits
+		defer ticker.Stop()        // Ensure ticker is always stopped
 
-			if metadata != nil {
-				t.updateMetadataEndpoints(metadata)
-				t.logger.Debug("Successfully refreshed metadata")
-			} else {
-				t.logger.Error("Received nil metadata during refresh")
+		for {
+			select {
+			case <-ticker.C:
+				t.logger.Debug("Refreshing OIDC metadata")
+				metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+				if err != nil {
+					t.logger.Errorf("Failed to refresh metadata: %v", err)
+					continue
+				}
+
+				if metadata != nil {
+					t.updateMetadataEndpoints(metadata)
+					t.logger.Debug("Successfully refreshed metadata")
+				} else {
+					t.logger.Error("Received nil metadata during refresh")
+				}
+			case <-t.metadataRefreshStopChan:
+				t.logger.Debug("Metadata refresh goroutine stopped.")
+				return
 			}
-		case <-t.metadataRefreshStopChan:
-			ticker.Stop()
-			t.logger.Debug("Metadata refresh goroutine stopped.")
-			return
 		}
-	}
+	}()
 }
 
 // discoverProviderMetadata attempts to fetch the OIDC provider's configuration from its
@@ -1720,8 +1763,11 @@ func (t *TraefikOidc) validateHost(host string) error {
 // the token cache, token blacklist cache, and JWK cache.
 func (t *TraefikOidc) startTokenCleanup() {
 	ticker := time.NewTicker(1 * time.Minute) // Run cleanup every minute
+	t.goroutineWG.Add(1)                      // Track this goroutine
 	go func() {
-		// No defer ticker.Stop() here, it's stopped in the select case
+		defer t.goroutineWG.Done() // Signal completion when goroutine exits
+		defer ticker.Stop()        // Ensure ticker is always stopped
+
 		for {
 			select {
 			case <-ticker.C:
@@ -1741,7 +1787,6 @@ func (t *TraefikOidc) startTokenCleanup() {
 					t.jwkCache.Cleanup()
 				}
 			case <-t.tokenCleanupStopChan:
-				ticker.Stop()
 				t.logger.Debug("Token cleanup goroutine stopped.")
 				return
 			}
@@ -2231,18 +2276,34 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 	_, _ = rw.Write([]byte(htmlBody)) // Ignore write error as header is already sent
 }
 
-// Close stops all background goroutines and closes resources.
+// Close stops all background goroutines and closes resources with proper timeout.
 func (t *TraefikOidc) Close() error {
 	t.logger.Debug("Closing TraefikOidc plugin instance")
-	// Signal and close tokenCleanupStopChan
+
+	// Signal all goroutines to stop
 	if t.tokenCleanupStopChan != nil {
 		close(t.tokenCleanupStopChan)
 		t.logger.Debug("tokenCleanupStopChan closed")
 	}
-	// Signal and close metadataRefreshStopChan
 	if t.metadataRefreshStopChan != nil {
 		close(t.metadataRefreshStopChan)
 		t.logger.Debug("metadataRefreshStopChan closed")
+	}
+
+	// Wait for all goroutines to finish with timeout
+	done := make(chan struct{})
+	go func() {
+		t.goroutineWG.Wait()
+		close(done)
+	}()
+
+	// Wait for goroutines to finish or timeout after 10 seconds
+	select {
+	case <-done:
+		t.logger.Debug("All background goroutines stopped gracefully")
+	case <-time.After(10 * time.Second):
+		t.logger.Errorf("Timeout waiting for background goroutines to stop")
+		// Continue with cleanup even if goroutines didn't stop gracefully
 	}
 
 	// Close caches

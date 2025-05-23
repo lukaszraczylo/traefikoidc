@@ -190,13 +190,18 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 	// Initialize session pool.
 	sm.sessionPool.New = func() interface{} {
 		// Initialize SessionData with necessary fields and the mutex.
-		return &SessionData{
+		sd := &SessionData{
 			manager:            sm,
 			accessTokenChunks:  make(map[int]*sessions.Session),
 			refreshTokenChunks: make(map[int]*sessions.Session),
-			refreshMutex:       sync.Mutex{}, // Initialize the mutex
-			dirty:              false,        // Initialize dirty flag
+			refreshMutex:       sync.Mutex{},   // Initialize the mutex
+			sessionMutex:       sync.RWMutex{}, // Initialize the session mutex
+			dirty:              false,          // Initialize dirty flag
+			inUse:              false,          // Initialize in-use flag
 		}
+		// Ensure the object is properly reset when created
+		sd.Reset()
+		return sd
 	}
 
 	return sm, nil
@@ -482,6 +487,8 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	// STABILITY FIX: Mark as not in use and return session to pool, regardless of error.
 	// This ensures the session is always returned to the pool, preventing memory leaks.
 	sd.inUse = false
+	// Reset the session data before returning to pool to prevent data leakage
+	sd.Reset()
 	sd.manager.sessionPool.Put(sd)
 
 	// Return the error from Save, if any
@@ -602,6 +609,52 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 	return nil
 }
 
+// Reset clears all session data and prepares the SessionData object for reuse.
+// This method is called when returning objects to the pool to prevent data leakage
+// between different users/sessions.
+func (sd *SessionData) Reset() {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+
+	// Clear all session values if sessions exist
+	if sd.mainSession != nil {
+		for k := range sd.mainSession.Values {
+			delete(sd.mainSession.Values, k)
+		}
+		sd.mainSession.ID = ""
+		sd.mainSession.IsNew = true
+	}
+
+	if sd.accessSession != nil {
+		for k := range sd.accessSession.Values {
+			delete(sd.accessSession.Values, k)
+		}
+		sd.accessSession.ID = ""
+		sd.accessSession.IsNew = true
+	}
+
+	if sd.refreshSession != nil {
+		for k := range sd.refreshSession.Values {
+			delete(sd.refreshSession.Values, k)
+		}
+		sd.refreshSession.ID = ""
+		sd.refreshSession.IsNew = true
+	}
+
+	// Clear chunk maps
+	for k := range sd.accessTokenChunks {
+		delete(sd.accessTokenChunks, k)
+	}
+	for k := range sd.refreshTokenChunks {
+		delete(sd.refreshTokenChunks, k)
+	}
+
+	// Reset state flags
+	sd.dirty = false
+	sd.inUse = false
+	sd.request = nil
+}
+
 // ReturnToPool explicitly returns this SessionData object to the pool.
 // This should be called when you're done with a SessionData in any error path
 // where Clear() is not called, to prevent memory leaks.
@@ -609,8 +662,8 @@ func (sd *SessionData) ReturnToPool() {
 	if sd != nil && sd.manager != nil {
 		// STABILITY FIX: Only return to pool if not currently in use
 		if !sd.inUse {
-			// Clear request reference to avoid memory leaks
-			sd.request = nil
+			// Reset the session data before returning to pool
+			sd.Reset()
 			sd.manager.sessionPool.Put(sd)
 		}
 	}
