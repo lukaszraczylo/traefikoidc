@@ -248,7 +248,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("refreshGracePeriodSeconds cannot be negative")
 	}
 
-	// Validate headers configuration
+	// SECURITY FIX: Validate headers configuration with enhanced template security
 	for _, header := range c.Headers {
 		if header.Name == "" {
 			return fmt.Errorf("header name cannot be empty")
@@ -260,7 +260,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("header value '%s' does not appear to be a valid template (missing {{ }})", header.Value)
 		}
 
-		// Provide more helpful guidance for common template errors
+		// Provide more helpful guidance for common template errors BEFORE security validation
 		if strings.Contains(header.Value, "{{.claims") {
 			return fmt.Errorf("header template '%s' appears to use lowercase 'claims' - use '{{.Claims...' instead (case sensitive)", header.Value)
 		}
@@ -272,6 +272,132 @@ func (c *Config) Validate() error {
 		}
 		if strings.Contains(header.Value, "{{.refreshToken") {
 			return fmt.Errorf("header template '%s' appears to use lowercase 'refreshToken' - use '{{.RefreshToken...' instead (case sensitive)", header.Value)
+		}
+
+		// SECURITY FIX: Implement template sandboxing and validation
+		if err := validateTemplateSecure(header.Value); err != nil {
+			return fmt.Errorf("header template '%s' failed security validation: %w", header.Value, err)
+		}
+	}
+
+	return nil
+}
+
+// SECURITY FIX: validateTemplateSecure implements template sandboxing and validation
+func validateTemplateSecure(templateStr string) error {
+	// SECURITY FIX: Restrict dangerous template functions and patterns
+	dangerousPatterns := []string{
+		"{{call",     // Function calls
+		"{{range",    // Range over arbitrary data
+		"{{with",     // With statements that could access unexpected data
+		"{{define",   // Template definitions
+		"{{template", // Template inclusions
+		"{{block",    // Block definitions
+		"{{/*",       // Comments that could hide malicious code
+		"{{-",        // Trim whitespace (could be used to obfuscate)
+		"-}}",        // Trim whitespace (could be used to obfuscate)
+		"{{printf",   // Printf functions
+		"{{print",    // Print functions
+		"{{println",  // Println functions
+		"{{html",     // HTML functions
+		"{{js",       // JavaScript functions
+		"{{urlquery", // URL query functions
+		"{{index",    // Index access to arbitrary data
+		"{{slice",    // Slice operations
+		"{{len",      // Length operations on arbitrary data
+		"{{eq",       // Comparison operations
+		"{{ne",       // Comparison operations
+		"{{lt",       // Comparison operations
+		"{{le",       // Comparison operations
+		"{{gt",       // Comparison operations
+		"{{ge",       // Comparison operations
+		"{{and",      // Logical operations
+		"{{or",       // Logical operations
+		"{{not",      // Logical operations
+	}
+
+	templateLower := strings.ToLower(templateStr)
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(templateLower, pattern) {
+			return fmt.Errorf("dangerous template pattern detected: %s", pattern)
+		}
+	}
+
+	// SECURITY FIX: Whitelist allowed template variables and functions
+	allowedPatterns := []string{
+		"{{.AccessToken}}",
+		"{{.IdToken}}",
+		"{{.RefreshToken}}",
+		"{{.Claims.",
+	}
+
+	// Check if template contains only allowed patterns
+	hasAllowedPattern := false
+	for _, pattern := range allowedPatterns {
+		if strings.Contains(templateStr, pattern) {
+			hasAllowedPattern = true
+			break
+		}
+	}
+
+	if !hasAllowedPattern {
+		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, or Claims.*")
+	}
+
+	// SECURITY FIX: Validate Claims access patterns
+	if strings.Contains(templateStr, "{{.Claims.") {
+		// Simple validation - ensure claims access is to known safe fields
+		safeClaimsFields := map[string]bool{
+			"email":              true,
+			"name":               true,
+			"given_name":         true,
+			"family_name":        true,
+			"preferred_username": true,
+			"sub":                true,
+			"iss":                true,
+			"aud":                true,
+			"exp":                true,
+			"iat":                true,
+			"groups":             true,
+			"roles":              true,
+		}
+
+		// Extract field names from Claims access
+		start := strings.Index(templateStr, "{{.Claims.")
+		for start != -1 {
+			end := strings.Index(templateStr[start:], "}}")
+			if end == -1 {
+				return fmt.Errorf("malformed Claims template syntax")
+			}
+
+			// Extract the content between "{{.Claims." and "}}"
+			// start+10 skips "{{.Claims." and start+end is the position of "}}"
+			claimsContent := templateStr[start+10 : start+end]
+
+			// Get the field name (first part before any dots)
+			fieldName := strings.Split(claimsContent, ".")[0]
+
+			if !safeClaimsFields[fieldName] {
+				return fmt.Errorf("access to Claims.%s is not allowed for security reasons", fieldName)
+			}
+
+			// Fix the search for next occurrence
+			nextStart := strings.Index(templateStr[start+end+2:], "{{.Claims.")
+			if nextStart != -1 {
+				start = start + end + 2 + nextStart
+			} else {
+				start = -1
+			}
+		}
+	}
+
+	// SECURITY FIX: Prevent code injection through template syntax
+	if strings.Contains(templateStr, "{{") && strings.Contains(templateStr, "}}") {
+		// Count opening and closing braces
+		openCount := strings.Count(templateStr, "{{")
+		closeCount := strings.Count(templateStr, "}}")
+		if openCount != closeCount {
+			return fmt.Errorf("unbalanced template braces")
 		}
 	}
 

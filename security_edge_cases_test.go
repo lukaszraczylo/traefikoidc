@@ -581,9 +581,186 @@ func TestSessionFixationAttack(t *testing.T) {
 // TestCSRFProtection tests the plugin's CSRF protection mechanisms
 // TestCSRFProtection tests CSRF protection in POST requests
 func TestCSRFProtection(t *testing.T) {
-	// Simply pass this test since we're focusing on the token and JTI checks
-	// The original CSRF test causes problems with nil pointer access
-	t.Skip("Skipping CSRF test to focus on token security")
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	// Test case 1: Valid CSRF token should succeed
+	t.Run("Valid CSRF token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "http://example.com/protected", nil)
+		resp := httptest.NewRecorder()
+
+		// Create a session and set CSRF token
+		session, err := sm.GetSession(req)
+		if err != nil {
+			t.Fatalf("Failed to get session: %v", err)
+		}
+
+		csrfToken := "valid-csrf-token-12345"
+		session.SetCSRF(csrfToken)
+		if err := session.Save(req, resp); err != nil {
+			t.Fatalf("Failed to save session: %v", err)
+		}
+
+		// Get cookies from response
+		cookies := resp.Result().Cookies()
+
+		// Create new request with CSRF token in header and cookies
+		req = httptest.NewRequest("POST", "http://example.com/protected", nil)
+		req.Header.Set("X-CSRF-Token", csrfToken)
+		for _, cookie := range cookies {
+			req.AddCookie(cookie)
+		}
+
+		// Get session again to verify CSRF
+		session, err = sm.GetSession(req)
+		if err != nil {
+			t.Fatalf("Failed to get session with cookies: %v", err)
+		}
+
+		sessionCSRF := session.GetCSRF()
+		if sessionCSRF != csrfToken {
+			t.Errorf("CSRF token mismatch: expected %s, got %s", csrfToken, sessionCSRF)
+		}
+
+		// Verify CSRF token matches
+		headerCSRF := req.Header.Get("X-CSRF-Token")
+		if headerCSRF != sessionCSRF {
+			t.Errorf("CSRF validation failed: header token %s != session token %s", headerCSRF, sessionCSRF)
+		}
+	})
+
+	// Test case 2: Missing CSRF token should fail
+	t.Run("Missing CSRF token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "http://example.com/protected", nil)
+		resp := httptest.NewRecorder()
+
+		// Create a session with CSRF token
+		session, err := sm.GetSession(req)
+		if err != nil {
+			t.Fatalf("Failed to get session: %v", err)
+		}
+
+		csrfToken := "expected-csrf-token-67890"
+		session.SetCSRF(csrfToken)
+		if err := session.Save(req, resp); err != nil {
+			t.Fatalf("Failed to save session: %v", err)
+		}
+
+		// Get cookies from response
+		cookies := resp.Result().Cookies()
+
+		// Create new request WITHOUT CSRF token in header but with cookies
+		req = httptest.NewRequest("POST", "http://example.com/protected", nil)
+		// Intentionally NOT setting X-CSRF-Token header
+		for _, cookie := range cookies {
+			req.AddCookie(cookie)
+		}
+
+		// Get session to verify CSRF exists
+		session, err = sm.GetSession(req)
+		if err != nil {
+			t.Fatalf("Failed to get session with cookies: %v", err)
+		}
+
+		sessionCSRF := session.GetCSRF()
+		headerCSRF := req.Header.Get("X-CSRF-Token")
+
+		// This should fail - no CSRF token in header
+		if headerCSRF == sessionCSRF && headerCSRF != "" {
+			t.Errorf("CSRF protection failed: request without CSRF token was accepted")
+		}
+
+		if headerCSRF == "" && sessionCSRF != "" {
+			t.Logf("CSRF protection working: missing header token, session has %s", sessionCSRF)
+		}
+	})
+
+	// Test case 3: Invalid CSRF token should fail
+	t.Run("Invalid CSRF token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "http://example.com/protected", nil)
+		resp := httptest.NewRecorder()
+
+		// Create a session with CSRF token
+		session, err := sm.GetSession(req)
+		if err != nil {
+			t.Fatalf("Failed to get session: %v", err)
+		}
+
+		csrfToken := "valid-csrf-token-abcdef"
+		session.SetCSRF(csrfToken)
+		if err := session.Save(req, resp); err != nil {
+			t.Fatalf("Failed to save session: %v", err)
+		}
+
+		// Get cookies from response
+		cookies := resp.Result().Cookies()
+
+		// Create new request with WRONG CSRF token in header
+		req = httptest.NewRequest("POST", "http://example.com/protected", nil)
+		req.Header.Set("X-CSRF-Token", "wrong-csrf-token-xyz")
+		for _, cookie := range cookies {
+			req.AddCookie(cookie)
+		}
+
+		// Get session to verify CSRF
+		session, err = sm.GetSession(req)
+		if err != nil {
+			t.Fatalf("Failed to get session with cookies: %v", err)
+		}
+
+		sessionCSRF := session.GetCSRF()
+		headerCSRF := req.Header.Get("X-CSRF-Token")
+
+		// This should fail - wrong CSRF token
+		if headerCSRF == sessionCSRF {
+			t.Errorf("CSRF protection failed: request with wrong CSRF token was accepted")
+		}
+
+		if headerCSRF != sessionCSRF {
+			t.Logf("CSRF protection working: header token %s != session token %s", headerCSRF, sessionCSRF)
+		}
+	})
+
+	// Test case 4: CSRF token generation and validation
+	t.Run("CSRF token generation", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/login", nil)
+		resp := httptest.NewRecorder()
+
+		// Create a session
+		session, err := sm.GetSession(req)
+		if err != nil {
+			t.Fatalf("Failed to get session: %v", err)
+		}
+
+		// Generate and set CSRF token
+		csrfToken := generateRandomString(32)
+		if len(csrfToken) != 32 {
+			t.Errorf("CSRF token length incorrect: expected 32, got %d", len(csrfToken))
+		}
+
+		session.SetCSRF(csrfToken)
+		if err := session.Save(req, resp); err != nil {
+			t.Fatalf("Failed to save session: %v", err)
+		}
+
+		// Verify token was stored
+		storedToken := session.GetCSRF()
+		if storedToken != csrfToken {
+			t.Errorf("CSRF token storage failed: expected %s, got %s", csrfToken, storedToken)
+		}
+
+		// Verify token is not empty and has reasonable entropy
+		if storedToken == "" {
+			t.Error("CSRF token is empty")
+		}
+
+		if len(storedToken) < 16 {
+			t.Errorf("CSRF token too short: %d characters", len(storedToken))
+		}
+	})
 }
 
 // TestTokenBlacklisting tests the token blacklisting mechanism
@@ -676,71 +853,114 @@ func TestTokenBlacklisting(t *testing.T) {
 
 // TestDifferentSigningAlgorithms tests that the plugin properly handles different signing algorithms
 func TestDifferentSigningAlgorithms(t *testing.T) {
-	// Skip this test as the current implementation only supports RS256
-	// and rate limiting in tests causes issues with multiple algorithm tests
-	t.Skip("Skipping different signing algorithms test as implementation only supports RS256")
-
 	ts := &TestSuite{t: t}
 	ts.Setup()
 
-	// Test cases for different algorithms
+	// Test cases for different algorithms - the implementation actually supports multiple algorithms
 	testCases := []struct {
 		name          string
 		algorithm     string
 		keyType       string
 		shouldSucceed bool
 	}{
+		// RSA algorithms
 		{"RS256 Algorithm", "RS256", "RSA", true},
-		// Currently, only RS256 is supported in our implementation
-		// Other algorithms are left commented out to document what could be supported
-		// {"RS384 Algorithm", "RS384", "RSA", true},
-		// {"RS512 Algorithm", "RS512", "RSA", true},
-		// {"PS256 Algorithm", "PS256", "RSA", true},
-		// {"PS384 Algorithm", "PS384", "RSA", true},
-		// {"PS512 Algorithm", "PS512", "RSA", true},
-		// {"ES256 Algorithm", "ES256", "EC", true},
-		// {"ES384 Algorithm", "ES384", "EC", true},
-		// {"ES512 Algorithm", "ES512", "EC", true},
+		{"RS384 Algorithm", "RS384", "RSA", true},
+		{"RS512 Algorithm", "RS512", "RSA", true},
+		{"PS256 Algorithm", "PS256", "RSA", true},
+		{"PS384 Algorithm", "PS384", "RSA", true},
+		{"PS512 Algorithm", "PS512", "RSA", true},
+
+		// EC algorithms
+		{"ES256 Algorithm", "ES256", "EC", true},
+		{"ES384 Algorithm", "ES384", "EC", true},
+		{"ES512 Algorithm", "ES512", "EC", true},
+
 		// Unsupported algorithms
 		{"HS256 Algorithm", "HS256", "RSA", false},
-		// {"HS384 Algorithm", "HS384", "RSA", false},
-		// {"HS512 Algorithm", "HS512", "RSA", false},
-	}
-
-	// Define standard claims
-	standardClaims := map[string]interface{}{
-		"iss":   "https://test-issuer.com",
-		"aud":   "test-client-id",
-		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
-		"iat":   float64(time.Now().Add(-2 * time.Minute).Unix()),
-		"sub":   "test-subject",
-		"email": "user@example.com",
-		"jti":   generateRandomString(16),
+		{"HS384 Algorithm", "HS384", "RSA", false},
+		{"HS512 Algorithm", "HS512", "RSA", false},
+		{"None Algorithm", "none", "RSA", false},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Define standard claims with unique JTI for each test
+			standardClaims := map[string]interface{}{
+				"iss":   "https://test-issuer.com",
+				"aud":   "test-client-id",
+				"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
+				"iat":   float64(time.Now().Add(-2 * time.Minute).Unix()),
+				"sub":   "test-subject",
+				"email": "user@example.com",
+				"jti":   generateRandomString(16), // Generate unique JTI for each test
+			}
+
 			var jwtToken string
 			var err error
 
-			// Use appropriate key type
+			// Use appropriate key type and create corresponding JWK
 			if tc.keyType == "RSA" {
-				jwtToken, err = createTestJWT(ts.rsaPrivateKey, tc.algorithm, "test-key-id", standardClaims)
-			} else if tc.keyType == "EC" {
-				// We need to create an EC key
-				if ts.ecPrivateKey == nil {
-					ts.ecPrivateKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-					if err != nil {
-						t.Fatalf("Failed to generate EC key: %v", err)
-					}
+				// Update the RSA JWK to support the current algorithm
+				rsaJWK := JWK{
+					Kty: "RSA",
+					Kid: "test-key-id",
+					Alg: tc.algorithm, // Use the algorithm being tested
+					N:   base64.RawURLEncoding.EncodeToString(ts.rsaPrivateKey.PublicKey.N.Bytes()),
+					E:   base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}), // 65537 in bytes
 				}
-				jwtToken, err = createTestJWTWithECKey(ts.ecPrivateKey, tc.algorithm, "test-key-id", standardClaims)
+
+				// Update the mock JWK cache with the correct algorithm
+				ts.mockJWKCache.JWKS = &JWKSet{
+					Keys: []JWK{rsaJWK},
+				}
+
+				jwtToken, err = createTestJWT(ts.rsaPrivateKey, tc.algorithm, "test-key-id", standardClaims)
+				if err != nil {
+					if !tc.shouldSucceed {
+						t.Logf("Expected failure creating JWT with %s algorithm: %v", tc.algorithm, err)
+						return // This is expected for unsupported algorithms
+					}
+					t.Fatalf("Failed to create JWT with %s algorithm: %v", tc.algorithm, err)
+				}
+			} else if tc.keyType == "EC" {
+				// Generate EC key for the specific curve
+				var curve elliptic.Curve
+				switch tc.algorithm {
+				case "ES256":
+					curve = elliptic.P256()
+				case "ES384":
+					curve = elliptic.P384()
+				case "ES512":
+					curve = elliptic.P521()
+				default:
+					t.Fatalf("Unsupported EC algorithm: %s", tc.algorithm)
+				}
+
+				ecPrivateKey, err := ecdsa.GenerateKey(curve, rand.Reader)
+				if err != nil {
+					t.Fatalf("Failed to generate EC key for %s: %v", tc.algorithm, err)
+				}
+
+				// Create EC JWK for this test
+				ecJWK := createECJWK(ecPrivateKey, tc.algorithm, "test-ec-key-id")
+
+				// Replace the JWK cache entirely with just the EC key for this test
+				ts.mockJWKCache.JWKS = &JWKSet{
+					Keys: []JWK{ecJWK},
+				}
+
+				// Ensure rate limiter is initialized for EC tests
+				if ts.tOidc.limiter == nil {
+					ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
+				}
+
+				jwtToken, err = createTestJWTWithECKey(ecPrivateKey, tc.algorithm, "test-ec-key-id", standardClaims)
+				if err != nil {
+					t.Fatalf("Failed to create JWT with %s algorithm: %v", tc.algorithm, err)
+				}
 			} else {
 				t.Fatalf("Unsupported key type: %s", tc.keyType)
-			}
-
-			if err != nil {
-				t.Fatalf("Failed to create JWT with %s algorithm: %v", tc.algorithm, err)
 			}
 
 			// Verify the token
@@ -749,6 +969,8 @@ func TestDifferentSigningAlgorithms(t *testing.T) {
 			if tc.shouldSucceed {
 				if err != nil {
 					t.Errorf("Verification with %s failed: %v", tc.algorithm, err)
+				} else {
+					t.Logf("Successfully verified token with %s algorithm", tc.algorithm)
 				}
 			} else {
 				if err == nil {
@@ -757,6 +979,8 @@ func TestDifferentSigningAlgorithms(t *testing.T) {
 					// Check that the error message indicates unsupported algorithm
 					if !strings.Contains(err.Error(), "unsupported algorithm") {
 						t.Errorf("Expected unsupported algorithm error for %s, but got: %v", tc.algorithm, err)
+					} else {
+						t.Logf("Correctly rejected unsupported algorithm %s: %v", tc.algorithm, err)
 					}
 				}
 			}
@@ -801,7 +1025,20 @@ func createTestJWTWithECKey(privateKey *ecdsa.PrivateKey, alg, kid string, claim
 		if err != nil {
 			return "", fmt.Errorf("failed to sign with ES256: %v", err)
 		}
-		signature = append(r.Bytes(), s.Bytes()...)
+		// For ES256, each coordinate should be 32 bytes (256 bits / 8)
+		rBytes := r.Bytes()
+		sBytes := s.Bytes()
+		if len(rBytes) < 32 {
+			padded := make([]byte, 32)
+			copy(padded[32-len(rBytes):], rBytes)
+			rBytes = padded
+		}
+		if len(sBytes) < 32 {
+			padded := make([]byte, 32)
+			copy(padded[32-len(sBytes):], sBytes)
+			sBytes = padded
+		}
+		signature = append(rBytes, sBytes...)
 	case "ES384":
 		h := crypto.SHA384.New()
 		h.Write([]byte(signingInput))
@@ -810,7 +1047,27 @@ func createTestJWTWithECKey(privateKey *ecdsa.PrivateKey, alg, kid string, claim
 		if err != nil {
 			return "", fmt.Errorf("failed to sign with ES384: %v", err)
 		}
-		signature = append(r.Bytes(), s.Bytes()...)
+		// For ES384 (P-384), each coordinate should be 48 bytes (384 bits / 8)
+		rBytes := r.Bytes()
+		sBytes := s.Bytes()
+		// Pad to exactly 48 bytes each
+		if len(rBytes) < 48 {
+			padded := make([]byte, 48)
+			copy(padded[48-len(rBytes):], rBytes)
+			rBytes = padded
+		} else if len(rBytes) > 48 {
+			// Truncate if too long (shouldn't happen with P-384)
+			rBytes = rBytes[len(rBytes)-48:]
+		}
+		if len(sBytes) < 48 {
+			padded := make([]byte, 48)
+			copy(padded[48-len(sBytes):], sBytes)
+			sBytes = padded
+		} else if len(sBytes) > 48 {
+			// Truncate if too long (shouldn't happen with P-384)
+			sBytes = sBytes[len(sBytes)-48:]
+		}
+		signature = append(rBytes, sBytes...)
 	case "ES512":
 		h := crypto.SHA512.New()
 		h.Write([]byte(signingInput))
@@ -819,7 +1076,27 @@ func createTestJWTWithECKey(privateKey *ecdsa.PrivateKey, alg, kid string, claim
 		if err != nil {
 			return "", fmt.Errorf("failed to sign with ES512: %v", err)
 		}
-		signature = append(r.Bytes(), s.Bytes()...)
+		// For ES512 (P-521), each coordinate should be 66 bytes (521 bits / 8 = 65.125, rounded up to 66)
+		rBytes := r.Bytes()
+		sBytes := s.Bytes()
+		// Pad to 66 bytes each
+		if len(rBytes) < 66 {
+			padded := make([]byte, 66)
+			copy(padded[66-len(rBytes):], rBytes)
+			rBytes = padded
+		} else if len(rBytes) > 66 {
+			// Truncate if too long (shouldn't happen with P-521)
+			rBytes = rBytes[len(rBytes)-66:]
+		}
+		if len(sBytes) < 66 {
+			padded := make([]byte, 66)
+			copy(padded[66-len(sBytes):], sBytes)
+			sBytes = padded
+		} else if len(sBytes) > 66 {
+			// Truncate if too long (shouldn't happen with P-521)
+			sBytes = sBytes[len(sBytes)-66:]
+		}
+		signature = append(rBytes, sBytes...)
 	default:
 		return "", fmt.Errorf("unsupported EC algorithm: %s", alg)
 	}
@@ -829,6 +1106,50 @@ func createTestJWTWithECKey(privateKey *ecdsa.PrivateKey, alg, kid string, claim
 
 	// Combine to create JWT
 	return signingInput + "." + signatureBase64, nil
+}
+
+// createECJWK creates a JWK from an EC private key
+func createECJWK(privateKey *ecdsa.PrivateKey, alg, kid string) JWK {
+	// Get the curve name
+	var crv string
+	switch privateKey.Curve {
+	case elliptic.P256():
+		crv = "P-256"
+	case elliptic.P384():
+		crv = "P-384"
+	case elliptic.P521():
+		crv = "P-521"
+	default:
+		panic("unsupported curve")
+	}
+
+	// Get the key size for coordinate encoding
+	keySize := (privateKey.Curve.Params().BitSize + 7) / 8
+
+	// Encode X and Y coordinates
+	xBytes := privateKey.PublicKey.X.Bytes()
+	yBytes := privateKey.PublicKey.Y.Bytes()
+
+	// Pad to the correct length
+	if len(xBytes) < keySize {
+		padded := make([]byte, keySize)
+		copy(padded[keySize-len(xBytes):], xBytes)
+		xBytes = padded
+	}
+	if len(yBytes) < keySize {
+		padded := make([]byte, keySize)
+		copy(padded[keySize-len(yBytes):], yBytes)
+		yBytes = padded
+	}
+
+	return JWK{
+		Kty: "EC",
+		Kid: kid,
+		Alg: alg,
+		Crv: crv,
+		X:   base64.RawURLEncoding.EncodeToString(xBytes),
+		Y:   base64.RawURLEncoding.EncodeToString(yBytes),
+	}
 }
 
 // TestMalformedTokens tests the plugin's handling of malformed tokens

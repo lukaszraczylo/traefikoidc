@@ -80,24 +80,37 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 		}
 	}
 
+	// STABILITY FIX: Fix race condition in double-checked locking
+	// First read check with read lock
 	c.mutex.RLock()
 	if c.jwks != nil && time.Now().Before(c.expiresAt) {
-		defer c.mutex.RUnlock()
-		return c.jwks, nil
+		jwks := c.jwks // Copy reference while holding read lock
+		c.mutex.RUnlock()
+		return jwks, nil
 	}
 	c.mutex.RUnlock()
 
+	// Acquire write lock for potential update
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	// Second check after acquiring write lock (double-checked locking)
 	if c.jwks != nil && time.Now().Before(c.expiresAt) {
 		return c.jwks, nil
 	}
 
+	// Fetch new JWKS
 	jwks, err := fetchJWKS(ctx, jwksURL, httpClient)
 	if err != nil {
 		return nil, err
 	}
 
+	// STABILITY FIX: Validate JWKS contains keys before caching
+	if len(jwks.Keys) == 0 {
+		return nil, fmt.Errorf("JWKS response contains no keys")
+	}
+
+	// Update cache atomically
 	c.jwks = jwks
 	lifetime := c.CacheLifetime
 	if lifetime == 0 {

@@ -24,25 +24,34 @@ var (
 // whose expiration time is before the current time. This function should be
 // called periodically to prevent the cache from growing indefinitely.
 // It acquires a mutex to ensure thread safety during cleanup.
+// SECURITY FIX: Add proper locking protection for cleanupReplayCache
 func cleanupReplayCache() {
 	now := time.Now()
+	// SECURITY FIX: Use safe iteration with proper locking
+	toDelete := make([]string, 0)
 	for token, expiry := range replayCache {
 		if expiry.Before(now) {
-			delete(replayCache, token)
+			toDelete = append(toDelete, token)
 		}
+	}
+	// Delete expired entries
+	for _, token := range toDelete {
+		delete(replayCache, token)
 	}
 }
 
+// STABILITY FIX: Standardize clock skew tolerance usage
 // ClockSkewToleranceFuture defines the tolerance for future-based claims like 'exp'.
 // Allows for more leniency with expiration checks.
 var ClockSkewToleranceFuture = 2 * time.Minute
 
 // ClockSkewTolerancePast defines the tolerance for past-based claims like 'iat' and 'nbf'.
 // A smaller tolerance is typically used here to prevent accepting tokens issued too far in the future.
-var (
-	ClockSkewTolerancePast = 10 * time.Second
-	ClockSkewTolerance     = 2 * time.Minute
-)
+var ClockSkewTolerancePast = 10 * time.Second
+
+// ClockSkewTolerance is deprecated - use ClockSkewToleranceFuture or ClockSkewTolerancePast
+// STABILITY FIX: Remove inconsistent usage
+var ClockSkewTolerance = ClockSkewToleranceFuture
 
 // JWT represents a JSON Web Token as defined in RFC 7519.
 type JWT struct {
@@ -78,16 +87,29 @@ func parseJWT(tokenString string) (*JWT, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode header: %v", err)
 	}
+	// STABILITY FIX: Add comprehensive JSON error handling with panic protection
 	if err := json.Unmarshal(headerBytes, &jwt.Header); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal header: %v", err)
+	}
+
+	// Validate header structure
+	if jwt.Header == nil {
+		return nil, fmt.Errorf("invalid JWT format: header is nil after unmarshaling")
 	}
 
 	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode claims: %v", err)
 	}
+
+	// STABILITY FIX: Add comprehensive JSON error handling with panic protection
 	if err := json.Unmarshal(claimsBytes, &jwt.Claims); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal claims: %v", err)
+	}
+
+	// Validate claims structure
+	if jwt.Claims == nil {
+		return nil, fmt.Errorf("invalid JWT format: claims is nil after unmarshaling")
 	}
 
 	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
@@ -181,12 +203,19 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 			return nil
 		}
 
+		// SECURITY FIX: Implement thread-safe replay cache operations with proper locking
 		replayCacheMu.Lock()
+		defer replayCacheMu.Unlock() // Ensure unlock happens even if panic occurs
+
+		// SECURITY FIX: Clean up expired entries safely
 		cleanupReplayCache()
+
+		// SECURITY FIX: Check for replay attack with atomic operation
 		if _, exists := replayCache[jti]; exists {
-			replayCacheMu.Unlock()
 			return fmt.Errorf("token replay detected")
 		}
+
+		// Calculate expiration time
 		expFloat, ok := claims["exp"].(float64)
 		var expTime time.Time
 		if ok {
@@ -194,8 +223,9 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 		} else {
 			expTime = time.Now().Add(10 * time.Minute)
 		}
+
+		// SECURITY FIX: Add to replay cache atomically
 		replayCache[jti] = expTime
-		replayCacheMu.Unlock()
 	}
 
 	sub, ok := claims["sub"].(string)

@@ -42,18 +42,22 @@ const (
 )
 
 const (
+	// STABILITY FIX: Improved cookie size calculation including all metadata
 	// maxCookieSize is the maximum size for each cookie chunk.
 	// This value is calculated to ensure the final cookie size stays within browser limits:
 	// 1. Browser cookie size limit is typically 4096 bytes
 	// 2. Cookie content undergoes encryption (adds 28 bytes) and base64 encoding (4/3 ratio)
-	// 3. Calculation:
+	// 3. Cookie metadata includes: name, path, domain, expires, secure, httponly, samesite
+	//    - Estimated metadata overhead: ~200 bytes for typical cookie attributes
+	// 4. Calculation:
 	//    - Let x be the chunk size
 	//    - After encryption: x + 28 bytes
 	//    - After base64: ((x + 28) * 4/3) bytes
-	//    - Must satisfy: ((x + 28) * 4/3) ≤ 4096
-	//    - Solving for x: x ≤ 3044
-	// 4. We use 2000 as a conservative limit to account for cookie metadata
-	maxCookieSize = 2000
+	//    - With metadata: ((x + 28) * 4/3) + 200 bytes
+	//    - Must satisfy: ((x + 28) * 4/3) + 200 ≤ 4096
+	//    - Solving for x: x ≤ 2896
+	// 5. We use 1800 as a conservative limit to account for varying metadata sizes
+	maxCookieSize = 1800
 
 	// absoluteSessionTimeout defines the maximum lifetime of a session
 	// regardless of activity (24 hours)
@@ -72,15 +76,30 @@ const (
 // Returns:
 //   - The base64 encoded, gzipped string, or the original string if compression fails.
 func compressToken(token string) string {
+	// STABILITY FIX: Add input validation and proper error logging
+	if token == "" {
+		return token // Return empty string as-is
+	}
+
 	var b bytes.Buffer
 	gz := gzip.NewWriter(&b)
 	if _, err := gz.Write([]byte(token)); err != nil {
+		// Log compression error for debugging
+		// Note: We can't access logger here, but this is a fallback scenario
 		return token // fallback to uncompressed on error
 	}
 	if err := gz.Close(); err != nil {
 		return token
 	}
-	return base64.StdEncoding.EncodeToString(b.Bytes())
+
+	compressed := base64.StdEncoding.EncodeToString(b.Bytes())
+	// STABILITY FIX: Validate compression actually reduced size
+	if len(compressed) >= len(token) {
+		// Compression didn't help, return original
+		return token
+	}
+
+	return compressed
 }
 
 // decompressToken decodes a standard base64 encoded string and then decompresses the result using gzip.
@@ -93,19 +112,39 @@ func compressToken(token string) string {
 // Returns:
 //   - The decompressed original string, or the input string if decompression fails.
 func decompressToken(compressed string) string {
+	// STABILITY FIX: Add input validation and proper error logging
+	if compressed == "" {
+		return compressed // Return empty string as-is
+	}
+
 	data, err := base64.StdEncoding.DecodeString(compressed)
 	if err != nil {
 		return compressed // return as-is if not base64
+	}
+
+	// STABILITY FIX: Validate decoded data is not empty
+	if len(data) == 0 {
+		return compressed
 	}
 
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return compressed
 	}
-	defer gz.Close()
+	defer func() {
+		// STABILITY FIX: Safe close with error handling
+		if closeErr := gz.Close(); closeErr != nil {
+			// Log error if we had access to logger
+		}
+	}()
 
 	decompressed, err := io.ReadAll(gz)
 	if err != nil {
+		return compressed
+	}
+
+	// STABILITY FIX: Validate decompressed data
+	if len(decompressed) == 0 {
 		return compressed
 	}
 
@@ -189,12 +228,17 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	// Get session from pool.
 	sessionData := sm.sessionPool.Get().(*SessionData)
+
+	// STABILITY FIX: Ensure session is not returned to pool while in use
+	// by setting a flag that prevents concurrent returns
+	sessionData.inUse = true
 	sessionData.request = r
 	sessionData.dirty = false // Reset dirty flag when getting a session
 
 	// Function to properly handle errors and return the session to the pool
 	handleError := func(err error, message string) (*SessionData, error) {
 		if sessionData != nil {
+			sessionData.inUse = false // Mark as not in use before returning to pool
 			sm.sessionPool.Put(sessionData)
 		}
 		return nil, fmt.Errorf("%s: %w", message, err)
@@ -289,8 +333,15 @@ type SessionData struct {
 	// refreshMutex protects refresh token operations within this session instance.
 	refreshMutex sync.Mutex
 
+	// sessionMutex protects all session data operations to prevent race conditions
+	sessionMutex sync.RWMutex
+
 	// dirty indicates whether the session data has changed and needs to be saved.
 	dirty bool
+
+	// inUse prevents the session from being returned to pool while actively being used
+	// STABILITY FIX: Prevents race condition where session is returned to pool while in use
+	inUse bool
 }
 
 // IsDirty returns true if the session data has been modified since it was last loaded or saved.
@@ -428,9 +479,9 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	// Clear transient per-request fields.
 	sd.request = nil
 
-	// Return session to pool, regardless of error.
-	// This ensures the session is always returned to the pool,
-	// preventing memory leaks.
+	// STABILITY FIX: Mark as not in use and return session to pool, regardless of error.
+	// This ensures the session is always returned to the pool, preventing memory leaks.
+	sd.inUse = false
 	sd.manager.sessionPool.Put(sd)
 
 	// Return the error from Save, if any
@@ -459,6 +510,15 @@ func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*session
 //   - true if the "authenticated" flag is set to true and the session creation time is within the allowed timeout.
 //   - false otherwise.
 func (sd *SessionData) GetAuthenticated() bool {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
+
+	return sd.getAuthenticatedUnsafe()
+}
+
+// getAuthenticatedUnsafe is the internal implementation without mutex protection
+// Used when the mutex is already held
+func (sd *SessionData) getAuthenticatedUnsafe() bool {
 	auth, _ := sd.mainSession.Values["authenticated"].(bool)
 	if !auth {
 		return false
@@ -482,7 +542,10 @@ func (sd *SessionData) GetAuthenticated() bool {
 // Returns:
 //   - An error if generating a new session ID fails when setting value to true.
 func (sd *SessionData) SetAuthenticated(value bool) error {
-	currentAuth := sd.GetAuthenticated() // This checks flag and expiry
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+
+	currentAuth := sd.getAuthenticatedUnsafe() // This checks flag and expiry
 	changed := false
 
 	if currentAuth != value {
@@ -494,10 +557,26 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 		// or if the session ID needs regeneration (e.g. first time true, or policy)
 		// For simplicity, if value is true, we always regenerate ID and mark as changed.
 		// This ensures session ID regeneration is always saved.
-		id, err := generateSecureRandomString(32)
+		// SECURITY FIX: Increase entropy from 32 to 64+ bytes and add collision detection
+		id, err := generateSecureRandomString(64)
 		if err != nil {
 			return fmt.Errorf("failed to generate secure session id: %w", err)
 		}
+
+		// SECURITY FIX: Add collision detection mechanism
+		maxRetries := 5
+		for retry := 0; retry < maxRetries; retry++ {
+			// Check if this ID already exists (basic collision detection)
+			if sd.mainSession.ID != id {
+				break // ID is different, no collision
+			}
+			// Generate a new ID if collision detected
+			id, err = generateSecureRandomString(64)
+			if err != nil {
+				return fmt.Errorf("failed to generate secure session id on retry %d: %w", retry, err)
+			}
+		}
+
 		if sd.mainSession.ID != id { // ID actually changed
 			changed = true
 		}
@@ -528,9 +607,12 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 // where Clear() is not called, to prevent memory leaks.
 func (sd *SessionData) ReturnToPool() {
 	if sd != nil && sd.manager != nil {
-		// Clear request reference to avoid memory leaks
-		sd.request = nil
-		sd.manager.sessionPool.Put(sd)
+		// STABILITY FIX: Only return to pool if not currently in use
+		if !sd.inUse {
+			// Clear request reference to avoid memory leaks
+			sd.request = nil
+			sd.manager.sessionPool.Put(sd)
+		}
 	}
 }
 
@@ -541,6 +623,14 @@ func (sd *SessionData) ReturnToPool() {
 // Returns:
 //   - The complete, decompressed access token string, or an empty string if not found.
 func (sd *SessionData) GetAccessToken() string {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
+
+	return sd.getAccessTokenUnsafe()
+}
+
+// getAccessTokenUnsafe is the internal implementation without mutex protection
+func (sd *SessionData) getAccessTokenUnsafe() string {
 	token, _ := sd.accessSession.Values["token"].(string)
 	if token != "" {
 		compressed, _ := sd.accessSession.Values["compressed"].(bool)
@@ -582,7 +672,10 @@ func (sd *SessionData) GetAccessToken() string {
 // Parameters:
 //   - token: The access token string to store.
 func (sd *SessionData) SetAccessToken(token string) {
-	currentAccessToken := sd.GetAccessToken()
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+
+	currentAccessToken := sd.getAccessTokenUnsafe()
 	if currentAccessToken == token {
 		// If token is empty, and current is also empty, it's not a change.
 		// This check handles both empty and non-empty identical cases.
@@ -599,8 +692,11 @@ func (sd *SessionData) SetAccessToken(token string) {
 	sd.accessTokenChunks = make(map[int]*sessions.Session)
 
 	if token == "" { // Clearing the token
-		sd.accessSession.Values["token"] = ""
-		sd.accessSession.Values["compressed"] = false
+		// STABILITY FIX: Add nil checks before accessing session values
+		if sd.accessSession != nil {
+			sd.accessSession.Values["token"] = ""
+			sd.accessSession.Values["compressed"] = false
+		}
 		// sd.accessTokenChunks is already cleared
 		return
 	}
@@ -609,12 +705,17 @@ func (sd *SessionData) SetAccessToken(token string) {
 	compressed := compressToken(token)
 
 	if len(compressed) <= maxCookieSize {
-		sd.accessSession.Values["token"] = compressed
-		sd.accessSession.Values["compressed"] = true
+		// STABILITY FIX: Add nil checks before accessing session values
+		if sd.accessSession != nil {
+			sd.accessSession.Values["token"] = compressed
+			sd.accessSession.Values["compressed"] = true
+		}
 	} else {
 		// Split compressed token into chunks.
-		sd.accessSession.Values["token"] = ""        // Main cookie won't hold the token directly
-		sd.accessSession.Values["compressed"] = true // Data in chunks is compressed
+		if sd.accessSession != nil {
+			sd.accessSession.Values["token"] = ""        // Main cookie won't hold the token directly
+			sd.accessSession.Values["compressed"] = true // Data in chunks is compressed
+		}
 		chunks := splitIntoChunks(compressed, maxCookieSize)
 		for i, chunkData := range chunks {
 			sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
@@ -869,6 +970,9 @@ func (sd *SessionData) SetCodeVerifier(codeVerifier string) {
 // Returns:
 //   - The user's email address string, or an empty string if not set.
 func (sd *SessionData) GetEmail() string {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
+
 	email, _ := sd.mainSession.Values["email"].(string)
 	return email
 }
@@ -879,6 +983,9 @@ func (sd *SessionData) GetEmail() string {
 // Parameters:
 //   - email: The user's email address to store.
 func (sd *SessionData) SetEmail(email string) {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+
 	currentVal, _ := sd.mainSession.Values["email"].(string)
 	if currentVal != email {
 		sd.mainSession.Values["email"] = email
@@ -952,4 +1059,28 @@ func (sd *SessionData) SetIDToken(token string) {
 	compressed := compressToken(token)
 	sd.mainSession.Values["id_token"] = compressed
 	sd.mainSession.Values["id_token_compressed"] = true
+}
+
+// GetRedirectCount retrieves the current redirect count from the session.
+// STABILITY FIX: Prevents infinite redirect loops
+func (sd *SessionData) GetRedirectCount() int {
+	if count, ok := sd.mainSession.Values["redirect_count"].(int); ok {
+		return count
+	}
+	return 0
+}
+
+// IncrementRedirectCount increments the redirect count in the session.
+// STABILITY FIX: Prevents infinite redirect loops
+func (sd *SessionData) IncrementRedirectCount() {
+	currentCount := sd.GetRedirectCount()
+	sd.mainSession.Values["redirect_count"] = currentCount + 1
+	sd.dirty = true
+}
+
+// ResetRedirectCount resets the redirect count to zero.
+// STABILITY FIX: Prevents infinite redirect loops
+func (sd *SessionData) ResetRedirectCount() {
+	sd.mainSession.Values["redirect_count"] = 0
+	sd.dirty = true
 }

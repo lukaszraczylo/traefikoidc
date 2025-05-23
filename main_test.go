@@ -225,11 +225,36 @@ func createTestJWT(privateKey *rsa.PrivateKey, alg, kid string, claims map[strin
 
 	signedContent := headerEncoded + "." + claimsEncoded
 
-	hasher := crypto.SHA256.New()
+	// Select the appropriate hash function based on algorithm
+	var hashFunc crypto.Hash
+	switch alg {
+	case "RS256", "PS256":
+		hashFunc = crypto.SHA256
+	case "RS384", "PS384":
+		hashFunc = crypto.SHA384
+	case "RS512", "PS512":
+		hashFunc = crypto.SHA512
+	default:
+		return "", fmt.Errorf("unsupported algorithm: %s", alg)
+	}
+
+	hasher := hashFunc.New()
 	hasher.Write([]byte(signedContent))
 	hashed := hasher.Sum(nil)
 
-	signatureBytes, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed)
+	var signatureBytes []byte
+
+	// Use appropriate signing method based on algorithm
+	if strings.HasPrefix(alg, "RS") {
+		// PKCS1v15 signing for RS* algorithms
+		signatureBytes, err = rsa.SignPKCS1v15(rand.Reader, privateKey, hashFunc, hashed)
+	} else if strings.HasPrefix(alg, "PS") {
+		// PSS signing for PS* algorithms
+		signatureBytes, err = rsa.SignPSS(rand.Reader, privateKey, hashFunc, hashed, nil)
+	} else {
+		return "", fmt.Errorf("unsupported RSA algorithm: %s", alg)
+	}
+
 	if err != nil {
 		return "", err
 	}
