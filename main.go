@@ -363,8 +363,8 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 		return fmt.Errorf("signature verification failed: %w", err)
 	}
 
-	// Verify standard claims
-	if err := jwt.Verify(t.issuerURL, t.clientID); err != nil {
+	// Verify standard claims - skip replay check since it's already handled in VerifyToken
+	if err := jwt.Verify(t.issuerURL, t.clientID, true); err != nil {
 		return fmt.Errorf("standard claim verification failed: %w", err)
 	}
 

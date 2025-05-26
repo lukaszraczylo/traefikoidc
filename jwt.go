@@ -123,11 +123,12 @@ func parseJWT(tokenString string) (*JWT, error) {
 // Parameters:
 //   - issuerURL: The expected issuer URL (e.g., "https://accounts.google.com").
 //   - clientID: The expected audience value (the client ID of this application).
+//   - skipReplayCheck: If true, skips JTI replay detection (used for revalidation of cached tokens).
 //
 // Returns:
 //   - nil if all standard claims are valid.
 //   - An error describing the first validation failure encountered.
-func (j *JWT) Verify(issuerURL, clientID string) error {
+func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error {
 	// Validate algorithm to prevent algorithm switching attacks
 	alg, ok := j.Header["alg"].(string)
 	if !ok {
@@ -183,7 +184,10 @@ func (j *JWT) Verify(issuerURL, clientID string) error {
 	}
 
 	// Implement replay protection by checking the jti (JWT ID)
-	if jti, ok := claims["jti"].(string); ok {
+	// Skip replay check if explicitly requested (for revalidation scenarios)
+	shouldSkipReplay := len(skipReplayCheck) > 0 && skipReplayCheck[0]
+
+	if jti, ok := claims["jti"].(string); ok && !shouldSkipReplay {
 		// Skip replay detection for tokens that are being verified from the cache
 		if j.Token == "" {
 			// This is a parsed JWT without the original token string,
