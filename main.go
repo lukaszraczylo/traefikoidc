@@ -1565,7 +1565,6 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 
 	// Handle scopes - ensure offline_access is included for refresh tokens
 	scopes := make([]string, len(t.scopes))
-	copy(scopes, t.scopes)
 
 	// Check if we're dealing with a Google OIDC provider
 	isGoogleProvider := strings.Contains(t.issuerURL, "google") || strings.Contains(t.issuerURL, "accounts.google.com")
