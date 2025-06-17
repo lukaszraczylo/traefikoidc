@@ -67,7 +67,7 @@ The middleware supports the following configuration options:
 |-----------|-------------|---------|---------|
 | `logoutURL` | The path for handling logout requests | `callbackURL + "/logout"` | `/oauth2/logout` |
 | `postLogoutRedirectURI` | The URL to redirect to after logout | `/` | `/logged-out-page` |
-| `scopes` | The OAuth 2.0 scopes to request | `["openid", "profile", "email"]` | `["openid", "email", "profile", "roles"]` |
+| `scopes` | Additional OAuth 2.0 scopes to append to defaults | `["openid", "profile", "email"]` (always included) | `["roles", "custom_scope"]` (appended to defaults) |
 | `logLevel` | Sets the logging verbosity | `info` | `debug`, `info`, `error` |
 | `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
 | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
@@ -80,6 +80,50 @@ The middleware supports the following configuration options:
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
+
+## Scope Configuration
+
+### Scope Append Behavior
+
+The middleware uses an **append** behavior for OAuth 2.0 scopes, not replacement. This means:
+
+- **Default scopes** are always included: `["openid", "profile", "email"]`
+- **User-provided scopes** are appended to the defaults with automatic deduplication
+- The final scope list maintains the order: defaults first, then user scopes
+
+#### Examples:
+
+**No custom scopes specified:**
+```yaml
+# No scopes field specified
+# Result: ["openid", "profile", "email"]
+```
+
+**Custom scopes appended:**
+```yaml
+scopes:
+  - roles
+  - custom_scope
+# Result: ["openid", "profile", "email", "roles", "custom_scope"]
+```
+
+**Overlapping scopes (automatic deduplication):**
+```yaml
+scopes:
+  - openid      # Duplicate - will be deduplicated
+  - roles
+  - profile     # Duplicate - will be deduplicated
+  - permissions
+# Result: ["openid", "profile", "email", "roles", "permissions"]
+```
+
+**Empty scopes list:**
+```yaml
+scopes: []
+# Result: ["openid", "profile", "email"]
+```
+
+This append behavior ensures that essential OIDC scopes are always present while allowing you to add provider-specific or application-specific scopes as needed.
 
 ## Usage Examples
 
@@ -101,9 +145,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 ### With Excluded URLs (Public Access Paths)
@@ -124,9 +166,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       excludedURLs:
         - /login        # covers /login, /login/me, /login/reminder etc.
         - /public-data
@@ -152,9 +192,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       allowedUserDomains:
         - company.com
         - subsidiary.com
@@ -178,9 +216,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       allowedUsers:
         - user1@example.com
         - user2@another.org
@@ -204,9 +240,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       allowedUserDomains:
         - company.com
       allowedUsers:
@@ -239,10 +273,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
-        - roles     # Include this to get role information from the provider
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       allowedRolesAndGroups:
         - admin
         - developer
@@ -269,9 +300,7 @@ spec:
       rateLimit: 500     # Requests per second (default: 100)
       forceHTTPS: false  # Default is true for security
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 ### With Custom Post-Logout Redirect
@@ -293,9 +322,7 @@ spec:
       logoutURL: /oauth2/logout
       postLogoutRedirectURI: /logged-out-page  # Where to redirect after logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 ### With Templated Headers
@@ -316,10 +343,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
-        - roles
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       headers:
         - name: "X-User-Email"
           value: "{{.Claims.email}}"
@@ -352,9 +376,7 @@ spec:
       logoutURL: /oauth2/logout
       enablePKCE: true  # Enables PKCE for added security
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 ### Google OIDC Configuration Example
@@ -377,9 +399,7 @@ spec:
       callbackURL: /oauth2/callback                             # Adjust if needed
       logoutURL: /oauth2/logout                                 # Optional: Adjust if needed
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
         # Note: DO NOT manually add offline_access scope for Google
         # The middleware automatically handles Google-specific requirements
       refreshGracePeriodSeconds: 300  # Optional: Start refresh 5 min before expiry (default 60)
@@ -408,9 +428,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 Don't forget to create the secret:
@@ -509,9 +527,7 @@ http:
           postLogoutRedirectURI: /logged-out-page
           sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
           scopes:
-            - openid
-            - email
-            - profile
+            - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
           allowedUserDomains:
             - company.com
           allowedUsers:

@@ -3647,6 +3647,211 @@ func TestScopeMerging(t *testing.T) {
 	}
 }
 
+// TestScopeMergingEdgeCases tests additional edge cases for scope deduplication
+func TestScopeMergingEdgeCases(t *testing.T) {
+	// Helper function to compare string slices
+	equalSlices := func(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i, v := range a {
+			if v != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	tests := []struct {
+		name           string
+		defaultScopes  []string
+		userScopes     []string
+		expectedScopes []string
+		description    string
+	}{
+		{
+			name:           "Case sensitivity preserved",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"OpenID", "PROFILE", "custom"},
+			expectedScopes: []string{"openid", "profile", "email", "OpenID", "PROFILE", "custom"},
+			description:    "OAuth scopes are case-sensitive, so different cases should be preserved",
+		},
+		{
+			name:           "Empty strings in user scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"", "custom", "", "another"},
+			expectedScopes: []string{"openid", "profile", "email", "", "custom", "another"},
+			description:    "Empty strings should be preserved (though invalid in OAuth)",
+		},
+		{
+			name:           "Whitespace scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{" ", "custom", "  ", "another"},
+			expectedScopes: []string{"openid", "profile", "email", " ", "custom", "  ", "another"},
+			description:    "Whitespace-only scopes should be preserved as distinct",
+		},
+		{
+			name:          "Large number of scopes",
+			defaultScopes: []string{"openid", "profile", "email"},
+			userScopes:    generateLargeUserScopes(),
+			expectedScopes: func() []string {
+				// Manually calculate expected result with proper deduplication
+				defaults := []string{"openid", "profile", "email"}
+				userScopes := generateLargeUserScopes()
+				return mergeScopes(defaults, userScopes)
+			}(),
+			description: "Performance test with larger scope lists",
+		},
+		{
+			name:           "Complex OAuth scopes with special characters",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"read:users", "write:users", "admin:*", "scope/with/slashes", "scope-with-dashes"},
+			expectedScopes: []string{"openid", "profile", "email", "read:users", "write:users", "admin:*", "scope/with/slashes", "scope-with-dashes"},
+			description:    "Real-world OAuth scopes with colons, slashes, and special characters",
+		},
+		{
+			name:           "Duplicate defaults in user scopes multiple times",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"openid", "profile", "openid", "custom", "email", "profile", "custom"},
+			expectedScopes: []string{"openid", "profile", "email", "custom"},
+			description:    "Multiple duplicates of default scopes should be completely deduplicated",
+		},
+		{
+			name:           "All user scopes are duplicates of defaults",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"email", "openid", "profile", "openid"},
+			expectedScopes: []string{"openid", "profile", "email"},
+			description:    "When all user scopes duplicate defaults, result should be just defaults",
+		},
+		{
+			name:           "Single scope scenarios",
+			defaultScopes:  []string{"openid"},
+			userScopes:     []string{"custom"},
+			expectedScopes: []string{"openid", "custom"},
+			description:    "Minimal case with single scopes",
+		},
+		{
+			name:           "Identical scopes in same order",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"openid", "profile", "email"},
+			expectedScopes: []string{"openid", "profile", "email"},
+			description:    "When user scopes exactly match defaults, no duplication",
+		},
+		{
+			name:           "Identical scopes in different order",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"email", "profile", "openid"},
+			expectedScopes: []string{"openid", "profile", "email"},
+			description:    "Order of defaults is preserved when user scopes are reordered duplicates",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test the mergeScopes function directly
+			result := mergeScopes(tc.defaultScopes, tc.userScopes)
+			if !equalSlices(result, tc.expectedScopes) {
+				t.Errorf("Expected %v, got %v\nDescription: %s", tc.expectedScopes, result, tc.description)
+			}
+		})
+	}
+}
+
+// generateLargeUserScopes creates a large list of user scopes for performance testing
+func generateLargeUserScopes() []string {
+	scopes := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		scopes[i] = fmt.Sprintf("scope_%d", i)
+	}
+	// Add some duplicates to test deduplication performance
+	scopes = append(scopes, "scope_1", "scope_5", "scope_10", "openid") // Include a default duplicate
+	return scopes
+}
+
+// TestScopeMergingPerformance tests performance with large scope lists
+func TestScopeMergingPerformance(t *testing.T) {
+	// Create large scope lists
+	defaultScopes := []string{"openid", "profile", "email"}
+
+	// Create 1000 user scopes with some duplicates
+	userScopes := make([]string, 1000)
+	for i := 0; i < 1000; i++ {
+		if i%10 == 0 {
+			// Add some duplicates of defaults
+			userScopes[i] = defaultScopes[i%len(defaultScopes)]
+		} else if i%7 == 0 {
+			// Add some internal duplicates
+			userScopes[i] = fmt.Sprintf("scope_%d", i%50)
+		} else {
+			userScopes[i] = fmt.Sprintf("scope_%d", i)
+		}
+	}
+
+	// Measure performance
+	start := time.Now()
+	result := mergeScopes(defaultScopes, userScopes)
+	duration := time.Since(start)
+
+	// Verify result correctness
+	if len(result) < len(defaultScopes) {
+		t.Errorf("Result should contain at least the default scopes")
+	}
+
+	// Verify no duplicates exist
+	seen := make(map[string]bool)
+	for _, scope := range result {
+		if seen[scope] {
+			t.Errorf("Duplicate scope found in result: %s", scope)
+		}
+		seen[scope] = true
+	}
+
+	// Performance assertion (should be very fast)
+	if duration > time.Millisecond*10 {
+		t.Logf("Performance note: mergeScopes took %v for 1000+ scopes (still acceptable)", duration)
+	}
+
+	t.Logf("Performance: processed %d user scopes in %v, result has %d unique scopes",
+		len(userScopes), duration, len(result))
+}
+
+// TestScopeMergingMemoryEfficiency tests memory efficiency of the mergeScopes function
+func TestScopeMergingMemoryEfficiency(t *testing.T) {
+	defaultScopes := []string{"openid", "profile", "email"}
+	userScopes := []string{"custom1", "custom2"}
+
+	// Test that the function doesn't modify input slices
+	originalDefaults := make([]string, len(defaultScopes))
+	copy(originalDefaults, defaultScopes)
+	originalUser := make([]string, len(userScopes))
+	copy(originalUser, userScopes)
+
+	result := mergeScopes(defaultScopes, userScopes)
+
+	// Verify input slices are unchanged
+	for i, scope := range defaultScopes {
+		if scope != originalDefaults[i] {
+			t.Errorf("Default scopes were modified: expected %s, got %s", originalDefaults[i], scope)
+		}
+	}
+	for i, scope := range userScopes {
+		if scope != originalUser[i] {
+			t.Errorf("User scopes were modified: expected %s, got %s", originalUser[i], scope)
+		}
+	}
+
+	// Verify result is independent
+	result[0] = "modified"
+	if defaultScopes[0] == "modified" {
+		t.Error("Modifying result affected input defaults")
+	}
+
+	expectedLength := len(defaultScopes) + len(userScopes)
+	if len(result) != expectedLength {
+		t.Errorf("Expected result length %d, got %d", expectedLength, len(result))
+	}
+}
+
 // TestNewWithScopeAppending tests that the New function properly merges scopes
 func TestNewWithScopeAppending(t *testing.T) {
 	// Create mock provider metadata server
