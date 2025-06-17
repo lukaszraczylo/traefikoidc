@@ -1160,7 +1160,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	}
 
 	// Verify ID token and claims
-	if err := t.VerifyToken(tokenResponse.IDToken); err != nil {
+	if err := t.verifyToken(tokenResponse.IDToken); err != nil {
 		t.logger.Errorf("Failed to verify id_token during callback: %v", err)
 		t.sendErrorResponse(rw, req, "Authentication failed: Could not verify ID token", http.StatusInternalServerError)
 		return
@@ -1311,134 +1311,13 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 //   - needsRefresh (bool): True if the token is valid but nearing expiration (within refreshGracePeriod) OR if VerifyJWTSignatureAndClaims failed specifically due to expiration (meaning refresh might be possible).
 //   - expired (bool): True if the session is unauthenticated, the token is missing, or the token verification failed for reasons other than nearing/actual expiration (e.g., invalid signature, invalid claims).
 func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, bool) {
-	if !session.GetAuthenticated() {
-		t.logger.Debug("User is not authenticated according to session flag")
-		// Check if there's still a refresh token - if so, refresh might be possible
-		if session.GetRefreshToken() != "" {
-			t.logger.Debug("Session not authenticated, but refresh token exists. Signaling need for refresh.")
-			return false, true, false // Not authenticated, NeedsRefresh=true (to attempt recovery), Expired=false
-		}
-		return false, false, false // Not authenticated, no refresh token, definitely not expired (just unauth)
+	// Route to provider-specific validation logic
+	if t.isAzureProvider() {
+		return t.validateAzureTokens(session)
+	} else if t.isGoogleProvider() {
+		return t.validateGoogleTokens(session)
 	}
-
-	// Check for access token - may be opaque (non-JWT)
-	accessToken := session.GetAccessToken()
-	if accessToken == "" {
-		t.logger.Debug("Authenticated flag set, but no access token found in session")
-		if session.GetRefreshToken() != "" {
-			t.logger.Debug("Access token missing, but refresh token exists. Signaling need for refresh.")
-			return false, true, false // Not authenticated (no token), NeedsRefresh=true, Expired=false
-		}
-		return false, false, true // No access or refresh token, treat as expired
-	}
-
-	// Check for ID token - needed for roles/groups and some claim validations
-	idToken := session.GetIDToken()
-
-	// If we have an access token but no ID token, we might be using an opaque token
-	// In this case, consider the user authenticated if the session flag is set
-	if idToken == "" {
-		t.logger.Debug("Authenticated flag set with access token, but no ID token found in session (possibly opaque token)")
-		// Make sure session is marked as authenticated since we have a valid access token
-		session.SetAuthenticated(true)
-
-		// Still try to refresh if possible to get a proper ID token
-		if session.GetRefreshToken() != "" {
-			t.logger.Debug("ID token missing but refresh token exists. Signaling conditional refresh to obtain ID token.")
-			return true, true, false // Authenticated=true (has access token), NeedsRefresh=true (to get ID token), Expired=false
-		}
-		// User is authenticated but without ID token claims - some features may be limited
-		return true, false, false
-	}
-
-	// For ID token validation - only if we have an ID token
-	// Verify the token structure and signature
-	// ID Token parsing is now handled within VerifyToken.
-	// Call VerifyToken to ensure tokenCache is populated.
-	if err := t.VerifyToken(idToken); err != nil {
-		// Check if the error is specifically about expiration
-		if strings.Contains(err.Error(), "token has expired") {
-			t.logger.Debugf("ID token signature/claims valid but token expired, needs refresh")
-			// Token is expired but otherwise valid, signal for refresh
-			// Return authenticated=false because the current token is unusable
-			// NeedsRefresh is true only if a refresh token exists
-			if session.GetRefreshToken() != "" {
-				return false, true, false // Not authenticated (current token unusable), NeedsRefresh=true, Expired=false
-			}
-			return false, false, true // Expired ID token, no refresh token, treat as expired
-		}
-
-		// Other verification error (signature, issuer, audience etc.)
-		t.logger.Errorf("ID token verification failed (non-expiration): %v", err)
-		// Check for refresh token before declaring fully expired
-		if session.GetRefreshToken() != "" {
-			t.logger.Debug("ID token verification failed, but refresh token exists. Signaling need for refresh.")
-			return false, true, false // Not authenticated (bad ID token), NeedsRefresh=true, Expired=false
-		}
-		return false, false, true // Token is invalid for other reasons, no refresh token, treat as expired/invalid session
-	}
-
-	// If VerifyToken succeeded, claims are in the cache.
-	cachedClaims, found := t.tokenCache.Get(idToken)
-	if !found {
-		t.logger.Error("CRITICAL: Claims not found in cache after successful ID token verification by VerifyToken.")
-		// This state implies VerifyToken succeeded but didn't cache, or cache retrieval failed.
-		// Safest to try to refresh if possible, otherwise treat as an error.
-		if session.GetRefreshToken() != "" {
-			t.logger.Debug("Claims missing post-VerifyToken, attempting refresh to recover.")
-			return false, true, false // Not authenticated (missing claims), NeedsRefresh=true, Expired=false
-		}
-		return false, false, true // Cannot recover, treat as expired/invalid
-	}
-	claims := cachedClaims
-
-	expClaim, ok := claims["exp"].(float64)
-	if !ok {
-		t.logger.Error("Failed to get expiration time ('exp' claim) from verified token")
-		// Check for refresh token before declaring fully expired
-		if session.GetRefreshToken() != "" {
-			t.logger.Debug("ID token missing 'exp' claim, but refresh token exists. Signaling need for refresh.")
-			return false, true, false // Not authenticated (bad ID token), NeedsRefresh=true, Expired=false
-		}
-		return false, false, true // Treat as invalid if 'exp' is missing and no refresh token
-	}
-
-	expTime := int64(expClaim)
-	expTimeObj := time.Unix(expTime, 0)
-	nowObj := time.Now()
-	refreshThreshold := nowObj.Add(t.refreshGracePeriod)
-
-	// Explicit logging for token expiration time
-	t.logger.Debugf("Token expires at %v, now is %v, refresh threshold is %v",
-		expTimeObj.Format(time.RFC3339),
-		nowObj.Format(time.RFC3339),
-		refreshThreshold.Format(time.RFC3339))
-
-	// Check if token is nearing expiration (needs refresh proactively)
-	// Only mark for refresh if within grace period
-	if expTimeObj.Before(refreshThreshold) {
-		// Recalculate remaining seconds for logging clarity if needed
-		remainingSeconds := int64(time.Until(expTimeObj).Seconds())
-		t.logger.Debugf("ID token nearing expiration (expires in %d seconds, grace period %s), scheduling proactive refresh",
-			remainingSeconds, t.refreshGracePeriod)
-
-		// Token is still valid, but we should refresh it soon
-		// NeedsRefresh is true only if a refresh token exists
-		if session.GetRefreshToken() != "" {
-			return true, true, false // Authenticated=true (current token usable), NeedsRefresh=true, Expired=false
-		}
-
-		// If no refresh token, we can't proactively refresh, treat as normal valid token for now
-		t.logger.Debugf("Token nearing expiration but no refresh token available, cannot proactively refresh.")
-		return true, false, false
-	}
-
-	// Token is valid and not nearing expiration
-	t.logger.Debugf("Token is valid and not nearing expiration (expires in %d seconds, outside %s grace period)",
-		int64(time.Until(expTimeObj).Seconds()), t.refreshGracePeriod)
-
-	// Refresh token exists but we don't need to use it since token is still valid and outside grace period
-	return true, false, false // Authenticated=true, NeedsRefresh=false, Expired=false
+	return t.validateStandardTokens(session)
 }
 
 // defaultInitiateAuthentication handles the process of starting an OIDC authentication flow.
@@ -1567,11 +1446,8 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	scopes := make([]string, len(t.scopes))
 	copy(scopes, t.scopes)
 
-	// Check if we're dealing with a Google OIDC provider
-	isGoogleProvider := strings.Contains(t.issuerURL, "google") || strings.Contains(t.issuerURL, "accounts.google.com")
-
-	// Handle offline access differently for Google vs other providers
-	if isGoogleProvider {
+	// Handle offline access differently for Google vs Azure vs other providers
+	if t.isGoogleProvider() {
 		// For Google, use access_type=offline parameter instead of offline_access scope
 		params.Set("access_type", "offline")
 		t.logger.Debug("Google OIDC provider detected, added access_type=offline for refresh tokens")
@@ -1579,8 +1455,25 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		// Add prompt=consent for Google to ensure refresh token is issued
 		params.Set("prompt", "consent")
 		t.logger.Debug("Google OIDC provider detected, added prompt=consent to ensure refresh tokens")
+	} else if t.isAzureProvider() {
+		// For Azure AD, use offline_access scope and set response_mode
+		params.Set("response_mode", "query")
+		t.logger.Debug("Azure AD provider detected, added response_mode=query")
+
+		hasOfflineAccess := false
+		for _, scope := range scopes {
+			if scope == "offline_access" {
+				hasOfflineAccess = true
+				break
+			}
+		}
+
+		if !hasOfflineAccess {
+			scopes = append(scopes, "offline_access")
+			t.logger.Debug("Azure AD provider detected, added offline_access scope for refresh tokens")
+		}
 	} else {
-		// For non-Google providers, use the offline_access scope
+		// For other providers, use the standard offline_access scope
 		hasOfflineAccess := false
 		for _, scope := range scopes {
 			if scope == "offline_access" {
@@ -1912,10 +1805,11 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		return false
 	}
 
-	// Detect if we're using Google's OIDC provider
-	isGoogleProvider := strings.Contains(t.issuerURL, "google") || strings.Contains(t.issuerURL, "accounts.google.com")
-	if isGoogleProvider {
+	// Detect provider type for token refresh operation
+	if t.isGoogleProvider() {
 		t.logger.Debug("Google OIDC provider detected for token refresh operation")
+	} else if t.isAzureProvider() {
+		t.logger.Debug("Azure AD provider detected for token refresh operation")
 	}
 
 	// Log the attempt with a truncated token for security
@@ -1942,7 +1836,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 			}
 		} else if strings.Contains(errMsg, "invalid_client") {
 			t.logger.Errorf("Client credentials rejected: %v - check client_id and client_secret configuration", err)
-		} else if isGoogleProvider && strings.Contains(errMsg, "invalid_request") {
+		} else if t.isGoogleProvider() && strings.Contains(errMsg, "invalid_request") {
 			t.logger.Errorf("Google OIDC provider error: %v - check scope configuration includes 'offline_access' and prompt=consent is used during authentication", err)
 		}
 
@@ -2274,6 +2168,213 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(code)
 	_, _ = rw.Write([]byte(htmlBody)) // Ignore write error as header is already sent
+}
+
+// isGoogleProvider checks if the current OIDC provider is Google
+func (t *TraefikOidc) isGoogleProvider() bool {
+	return strings.Contains(t.issuerURL, "google") || strings.Contains(t.issuerURL, "accounts.google.com")
+}
+
+// isAzureProvider checks if the current OIDC provider is Azure AD
+func (t *TraefikOidc) isAzureProvider() bool {
+	return strings.Contains(t.issuerURL, "login.microsoftonline.com") ||
+		strings.Contains(t.issuerURL, "sts.windows.net") ||
+		strings.Contains(t.issuerURL, "login.windows.net")
+}
+
+// validateAzureTokens handles Azure AD-specific token validation logic
+// Azure AD tokens may have different characteristics, so we validate access token first
+func (t *TraefikOidc) validateAzureTokens(session *SessionData) (bool, bool, bool) {
+	if !session.GetAuthenticated() {
+		t.logger.Debug("Azure user is not authenticated according to session flag")
+		// Check if there's still a refresh token - if so, refresh might be possible
+		if session.GetRefreshToken() != "" {
+			t.logger.Debug("Azure session not authenticated, but refresh token exists. Signaling need for refresh.")
+			return false, true, false // Not authenticated, NeedsRefresh=true, Expired=false
+		}
+		return false, true, false // Not authenticated, no refresh token
+	}
+
+	// For Azure, prioritize access token validation
+	accessToken := session.GetAccessToken()
+	idToken := session.GetIDToken()
+
+	// If we have an access token, validate it first (Azure's preferred approach)
+	if accessToken != "" {
+		// Check if the access token is JWT format (contains two dots)
+		if strings.Count(accessToken, ".") == 2 {
+			if err := t.verifyToken(accessToken); err != nil {
+				// Access token validation failed, check if we have ID token as fallback
+				if idToken != "" {
+					if err := t.verifyToken(idToken); err != nil {
+						t.logger.Debugf("Azure: Both access and ID token validation failed: %v", err)
+						if session.GetRefreshToken() != "" {
+							return false, true, false // Failed validation, but can refresh
+						}
+						return false, false, true // Failed validation, no refresh token
+					}
+					// ID token is valid, continue with ID token validation logic
+					return t.validateTokenExpiry(session, idToken)
+				}
+				// No ID token fallback available
+				if session.GetRefreshToken() != "" {
+					return false, true, false // Failed validation, but can refresh
+				}
+				return false, false, true // Failed validation, no refresh token
+			}
+			// Access token is valid, check expiry with grace period
+			return t.validateTokenExpiry(session, accessToken)
+		} else {
+			// Access token appears opaque, assume it's valid if session is authenticated
+			t.logger.Debug("Azure access token appears opaque, treating as valid")
+			// Still validate ID token if available for proper expiry checking
+			if idToken != "" {
+				return t.validateTokenExpiry(session, idToken)
+			}
+			// No ID token, but access token exists and session is authenticated
+			return true, false, false
+		}
+	}
+
+	// No access token, fall back to ID token validation (same as standard flow)
+	if idToken != "" {
+		if err := t.verifyToken(idToken); err != nil {
+			if strings.Contains(err.Error(), "token has expired") {
+				if session.GetRefreshToken() != "" {
+					return false, true, false // Expired but can refresh
+				}
+				return false, false, true // Expired, no refresh token
+			}
+			// Other verification error
+			if session.GetRefreshToken() != "" {
+				return false, true, false // Failed validation, but can refresh
+			}
+			return false, false, true // Failed validation, no refresh token
+		}
+		return t.validateTokenExpiry(session, idToken)
+	}
+
+	// No tokens available
+	if session.GetRefreshToken() != "" {
+		return false, true, false // No tokens, but can refresh
+	}
+	return false, false, true // No tokens, no refresh token
+}
+
+// validateGoogleTokens handles Google-specific token validation logic (existing behavior)
+func (t *TraefikOidc) validateGoogleTokens(session *SessionData) (bool, bool, bool) {
+	// Use the existing ID token-first validation logic for Google
+	return t.validateStandardTokens(session)
+}
+
+// validateStandardTokens handles standard OIDC token validation (existing logic)
+func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, bool) {
+	if !session.GetAuthenticated() {
+		t.logger.Debug("User is not authenticated according to session flag")
+		if session.GetRefreshToken() != "" {
+			t.logger.Debug("Session not authenticated, but refresh token exists. Signaling need for refresh.")
+			return false, true, false
+		}
+		return false, false, false
+	}
+
+	// Check for access token - may be opaque (non-JWT)
+	accessToken := session.GetAccessToken()
+	if accessToken == "" {
+		t.logger.Debug("Authenticated flag set, but no access token found in session")
+		if session.GetRefreshToken() != "" {
+			t.logger.Debug("Access token missing, but refresh token exists. Signaling need for refresh.")
+			return false, true, false
+		}
+		return false, false, true
+	}
+
+	// Check for ID token - needed for roles/groups and some claim validations
+	idToken := session.GetIDToken()
+	if idToken == "" {
+		t.logger.Debug("Authenticated flag set with access token, but no ID token found in session (possibly opaque token)")
+		session.SetAuthenticated(true)
+
+		if session.GetRefreshToken() != "" {
+			t.logger.Debug("ID token missing but refresh token exists. Signaling conditional refresh to obtain ID token.")
+			return true, true, false
+		}
+		return true, false, false
+	}
+
+	// For ID token validation
+	if err := t.verifyToken(idToken); err != nil {
+		if strings.Contains(err.Error(), "token has expired") {
+			t.logger.Debugf("ID token signature/claims valid but token expired, needs refresh")
+			if session.GetRefreshToken() != "" {
+				return false, true, false
+			}
+			return false, false, true
+		}
+
+		t.logger.Errorf("ID token verification failed (non-expiration): %v", err)
+		if session.GetRefreshToken() != "" {
+			t.logger.Debug("ID token verification failed, but refresh token exists. Signaling need for refresh.")
+			return false, true, false
+		}
+		return false, false, true
+	}
+
+	return t.validateTokenExpiry(session, idToken)
+}
+
+// validateTokenExpiry checks if a token is nearing expiration and needs refresh
+func (t *TraefikOidc) validateTokenExpiry(session *SessionData, token string) (bool, bool, bool) {
+	// Get cached claims from verified token
+	cachedClaims, found := t.tokenCache.Get(token)
+	if !found {
+		t.logger.Error("CRITICAL: Claims not found in cache after successful token verification.")
+		if session.GetRefreshToken() != "" {
+			t.logger.Debug("Claims missing post-verification, attempting refresh to recover.")
+			return false, true, false
+		}
+		return false, false, true
+	}
+
+	expClaim, ok := cachedClaims["exp"].(float64)
+	if !ok {
+		t.logger.Error("Failed to get expiration time ('exp' claim) from verified token")
+		if session.GetRefreshToken() != "" {
+			t.logger.Debug("Token missing 'exp' claim, but refresh token exists. Signaling need for refresh.")
+			return false, true, false
+		}
+		return false, false, true
+	}
+
+	expTime := int64(expClaim)
+	expTimeObj := time.Unix(expTime, 0)
+	nowObj := time.Now()
+	refreshThreshold := nowObj.Add(t.refreshGracePeriod)
+
+	t.logger.Debugf("Token expires at %v, now is %v, refresh threshold is %v",
+		expTimeObj.Format(time.RFC3339),
+		nowObj.Format(time.RFC3339),
+		refreshThreshold.Format(time.RFC3339))
+
+	// Check if token is nearing expiration
+	if expTimeObj.Before(refreshThreshold) {
+		remainingSeconds := int64(time.Until(expTimeObj).Seconds())
+		t.logger.Debugf("Token nearing expiration (expires in %d seconds, grace period %s), scheduling proactive refresh",
+			remainingSeconds, t.refreshGracePeriod)
+
+		if session.GetRefreshToken() != "" {
+			return true, true, false // Authenticated, NeedsRefresh, not Expired
+		}
+
+		t.logger.Debugf("Token nearing expiration but no refresh token available, cannot proactively refresh.")
+		return true, false, false
+	}
+
+	// Token is valid and not nearing expiration
+	t.logger.Debugf("Token is valid and not nearing expiration (expires in %d seconds, outside %s grace period)",
+		int64(time.Until(expTimeObj).Seconds()), t.refreshGracePeriod)
+
+	return true, false, false // Authenticated, no refresh needed, not expired
 }
 
 // Close stops all background goroutines and closes resources with proper timeout.

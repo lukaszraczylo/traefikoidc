@@ -529,6 +529,11 @@ func TestSessionFixationAttack(t *testing.T) {
 		initComplete:       make(chan struct{}),
 		sessionManager:     sm,
 	}
+
+	// Set up the token verifier and JWT verifier
+	tOidc.jwtVerifier = tOidc
+	tOidc.tokenVerifier = tOidc
+
 	close(tOidc.initComplete)
 
 	// Now create a victim's request with the attacker's cookies
