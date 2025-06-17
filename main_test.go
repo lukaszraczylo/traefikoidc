@@ -3564,3 +3564,220 @@ func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 		})
 	}
 }
+
+// TestScopeMerging tests the scope append functionality
+func TestScopeMerging(t *testing.T) {
+	// Helper function to compare string slices
+	equalSlices := func(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i, v := range a {
+			if v != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	tests := []struct {
+		name           string
+		defaultScopes  []string
+		userScopes     []string
+		expectedScopes []string
+	}{
+		{
+			name:           "Empty user scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{},
+			expectedScopes: []string{"openid", "profile", "email"},
+		},
+		{
+			name:           "Nil user scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     nil,
+			expectedScopes: []string{"openid", "profile", "email"},
+		},
+		{
+			name:           "New scopes are appended",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"custom_scope", "another_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+		},
+		{
+			name:           "Deduplication - user scope already in defaults",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"openid", "custom_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope"},
+		},
+		{
+			name:           "Duplicate user scopes are removed",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"custom_scope", "custom_scope", "another_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+		},
+		{
+			name:           "Multiple overlapping scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"profile", "custom_scope", "email", "another_scope", "profile"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+		},
+		{
+			name:           "Only custom scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"read:users", "write:users", "admin"},
+			expectedScopes: []string{"openid", "profile", "email", "read:users", "write:users", "admin"},
+		},
+		{
+			name:           "Empty defaults",
+			defaultScopes:  []string{},
+			userScopes:     []string{"custom1", "custom2"},
+			expectedScopes: []string{"custom1", "custom2"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test the mergeScopes function directly
+			result := mergeScopes(tc.defaultScopes, tc.userScopes)
+			if !equalSlices(result, tc.expectedScopes) {
+				t.Errorf("Expected %v, got %v", tc.expectedScopes, result)
+			}
+		})
+	}
+}
+
+// TestNewWithScopeAppending tests that the New function properly merges scopes
+func TestNewWithScopeAppending(t *testing.T) {
+	// Create mock provider metadata server
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metadata := ProviderMetadata{
+			Issuer:        "https://test-issuer.com",
+			AuthURL:       "https://test-issuer.com/auth",
+			TokenURL:      "https://test-issuer.com/token",
+			JWKSURL:       "https://test-issuer.com/jwks",
+			RevokeURL:     "https://test-issuer.com/revoke",
+			EndSessionURL: "https://test-issuer.com/end-session",
+		}
+		json.NewEncoder(w).Encode(metadata)
+	}))
+	defer mockServer.Close()
+
+	tests := []struct {
+		name           string
+		configScopes   []string
+		expectedScopes []string
+	}{
+		{
+			name:           "Default scopes only",
+			configScopes:   []string{},
+			expectedScopes: []string{"openid", "profile", "email"},
+		},
+		{
+			name:           "Custom scopes appended",
+			configScopes:   []string{"custom_scope", "another_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+		},
+		{
+			name:           "Overlapping scopes deduplicated",
+			configScopes:   []string{"openid", "custom_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope"},
+		},
+		{
+			name:           "OAuth scopes",
+			configScopes:   []string{"read:users", "write:users", "admin"},
+			expectedScopes: []string{"openid", "profile", "email", "read:users", "write:users", "admin"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create config with test scopes
+			config := &Config{
+				ProviderURL:          mockServer.URL,
+				ClientID:             "test-client",
+				ClientSecret:         "test-secret",
+				CallbackURL:          "/callback",
+				SessionEncryptionKey: "test-encryption-key-thats-long-enough",
+				Scopes:               tc.configScopes,
+			}
+
+			// Create middleware instance
+			middleware, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}), config, "test")
+			if err != nil {
+				t.Fatalf("Failed to create middleware: %v", err)
+			}
+
+			// Wait for initialization
+			if m, ok := middleware.(*TraefikOidc); ok {
+				select {
+				case <-m.initComplete:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("Middleware failed to initialize")
+				}
+
+				// Check that scopes were properly merged
+				if !equalSlices(m.scopes, tc.expectedScopes) {
+					t.Errorf("Expected scopes %v, got %v", tc.expectedScopes, m.scopes)
+				}
+			} else {
+				t.Fatalf("Middleware is not of type *TraefikOidc")
+			}
+		})
+	}
+}
+
+// TestBuildAuthURLWithMergedScopes tests that the auth URL includes the properly merged scopes
+func TestBuildAuthURLWithMergedScopes(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	tests := []struct {
+		name           string
+		scopes         []string
+		expectedScopes string
+	}{
+		{
+			name:           "Default scopes only",
+			scopes:         []string{"openid", "profile", "email"},
+			expectedScopes: "openid profile email offline_access",
+		},
+		{
+			name:           "Custom scopes appended",
+			scopes:         []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+			expectedScopes: "openid profile email custom_scope another_scope offline_access",
+		},
+		{
+			name:           "OAuth scopes",
+			scopes:         []string{"openid", "profile", "email", "read:users", "write:users"},
+			expectedScopes: "openid profile email read:users write:users offline_access",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Configure the test instance with specific scopes
+			tOidc := ts.tOidc
+			tOidc.scopes = tc.scopes
+			tOidc.authURL = "https://auth.example.com/oauth/authorize"
+			tOidc.issuerURL = "https://auth.example.com"
+
+			// Build auth URL
+			result := tOidc.buildAuthURL("https://app.example.com/callback", "test-state", "test-nonce", "")
+
+			// Parse the resulting URL to verify scopes
+			parsedURL, err := url.Parse(result)
+			if err != nil {
+				t.Fatalf("Failed to parse resulting URL: %v", err)
+			}
+
+			query := parsedURL.Query()
+			actualScopes := query.Get("scope")
+			if actualScopes != tc.expectedScopes {
+				t.Errorf("Expected scopes %q, got %q", tc.expectedScopes, actualScopes)
+			}
+		})
+	}
+}

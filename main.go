@@ -371,6 +371,45 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	return nil
 }
 
+// mergeScopes merges default scopes with user-provided scopes, ensuring no duplicates
+// while preserving order (defaults first, then user scopes).
+// It handles edge cases like empty user scopes or nil inputs.
+//
+// Parameters:
+//   - defaultScopes: The default scopes to include (e.g., ["openid", "profile", "email"])
+//   - userScopes: The user-provided scopes to append
+//
+// Returns:
+//   - A slice containing merged scopes with defaults first, then user scopes, with duplicates removed
+func mergeScopes(defaultScopes, userScopes []string) []string {
+	if len(userScopes) == 0 {
+		// If no user scopes provided, return only defaults
+		return append([]string(nil), defaultScopes...)
+	}
+
+	// Create a map to track which scopes we've already seen (for deduplication)
+	seen := make(map[string]bool)
+	var result []string
+
+	// Add default scopes first
+	for _, scope := range defaultScopes {
+		if !seen[scope] {
+			seen[scope] = true
+			result = append(result, scope)
+		}
+	}
+
+	// Add user scopes, skipping duplicates
+	for _, scope := range userScopes {
+		if !seen[scope] {
+			seen[scope] = true
+			result = append(result, scope)
+		}
+	}
+
+	return result
+}
+
 // New is the constructor for the TraefikOidc middleware plugin.
 // It is called by Traefik during plugin initialization. It performs the following steps:
 //  1. Creates a default configuration if none is provided.
@@ -450,7 +489,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		clientSecret:          config.ClientSecret,
 		forceHTTPS:            config.ForceHTTPS,
 		enablePKCE:            config.EnablePKCE,
-		scopes:                config.Scopes,
+		scopes:                mergeScopes([]string{"openid", "profile", "email"}, config.Scopes),
 		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:            NewTokenCache(),
 		httpClient:            httpClient,
