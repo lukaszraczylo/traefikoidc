@@ -240,11 +240,27 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	sessionData.request = r
 	sessionData.dirty = false // Reset dirty flag when getting a session
 
+	// CRITICAL FIX: Use defer to guarantee session is returned to pool on any error
+	var sessionReturned bool
+	defer func() {
+		if !sessionReturned && sessionData != nil {
+			// Recover from any panics and ensure session cleanup
+			if r := recover(); r != nil {
+				sessionData.inUse = false
+				sessionData.Reset()
+				sm.sessionPool.Put(sessionData)
+				panic(r) // Re-panic after cleanup
+			}
+		}
+	}()
+
 	// Function to properly handle errors and return the session to the pool
 	handleError := func(err error, message string) (*SessionData, error) {
-		if sessionData != nil {
+		if sessionData != nil && !sessionReturned {
 			sessionData.inUse = false // Mark as not in use before returning to pool
+			sessionData.Reset()       // Reset to prevent data leakage
 			sm.sessionPool.Put(sessionData)
+			sessionReturned = true // Mark as returned to prevent double-return
 		}
 		return nil, fmt.Errorf("%s: %w", message, err)
 	}
@@ -285,6 +301,8 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	sm.getTokenChunkSessions(r, accessTokenCookie, sessionData.accessTokenChunks)
 	sm.getTokenChunkSessions(r, refreshTokenCookie, sessionData.refreshTokenChunks)
 
+	// CRITICAL FIX: Mark session as successfully retrieved to prevent cleanup in defer
+	sessionReturned = false // Session is successfully being returned to caller
 	return sessionData, nil
 }
 
@@ -442,6 +460,21 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 //
 // Note: This method will always return the SessionData object to the pool, even if an error occurs.
 func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
+	// CRITICAL FIX: Use defer to guarantee session is returned to pool regardless of any errors or panics
+	defer func() {
+		if rec := recover(); rec != nil {
+			// Ensure session is returned to pool even on panic
+			sd.returnToPoolSafely()
+			panic(rec) // Re-panic after cleanup
+		}
+		// Normal path - return to pool
+		sd.returnToPoolSafely()
+	}()
+
+	// CRITICAL FIX: Lock session mutex to prevent race conditions during Clear
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+
 	sd.dirty = true // Clearing the session means its state is changing and needs to be saved.
 
 	// Clear and expire all sessions.
@@ -484,15 +517,21 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	// Clear transient per-request fields.
 	sd.request = nil
 
-	// STABILITY FIX: Mark as not in use and return session to pool, regardless of error.
-	// This ensures the session is always returned to the pool, preventing memory leaks.
-	sd.inUse = false
-	// Reset the session data before returning to pool to prevent data leakage
-	sd.Reset()
-	sd.manager.sessionPool.Put(sd)
-
-	// Return the error from Save, if any
+	// Return the error from Save, if any (defer will handle pool return)
 	return err
+}
+
+// CRITICAL FIX: Add thread-safe helper method to return session to pool
+func (sd *SessionData) returnToPoolSafely() {
+	if sd != nil && sd.manager != nil {
+		// Check if already returned to prevent double-return
+		if sd.inUse {
+			sd.inUse = false
+			// Reset the session data before returning to pool to prevent data leakage
+			sd.Reset()
+			sd.manager.sessionPool.Put(sd)
+		}
+	}
 }
 
 // clearTokenChunks iterates through a map of session chunks, clears their values,

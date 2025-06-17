@@ -94,6 +94,87 @@ const (
 	defaultMaxBlacklistSize  = 10000          // Default maximum size for token blacklist cache
 )
 
+// CRITICAL FIX: Global cache manager for shared cache instances to prevent memory leaks
+var (
+	globalCacheManager *CacheManager
+	cacheManagerOnce   sync.Once
+)
+
+// CacheManager provides shared cache instances across middleware instances
+type CacheManager struct {
+	tokenBlacklist *Cache
+	tokenCache     *TokenCache
+	metadataCache  *MetadataCache
+	jwkCache       JWKCacheInterface
+	mu             sync.RWMutex
+}
+
+// GetGlobalCacheManager returns the singleton cache manager instance
+func GetGlobalCacheManager() *CacheManager {
+	cacheManagerOnce.Do(func() {
+		globalCacheManager = &CacheManager{
+			tokenBlacklist: func() *Cache {
+				c := NewCache()
+				c.SetMaxSize(defaultMaxBlacklistSize)
+				return c
+			}(),
+			tokenCache:    NewTokenCache(),
+			metadataCache: NewMetadataCache(),
+			jwkCache:      &JWKCache{},
+		}
+	})
+	return globalCacheManager
+}
+
+// GetSharedTokenBlacklist returns the shared token blacklist cache
+func (cm *CacheManager) GetSharedTokenBlacklist() *Cache {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.tokenBlacklist
+}
+
+// GetSharedTokenCache returns the shared token cache
+func (cm *CacheManager) GetSharedTokenCache() *TokenCache {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.tokenCache
+}
+
+// GetSharedMetadataCache returns the shared metadata cache
+func (cm *CacheManager) GetSharedMetadataCache() *MetadataCache {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.metadataCache
+}
+
+// GetSharedJWKCache returns the shared JWK cache
+func (cm *CacheManager) GetSharedJWKCache() JWKCacheInterface {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.jwkCache
+}
+
+// Close properly closes all shared caches
+func (cm *CacheManager) Close() error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if cm.tokenBlacklist != nil {
+		cm.tokenBlacklist.Close()
+	}
+	if cm.tokenCache != nil {
+		cm.tokenCache.Close()
+	}
+	if cm.metadataCache != nil {
+		cm.metadataCache.Close()
+	}
+	if cm.jwkCache != nil {
+		cm.jwkCache.Close()
+	}
+
+	return nil
+}
+
 // TokenVerifier interface for token verification
 type TokenVerifier interface {
 	VerifyToken(token string) error
@@ -155,6 +236,10 @@ type TraefikOidc struct {
 	tokenCleanupStopChan    chan struct{}                 // Channel to stop token cleanup goroutine
 	metadataRefreshStopChan chan struct{}                 // Channel to stop metadata refresh goroutine
 	goroutineWG             sync.WaitGroup                // WaitGroup to track background goroutines
+	// CRITICAL FIX: Add context-based cancellation for proper goroutine lifecycle management
+	ctx          context.Context    // Context for all background operations
+	cancelFunc   context.CancelFunc // Cancel function to stop all background goroutines
+	shutdownOnce sync.Once          // Ensure shutdown is only called once
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -462,6 +547,12 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	} else {
 		httpClient = createDefaultHTTPClient()
 	}
+	// CRITICAL FIX: Use shared cache instances to prevent memory leaks
+	cacheManager := GetGlobalCacheManager()
+
+	// CRITICAL FIX: Initialize context for proper goroutine lifecycle management
+	pluginCtx, cancelFunc := context.WithCancel(context.Background())
+
 	t := &TraefikOidc{
 		next:         next,
 		name:         name,
@@ -478,20 +569,17 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			}
 			return config.PostLogoutRedirectURI
 		}(),
-		tokenBlacklist: func() *Cache {
-			c := NewCache()
-			c.SetMaxSize(defaultMaxBlacklistSize)
-			return c
-		}(), // Use generic cache for blacklist with size limit
-		jwkCache:              &JWKCache{},
-		metadataCache:         NewMetadataCache(),
+		// CRITICAL FIX: Use shared cache instances instead of creating new ones per middleware
+		tokenBlacklist:        cacheManager.GetSharedTokenBlacklist(),
+		jwkCache:              cacheManager.GetSharedJWKCache(),
+		metadataCache:         cacheManager.GetSharedMetadataCache(),
 		clientID:              config.ClientID,
 		clientSecret:          config.ClientSecret,
 		forceHTTPS:            config.ForceHTTPS,
 		enablePKCE:            config.EnablePKCE,
 		scopes:                mergeScopes([]string{"openid", "profile", "email"}, config.Scopes),
 		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
-		tokenCache:            NewTokenCache(),
+		tokenCache:            cacheManager.GetSharedTokenCache(),
 		httpClient:            httpClient,
 		tokenHTTPClient:       createTokenHTTPClient(httpClient),
 		excludedURLs:          createStringMap(config.ExcludedURLs),
@@ -508,6 +596,9 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		}(),
 		tokenCleanupStopChan:    make(chan struct{}),
 		metadataRefreshStopChan: make(chan struct{}),
+		// CRITICAL FIX: Initialize context-based cancellation
+		ctx:        pluginCtx,
+		cancelFunc: cancelFunc,
 	}
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
@@ -538,6 +629,9 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		t.headerTemplates[header.Name] = tmpl
 		logger.Debugf("Parsed template for header %s: %s", header.Name, header.Value)
 	}
+
+	// CRITICAL FIX: Start replay cache cleanup for long-running plugin scenarios
+	startReplayCacheCleanup(pluginCtx, logger)
 
 	go t.initializeMetadata(config.ProviderURL)
 
@@ -628,6 +722,10 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 				}
 			case <-t.metadataRefreshStopChan:
 				t.logger.Debug("Metadata refresh goroutine stopped.")
+				return
+			case <-t.ctx.Done():
+				// CRITICAL FIX: Context-based cancellation for proper goroutine lifecycle
+				t.logger.Debug("Metadata refresh goroutine stopped due to context cancellation.")
 				return
 			}
 		}
@@ -1721,6 +1819,10 @@ func (t *TraefikOidc) startTokenCleanup() {
 			case <-t.tokenCleanupStopChan:
 				t.logger.Debug("Token cleanup goroutine stopped.")
 				return
+			case <-t.ctx.Done():
+				// CRITICAL FIX: Context-based cancellation for proper goroutine lifecycle
+				t.logger.Debug("Token cleanup goroutine stopped due to context cancellation.")
+				return
 			}
 		}
 	}()
@@ -2418,58 +2520,68 @@ func (t *TraefikOidc) validateTokenExpiry(session *SessionData, token string) (b
 
 // Close stops all background goroutines and closes resources with proper timeout.
 func (t *TraefikOidc) Close() error {
-	t.logger.Debug("Closing TraefikOidc plugin instance")
+	// CRITICAL FIX: Use shutdownOnce to ensure Close is only called once
+	var closeErr error
+	t.shutdownOnce.Do(func() {
+		t.logger.Debug("Closing TraefikOidc plugin instance")
 
-	// Signal all goroutines to stop
-	if t.tokenCleanupStopChan != nil {
-		close(t.tokenCleanupStopChan)
-		t.logger.Debug("tokenCleanupStopChan closed")
-	}
-	if t.metadataRefreshStopChan != nil {
-		close(t.metadataRefreshStopChan)
-		t.logger.Debug("metadataRefreshStopChan closed")
-	}
+		// CRITICAL FIX: Signal all goroutines to stop using context cancellation
+		if t.cancelFunc != nil {
+			t.cancelFunc()
+			t.logger.Debug("Context cancellation signaled to all goroutines")
+		}
 
-	// Wait for all goroutines to finish with timeout
-	done := make(chan struct{})
-	go func() {
-		t.goroutineWG.Wait()
-		close(done)
-	}()
+		// Legacy channel cleanup for backward compatibility (if channels still exist)
+		if t.tokenCleanupStopChan != nil {
+			close(t.tokenCleanupStopChan)
+			t.logger.Debug("tokenCleanupStopChan closed")
+		}
+		if t.metadataRefreshStopChan != nil {
+			close(t.metadataRefreshStopChan)
+			t.logger.Debug("metadataRefreshStopChan closed")
+		}
 
-	// Wait for goroutines to finish or timeout after 10 seconds
-	select {
-	case <-done:
-		t.logger.Debug("All background goroutines stopped gracefully")
-	case <-time.After(10 * time.Second):
-		t.logger.Errorf("Timeout waiting for background goroutines to stop")
-		// Continue with cleanup even if goroutines didn't stop gracefully
-	}
+		// Wait for all goroutines to finish with timeout
+		done := make(chan struct{})
+		go func() {
+			t.goroutineWG.Wait()
+			close(done)
+		}()
 
-	// Close caches
-	// These Close methods should stop their respective autoCleanupRoutine goroutines
-	if t.tokenBlacklist != nil {
-		t.tokenBlacklist.Close() // This is *cache.Cache, which has Close()
-		t.logger.Debug("tokenBlacklist closed")
-	}
-	if t.metadataCache != nil {
-		t.metadataCache.Close() // This is *MetadataCache, which has Close()
-		t.logger.Debug("metadataCache closed")
-	}
-	if t.tokenCache != nil {
-		t.tokenCache.Close() // This is *TokenCache, which now has Close()
-		t.logger.Debug("tokenCache closed")
-	}
+		// Wait for goroutines to finish or timeout after 10 seconds
+		select {
+		case <-done:
+			t.logger.Debug("All background goroutines stopped gracefully")
+		case <-time.After(10 * time.Second):
+			t.logger.Errorf("Timeout waiting for background goroutines to stop")
+			// Continue with cleanup even if goroutines didn't stop gracefully
+		}
 
-	if t.jwkCache != nil {
-		// Reverting to the original explicit instruction to call t.jwkCache.Close().
-		// This will cause a compile error if JWKCacheInterface (and its implementation *JWKCache)
-		// is not updated in jwk.go to include and implement a Close() method
-		// that properly closes the internal *cache.Cache instance.
-		t.jwkCache.Close()
-		t.logger.Debug("t.jwkCache.Close() called as per original instruction.")
-	}
+		// Close caches
+		// These Close methods should stop their respective autoCleanupRoutine goroutines
+		if t.tokenBlacklist != nil {
+			t.tokenBlacklist.Close() // This is *cache.Cache, which has Close()
+			t.logger.Debug("tokenBlacklist closed")
+		}
+		if t.metadataCache != nil {
+			t.metadataCache.Close() // This is *MetadataCache, which has Close()
+			t.logger.Debug("metadataCache closed")
+		}
+		if t.tokenCache != nil {
+			t.tokenCache.Close() // This is *TokenCache, which now has Close()
+			t.logger.Debug("tokenCache closed")
+		}
 
-	t.logger.Info("TraefikOidc plugin instance closed successfully.")
-	return nil
+		if t.jwkCache != nil {
+			// Reverting to the original explicit instruction to call t.jwkCache.Close().
+			// This will cause a compile error if JWKCacheInterface (and its implementation *JWKCache)
+			// is not updated in jwk.go to include and implement a Close() method
+			// that properly closes the internal *cache.Cache instance.
+			t.jwkCache.Close()
+			t.logger.Debug("t.jwkCache.Close() called as per original instruction.")
+		}
+
+		t.logger.Info("TraefikOidc plugin instance closed successfully.")
+	})
+	return closeErr
 }
