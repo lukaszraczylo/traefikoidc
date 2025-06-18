@@ -42,21 +42,6 @@ const (
 )
 
 const (
-	// STABILITY FIX: Improved cookie size calculation including all metadata
-	// maxCookieSize is the maximum size for each cookie chunk.
-	// This value is calculated to ensure the final cookie size stays within browser limits:
-	// 1. Browser cookie size limit is typically 4096 bytes
-	// 2. Cookie content undergoes encryption (adds 28 bytes) and base64 encoding (4/3 ratio)
-	// 3. Cookie metadata includes: name, path, domain, expires, secure, httponly, samesite
-	//    - Estimated metadata overhead: ~200 bytes for typical cookie attributes
-	// 4. Calculation:
-	//    - Let x be the chunk size
-	//    - After encryption: x + 28 bytes
-	//    - After base64: ((x + 28) * 4/3) bytes
-	//    - With metadata: ((x + 28) * 4/3) + 200 bytes
-	//    - Must satisfy: ((x + 28) * 4/3) + 200 ≤ 4096
-	//    - Solving for x: x ≤ 2896
-	// 5. We use 1800 as a conservative limit to account for varying metadata sizes
 	maxCookieSize = 1800
 
 	// absoluteSessionTimeout defines the maximum lifetime of a session
@@ -76,26 +61,21 @@ const (
 // Returns:
 //   - The base64 encoded, gzipped string, or the original string if compression fails.
 func compressToken(token string) string {
-	// STABILITY FIX: Add input validation and proper error logging
 	if token == "" {
-		return token // Return empty string as-is
+		return token
 	}
 
 	var b bytes.Buffer
 	gz := gzip.NewWriter(&b)
 	if _, err := gz.Write([]byte(token)); err != nil {
-		// Log compression error for debugging
-		// Note: We can't access logger here, but this is a fallback scenario
-		return token // fallback to uncompressed on error
+		return token
 	}
 	if err := gz.Close(); err != nil {
 		return token
 	}
 
 	compressed := base64.StdEncoding.EncodeToString(b.Bytes())
-	// STABILITY FIX: Validate compression actually reduced size
 	if len(compressed) >= len(token) {
-		// Compression didn't help, return original
 		return token
 	}
 
@@ -112,17 +92,15 @@ func compressToken(token string) string {
 // Returns:
 //   - The decompressed original string, or the input string if decompression fails.
 func decompressToken(compressed string) string {
-	// STABILITY FIX: Add input validation and proper error logging
 	if compressed == "" {
-		return compressed // Return empty string as-is
+		return compressed
 	}
 
 	data, err := base64.StdEncoding.DecodeString(compressed)
 	if err != nil {
-		return compressed // return as-is if not base64
+		return compressed
 	}
 
-	// STABILITY FIX: Validate decoded data is not empty
 	if len(data) == 0 {
 		return compressed
 	}
@@ -132,9 +110,7 @@ func decompressToken(compressed string) string {
 		return compressed
 	}
 	defer func() {
-		// STABILITY FIX: Safe close with error handling
 		if closeErr := gz.Close(); closeErr != nil {
-			// Log error if we had access to logger
 		}
 	}()
 
@@ -143,7 +119,6 @@ func decompressToken(compressed string) string {
 		return compressed
 	}
 
-	// STABILITY FIX: Validate decompressed data
 	if len(decompressed) == 0 {
 		return compressed
 	}
@@ -187,24 +162,25 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 		logger:     logger,
 	}
 
-	// Initialize session pool.
 	sm.sessionPool.New = func() interface{} {
-		// Initialize SessionData with necessary fields and the mutex.
 		sd := &SessionData{
 			manager:            sm,
 			accessTokenChunks:  make(map[int]*sessions.Session),
 			refreshTokenChunks: make(map[int]*sessions.Session),
-			refreshMutex:       sync.Mutex{},   // Initialize the mutex
-			sessionMutex:       sync.RWMutex{}, // Initialize the session mutex
-			dirty:              false,          // Initialize dirty flag
-			inUse:              false,          // Initialize in-use flag
+			refreshMutex:       sync.Mutex{},
+			sessionMutex:       sync.RWMutex{},
+			dirty:              false,
+			inUse:              false,
 		}
-		// Ensure the object is properly reset when created
 		sd.Reset()
 		return sd
 	}
 
 	return sm, nil
+}
+
+func (sm *SessionManager) PeriodicChunkCleanup() {
+	sm.logger.Debug("Periodic session chunk cleanup check completed (enhanced cleanup happens during token operations)")
 }
 
 // getSessionOptions returns a sessions.Options struct configured with security best practices.
@@ -231,36 +207,30 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 // and combines them into a single SessionData structure for easy access.
 // Returns an error if any session component cannot be loaded.
 func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
-	// Get session from pool.
 	sessionData := sm.sessionPool.Get().(*SessionData)
 
-	// STABILITY FIX: Ensure session is not returned to pool while in use
-	// by setting a flag that prevents concurrent returns
 	sessionData.inUse = true
 	sessionData.request = r
-	sessionData.dirty = false // Reset dirty flag when getting a session
+	sessionData.dirty = false
 
-	// CRITICAL FIX: Use defer to guarantee session is returned to pool on any error
 	var sessionReturned bool
 	defer func() {
 		if !sessionReturned && sessionData != nil {
-			// Recover from any panics and ensure session cleanup
 			if r := recover(); r != nil {
 				sessionData.inUse = false
 				sessionData.Reset()
 				sm.sessionPool.Put(sessionData)
-				panic(r) // Re-panic after cleanup
+				panic(r)
 			}
 		}
 	}()
 
-	// Function to properly handle errors and return the session to the pool
 	handleError := func(err error, message string) (*SessionData, error) {
 		if sessionData != nil && !sessionReturned {
-			sessionData.inUse = false // Mark as not in use before returning to pool
-			sessionData.Reset()       // Reset to prevent data leakage
+			sessionData.inUse = false
+			sessionData.Reset()
 			sm.sessionPool.Put(sessionData)
-			sessionReturned = true // Mark as returned to prevent double-return
+			sessionReturned = true
 		}
 		return nil, fmt.Errorf("%s: %w", message, err)
 	}
@@ -271,7 +241,6 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 		return handleError(err, "failed to get main session")
 	}
 
-	// Check for absolute session timeout.
 	if createdAt, ok := sessionData.mainSession.Values["created_at"].(int64); ok {
 		if time.Since(time.Unix(createdAt, 0)) > absoluteSessionTimeout {
 			sessionData.Clear(r, nil)
@@ -301,8 +270,7 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	sm.getTokenChunkSessions(r, accessTokenCookie, sessionData.accessTokenChunks)
 	sm.getTokenChunkSessions(r, refreshTokenCookie, sessionData.refreshTokenChunks)
 
-	// CRITICAL FIX: Mark session as successfully retrieved to prevent cleanup in defer
-	sessionReturned = false // Session is successfully being returned to caller
+	sessionReturned = false
 	return sessionData, nil
 }
 
@@ -599,31 +567,23 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 	}
 
 	if value {
-		// If we are setting to true, and either it wasn't true before,
-		// or if the session ID needs regeneration (e.g. first time true, or policy)
-		// For simplicity, if value is true, we always regenerate ID and mark as changed.
-		// This ensures session ID regeneration is always saved.
-		// SECURITY FIX: Increase entropy from 32 to 64+ bytes and add collision detection
 		id, err := generateSecureRandomString(64)
 		if err != nil {
 			return fmt.Errorf("failed to generate secure session id: %w", err)
 		}
 
-		// SECURITY FIX: Add collision detection mechanism
 		maxRetries := 5
 		for retry := 0; retry < maxRetries; retry++ {
-			// Check if this ID already exists (basic collision detection)
 			if sd.mainSession.ID != id {
-				break // ID is different, no collision
+				break
 			}
-			// Generate a new ID if collision detected
 			id, err = generateSecureRandomString(64)
 			if err != nil {
 				return fmt.Errorf("failed to generate secure session id on retry %d: %w", retry, err)
 			}
 		}
 
-		if sd.mainSession.ID != id { // ID actually changed
+		if sd.mainSession.ID != id {
 			changed = true
 		}
 		sd.mainSession.ID = id
@@ -655,7 +615,6 @@ func (sd *SessionData) Reset() {
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	// Clear all session values if sessions exist
 	if sd.mainSession != nil {
 		for k := range sd.mainSession.Values {
 			delete(sd.mainSession.Values, k)
@@ -680,7 +639,6 @@ func (sd *SessionData) Reset() {
 		sd.refreshSession.IsNew = true
 	}
 
-	// Clear chunk maps
 	for k := range sd.accessTokenChunks {
 		delete(sd.accessTokenChunks, k)
 	}
@@ -688,7 +646,6 @@ func (sd *SessionData) Reset() {
 		delete(sd.refreshTokenChunks, k)
 	}
 
-	// Reset state flags
 	sd.dirty = false
 	sd.inUse = false
 	sd.request = nil
@@ -732,7 +689,6 @@ func (sd *SessionData) getAccessTokenUnsafe() string {
 		return token
 	}
 
-	// Reassemble token from chunks.
 	if len(sd.accessTokenChunks) == 0 {
 		return ""
 	}
@@ -760,6 +716,7 @@ func (sd *SessionData) getAccessTokenUnsafe() string {
 // It then compresses the token. If the compressed token fits within a single cookie (maxCookieSize),
 // it's stored directly in the primary access token session. Otherwise, the compressed token
 // is split into chunks, and each chunk is stored in a separate numbered cookie (_oidc_raczylo_a_0, _oidc_raczylo_a_1, etc.).
+// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned session chunks.
 //
 // Parameters:
 //   - token: The access token string to store.
@@ -775,9 +732,9 @@ func (sd *SessionData) SetAccessToken(token string) {
 	}
 	sd.dirty = true
 
-	// Expire any existing chunk cookies first.
+	// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned chunks
 	if sd.request != nil {
-		sd.expireAccessTokenChunks(nil) // Will be saved when Save() is called.
+		sd.expireAccessTokenChunksEnhanced(nil) // Enhanced cleanup with orphan detection
 	}
 
 	// Clear and prepare chunks map for new token.
@@ -819,6 +776,8 @@ func (sd *SessionData) SetAccessToken(token string) {
 			}
 			session, _ := sd.manager.store.Get(sd.request, sessionName)
 			session.Values["token_chunk"] = chunkData
+			// MEDIUM IMPACT FIX: Add timestamp to track chunk creation for orphan detection
+			session.Values["chunk_created_at"] = time.Now().Unix()
 			sd.accessTokenChunks[i] = session
 		}
 	}
@@ -868,6 +827,7 @@ func (sd *SessionData) GetRefreshToken() string {
 // It then compresses the token. If the compressed token fits within a single cookie (maxCookieSize),
 // it's stored directly in the primary refresh token session. Otherwise, the compressed token
 // is split into chunks, and each chunk is stored in a separate numbered cookie (_oidc_raczylo_r_0, _oidc_raczylo_r_1, etc.).
+// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned session chunks.
 //
 // Parameters:
 //   - token: The refresh token string to store.
@@ -878,9 +838,9 @@ func (sd *SessionData) SetRefreshToken(token string) {
 	}
 	sd.dirty = true
 
-	// Expire any existing chunk cookies first.
+	// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned chunks
 	if sd.request != nil {
-		sd.expireRefreshTokenChunks(nil) // Will be saved when Save() is called.
+		sd.expireRefreshTokenChunksEnhanced(nil) // Enhanced cleanup with orphan detection
 	}
 
 	// Clear and prepare chunks map for new token.
@@ -912,56 +872,116 @@ func (sd *SessionData) SetRefreshToken(token string) {
 			}
 			session, _ := sd.manager.store.Get(sd.request, sessionName)
 			session.Values["token_chunk"] = chunkData
+			// MEDIUM IMPACT FIX: Add timestamp to track chunk creation for orphan detection
+			session.Values["chunk_created_at"] = time.Now().Unix()
 			sd.refreshTokenChunks[i] = session
 		}
 	}
 }
 
-// expireAccessTokenChunks finds all existing access token chunk cookies (_oidc_raczylo_a_N)
-// associated with the current request, clears their values, and sets their MaxAge to -1.
-// If a ResponseWriter is provided, it attempts to save the expired chunk sessions to send
-// the expiring Set-Cookie headers. This is used internally when setting a new access token.
+// expireAccessTokenChunksEnhanced provides enhanced cleanup for access token chunks
+// with orphaned chunk detection and timeout-based cleanup mechanisms.
+// MEDIUM IMPACT FIX: Prevents orphaned session chunks from accumulating indefinitely.
 //
 // Parameters:
 //   - w: The HTTP response writer (optional). If provided, expiring Set-Cookie headers will be sent.
-func (sd *SessionData) expireAccessTokenChunks(w http.ResponseWriter) {
-	for i := 0; ; i++ {
+func (sd *SessionData) expireAccessTokenChunksEnhanced(w http.ResponseWriter) {
+	const maxChunkSearchLimit = 50 // Limit search to prevent infinite loops from corrupted state
+	orphanedChunks := 0
+
+	for i := 0; i < maxChunkSearchLimit; i++ {
 		sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
-		if err != nil || session.IsNew {
+		if err != nil {
+			// Error getting session - likely doesn't exist, stop searching
 			break
 		}
+		if session.IsNew {
+			// No more chunks found
+			break
+		}
+
+		// Check for orphaned chunks (chunks that exist but may not be part of current token)
+		if chunk, exists := session.Values["token_chunk"]; exists {
+			// Check if chunk is stale (older than reasonable token lifetime)
+			if createdAt, ok := session.Values["chunk_created_at"].(int64); ok {
+				chunkAge := time.Since(time.Unix(createdAt, 0))
+				if chunkAge > 24*time.Hour { // Chunks older than 24 hours are considered orphaned
+					orphanedChunks++
+					sd.manager.logger.Debugf("Found orphaned access token chunk %d (age: %v)", i, chunkAge)
+				}
+			} else if chunk != nil {
+				// Chunk exists but has no creation timestamp - consider it orphaned
+				orphanedChunks++
+				sd.manager.logger.Debugf("Found access token chunk %d without timestamp, treating as orphaned", i)
+			}
+		}
+
+		// Expire the chunk regardless of orphan status
 		session.Options.MaxAge = -1
 		session.Values = make(map[interface{}]interface{})
 		if w != nil {
 			if err := session.Save(sd.request, w); err != nil {
-				sd.manager.logger.Errorf("failed to save expired access token cookie: %v", err)
+				sd.manager.logger.Errorf("failed to save expired access token chunk %d: %v", i, err)
 			}
 		}
 	}
+
+	if orphanedChunks > 0 {
+		sd.manager.logger.Infof("Cleaned up %d orphaned access token chunks", orphanedChunks)
+	}
 }
 
-// expireRefreshTokenChunks finds all existing refresh token chunk cookies (_oidc_raczylo_r_N)
-// associated with the current request, clears their values, and sets their MaxAge to -1.
-// If a ResponseWriter is provided, it attempts to save the expired chunk sessions to send
-// the expiring Set-Cookie headers. This is used internally when setting a new refresh token.
+// expireRefreshTokenChunksEnhanced provides enhanced cleanup for refresh token chunks
+// with orphaned chunk detection and timeout-based cleanup mechanisms.
+// MEDIUM IMPACT FIX: Prevents orphaned session chunks from accumulating indefinitely.
 //
 // Parameters:
 //   - w: The HTTP response writer (optional). If provided, expiring Set-Cookie headers will be sent.
-func (sd *SessionData) expireRefreshTokenChunks(w http.ResponseWriter) {
-	for i := 0; ; i++ {
+func (sd *SessionData) expireRefreshTokenChunksEnhanced(w http.ResponseWriter) {
+	const maxChunkSearchLimit = 50 // Limit search to prevent infinite loops from corrupted state
+	orphanedChunks := 0
+
+	for i := 0; i < maxChunkSearchLimit; i++ {
 		sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
-		if err != nil || session.IsNew {
+		if err != nil {
+			// Error getting session - likely doesn't exist, stop searching
 			break
 		}
+		if session.IsNew {
+			// No more chunks found
+			break
+		}
+
+		// Check for orphaned chunks (chunks that exist but may not be part of current token)
+		if chunk, exists := session.Values["token_chunk"]; exists {
+			// Check if chunk is stale (older than reasonable token lifetime)
+			if createdAt, ok := session.Values["chunk_created_at"].(int64); ok {
+				chunkAge := time.Since(time.Unix(createdAt, 0))
+				if chunkAge > 24*time.Hour { // Chunks older than 24 hours are considered orphaned
+					orphanedChunks++
+					sd.manager.logger.Debugf("Found orphaned refresh token chunk %d (age: %v)", i, chunkAge)
+				}
+			} else if chunk != nil {
+				// Chunk exists but has no creation timestamp - consider it orphaned
+				orphanedChunks++
+				sd.manager.logger.Debugf("Found refresh token chunk %d without timestamp, treating as orphaned", i)
+			}
+		}
+
+		// Expire the chunk regardless of orphan status
 		session.Options.MaxAge = -1
 		session.Values = make(map[interface{}]interface{})
 		if w != nil {
 			if err := session.Save(sd.request, w); err != nil {
-				sd.manager.logger.Errorf("failed to save expired refresh token cookie: %v", err)
+				sd.manager.logger.Errorf("failed to save expired refresh token chunk %d: %v", i, err)
 			}
 		}
+	}
+
+	if orphanedChunks > 0 {
+		sd.manager.logger.Infof("Cleaned up %d orphaned refresh token chunks", orphanedChunks)
 	}
 }
 

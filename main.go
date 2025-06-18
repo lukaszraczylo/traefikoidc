@@ -94,7 +94,6 @@ const (
 	defaultMaxBlacklistSize  = 10000          // Default maximum size for token blacklist cache
 )
 
-// CRITICAL FIX: Global cache manager for shared cache instances to prevent memory leaks
 var (
 	globalCacheManager *CacheManager
 	cacheManagerOnce   sync.Once
@@ -236,10 +235,9 @@ type TraefikOidc struct {
 	tokenCleanupStopChan    chan struct{}                 // Channel to stop token cleanup goroutine
 	metadataRefreshStopChan chan struct{}                 // Channel to stop metadata refresh goroutine
 	goroutineWG             sync.WaitGroup                // WaitGroup to track background goroutines
-	// CRITICAL FIX: Add context-based cancellation for proper goroutine lifecycle management
-	ctx          context.Context    // Context for all background operations
-	cancelFunc   context.CancelFunc // Cancel function to stop all background goroutines
-	shutdownOnce sync.Once          // Ensure shutdown is only called once
+	ctx                     context.Context
+	cancelFunc              context.CancelFunc
+	shutdownOnce            sync.Once
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -272,23 +270,18 @@ var defaultExcludedURLs = map[string]struct{}{
 //   - nil if the token is valid according to all checks.
 //   - An error describing the reason for validation failure (e.g., rate limit, blacklisted, parsing error, signature error, claim error).
 func (t *TraefikOidc) VerifyToken(token string) error {
-	// STABILITY FIX: Add input validation for token format
 	if token == "" {
 		return fmt.Errorf("invalid JWT format: token is empty")
 	}
 
-	// STABILITY FIX: Validate token has minimum JWT structure (3 parts separated by dots)
 	if strings.Count(token, ".") != 2 {
 		return fmt.Errorf("invalid JWT format: expected JWT with 3 parts, got %d parts", strings.Count(token, ".")+1)
 	}
 
-	// STABILITY FIX: Check for minimum token length to prevent processing malformed tokens
 	if len(token) < 10 {
 		return fmt.Errorf("token too short to be valid JWT")
 	}
 
-	// SECURITY FIX: Always check blacklist before cache lookup to prevent bypass
-	// First, check if the raw token string itself is blacklisted (e.g., via explicit revocation)
 	if blacklisted, exists := t.tokenBlacklist.Get(token); exists && blacklisted != nil {
 		return fmt.Errorf("token is blacklisted (raw string) in cache")
 	}
@@ -299,11 +292,8 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		return fmt.Errorf("failed to parse JWT for blacklist check: %w", parseErr)
 	}
 
-	// SECURITY FIX: Check JTI blacklist before cache lookup to prevent bypass
 	if jti, ok := parsedJWT.Claims["jti"].(string); ok && jti != "" {
-		// Skip JTI check in template-specific tests
 		if !strings.HasPrefix(token, "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0") {
-			// This is a non-test token, proceed with normal JTI check
 			if blacklisted, exists := t.tokenBlacklist.Get(jti); exists && blacklisted != nil {
 				return fmt.Errorf("token replay detected (jti: %s) in cache", jti)
 			}
@@ -381,7 +371,6 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 //   - token: The raw token string (used as the cache key).
 //   - claims: The map of claims extracted from the verified token.
 func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interface{}) {
-	// STABILITY FIX: Safe type assertion with panic protection
 	expClaim, ok := claims["exp"].(float64)
 	if !ok {
 		t.logger.Errorf("Failed to cache token: invalid 'exp' claim type")
@@ -547,10 +536,8 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	} else {
 		httpClient = createDefaultHTTPClient()
 	}
-	// CRITICAL FIX: Use shared cache instances to prevent memory leaks
 	cacheManager := GetGlobalCacheManager()
 
-	// CRITICAL FIX: Initialize context for proper goroutine lifecycle management
 	pluginCtx, cancelFunc := context.WithCancel(context.Background())
 
 	t := &TraefikOidc{
@@ -569,7 +556,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			}
 			return config.PostLogoutRedirectURI
 		}(),
-		// CRITICAL FIX: Use shared cache instances instead of creating new ones per middleware
 		tokenBlacklist:        cacheManager.GetSharedTokenBlacklist(),
 		jwkCache:              cacheManager.GetSharedJWKCache(),
 		metadataCache:         cacheManager.GetSharedMetadataCache(),
@@ -596,9 +582,8 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		}(),
 		tokenCleanupStopChan:    make(chan struct{}),
 		metadataRefreshStopChan: make(chan struct{}),
-		// CRITICAL FIX: Initialize context-based cancellation
-		ctx:        pluginCtx,
-		cancelFunc: cancelFunc,
+		ctx:                     pluginCtx,
+		cancelFunc:              cancelFunc,
 	}
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
@@ -630,7 +615,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		logger.Debugf("Parsed template for header %s: %s", header.Name, header.Value)
 	}
 
-	// CRITICAL FIX: Start replay cache cleanup for long-running plugin scenarios
 	startReplayCacheCleanup(pluginCtx, logger)
 
 	go t.initializeMetadata(config.ProviderURL)
@@ -808,7 +792,6 @@ func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetad
 		return nil, fmt.Errorf("received nil response from provider at %s", wellKnownURL)
 	}
 
-	// STABILITY FIX: Ensure response body is always closed on all paths
 	defer func() {
 		if resp != nil && resp.Body != nil {
 			resp.Body.Close()
@@ -822,7 +805,6 @@ func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetad
 
 	var metadata ProviderMetadata
 	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
-		// STABILITY FIX: Improved error handling without double-reading body
 		return nil, fmt.Errorf("failed to decode provider metadata from %s: %w", wellKnownURL, err)
 	}
 
@@ -1472,7 +1454,6 @@ func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, boo
 func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 	t.logger.Debugf("Initiating new OIDC authentication flow for request: %s", req.URL.RequestURI())
 
-	// STABILITY FIX: Prevent infinite redirect loops
 	const maxRedirects = 5
 	redirectCount := session.GetRedirectCount()
 	if redirectCount >= maxRedirects {
@@ -1482,7 +1463,6 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		return
 	}
 
-	// Increment redirect count
 	session.IncrementRedirectCount()
 
 	// Generate CSRF token and nonce
@@ -1508,10 +1488,7 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		t.logger.Debugf("PKCE enabled, generated code challenge")
 	}
 
-	// Clear any existing session data to avoid stale state causing redirect loops
-	// Pass the response writer to ensure expiring cookies are sent
 	if err := session.Clear(req, rw); err != nil {
-		// Log the error but continue, as clearing is best-effort before re-auth
 		t.logger.Errorf("Error clearing session before initiating authentication: %v", err)
 	}
 
@@ -1643,10 +1620,7 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 // Returns:
 //   - The fully constructed URL string with appended query parameters.
 func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) string {
-	// SECURITY FIX: Implement strict URL sanitization and validation
-	// Allow empty baseURL for tests where metadata hasn't been initialized yet
 	if baseURL != "" {
-		// Skip validation for relative URLs - they will be resolved against issuer URL
 		if strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://") {
 			if err := t.validateURL(baseURL); err != nil {
 				t.logger.Errorf("URL validation failed for %s: %v", baseURL, err)
@@ -1655,9 +1629,7 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 		}
 	}
 
-	// Ensure URL is absolute
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-		// Attempt to resolve relative URL against issuer URL
 		issuerURLParsed, err := url.Parse(t.issuerURL)
 		if err != nil {
 			t.logger.Errorf("Could not parse issuerURL: %s. Error: %v", t.issuerURL, err)
@@ -1672,7 +1644,6 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 
 		resolvedURL := issuerURLParsed.ResolveReference(baseURLParsed)
 
-		// SECURITY FIX: Validate resolved URL (now it should have a proper scheme)
 		if err := t.validateURL(resolvedURL.String()); err != nil {
 			t.logger.Errorf("Resolved URL validation failed for %s: %v", resolvedURL.String(), err)
 			return ""
@@ -1682,14 +1653,12 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 		return resolvedURL.String()
 	}
 
-	// If baseURL is already absolute
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		t.logger.Errorf("Could not parse absolute baseURL: %s. Error: %v", baseURL, err)
 		return ""
 	}
 
-	// SECURITY FIX: Additional validation for parsed URL
 	if err := t.validateParsedURL(u); err != nil {
 		t.logger.Errorf("Parsed URL validation failed for %s: %v", baseURL, err)
 		return ""
@@ -1699,7 +1668,6 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 	return u.String()
 }
 
-// SECURITY FIX: Add URL validation functions to prevent open redirect and SSRF attacks
 func (t *TraefikOidc) validateURL(urlStr string) error {
 	if urlStr == "" {
 		return fmt.Errorf("empty URL")
@@ -1715,10 +1683,9 @@ func (t *TraefikOidc) validateURL(urlStr string) error {
 }
 
 func (t *TraefikOidc) validateParsedURL(u *url.URL) error {
-	// SECURITY FIX: Whitelist allowed schemes
 	allowedSchemes := map[string]bool{
 		"https": true,
-		"http":  true, // Allow HTTP for development, but log warning
+		"http":  true,
 	}
 
 	if !allowedSchemes[u.Scheme] {
@@ -1729,17 +1696,14 @@ func (t *TraefikOidc) validateParsedURL(u *url.URL) error {
 		t.logger.Debugf("Warning: Using HTTP scheme for URL: %s", u.String())
 	}
 
-	// SECURITY FIX: Validate host to prevent SSRF
 	if u.Host == "" {
 		return fmt.Errorf("missing host in URL")
 	}
 
-	// SECURITY FIX: Prevent access to private/internal networks
 	if err := t.validateHost(u.Host); err != nil {
 		return fmt.Errorf("invalid host: %w", err)
 	}
 
-	// SECURITY FIX: Prevent path traversal
 	if strings.Contains(u.Path, "..") {
 		return fmt.Errorf("path traversal detected in URL path")
 	}
@@ -1748,7 +1712,6 @@ func (t *TraefikOidc) validateParsedURL(u *url.URL) error {
 }
 
 func (t *TraefikOidc) validateHost(host string) error {
-	// Extract hostname without port
 	hostname := host
 	if strings.Contains(host, ":") {
 		var err error
@@ -1758,28 +1721,24 @@ func (t *TraefikOidc) validateHost(host string) error {
 		}
 	}
 
-	// Parse IP address if it's an IP
 	ip := net.ParseIP(hostname)
 	if ip != nil {
-		// SECURITY FIX: Block private/internal IP ranges
 		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			return fmt.Errorf("access to private/internal IP addresses is not allowed: %s", ip.String())
 		}
 
-		// Block additional dangerous ranges
 		if ip.IsUnspecified() || ip.IsMulticast() {
 			return fmt.Errorf("access to unspecified or multicast IP addresses is not allowed: %s", ip.String())
 		}
 	}
 
-	// SECURITY FIX: Block dangerous hostnames
 	dangerousHosts := map[string]bool{
 		"localhost":                true,
 		"127.0.0.1":                true,
 		"::1":                      true,
 		"0.0.0.0":                  true,
-		"169.254.169.254":          true, // AWS metadata service
-		"metadata.google.internal": true, // GCP metadata service
+		"169.254.169.254":          true,
+		"metadata.google.internal": true,
 	}
 
 	if dangerousHosts[strings.ToLower(hostname)] {
@@ -1815,6 +1774,10 @@ func (t *TraefikOidc) startTokenCleanup() {
 					// If it's JWKCacheInterface, it needs a Cleanup method.
 					// Based on New(), t.jwkCache = &JWKCache{}, which has a Cleanup method.
 					t.jwkCache.Cleanup()
+				}
+				// MEDIUM IMPACT FIX: Periodic session chunk cleanup to prevent orphaned chunks
+				if t.sessionManager != nil {
+					t.sessionManager.PeriodicChunkCleanup()
 				}
 			case <-t.tokenCleanupStopChan:
 				t.logger.Debug("Token cleanup goroutine stopped.")
@@ -1927,20 +1890,17 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 //   - false if no refresh token was found, the refresh exchange failed, the new token failed verification,
 //     a concurrency conflict was detected, or saving the session failed.
 func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, session *SessionData) bool {
-	// STABILITY FIX: Broader session locking strategy to prevent race conditions
-	// Lock the mutex specific to this session instance before attempting refresh
 	session.refreshMutex.Lock()
 	defer session.refreshMutex.Unlock()
 
 	t.logger.Debug("Attempting to refresh token (mutex acquired)")
 
-	// STABILITY FIX: Check if session is still valid and in use
 	if !session.inUse {
 		t.logger.Debug("refreshToken aborted: Session no longer in use")
 		return false
 	}
 
-	initialRefreshToken := session.GetRefreshToken() // Get token *after* acquiring lock
+	initialRefreshToken := session.GetRefreshToken()
 	if initialRefreshToken == "" {
 		t.logger.Errorf("refreshToken failed: No refresh token found in session (after acquiring lock)")
 		return false
@@ -2000,19 +1960,12 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		return false
 	}
 
-	// --- Concurrency Check ---
-	// Before saving the new token, check if the session state (specifically the refresh token)
-	// has been modified concurrently (e.g., by a logout or another auth initiation).
-	currentRefreshToken := session.GetRefreshToken() // Get token again *after* the potentially long exchange
+	currentRefreshToken := session.GetRefreshToken()
 	if initialRefreshToken != currentRefreshToken {
-		// Use Infof as Warnf doesn't exist
 		t.logger.Infof("refreshToken aborted: Session refresh token changed concurrently during refresh attempt.")
-		// Do not save the new tokens, as the session state is likely invalid/cleared.
-		return false // Indicate refresh failure due to concurrency conflict
+		return false
 	}
-	// --- End Concurrency Check ---
 
-	// Update session with new tokens ONLY if the concurrency check passed
 	t.logger.Debugf("Concurrency check passed. Updating session with new tokens.")
 
 	// Extract email from the new token and update session
@@ -2520,18 +2473,15 @@ func (t *TraefikOidc) validateTokenExpiry(session *SessionData, token string) (b
 
 // Close stops all background goroutines and closes resources with proper timeout.
 func (t *TraefikOidc) Close() error {
-	// CRITICAL FIX: Use shutdownOnce to ensure Close is only called once
 	var closeErr error
 	t.shutdownOnce.Do(func() {
 		t.logger.Debug("Closing TraefikOidc plugin instance")
 
-		// CRITICAL FIX: Signal all goroutines to stop using context cancellation
 		if t.cancelFunc != nil {
 			t.cancelFunc()
 			t.logger.Debug("Context cancellation signaled to all goroutines")
 		}
 
-		// Legacy channel cleanup for backward compatibility (if channels still exist)
 		if t.tokenCleanupStopChan != nil {
 			close(t.tokenCleanupStopChan)
 			t.logger.Debug("tokenCleanupStopChan closed")
@@ -2541,42 +2491,53 @@ func (t *TraefikOidc) Close() error {
 			t.logger.Debug("metadataRefreshStopChan closed")
 		}
 
-		// Wait for all goroutines to finish with timeout
 		done := make(chan struct{})
 		go func() {
 			t.goroutineWG.Wait()
 			close(done)
 		}()
 
-		// Wait for goroutines to finish or timeout after 10 seconds
 		select {
 		case <-done:
 			t.logger.Debug("All background goroutines stopped gracefully")
 		case <-time.After(10 * time.Second):
 			t.logger.Errorf("Timeout waiting for background goroutines to stop")
-			// Continue with cleanup even if goroutines didn't stop gracefully
 		}
 
-		// Close caches
-		// These Close methods should stop their respective autoCleanupRoutine goroutines
+		if t.httpClient != nil {
+			if transport, ok := t.httpClient.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+				t.logger.Debug("HTTP client idle connections closed")
+			}
+		}
+
+		if t.tokenHTTPClient != nil {
+			if transport, ok := t.tokenHTTPClient.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+				t.logger.Debug("Token HTTP client idle connections closed")
+			}
+			if t.tokenHTTPClient.Transport != t.httpClient.Transport {
+				if transport, ok := t.tokenHTTPClient.Transport.(*http.Transport); ok {
+					transport.CloseIdleConnections()
+					t.logger.Debug("Token HTTP client transport closed (separate from main)")
+				}
+			}
+		}
+
 		if t.tokenBlacklist != nil {
-			t.tokenBlacklist.Close() // This is *cache.Cache, which has Close()
+			t.tokenBlacklist.Close()
 			t.logger.Debug("tokenBlacklist closed")
 		}
 		if t.metadataCache != nil {
-			t.metadataCache.Close() // This is *MetadataCache, which has Close()
+			t.metadataCache.Close()
 			t.logger.Debug("metadataCache closed")
 		}
 		if t.tokenCache != nil {
-			t.tokenCache.Close() // This is *TokenCache, which now has Close()
+			t.tokenCache.Close()
 			t.logger.Debug("tokenCache closed")
 		}
 
 		if t.jwkCache != nil {
-			// Reverting to the original explicit instruction to call t.jwkCache.Close().
-			// This will cause a compile error if JWKCacheInterface (and its implementation *JWKCache)
-			// is not updated in jwk.go to include and implement a Close() method
-			// that properly closes the internal *cache.Cache instance.
 			t.jwkCache.Close()
 			t.logger.Debug("t.jwkCache.Close() called as per original instruction.")
 		}

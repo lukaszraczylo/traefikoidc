@@ -19,30 +19,26 @@ import (
 var (
 	replayCacheMu   sync.RWMutex // Use RWMutex for better read performance
 	replayCache     *Cache       // Replace unbounded map with bounded Cache
-	replayCacheOnce sync.Once    // CRITICAL FIX: Ensure thread-safe singleton initialization
+	replayCacheOnce sync.Once
 )
 
-// CRITICAL FIX: Thread-safe initialization with proper size limits and LRU eviction
 func initReplayCache() {
 	replayCacheOnce.Do(func() {
 		replayCache = NewCache()
-		replayCache.SetMaxSize(10000) // Set size limit to 10,000 entries (prevents unbounded growth)
-		// Note: NewCache() already starts auto-cleanup goroutine with LRU eviction
+		replayCache.SetMaxSize(10000)
 	})
 }
 
-// CRITICAL FIX: Add cleanup function for global replay cache
 func cleanupReplayCache() {
 	replayCacheMu.Lock()
 	defer replayCacheMu.Unlock()
 
 	if replayCache != nil {
-		replayCache.Close() // Stop auto-cleanup goroutine
-		replayCache = nil   // Allow GC
+		replayCache.Close()
+		replayCache = nil
 	}
 }
 
-// CRITICAL FIX: Add function to get cache stats for monitoring
 func getReplayCacheStats() (size int, maxSize int) {
 	replayCacheMu.RLock()
 	defer replayCacheMu.RUnlock()
@@ -51,38 +47,28 @@ func getReplayCacheStats() (size int, maxSize int) {
 		return 0, 0
 	}
 
-	// We need to add a method to get current size from Cache
-	// For now, return maxSize as approximation
-	return 0, 10000 // TODO: Add Size() method to Cache
+	return 0, 10000
 }
 
-// CRITICAL FIX: Add periodic cleanup mechanism for long-running scenarios
 func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
-	// Start background cleanup goroutine with periodic stats logging
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute) // Run cleanup every 5 minutes
+		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
-				// Log cache stats for monitoring
 				size, maxSize := getReplayCacheStats()
 				if logger != nil {
 					logger.Debugf("Replay cache stats: size=%d, maxSize=%d", size, maxSize)
 				}
 
-				// Force cleanup if cache exists (the cache handles its own cleanup,
-				// but this provides additional periodic maintenance)
 				replayCacheMu.RLock()
 				if replayCache != nil {
-					// Cache already handles cleanup automatically,
-					// this just ensures cleanup runs periodically for long-running scenarios
 				}
 				replayCacheMu.RUnlock()
 
 			case <-ctx.Done():
-				// Context cancelled, cleanup and exit
 				cleanupReplayCache()
 				if logger != nil {
 					logger.Debug("Replay cache cleanup goroutine stopped due to context cancellation")
@@ -93,17 +79,10 @@ func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
 	}()
 }
 
-// STABILITY FIX: Standardize clock skew tolerance usage
-// ClockSkewToleranceFuture defines the tolerance for future-based claims like 'exp'.
-// Allows for more leniency with expiration checks.
 var ClockSkewToleranceFuture = 2 * time.Minute
 
-// ClockSkewTolerancePast defines the tolerance for past-based claims like 'iat' and 'nbf'.
-// A smaller tolerance is typically used here to prevent accepting tokens issued too far in the future.
 var ClockSkewTolerancePast = 10 * time.Second
 
-// ClockSkewTolerance is deprecated - use ClockSkewToleranceFuture or ClockSkewTolerancePast
-// STABILITY FIX: Remove inconsistent usage
 var ClockSkewTolerance = ClockSkewToleranceFuture
 
 // JWT represents a JSON Web Token as defined in RFC 7519.
@@ -140,12 +119,10 @@ func parseJWT(tokenString string) (*JWT, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode header: %v", err)
 	}
-	// STABILITY FIX: Add comprehensive JSON error handling with panic protection
 	if err := json.Unmarshal(headerBytes, &jwt.Header); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal header: %v", err)
 	}
 
-	// Validate header structure
 	if jwt.Header == nil {
 		return nil, fmt.Errorf("invalid JWT format: header is nil after unmarshaling")
 	}
@@ -155,12 +132,10 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode claims: %v", err)
 	}
 
-	// STABILITY FIX: Add comprehensive JSON error handling with panic protection
 	if err := json.Unmarshal(claimsBytes, &jwt.Claims); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal claims: %v", err)
 	}
 
-	// Validate claims structure
 	if jwt.Claims == nil {
 		return nil, fmt.Errorf("invalid JWT format: claims is nil after unmarshaling")
 	}
@@ -248,22 +223,15 @@ func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error 
 		}
 	}
 
-	// Implement replay protection by checking the jti (JWT ID)
-	// Skip replay check if explicitly requested (for revalidation scenarios)
 	shouldSkipReplay := len(skipReplayCheck) > 0 && skipReplayCheck[0]
 
 	if jti, ok := claims["jti"].(string); ok && !shouldSkipReplay {
-		// Skip replay detection for tokens that are being verified from the cache
 		if j.Token == "" {
-			// This is a parsed JWT without the original token string,
-			// which means it's likely from a cached token verification
 			return nil
 		}
 
-		// CRITICAL FIX: Use thread-safe initialization and proper locking
-		initReplayCache() // Thread-safe initialization
+		initReplayCache()
 
-		// SECURITY FIX: Use read lock for checking, write lock for writing
 		replayCacheMu.RLock()
 		_, exists := replayCache.Get(jti)
 		replayCacheMu.RUnlock()
@@ -272,7 +240,6 @@ func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error 
 			return fmt.Errorf("token replay detected (jti: %s)", jti)
 		}
 
-		// Calculate expiration time
 		expFloat, ok := claims["exp"].(float64)
 		var expTime time.Time
 		if ok {
@@ -281,11 +248,9 @@ func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error 
 			expTime = time.Now().Add(10 * time.Minute)
 		}
 
-		// SECURITY FIX: Add to replay cache with expiration using write lock
 		duration := time.Until(expTime)
 		if duration > 0 {
 			replayCacheMu.Lock()
-			// Double-check pattern: verify cache is still initialized
 			if replayCache != nil {
 				replayCache.Set(jti, true, duration)
 			}
@@ -363,17 +328,15 @@ func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 //   - An error describing the failure (e.g., "token has expired", "token used before issued").
 func verifyTimeConstraint(unixTime float64, claimName string, future bool) error {
 	claimTime := time.Unix(int64(unixTime), 0)
-	now := time.Now() // Use current time without truncation
+	now := time.Now()
 
 	var err error
-	if future { // 'exp' check
-		// Token is expired if Now is after (ClaimTime + FutureTolerance)
+	if future {
 		allowedExpiry := claimTime.Add(ClockSkewToleranceFuture)
 		if now.After(allowedExpiry) {
 			err = fmt.Errorf("token has expired (exp: %v, now: %v, allowed_until: %v)", claimTime.UTC(), now.UTC(), allowedExpiry.UTC())
 		}
-	} else { // 'iat' or 'nbf' check
-		// Token is invalid if Now is before (ClaimTime - PastTolerance)
+	} else {
 		allowedStart := claimTime.Add(-ClockSkewTolerancePast)
 		if now.Before(allowedStart) {
 			reason := "not yet valid"

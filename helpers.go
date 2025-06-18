@@ -123,17 +123,13 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 		data.Set("refresh_token", codeOrToken)
 	}
 
-	// Use the reusable token HTTP client, fallback to creating one if not initialized
 	client := t.tokenHTTPClient
 	if client == nil {
-		// Fallback for tests or incomplete initialization - create a temporary client
-		// with the same behavior as the original implementation
 		jar, _ := cookiejar.New(nil)
 		client = &http.Client{
 			Transport: t.httpClient.Transport,
 			Timeout:   t.httpClient.Timeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				// Always follow redirects for OIDC endpoints
 				if len(via) >= 50 {
 					return fmt.Errorf("stopped after 50 redirects")
 				}
@@ -223,15 +219,21 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 // It stores token claims to avoid repeated validation of the
 // same token, improving performance for frequently used tokens.
 type TokenCache struct {
-	// cache is the underlying cache implementation
 	cache *Cache
 }
 
+const (
+	defaultTokenCacheMaxSize         = 1000
+	defaultTokenCacheCleanupInterval = 2 * time.Minute
+)
+
 // NewTokenCache creates and initializes a new TokenCache.
-// It internally creates a new generic Cache instance for storage.
 func NewTokenCache() *TokenCache {
+	cache := NewCache()
+	cache.SetMaxSize(defaultTokenCacheMaxSize)
+
 	return &TokenCache{
-		cache: NewCache(),
+		cache: cache,
 	}
 }
 
@@ -303,7 +305,6 @@ func (tc *TokenCache) Close() {
 func (t *TraefikOidc) exchangeCodeForToken(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 	ctx := context.Background()
 
-	// Only include code verifier if PKCE is enabled
 	effectiveCodeVerifier := ""
 	if t.enablePKCE && codeVerifier != "" {
 		effectiveCodeVerifier = codeVerifier
