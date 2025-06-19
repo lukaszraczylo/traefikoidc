@@ -590,6 +590,7 @@ func createLargeTemplate(size int) string {
 func createLargeClaims(size int) map[string]interface{} {
 	claims := make(map[string]interface{})
 	for i := 0; i < size; i++ {
+		claims["email"] = "largeclaimsuser@example.com" // Add email claim
 		key := "field" + string(rune('a'+i%26)) + string(rune('0'+i%10))
 		claims[key] = "value" + string(rune('a'+i%26)) + string(rune('0'+i%10))
 	}

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -238,6 +239,7 @@ type TraefikOidc struct {
 	ctx                     context.Context
 	cancelFunc              context.CancelFunc
 	shutdownOnce            sync.Once
+	suppressDiagnosticLogs  bool // Flag to suppress diagnostic logs during tests
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -248,6 +250,45 @@ type ProviderMetadata struct {
 	JWKSURL       string `json:"jwks_uri"`
 	RevokeURL     string `json:"revocation_endpoint"`
 	EndSessionURL string `json:"end_session_endpoint"`
+}
+
+// isTestMode detects if the application is running in test mode
+// This helps suppress diagnostic logs during testing to keep test output clean
+func isTestMode() bool {
+	// First check for explicit environment variable override
+	if os.Getenv("SUPPRESS_DIAGNOSTIC_LOGS") == "1" {
+		return true
+	}
+
+	// Check for common test environment indicators
+	if strings.Contains(os.Args[0], ".test") ||
+		strings.Contains(os.Args[0], "go_build_") ||
+		os.Getenv("GO_TEST") == "1" ||
+		runtime.Compiler == "yaegi" { // Traefik plugin analyzer
+		return true
+	}
+
+	// Check if any argument contains "test"
+	for _, arg := range os.Args {
+		if strings.Contains(arg, "-test") {
+			return true
+		}
+	}
+
+	// Additional check: look for testing package being imported (runtime check)
+	// This is a more aggressive approach - check if we're in testing context
+	if runtime.Compiler == "gc" {
+		// Check if any goroutine has "testing" in its stack (simplified check)
+		// For now, let's use a simpler approach - check if program name suggests testing
+		progName := os.Args[0]
+		if strings.Contains(progName, "test") ||
+			strings.HasSuffix(progName, ".test") ||
+			strings.Contains(progName, "__debug_bin") { // VS Code debug binary
+			return true
+		}
+	}
+
+	return false
 }
 
 // defaultExcludedURLs are the paths that are excluded from authentication
@@ -292,6 +333,27 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		return fmt.Errorf("failed to parse JWT for blacklist check: %w", parseErr)
 	}
 
+	// DIAGNOSTIC: Determine token type for debugging
+	tokenType := "UNKNOWN"
+	tokenPrefix := token
+	if len(token) > 20 {
+		tokenPrefix = token[:20] + "..."
+	}
+	if aud, ok := parsedJWT.Claims["aud"]; ok {
+		if audStr, ok := aud.(string); ok && audStr == t.clientID {
+			tokenType = "ID_TOKEN"
+		}
+	}
+	if scope, ok := parsedJWT.Claims["scope"]; ok {
+		if _, ok := scope.(string); ok {
+			tokenType = "ACCESS_TOKEN"
+		}
+	}
+
+	if !t.suppressDiagnosticLogs {
+		t.logger.Debugf("DIAGNOSTIC: Verifying %s token (prefix: %s)", tokenType, tokenPrefix)
+	}
+
 	if jti, ok := parsedJWT.Claims["jti"].(string); ok && jti != "" {
 		if !strings.HasPrefix(token, "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0") {
 			if blacklisted, exists := t.tokenBlacklist.Get(jti); exists && blacklisted != nil {
@@ -302,7 +364,9 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 
 	// Check cache for efficiency AFTER blacklist checks
 	if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
-		t.logger.Debugf("Token found in cache with valid claims; skipping signature verification")
+		if !t.suppressDiagnosticLogs {
+			t.logger.Debugf("DIAGNOSTIC: %s token found in cache with valid claims; skipping signature verification", tokenType)
+		}
 		return nil
 	}
 
@@ -311,13 +375,18 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		return fmt.Errorf("rate limit exceeded")
 	}
 
-	t.logger.Debugf("Verifying token")
+	if !t.suppressDiagnosticLogs {
+		t.logger.Debugf("DIAGNOSTIC: %s token NOT in cache, performing full verification", tokenType)
+	}
 
 	// Use the already parsed JWT to avoid parsing twice
 	jwt := parsedJWT
 
 	// Verify JWT signature and standard claims
 	if err := t.VerifyJWTSignatureAndClaims(jwt, token); err != nil {
+		if !t.suppressDiagnosticLogs {
+			t.logger.Errorf("DIAGNOSTIC: %s token verification failed: %v", tokenType, err)
+		}
 		return err
 	}
 
@@ -404,6 +473,11 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 		return fmt.Errorf("failed to get JWKS: %w", err)
 	}
 
+	// DIAGNOSTIC: Log JWKS info
+	if !t.suppressDiagnosticLogs {
+		t.logger.Debugf("DIAGNOSTIC: Retrieved JWKS with %d keys from URL: %s", len(jwks.Keys), t.jwksURL)
+	}
+
 	// Retrieve key ID and algorithm from JWT header
 	kid, ok := jwt.Header["kid"].(string)
 	if !ok {
@@ -414,16 +488,30 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 		return fmt.Errorf("missing algorithm in token header")
 	}
 
+	if !t.suppressDiagnosticLogs {
+		t.logger.Debugf("DIAGNOSTIC: Looking for kid=%s, alg=%s in JWKS", kid, alg)
+	}
+
 	// Find the matching key in JWKS
 	var matchingKey *JWK
+	availableKids := make([]string, 0, len(jwks.Keys))
 	for _, key := range jwks.Keys {
+		availableKids = append(availableKids, key.Kid)
 		if key.Kid == kid {
 			matchingKey = &key
 			break
 		}
 	}
+
 	if matchingKey == nil {
+		if !t.suppressDiagnosticLogs {
+			t.logger.Errorf("DIAGNOSTIC: No matching key found for kid=%s. Available kids: %v", kid, availableKids)
+		}
 		return fmt.Errorf("no matching public key found for kid: %s", kid)
+	}
+
+	if !t.suppressDiagnosticLogs {
+		t.logger.Debugf("DIAGNOSTIC: Found matching key for kid=%s, key type: %s", kid, matchingKey.Kty)
 	}
 
 	// Convert JWK to PEM format
@@ -434,7 +522,14 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 
 	// Verify the signature
 	if err := verifySignature(token, publicKeyPEM, alg); err != nil {
+		if !t.suppressDiagnosticLogs {
+			t.logger.Errorf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s: %v", kid, alg, err)
+		}
 		return fmt.Errorf("signature verification failed: %w", err)
+	}
+
+	if !t.suppressDiagnosticLogs {
+		t.logger.Debugf("DIAGNOSTIC: Signature verification successful for kid=%s", kid)
 	}
 
 	// Verify standard claims - skip replay check since it's already handled in VerifyToken
@@ -584,6 +679,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		metadataRefreshStopChan: make(chan struct{}),
 		ctx:                     pluginCtx,
 		cancelFunc:              cancelFunc,
+		suppressDiagnosticLogs:  isTestMode(), // Suppress diagnostic logs during tests
 	}
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
@@ -708,7 +804,7 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 				t.logger.Debug("Metadata refresh goroutine stopped.")
 				return
 			case <-t.ctx.Done():
-				// CRITICAL FIX: Context-based cancellation for proper goroutine lifecycle
+				// Context-based cancellation for proper goroutine lifecycle
 				t.logger.Debug("Metadata refresh goroutine stopped due to context cancellation.")
 				return
 			}
@@ -1114,12 +1210,15 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 			// Execute each template and set the resulting header
 			for headerName, tmpl := range t.headerTemplates {
 				var buf bytes.Buffer
+
 				if err := tmpl.Execute(&buf, templateData); err != nil {
 					t.logger.Errorf("Failed to execute template for header %s: %v", headerName, err)
 					continue
 				}
 				headerValue := buf.String()
+
 				req.Header.Set(headerName, headerValue)
+
 				t.logger.Debugf("Set templated header %s = %s", headerName, headerValue)
 			}
 			// Mark session as dirty after processing templated headers to ensure cookie is re-issued
@@ -1783,7 +1882,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 				t.logger.Debug("Token cleanup goroutine stopped.")
 				return
 			case <-t.ctx.Done():
-				// CRITICAL FIX: Context-based cancellation for proper goroutine lifecycle
+				// Context-based cancellation for proper goroutine lifecycle
 				t.logger.Debug("Token cleanup goroutine stopped due to context cancellation.")
 				return
 			}

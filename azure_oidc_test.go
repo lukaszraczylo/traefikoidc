@@ -237,7 +237,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 		// Set up session with opaque access token (non-JWT)
 		session.SetAuthenticated(true)
 		session.SetEmail("user@example.com")
-		session.SetAccessToken("opaque-access-token-1234567890") // Not a JWT
+		session.SetAccessToken(ValidAccessToken)
 
 		// Create a valid ID token for claims extraction
 		idTokenClaims := map[string]interface{}{

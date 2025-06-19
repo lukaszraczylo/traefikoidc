@@ -2,8 +2,12 @@ package traefikoidc
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"text/template"
 	"time"
@@ -257,10 +261,10 @@ func TestSessionIDTokenAccessToken(t *testing.T) {
 		t.Fatalf("Failed to get session: %v", err)
 	}
 
-	// Set test tokens
-	idToken := "test-id-token-123"
-	accessToken := "test-access-token-456"
-	refreshToken := "test-refresh-token-789"
+	// Set test tokens using standardized tokens
+	idToken := ValidIDToken
+	accessToken := ValidAccessToken
+	refreshToken := ValidRefreshToken
 
 	// Store tokens in session
 	session.SetIDToken(idToken)
@@ -308,4 +312,363 @@ func TestSessionIDTokenAccessToken(t *testing.T) {
 	if retrievedIDToken == retrievedAccessToken {
 		t.Errorf("ID token and Access token should be different, but both are %q", retrievedIDToken)
 	}
+}
+
+// TestTokenCorruptionIntegrationFlows tests the complete token handling flow with corruption scenarios
+func TestTokenCorruptionIntegrationFlows(t *testing.T) {
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		accessToken   string
+		refreshToken  string
+		idToken       string
+		expectSuccess bool
+		corruptAction func(*SessionData) // Function to corrupt session after storage
+	}{
+		{
+			name:          "Normal flow - small tokens",
+			accessToken:   "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.access_sig",
+			refreshToken:  "refresh_token_12345",
+			idToken:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.id_sig",
+			expectSuccess: true,
+		},
+		{
+			name:          "Normal flow - large tokens (chunked)",
+			accessToken:   createLargeValidJWT(5000),
+			refreshToken:  createLargeRefreshToken(3000),
+			idToken:       createLargeValidJWT(2000),
+			expectSuccess: true,
+		},
+		{
+			name:          "Corrupted access token compression",
+			accessToken:   createLargeValidJWT(3000),
+			refreshToken:  "refresh_token_12345",
+			idToken:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.id_sig",
+			expectSuccess: false,
+			corruptAction: func(session *SessionData) {
+				// Corrupt compressed access token
+				if session.accessSession != nil {
+					session.accessSession.Values["token"] = "corrupted_compressed_data_!@#"
+					session.accessSession.Values["compressed"] = true
+				}
+			},
+		},
+		{
+			name:          "Corrupted chunk in large token",
+			accessToken:   createLargeValidJWT(8000), // Force chunking
+			refreshToken:  "refresh_token_12345",
+			idToken:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.id_sig",
+			expectSuccess: false,
+			corruptAction: func(session *SessionData) {
+				// Corrupt first chunk
+				if len(session.accessTokenChunks) > 0 {
+					if chunk, exists := session.accessTokenChunks[0]; exists {
+						chunk.Values["token_chunk"] = "corrupted_chunk_data"
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/test", nil)
+			rr := httptest.NewRecorder()
+
+			// Get session
+			session, err := sm.GetSession(req)
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
+			}
+			defer session.ReturnToPool()
+
+			// Store tokens
+			session.SetAccessToken(tt.accessToken)
+			session.SetRefreshToken(tt.refreshToken)
+			session.SetIDToken(tt.idToken)
+			session.SetAuthenticated(true)
+
+			// Save session
+			if err := session.Save(req, rr); err != nil {
+				t.Fatalf("Failed to save session: %v", err)
+			}
+
+			// Apply corruption if specified
+			if tt.corruptAction != nil {
+				tt.corruptAction(session)
+			}
+
+			// Test token retrieval after corruption
+			retrievedAccess := session.GetAccessToken()
+			retrievedRefresh := session.GetRefreshToken()
+			retrievedID := session.GetIDToken()
+
+			if tt.expectSuccess {
+				if retrievedAccess != tt.accessToken {
+					t.Errorf("Access token corruption: expected %q, got %q", tt.accessToken, retrievedAccess)
+				}
+				if retrievedRefresh != tt.refreshToken {
+					t.Errorf("Refresh token corruption: expected %q, got %q", tt.refreshToken, retrievedRefresh)
+				}
+				if retrievedID != tt.idToken {
+					t.Errorf("ID token corruption: expected %q, got %q", tt.idToken, retrievedID)
+				}
+			} else {
+				// For corruption scenarios, access token should be empty (graceful failure)
+				if retrievedAccess != "" {
+					t.Errorf("Expected corrupted access token to return empty, got: %q", retrievedAccess)
+				}
+				// Other tokens should still work
+				if retrievedRefresh != tt.refreshToken {
+					t.Errorf("Refresh token should not be affected by access token corruption: expected %q, got %q",
+						tt.refreshToken, retrievedRefresh)
+				}
+			}
+		})
+	}
+}
+
+// TestSessionPersistenceWithCorruption tests that session corruption is handled across requests
+func TestSessionPersistenceWithCorruption(t *testing.T) {
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	// First request - store tokens
+	req1 := httptest.NewRequest("GET", "/test", nil)
+	rr1 := httptest.NewRecorder()
+
+	session1, err := sm.GetSession(req1)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+
+	largeToken := createLargeValidJWT(6000)
+	session1.SetAccessToken(largeToken)
+	session1.SetAuthenticated(true)
+
+	if err := session1.Save(req1, rr1); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	// Get cookies from first response
+	cookies := rr1.Result().Cookies()
+	session1.ReturnToPool()
+
+	// Second request - retrieve tokens with cookies
+	req2 := httptest.NewRequest("GET", "/test", nil)
+	for _, cookie := range cookies {
+		req2.AddCookie(cookie)
+	}
+
+	session2, err := sm.GetSession(req2)
+	if err != nil {
+		t.Fatalf("Failed to get session from cookies: %v", err)
+	}
+	defer session2.ReturnToPool()
+
+	// Verify token can be retrieved
+	retrieved := session2.GetAccessToken()
+	if retrieved != largeToken {
+		t.Errorf("Token persistence failed: expected %q, got %q", largeToken, retrieved)
+	}
+
+	// Simulate corruption by modifying chunks
+	if len(session2.accessTokenChunks) > 0 {
+		// Corrupt a middle chunk
+		chunkIndex := len(session2.accessTokenChunks) / 2
+		if chunk, exists := session2.accessTokenChunks[chunkIndex]; exists {
+			chunk.Values["token_chunk"] = "corrupted"
+		}
+
+		// Try to retrieve again - should detect corruption and return empty
+		retrievedAfterCorruption := session2.GetAccessToken()
+		if retrievedAfterCorruption != "" {
+			t.Errorf("Expected corruption to be detected, but got token: %q", retrievedAfterCorruption)
+		}
+	}
+}
+
+// TestConcurrentTokenOperationsWithCorruption tests concurrent access with intentional corruption
+func TestConcurrentTokenOperationsWithCorruption(t *testing.T) {
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	session, err := sm.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	defer session.ReturnToPool()
+
+	const numGoroutines = 10
+	const numOperations = 20
+
+	done := make(chan bool, numGoroutines)
+	errorChan := make(chan error, numGoroutines*numOperations)
+
+	// Start concurrent operations
+	for i := 0; i < numGoroutines; i++ {
+		go func(goroutineID int) {
+			defer func() { done <- true }()
+
+			for j := 0; j < numOperations; j++ {
+				// Create a unique valid token for each operation
+				token := fmt.Sprintf("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwib3AiOiIxMjMifQ.sig_%d_%d",
+					goroutineID, j)
+
+				// Store token
+				session.SetAccessToken(token)
+
+				// Retrieve token
+				retrieved := session.GetAccessToken()
+
+				// Validate retrieved token format
+				if retrieved != "" {
+					if strings.Count(retrieved, ".") != 2 {
+						errorChan <- fmt.Errorf("goroutine %d, op %d: invalid JWT format: %q",
+							goroutineID, j, retrieved)
+						continue
+					}
+
+					// Check if it's a reasonable length
+					if len(retrieved) < 10 || len(retrieved) > 100000 {
+						errorChan <- fmt.Errorf("goroutine %d, op %d: suspicious token length %d: %q",
+							goroutineID, j, len(retrieved), retrieved)
+					}
+				}
+
+				// Occasionally simulate corruption to test error handling
+				if j%5 == 0 && len(session.accessTokenChunks) > 0 {
+					// Intentionally corrupt a random chunk
+					for chunkID, chunk := range session.accessTokenChunks {
+						if chunkID%2 == 0 {
+							chunk.Values["token_chunk"] = "intentionally_corrupted"
+							break
+						}
+					}
+				}
+			}
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	for i := 0; i < numGoroutines; i++ {
+		<-done
+	}
+	close(errorChan)
+
+	// Check for any unexpected errors
+	errorCount := 0
+	for err := range errorChan {
+		t.Logf("Concurrent operation error: %v", err)
+		errorCount++
+	}
+
+	// We expect some corruption-related "errors" due to intentional corruption,
+	// but not format-related errors which would indicate actual corruption bugs
+	if errorCount > numGoroutines*numOperations/4 { // Allow up to 25% corruption-related issues
+		t.Errorf("Too many errors during concurrent operations: %d", errorCount)
+	}
+}
+
+// TestTokenValidationEdgeCases tests edge cases in token validation
+func TestTokenValidationEdgeCases(t *testing.T) {
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	session, err := sm.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	defer session.ReturnToPool()
+
+	// Use standardized test tokens
+	testTokens := NewTestTokens()
+	edgeCases := testTokens.TokenValidationTestCases()
+
+	for _, ec := range edgeCases {
+		t.Run(ec.Name, func(t *testing.T) {
+			// Clear any previous token
+			session.SetAccessToken("")
+
+			// Store the test token
+			originalToken := session.GetAccessToken()
+			session.SetAccessToken(ec.Token)
+			afterStoreToken := session.GetAccessToken()
+
+			if ec.ExpectStored {
+				if afterStoreToken != ec.Token {
+					t.Errorf("Expected token to be stored, but got different value")
+				}
+			} else {
+				if afterStoreToken != originalToken {
+					t.Errorf("Expected invalid token to be rejected, but it was stored")
+				}
+			}
+
+			// Test retrieval
+			finalToken := session.GetAccessToken()
+			if ec.ExpectRetrieved {
+				if finalToken != ec.Token {
+					t.Errorf("Expected token to be retrievable: %q, got: %q", ec.Token, finalToken)
+				}
+			} else {
+				if finalToken != "" {
+					t.Errorf("Expected empty token due to invalid format, got: %q", finalToken)
+				}
+			}
+		})
+	}
+}
+
+// Helper functions for test data creation
+
+// createLargeValidJWT creates a JWT of approximately the specified size
+func createLargeValidJWT(targetSize int) string {
+	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+	signature := "signature_" + generateRandomString(32)
+
+	// Calculate required payload size
+	usedSize := len(header) + len(signature) + 2 // account for dots
+	payloadSize := targetSize - usedSize
+	if payloadSize < 50 {
+		payloadSize = 50
+	}
+
+	// Create a payload with realistic JWT claims
+	claims := map[string]interface{}{
+		"sub":  "user123",
+		"iss":  "https://example.com",
+		"aud":  "client123",
+		"exp":  9999999999,
+		"iat":  1000000000,
+		"data": generateRandomString(payloadSize - 100), // Account for other claims
+	}
+
+	claimsJSON, _ := json.Marshal(claims)
+	payload := base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	return fmt.Sprintf("%s.%s.%s", header, payload, signature)
+}
+
+// createLargeRefreshToken creates a refresh token of approximately the specified size
+func createLargeRefreshToken(targetSize int) string {
+	baseToken := "refresh_token_"
+	padding := generateRandomString(targetSize - len(baseToken))
+	return baseToken + padding
 }

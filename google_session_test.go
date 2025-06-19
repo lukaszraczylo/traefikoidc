@@ -94,7 +94,7 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 		session, _ := sessionManager.GetSession(req)
 		session.SetAuthenticated(true)
 		session.SetEmail("test@example.com")
-		session.SetAccessToken("old-access-token")
+		session.SetAccessToken(ValidAccessToken)
 		session.SetRefreshToken("valid-refresh-token")
 
 		// Create a mock token exchanger that simulates Google's behavior
@@ -106,11 +106,15 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 					return nil, fmt.Errorf("invalid token")
 				}
 
+				// Use standardized test tokens instead of ad-hoc strings
+				testTokens := NewTestTokens()
+				googleTokens := testTokens.GetGoogleTokenSet()
+
 				// Return a simulated Google token response with a new access token
 				// but without a new refresh token (Google doesn't always return a new refresh token)
 				return &TokenResponse{
-					IDToken:      "new-id-token-from-google",
-					AccessToken:  "new-access-token-from-google",
+					IDToken:      googleTokens.IDToken,
+					AccessToken:  googleTokens.AccessToken,
 					RefreshToken: "", // Google often doesn't return a new refresh token
 					ExpiresIn:    3600,
 				}, nil
@@ -149,15 +153,19 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 				session.GetRefreshToken())
 		}
 
+		// Use the same test tokens for validation
+		testTokens := NewTestTokens()
+		expectedTokens := testTokens.GetGoogleTokenSet()
+
 		// Check that the tokens were updated correctly
-		if session.GetIDToken() != "new-id-token-from-google" {
-			t.Errorf("ID token not updated: got %s, expected 'new-id-token-from-google'",
-				session.GetIDToken())
+		if session.GetIDToken() != expectedTokens.IDToken {
+			t.Errorf("ID token not updated: got %s, expected %s",
+				session.GetIDToken(), expectedTokens.IDToken)
 		}
 
-		if session.GetAccessToken() != "new-access-token-from-google" {
-			t.Errorf("Access token not updated: got %s, expected 'new-access-token-from-google'",
-				session.GetAccessToken())
+		if session.GetAccessToken() != expectedTokens.AccessToken {
+			t.Errorf("Access token not updated: got %s, expected %s",
+				session.GetAccessToken(), expectedTokens.AccessToken)
 		}
 	})
 	// Test that our fix specifically addresses the reported Google error

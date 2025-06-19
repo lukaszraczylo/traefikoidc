@@ -503,7 +503,13 @@ func TestServeHTTP(t *testing.T) {
 				// We rely on needsRefresh=true and the presence of the refresh token to trigger the refresh attempt.
 				session.SetAuthenticated(true) // Set flag initially, though isUserAuthenticated will override based on token
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(createExpiredToken())   // Set expired token
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)           // Set expired token
 				session.SetRefreshToken("valid-refresh-token") // Set valid refresh token
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
@@ -572,7 +578,13 @@ func TestServeHTTP(t *testing.T) {
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true) // Set flag initially
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(createExpiredToken())   // Expired access token
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)           // Expired access token
 				session.SetRefreshToken("valid-refresh-token") // Valid refresh token
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
@@ -594,7 +606,13 @@ func TestServeHTTP(t *testing.T) {
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true) // Set flag initially
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(createExpiredToken())   // Expired access token
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)           // Expired access token
 				session.SetRefreshToken("valid-refresh-token") // Valid refresh token
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
@@ -1497,20 +1515,22 @@ func TestHandleLogout(t *testing.T) {
 			name: "Successful logout with end session endpoint",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("test.id.token")
-				session.SetRefreshToken("test-refresh-token")
+				session.SetAccessToken(ValidAccessToken)
+				session.SetIDToken(ValidIDToken)
+				session.SetRefreshToken(ValidRefreshToken)
 			},
 			endSessionURL:  "https://provider/end-session",
 			expectedStatus: http.StatusFound,
-			expectedURL:    "https://provider/end-session?id_token_hint=test.id.token&post_logout_redirect_uri=http%3A%2F%2Fexample.com%2F",
+			expectedURL:    "https://provider/end-session?id_token_hint=" + url.QueryEscape(ValidIDToken) + "&post_logout_redirect_uri=http%3A%2F%2Fexample.com%2F",
 			host:           "test-host",
 		},
 		{
 			name: "Successful logout without end session endpoint",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("test.id.token")
-				session.SetRefreshToken("test-refresh-token")
+				session.SetAccessToken(ValidAccessToken)
+				session.SetIDToken(ValidIDToken)
+				session.SetRefreshToken(ValidRefreshToken)
 			},
 			endSessionURL:  "",
 			expectedStatus: http.StatusFound,
@@ -1528,8 +1548,9 @@ func TestHandleLogout(t *testing.T) {
 			name: "Logout with invalid end session URL",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("test.id.token")
-				session.SetRefreshToken("test-refresh-token")
+				session.SetAccessToken(ValidAccessToken)
+				session.SetIDToken(ValidIDToken)
+				session.SetRefreshToken(ValidRefreshToken)
 			},
 			endSessionURL:  ":\\invalid-url",
 			expectedStatus: http.StatusInternalServerError,
@@ -1811,7 +1832,13 @@ func TestHandleExpiredToken(t *testing.T) {
 			name: "Basic expired token",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("expired.token")
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)
 				session.SetEmail("test@example.com")
 			},
 			expectedPath: "/original/path",
@@ -1820,7 +1847,13 @@ func TestHandleExpiredToken(t *testing.T) {
 			name: "Session with additional values",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("expired.token")
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)
 				session.mainSession.Values["custom_value"] = "should-be-cleared"
 			},
 			expectedPath: "/another/path",

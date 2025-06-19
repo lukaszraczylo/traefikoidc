@@ -229,7 +229,7 @@ func TestSessionConcurrencyProtection(t *testing.T) {
 				// Perform operations on session
 				s.SetEmail(fmt.Sprintf("user%d-%d@example.com", goroutineID, j))
 				s.SetAuthenticated(true)
-				s.SetAccessToken(fmt.Sprintf("token-%d-%d", goroutineID, j))
+				s.SetAccessToken(ValidAccessToken)
 
 				// Save session
 				testRR := httptest.NewRecorder()

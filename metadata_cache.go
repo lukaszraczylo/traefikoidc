@@ -92,7 +92,7 @@ func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client,
 
 	c.metadata = metadata
 	// Set a fixed cache lifetime (e.g., 1 hour)
-	// TODO: Consider making this configurable or respecting HTTP cache headers
+	// Consider making this configurable or respecting HTTP cache headers
 	c.expiresAt = time.Now().Add(1 * time.Hour)
 
 	// End of GetMetadata

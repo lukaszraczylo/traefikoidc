@@ -353,7 +353,7 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	accessToken := session.GetAccessToken()
+	idToken := session.GetIDToken()
 
 	if err := session.Clear(req, rw); err != nil {
 		t.logger.Errorf("Error clearing session: %v", err)
@@ -372,8 +372,8 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		postLogoutRedirectURI = fmt.Sprintf("%s%s", baseURL, postLogoutRedirectURI)
 	}
 
-	if t.endSessionURL != "" && accessToken != "" {
-		logoutURL, err := BuildLogoutURL(t.endSessionURL, accessToken, postLogoutRedirectURI)
+	if t.endSessionURL != "" && idToken != "" {
+		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, postLogoutRedirectURI)
 		if err != nil {
 			t.logger.Errorf("Failed to build logout URL: %v", err)
 			http.Error(rw, "Logout error", http.StatusInternalServerError)
