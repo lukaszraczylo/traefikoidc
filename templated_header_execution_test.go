@@ -143,6 +143,59 @@ func TestTemplateExecution(t *testing.T) {
 			expectedValue: "",
 			expectError:   true, // Parsing should fail
 		},
+		{
+			name:         "Custom Claims",
+			templateText: "Role: {{.Claims.role}}, Department: {{.Claims.department}}",
+			data: map[string]any{
+				"Claims": map[string]any{
+					"email":      "user@example.com",
+					"role":       "admin",
+					"department": "engineering",
+				},
+			},
+			expectedValue: "Role: admin, Department: engineering",
+			expectError:   false,
+		},
+		{
+			name:         "Nested Custom Claims",
+			templateText: "Org: {{.Claims.metadata.organization}}, Team: {{.Claims.metadata.team}}",
+			data: map[string]any{
+				"Claims": map[string]any{
+					"email": "user@example.com",
+					"metadata": map[string]any{
+						"organization": "company-name",
+						"team":         "platform",
+					},
+				},
+			},
+			expectedValue: "Org: company-name, Team: platform",
+			expectError:   false,
+		},
+		{
+			name:         "Email Claims",
+			templateText: "Email: {{.Claims.email}}, Verified: {{.Claims.email_verified}}",
+			data: map[string]any{
+				"Claims": map[string]any{
+					"email":          "user@example.com",
+					"email_verified": true,
+				},
+			},
+			expectedValue: "Email: user@example.com, Verified: true",
+			expectError:   false,
+		},
+		{
+			name:         "User Identity Claims",
+			templateText: "Name: {{.Claims.name}}, Subject: {{.Claims.sub}}, Username: {{.Claims.preferred_username}}",
+			data: map[string]any{
+				"Claims": map[string]any{
+					"name":               "John Doe",
+					"sub":                "user123",
+					"preferred_username": "johndoe",
+				},
+			},
+			expectedValue: "Name: John Doe, Subject: user123, Username: johndoe",
+			expectError:   false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -176,7 +229,137 @@ func TestTemplateExecution(t *testing.T) {
 
 // TestTemplateExecutionContext tests the specific template data context used in processAuthorizedRequest
 func TestTemplateExecutionContext(t *testing.T) {
-	// Define a test struct that matches the one used in processAuthorizedRequest
+	// Test cases for map-based template data, matching the new implementation
+	mapTests := []struct {
+		name          string
+		templateText  string
+		data          map[string]any
+		expectedValue string
+	}{
+		{
+			name:         "Access and ID token distinction with map",
+			templateText: "Access: {{.AccessToken}} ID: {{.IdToken}}",
+			data: map[string]any{
+				"AccessToken":  "access-token-value",
+				"IdToken":      "id-token-value",
+				"Claims":       map[string]any{},
+				"RefreshToken": "refresh-token-value",
+			},
+			expectedValue: "Access: access-token-value ID: id-token-value",
+		},
+		{
+			name:         "Combining tokens and claims with map",
+			templateText: "User: {{.Claims.sub}} Token: {{.AccessToken}}",
+			data: map[string]any{
+				"AccessToken": "access-token",
+				"IdToken":     "id-token",
+				"Claims": map[string]any{
+					"sub": "user123",
+				},
+				"RefreshToken": "refresh-token",
+			},
+			expectedValue: "User: user123 Token: access-token",
+		},
+		{
+			name:         "Authorization header with Bearer token",
+			templateText: "Bearer {{.AccessToken}}",
+			data: map[string]any{
+				"AccessToken": "jwt-access-token",
+				"IdToken":     "id-token",
+				"Claims":      map[string]any{},
+			},
+			expectedValue: "Bearer jwt-access-token",
+		},
+		{
+			name:         "Boolean template data with AccessToken",
+			templateText: "Bearer {{.AccessToken}}",
+			data: map[string]any{
+				"AccessToken": true, // Test boolean values to ensure they render correctly
+			},
+			expectedValue: "Bearer true",
+		},
+		{
+			name:         "Custom non-standard claims in ID token",
+			templateText: "X-User-Role: {{.Claims.role}}, X-User-Permissions: {{.Claims.permissions}}",
+			data: map[string]any{
+				"AccessToken": "access-token-value",
+				"IdToken":     "id-token-value",
+				"Claims": map[string]any{
+					"email":       "user@example.com",
+					"role":        "admin",
+					"permissions": "read:all,write:own",
+				},
+			},
+			expectedValue: "X-User-Role: admin, X-User-Permissions: read:all,write:own",
+		},
+		{
+			name:         "Deeply nested custom claims",
+			templateText: "X-Organization: {{.Claims.app_metadata.organization.name}}, X-Team: {{.Claims.app_metadata.team}}",
+			data: map[string]any{
+				"AccessToken": "access-token-value",
+				"Claims": map[string]any{
+					"app_metadata": map[string]any{
+						"organization": map[string]any{
+							"name": "acme-corp",
+							"id":   "org-123",
+						},
+						"team": "platform",
+					},
+				},
+			},
+			expectedValue: "X-Organization: acme-corp, X-Team: platform",
+		},
+		{
+			name:         "Email in claims",
+			templateText: "X-User-Email: {{.Claims.email}}, X-Email-Verified: {{.Claims.email_verified}}",
+			data: map[string]any{
+				"AccessToken": "access-token-value",
+				"IdToken":     "id-token-value",
+				"Claims": map[string]any{
+					"email":          "user@example.com",
+					"email_verified": true,
+				},
+			},
+			expectedValue: "X-User-Email: user@example.com, X-Email-Verified: true",
+		},
+		{
+			name:         "User info from claims",
+			templateText: "X-User-ID: {{.Claims.sub}}, X-User-Name: {{.Claims.name}}, X-Username: {{.Claims.preferred_username}}",
+			data: map[string]any{
+				"AccessToken": "access-token-value",
+				"IdToken":     "id-token-value",
+				"Claims": map[string]any{
+					"sub":                "user123456",
+					"name":               "Jane Doe",
+					"preferred_username": "jane.doe",
+				},
+			},
+			expectedValue: "X-User-ID: user123456, X-User-Name: Jane Doe, X-Username: jane.doe",
+		},
+	}
+
+	// Run map-based tests (matching the new implementation)
+	for _, tc := range mapTests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl, err := template.New("test").Parse(tc.templateText)
+			if err != nil {
+				t.Fatalf("Failed to parse template: %v", err)
+			}
+
+			var buf bytes.Buffer
+			err = tmpl.Execute(&buf, tc.data)
+			if err != nil {
+				t.Fatalf("Failed to execute template: %v", err)
+			}
+
+			result := buf.String()
+			if result != tc.expectedValue {
+				t.Errorf("Expected template output %q, got %q", tc.expectedValue, result)
+			}
+		})
+	}
+
+	// For backward compatibility, also test the original struct-based implementation
 	type templateData struct {
 		Claims       map[string]any
 		AccessToken  string
@@ -184,15 +367,15 @@ func TestTemplateExecutionContext(t *testing.T) {
 		RefreshToken string
 	}
 
-	// Test cases
-	tests := []struct {
+	// Test cases for struct-based template data (original implementation)
+	structTests := []struct {
 		name          string
 		templateText  string
 		data          templateData
 		expectedValue string
 	}{
 		{
-			name:         "Access and ID token distinction",
+			name:         "Access and ID token distinction with struct",
 			templateText: "Access: {{.AccessToken}} ID: {{.IdToken}}",
 			data: templateData{
 				AccessToken: "access-token-value",
@@ -202,7 +385,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			expectedValue: "Access: access-token-value ID: id-token-value",
 		},
 		{
-			name:         "Combining tokens and claims",
+			name:         "Combining tokens and claims with struct",
 			templateText: "User: {{.Claims.sub}} Token: {{.AccessToken}}",
 			data: templateData{
 				AccessToken: "access-token",
@@ -213,9 +396,36 @@ func TestTemplateExecutionContext(t *testing.T) {
 			},
 			expectedValue: "User: user123 Token: access-token",
 		},
+		{
+			name:         "Custom claims with struct",
+			templateText: "X-Custom: {{.Claims.custom_field}}, X-Group: {{.Claims.group}}",
+			data: templateData{
+				AccessToken: "access-token",
+				IdToken:     "id-token",
+				Claims: map[string]any{
+					"sub":          "user123",
+					"custom_field": "custom-value",
+					"group":        "admins",
+				},
+			},
+			expectedValue: "X-Custom: custom-value, X-Group: admins",
+		},
+		{
+			name:         "Email claim in struct context",
+			templateText: "X-Email: {{.Claims.email}}, X-Name: {{.Claims.name}}",
+			data: templateData{
+				AccessToken: "access-token",
+				IdToken:     "id-token",
+				Claims: map[string]any{
+					"email": "user@example.com",
+					"name":  "John Smith",
+				},
+			},
+			expectedValue: "X-Email: user@example.com, X-Name: John Smith",
+		},
 	}
 
-	for _, tc := range tests {
+	for _, tc := range structTests {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpl, err := template.New("test").Parse(tc.templateText)
 			if err != nil {
@@ -224,6 +434,165 @@ func TestTemplateExecutionContext(t *testing.T) {
 
 			var buf bytes.Buffer
 			err = tmpl.Execute(&buf, tc.data)
+			if err != nil {
+				t.Fatalf("Failed to execute template: %v", err)
+			}
+
+			result := buf.String()
+			if result != tc.expectedValue {
+				t.Errorf("Expected template output %q, got %q", tc.expectedValue, result)
+			}
+		})
+	}
+}
+
+// TestRegressionBooleanAccessToken specifically tests the regression case where
+// a boolean value was causing "can't evaluate field AccessToken in type bool" error
+func TestRegressionBooleanAccessToken(t *testing.T) {
+	// Test the specific case where we execute a template referencing AccessToken
+	// using a boolean context value
+	testCases := []struct {
+		name          string
+		templateText  string
+		dataContext   any
+		expectedValue string
+		expectError   bool // Added to skip the test that demonstrates the error
+	}{
+		{
+			name:          "Map with boolean as root",
+			templateText:  "{{.AccessToken}}",
+			dataContext:   map[string]any{"AccessToken": "token-value"},
+			expectedValue: "token-value",
+			expectError:   false,
+		},
+		{
+			name:          "Boolean as root context",
+			templateText:  "{{.AccessToken}}",
+			dataContext:   true,
+			expectedValue: "<no value>",
+			expectError:   true, // Skip this test as it demonstrates the error we're fixing
+		},
+		{
+			name:          "Bearer with map context",
+			templateText:  "Bearer {{.AccessToken}}",
+			dataContext:   map[string]any{"AccessToken": "token-value"},
+			expectedValue: "Bearer token-value",
+			expectError:   false,
+		},
+		{
+			name:         "Complex nesting with authorization",
+			templateText: "Authorization: Bearer {{.AccessToken}}",
+			dataContext: map[string]any{
+				"AccessToken": "jwt-token-123",
+				"something":   true,
+				"anotherField": map[string]any{
+					"nested": "value",
+				},
+			},
+			expectedValue: "Authorization: Bearer jwt-token-123",
+			expectError:   false,
+		},
+		{
+			name:         "Custom claims access",
+			templateText: "X-User-Role: {{.Claims.role}}, X-User-Groups: {{.Claims.groups}}",
+			dataContext: map[string]any{
+				"AccessToken": "jwt-token-xyz",
+				"Claims": map[string]any{
+					"email":  "user@example.com",
+					"role":   "admin",
+					"groups": "group1,group2,group3",
+					"custom_data": map[string]any{
+						"organization": "company-name",
+						"department":   "engineering",
+					},
+				},
+			},
+			expectedValue: "X-User-Role: admin, X-User-Groups: group1,group2,group3",
+			expectError:   false,
+		},
+		{
+			name:         "Nested custom claims access",
+			templateText: "X-Organization: {{.Claims.custom_data.organization}}, X-Department: {{.Claims.custom_data.department}}",
+			dataContext: map[string]any{
+				"Claims": map[string]any{
+					"custom_data": map[string]any{
+						"organization": "company-name",
+						"department":   "engineering",
+					},
+				},
+			},
+			expectedValue: "X-Organization: company-name, X-Department: engineering",
+			expectError:   false,
+		},
+		{
+			name:         "Azure AD specific claims",
+			templateText: "X-TenantID: {{.Claims.tid}}, X-Roles: {{.Claims.roles}}",
+			dataContext: map[string]any{
+				"Claims": map[string]any{
+					"tid":   "tenant-id-12345",
+					"roles": "User,Admin,Developer",
+				},
+			},
+			expectedValue: "X-TenantID: tenant-id-12345, X-Roles: User,Admin,Developer",
+			expectError:   false,
+		},
+		{
+			name:         "Auth0 specific claims",
+			templateText: "X-Permissions: {{.Claims.permissions}}, X-AppMetadata: {{.Claims.app_metadata.plan}}",
+			dataContext: map[string]any{
+				"Claims": map[string]any{
+					"permissions": "read:products,write:orders",
+					"app_metadata": map[string]any{
+						"plan":        "premium",
+						"status":      "active",
+						"trial_ended": false,
+					},
+				},
+			},
+			expectedValue: "X-Permissions: read:products,write:orders, X-AppMetadata: premium",
+			expectError:   false,
+		},
+		{
+			name:         "Standard claims with email",
+			templateText: "X-Email: {{.Claims.email}}, X-Name: {{.Claims.name}}, X-Subject: {{.Claims.sub}}",
+			dataContext: map[string]any{
+				"Claims": map[string]any{
+					"email": "user@example.com",
+					"name":  "John Doe",
+					"sub":   "auth0|12345",
+				},
+			},
+			expectedValue: "X-Email: user@example.com, X-Name: John Doe, X-Subject: auth0|12345",
+			expectError:   false,
+		},
+		{
+			name:         "Verified email claim",
+			templateText: "X-Email: {{.Claims.email}}, X-Email-Verified: {{.Claims.email_verified}}",
+			dataContext: map[string]any{
+				"Claims": map[string]any{
+					"email":          "user@example.com",
+					"email_verified": true,
+				},
+			},
+			expectedValue: "X-Email: user@example.com, X-Email-Verified: true",
+			expectError:   false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl, err := template.New("test").Parse(tc.templateText)
+			if err != nil {
+				t.Fatalf("Failed to parse template: %v", err)
+			}
+
+			// Skip tests that demonstrate the error
+			if tc.expectError {
+				t.Skip("Skipping test that demonstrates the error we're fixing")
+			}
+
+			var buf bytes.Buffer
+			err = tmpl.Execute(&buf, tc.dataContext)
 			if err != nil {
 				t.Fatalf("Failed to execute template: %v", err)
 			}

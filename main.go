@@ -701,12 +701,17 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	// Initialize and parse header templates
 	t.headerTemplates = make(map[string]*template.Template)
 	for _, header := range config.Headers {
-		tmpl, err := template.New(header.Name).Parse(header.Value)
+		// Use a default empty template to set a proper name for error reporting
+		tmpl := template.New(header.Name)
+
+		// Parse the template with proper error handling
+		parsedTmpl, err := tmpl.Parse(header.Value)
 		if err != nil {
 			logger.Errorf("Failed to parse header template for %s: %v", header.Name, err)
 			continue
 		}
-		t.headerTemplates[header.Name] = tmpl
+
+		t.headerTemplates[header.Name] = parsedTmpl
 		logger.Debugf("Parsed template for header %s: %s", header.Name, header.Value)
 	}
 
@@ -1193,16 +1198,11 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		} else {
 			// Create template data context with available tokens and claims
 			// Fields must be exported (uppercase) to be accessible in templates
-			templateData := struct {
-				Claims       map[string]any
-				AccessToken  string
-				IdToken      string
-				RefreshToken string
-			}{
-				AccessToken:  session.GetAccessToken(), // Provide AccessToken for templates if needed
-				IdToken:      session.GetIDToken(),
-				RefreshToken: session.GetRefreshToken(),
-				Claims:       claims,
+			templateData := map[string]any{
+				"AccessToken":  session.GetAccessToken(),
+				"IdToken":      session.GetIDToken(),
+				"RefreshToken": session.GetRefreshToken(),
+				"Claims":       claims,
 			}
 
 			// Execute each template and set the resulting header
