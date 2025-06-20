@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +25,7 @@ func TestJWTAlgorithmConfusionAttack(t *testing.T) {
 	ts.Setup()
 
 	// Create a standard JWT with RS256 algorithm
-	validRS256JWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	validRS256JWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -52,7 +51,7 @@ func TestJWTAlgorithmConfusionAttack(t *testing.T) {
 	}
 
 	// Parse header
-	var header map[string]any
+	var header map[string]interface{}
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
 		t.Fatalf("Failed to unmarshal header: %v", err)
 	}
@@ -91,7 +90,7 @@ func TestJWTNoneAlgorithmAttack(t *testing.T) {
 	ts.Setup()
 
 	// Create a standard JWT
-	validJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	validJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -117,7 +116,7 @@ func TestJWTNoneAlgorithmAttack(t *testing.T) {
 	}
 
 	// Parse header
-	var header map[string]any
+	var header map[string]interface{}
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
 		t.Fatalf("Failed to unmarshal header: %v", err)
 	}
@@ -155,7 +154,7 @@ func TestJWTTokenTampering(t *testing.T) {
 	ts.Setup()
 
 	// Create a standard JWT
-	validJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	validJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -181,7 +180,7 @@ func TestJWTTokenTampering(t *testing.T) {
 	}
 
 	// Parse claims
-	var claims map[string]any
+	var claims map[string]interface{}
 	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
 		t.Fatalf("Failed to unmarshal claims: %v", err)
 	}
@@ -220,7 +219,7 @@ func TestJWTExpiredToken(t *testing.T) {
 	ts.Setup()
 
 	// Create a JWT that is already expired
-	expiredJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	expiredJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(-1 * time.Hour).Unix()), // Expired 1 hour ago
@@ -253,7 +252,7 @@ func TestJWTFutureToken(t *testing.T) {
 	ts.Setup()
 
 	// Create a JWT with a future issuance time
-	futureJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	futureJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(2 * time.Hour).Unix()),
@@ -316,7 +315,7 @@ func TestJWTReplayAttack(t *testing.T) {
 	fixedJTI := "fixed-test-jti-for-replay-" + generateRandomString(8)
 
 	// Create a JWT with the fixed JTI
-	replayJWT, err := createTestJWT(rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	replayJWT, err := createTestJWT(rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -423,7 +422,7 @@ func TestMissingClaims(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create standard claims
-			claims := map[string]any{
+			claims := map[string]interface{}{
 				"iss":   "https://test-issuer.com",
 				"aud":   "test-client-id",
 				"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -599,7 +598,13 @@ func TestSessionFixationAttack(t *testing.T) {
 	// - The response is unauthorized (401), OR
 	// - The token verification failed
 	expectedCodes := []int{http.StatusFound, http.StatusUnauthorized, http.StatusForbidden}
-	codeFound := slices.Contains(expectedCodes, victimResp.Code)
+	codeFound := false
+	for _, code := range expectedCodes {
+		if victimResp.Code == code {
+			codeFound = true
+			break
+		}
+	}
 
 	if !codeFound {
 		t.Errorf("Expected status code to be one of %v, but got %d", expectedCodes, victimResp.Code)
@@ -824,7 +829,7 @@ func TestTokenBlacklisting(t *testing.T) {
 	}
 
 	// Create a valid JWT
-	validJWT, err := createTestJWT(rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	validJWT, err := createTestJWT(rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -914,7 +919,7 @@ func TestDifferentSigningAlgorithms(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Define standard claims with unique JTI for each test
-			standardClaims := map[string]any{
+			standardClaims := map[string]interface{}{
 				"iss":   "https://test-issuer.com",
 				"aud":   "test-client-id",
 				"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -1017,9 +1022,9 @@ func TestDifferentSigningAlgorithms(t *testing.T) {
 }
 
 // createTestJWTWithECKey creates a JWT signed with an EC private key
-func createTestJWTWithECKey(privateKey *ecdsa.PrivateKey, alg, kid string, claims map[string]any) (string, error) {
+func createTestJWTWithECKey(privateKey *ecdsa.PrivateKey, alg, kid string, claims map[string]interface{}) (string, error) {
 	// Create the header
-	header := map[string]any{
+	header := map[string]interface{}{
 		"alg": alg,
 		"typ": "JWT",
 		"kid": kid,
@@ -1276,7 +1281,7 @@ func TestRateLimiting(t *testing.T) {
 	tOidc.tokenVerifier = tOidc
 
 	// Create a valid JWT token
-	validJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	validJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -1296,7 +1301,7 @@ func TestRateLimiting(t *testing.T) {
 	}
 
 	// Second request should succeed
-	validJWT2, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	validJWT2, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -1315,7 +1320,7 @@ func TestRateLimiting(t *testing.T) {
 	}
 
 	// Third request should be rate limited
-	validJWT3, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	validJWT3, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -1399,7 +1404,13 @@ func TestAuthorizationHeaderBypass(t *testing.T) {
 
 	// Verify that the response is a redirect to authentication (302) or unauthorized (401)
 	expectedCodes := []int{http.StatusFound, http.StatusUnauthorized}
-	codeFound := slices.Contains(expectedCodes, resp.Code)
+	codeFound := false
+	for _, code := range expectedCodes {
+		if resp.Code == code {
+			codeFound = true
+			break
+		}
+	}
 
 	if !codeFound {
 		t.Errorf("Expected status code to be one of %v, but got %d", expectedCodes, resp.Code)
@@ -1412,7 +1423,7 @@ func TestEmptyAudience(t *testing.T) {
 	ts.Setup()
 
 	// Create a JWT with empty audience
-	emptyAudJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	emptyAudJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "https://test-issuer.com",
 		"aud":   "", // Empty audience
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -1445,7 +1456,7 @@ func TestEmptyIssuer(t *testing.T) {
 	ts.Setup()
 
 	// Create a JWT with empty issuer
-	emptyIssJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	emptyIssJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 		"iss":   "", // Empty issuer
 		"aud":   "test-client-id",
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),

@@ -49,7 +49,7 @@ func TestCache_SetMaxSize(t *testing.T) {
 	newMaxSize := 3
 
 	// Add more items than the new max size
-	for i := range originalMaxSize {
+	for i := 0; i < originalMaxSize; i++ {
 		key := "key" + string(rune('A'+i))
 		c.Set(key, i, 1*time.Hour)
 	}

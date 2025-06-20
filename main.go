@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -14,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"text/template"
@@ -209,7 +207,7 @@ type TraefikOidc struct {
 	sessionManager             *SessionManager
 	tokenCleanupStopChan       chan struct{}
 	excludedURLs               map[string]struct{}
-	extractClaimsFunc          func(tokenString string) (map[string]any, error)
+	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
 	metadataCache              *MetadataCache
 	allowedRolesAndGroups      map[string]struct{}
@@ -441,7 +439,7 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 // Parameters:
 //   - token: The raw token string (used as the cache key).
 //   - claims: The map of claims extracted from the verified token.
-func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]any) {
+func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interface{}) {
 	expClaim, ok := claims["exp"].(float64)
 	if !ok {
 		t.logger.Errorf("Failed to cache token: invalid 'exp' claim type")
@@ -698,7 +696,9 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	// Add default excluded URLs
-	maps.Copy(t.excludedURLs, defaultExcludedURLs)
+	for k, v := range defaultExcludedURLs {
+		t.excludedURLs[k] = v
+	}
 
 	t.tokenVerifier = t
 	t.jwtVerifier = t
@@ -848,7 +848,7 @@ func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Lo
 	start := time.Now()
 
 	var lastErr error
-	for attempt := range maxRetries {
+	for attempt := 0; attempt < maxRetries; attempt++ {
 		if time.Since(start) > totalTimeout {
 			l.Errorf("Timeout exceeded while fetching provider metadata")
 			return nil, fmt.Errorf("timeout exceeded while fetching provider metadata: %w", lastErr)
@@ -1048,7 +1048,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if idToken != "" {
 			jwt, err := parseJWT(idToken)
 			if err == nil {
-				// jwt.Claims is already map[string]any, no type assertion needed
+				// jwt.Claims is already map[string]interface{}, no type assertion needed
 				claims := jwt.Claims
 				// STABILITY FIX: Safe type assertion with proper error handling
 				if expClaim, ok := claims["exp"].(float64); ok {
@@ -1205,7 +1205,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		} else {
 			// Create template data context with available tokens and claims
 			// Fields must be exported (uppercase) to be accessible in templates
-			templateData := map[string]any{
+			templateData := map[string]interface{}{
 				"AccessToken":  session.GetAccessToken(),
 				"IdToken":      session.GetIDToken(),
 				"RefreshToken": session.GetRefreshToken(),
@@ -1680,8 +1680,11 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 
 		hasOfflineAccess := false
 
-		if slices.Contains(scopes, "offline_access") {
-			hasOfflineAccess = true
+		for _, scope := range scopes {
+			if scope == "offline_access" {
+				hasOfflineAccess = true
+				break
+			}
 		}
 
 		if !hasOfflineAccess {
@@ -1690,7 +1693,13 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		}
 	} else {
 		// For other providers, use the standard offline_access scope
-		hasOfflineAccess := slices.Contains(scopes, "offline_access")
+		hasOfflineAccess := false
+		for _, scope := range scopes {
+			if scope == "offline_access" {
+				hasOfflineAccess = true
+				break
+			}
+		}
 
 		if !hasOfflineAccess {
 			scopes = append(scopes, "offline_access")
@@ -2214,7 +2223,7 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 
 	// Extract groups with type checking
 	if groupsClaim, exists := claims["groups"]; exists {
-		groupsSlice, ok := groupsClaim.([]any)
+		groupsSlice, ok := groupsClaim.([]interface{})
 		if !ok {
 			// Strictly expect an array
 			return nil, nil, fmt.Errorf("groups claim is not an array")
@@ -2232,7 +2241,7 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 
 	// Extract roles with type checking
 	if rolesClaim, exists := claims["roles"]; exists {
-		rolesSlice, ok := rolesClaim.([]any)
+		rolesSlice, ok := rolesClaim.([]interface{})
 		if !ok {
 			// Strictly expect an array
 			return nil, nil, fmt.Errorf("roles claim is not an array")
@@ -2316,7 +2325,7 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(code)
 		// Use a simple error structure - ensure this matches the expected response format in tests
-		json.NewEncoder(rw).Encode(map[string]any{
+		json.NewEncoder(rw).Encode(map[string]interface{}{
 			"error":             http.StatusText(code), // Use standard text for the code
 			"error_description": message,               // Provide specific detail here
 			"status_code":       code,

@@ -55,14 +55,14 @@ func (t SecurityEventType) IPFailureType() string {
 
 // SecurityEvent represents a security-related event that should be logged and monitored
 type SecurityEvent struct {
-	Timestamp   time.Time      `json:"timestamp"`
-	Details     map[string]any `json:"details,omitempty"`
-	Type        string         `json:"type"`
-	Severity    string         `json:"severity"`
-	ClientIP    string         `json:"client_ip"`
-	UserAgent   string         `json:"user_agent"`
-	RequestPath string         `json:"request_path"`
-	Message     string         `json:"message"`
+	Timestamp   time.Time              `json:"timestamp"`
+	Details     map[string]interface{} `json:"details,omitempty"`
+	Type        string                 `json:"type"`
+	Severity    string                 `json:"severity"`
+	ClientIP    string                 `json:"client_ip"`
+	UserAgent   string                 `json:"user_agent"`
+	RequestPath string                 `json:"request_path"`
+	Message     string                 `json:"message"`
 }
 
 // SecurityMonitor tracks security events and suspicious activity patterns
@@ -168,7 +168,7 @@ func (sm *SecurityMonitor) RecordSecurityEvent(
 	eventType SecurityEventType,
 	clientIP, userAgent, requestPath string,
 	message string,
-	details map[string]any,
+	details map[string]interface{},
 	trackIPFailure bool) {
 
 	// Create event with default values for the event type
@@ -193,9 +193,9 @@ func (sm *SecurityMonitor) RecordSecurityEvent(
 }
 
 // RecordAuthenticationFailure records an authentication failure event
-func (sm *SecurityMonitor) RecordAuthenticationFailure(clientIP, userAgent, requestPath, reason string, details map[string]any) {
+func (sm *SecurityMonitor) RecordAuthenticationFailure(clientIP, userAgent, requestPath, reason string, details map[string]interface{}) {
 	if details == nil {
-		details = make(map[string]any)
+		details = make(map[string]interface{})
 	}
 	details["reason"] = reason
 
@@ -212,7 +212,7 @@ func (sm *SecurityMonitor) RecordAuthenticationFailure(clientIP, userAgent, requ
 
 // RecordTokenValidationFailure records a token validation failure
 func (sm *SecurityMonitor) RecordTokenValidationFailure(clientIP, userAgent, requestPath, reason string, tokenPrefix string) {
-	details := map[string]any{
+	details := map[string]interface{}{
 		"reason": reason,
 	}
 	if tokenPrefix != "" {
@@ -232,7 +232,7 @@ func (sm *SecurityMonitor) RecordTokenValidationFailure(clientIP, userAgent, req
 
 // RecordRateLimitHit records when rate limiting is triggered
 func (sm *SecurityMonitor) RecordRateLimitHit(clientIP, userAgent, requestPath string) {
-	details := map[string]any{
+	details := map[string]interface{}{
 		"limit_type": "token_verification",
 	}
 
@@ -248,9 +248,9 @@ func (sm *SecurityMonitor) RecordRateLimitHit(clientIP, userAgent, requestPath s
 }
 
 // RecordSuspiciousActivity records suspicious activity that doesn't fit other categories
-func (sm *SecurityMonitor) RecordSuspiciousActivity(clientIP, userAgent, requestPath, activityType, description string, details map[string]any) {
+func (sm *SecurityMonitor) RecordSuspiciousActivity(clientIP, userAgent, requestPath, activityType, description string, details map[string]interface{}) {
 	if details == nil {
-		details = make(map[string]any)
+		details = make(map[string]interface{})
 	}
 	details["activity_type"] = activityType
 
@@ -302,7 +302,7 @@ func (sm *SecurityMonitor) recordIPFailure(clientIP, failureType string) {
 				Timestamp: time.Now(),
 				ClientIP:  clientIP,
 				Message:   fmt.Sprintf("IP blocked due to %d failures in %d minutes", tracker.FailureCount, sm.config.FailureWindowMinutes),
-				Details: map[string]any{
+				Details: map[string]interface{}{
 					"failure_count": tracker.FailureCount,
 					"failure_types": tracker.FailureTypes,
 					"blocked_until": tracker.BlockedUntil,
@@ -355,7 +355,7 @@ func (sm *SecurityMonitor) processSecurityEvent(event SecurityEvent) {
 					Severity:  "high",
 					Timestamp: time.Now(),
 					Message:   fmt.Sprintf("Suspicious pattern detected: %s", pattern),
-					Details: map[string]any{
+					Details: map[string]interface{}{
 						"pattern_type":  pattern,
 						"trigger_event": event,
 					},
@@ -389,8 +389,8 @@ func (sm *SecurityMonitor) AddEventHandler(handler SecurityEventHandler) {
 
 // GetSecurityMetrics returns minimal security metrics
 // This is kept for API compatibility but doesn't collect actual metrics
-func (sm *SecurityMonitor) GetSecurityMetrics() map[string]any {
-	return map[string]any{
+func (sm *SecurityMonitor) GetSecurityMetrics() map[string]interface{} {
+	return map[string]interface{}{
 		"tracked_ips": 0,
 	}
 }

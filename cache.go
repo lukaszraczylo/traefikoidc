@@ -9,7 +9,7 @@ import (
 // CacheItem represents an item stored in the cache with its associated metadata.
 type CacheItem struct {
 	// Value is the cached data of any type.
-	Value any
+	Value interface{}
 
 	// ExpiresAt is the timestamp when this item should be considered expired.
 	ExpiresAt time.Time
@@ -66,7 +66,7 @@ func NewCacheWithLogger(logger *Logger) *Cache {
 // If the key does not exist and the cache is full, the least recently used item is evicted
 // before adding the new item.
 // The expiration duration is relative to the time Set is called.
-func (c *Cache) Set(key string, value any, expiration time.Duration) {
+func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -104,7 +104,7 @@ func (c *Cache) Set(key string, value any, expiration time.Duration) {
 // Accessing an item moves it to the most recently used position in the LRU list.
 // If the item does not exist or has expired, nil and false are returned, and the
 // expired item is removed from the cache.
-func (c *Cache) Get(key string) (any, bool) {
+func (c *Cache) Get(key string) (interface{}, bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 

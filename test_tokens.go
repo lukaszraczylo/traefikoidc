@@ -61,10 +61,13 @@ func (tt *TestTokens) CreateLargeValidJWT(targetSize int) string {
 
 	// Calculate required payload size
 	usedSize := len(header) + len(signature) + 2 // account for dots
-	payloadSize := max(targetSize-usedSize, 50)
+	payloadSize := targetSize - usedSize
+	if payloadSize < 50 {
+		payloadSize = 50
+	}
 
 	// Create a payload with realistic JWT claims
-	claims := map[string]any{
+	claims := map[string]interface{}{
 		"sub": "user123",
 		"iss": "https://example.com",
 		"aud": "client123",
@@ -72,12 +75,10 @@ func (tt *TestTokens) CreateLargeValidJWT(targetSize int) string {
 		"iat": 1000000000,
 	}
 
-	// FIXED: Calculate data size safely
-	dataSize := max(
-		// Account for other claims and base64 encoding
-		payloadSize-100,
-		// Minimum data size
-		10)
+	dataSize := payloadSize - 100 // Account for other claims and base64 encoding
+	if dataSize < 10 {
+		dataSize = 10 // Minimum data size
+	}
 
 	claims["data"] = tt.generateRandomString(dataSize)
 
@@ -99,7 +100,7 @@ func (tt *TestTokens) CreateExpiredJWT() string {
 	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
 
 	// Create claims with expired timestamp
-	claims := map[string]any{
+	claims := map[string]interface{}{
 		"sub": "user123",
 		"iss": "https://example.com",
 		"aud": "client123",
@@ -118,7 +119,7 @@ func (tt *TestTokens) CreateExpiredJWT() string {
 func (tt *TestTokens) CreateUniqueValidJWT(id string) string {
 	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
 
-	claims := map[string]any{
+	claims := map[string]interface{}{
 		"sub": "user_" + id,
 		"iss": "https://example.com",
 		"aud": "client123",
@@ -145,7 +146,7 @@ func (tt *TestTokens) CreateIncompressibleToken(targetSize int) string {
 	payloadSize := max(targetSize-usedSize, 100)
 
 	// Generate multiple random fields to prevent compression
-	randomFields := make(map[string]any)
+	randomFields := make(map[string]interface{})
 	randomFields["sub"] = "user123"
 	randomFields["iss"] = "https://example.com"
 	randomFields["aud"] = "client123"
@@ -154,11 +155,12 @@ func (tt *TestTokens) CreateIncompressibleToken(targetSize int) string {
 
 	// Add many random fields with random data to prevent compression
 	remainingSize := payloadSize - 200 // Account for base64 encoding and other fields
-	fieldCount := max(
-		// ~100 bytes per field
-		remainingSize/100, 1)
+	fieldCount := remainingSize / 100  // ~100 bytes per field
+	if fieldCount < 1 {
+		fieldCount = 1
+	}
 
-	for i := range fieldCount {
+	for i := 0; i < fieldCount; i++ {
 		// Generate truly random data for each field
 		randomBytes := make([]byte, 50)
 		rand.Read(randomBytes)
@@ -232,7 +234,7 @@ func (tt *TestTokens) generateRandomString(length int) string {
 
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, length)
-	for i := range b {
+	for i := 0; i < length; i++ {
 		randomByte := make([]byte, 1)
 		rand.Read(randomByte)
 		b[i] = charset[int(randomByte[0])%len(charset)]
@@ -296,7 +298,7 @@ func (ts *TestScenarios) CorruptionTest() CorruptionTestSet {
 // ConcurrentTest returns unique tokens for concurrent testing
 func (ts *TestScenarios) ConcurrentTest(count int) []TokenSet {
 	sets := make([]TokenSet, count)
-	for i := range count {
+	for i := 0; i < count; i++ {
 		sets[i] = TokenSet{
 			AccessToken:  ts.tokens.CreateUniqueValidJWT(fmt.Sprintf("concurrent_%d", i)),
 			IDToken:      ts.tokens.CreateUniqueValidJWT(fmt.Sprintf("id_%d", i)),
@@ -387,5 +389,12 @@ func AssertInvalidTokenRejection(t TestingInterface, session *SessionData, token
 
 // TestingInterface provides the minimal interface needed for testing
 type TestingInterface interface {
-	Errorf(format string, args ...any)
+	Errorf(format string, args ...interface{})
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

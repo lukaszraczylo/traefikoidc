@@ -3,7 +3,6 @@ package traefikoidc
 import (
 	"context"
 	"fmt"
-	"maps"
 	"math"
 	"math/rand/v2"
 	"net"
@@ -17,7 +16,7 @@ type ErrorRecoveryMechanism interface {
 	// ExecuteWithContext executes a function with error recovery
 	ExecuteWithContext(ctx context.Context, fn func() error) error
 	// GetMetrics returns metrics about the error recovery mechanism
-	GetMetrics() map[string]any
+	GetMetrics() map[string]interface{}
 	// Reset resets the state of the error recovery mechanism
 	Reset()
 	// IsAvailable returns whether the mechanism is available for use
@@ -74,11 +73,11 @@ func (b *BaseRecoveryMechanism) RecordFailure() {
 }
 
 // GetBaseMetrics returns base metrics common to all recovery mechanisms
-func (b *BaseRecoveryMechanism) GetBaseMetrics() map[string]any {
+func (b *BaseRecoveryMechanism) GetBaseMetrics() map[string]interface{} {
 	b.mutex.RLock()
 	defer b.mutex.RUnlock()
 
-	metrics := map[string]any{
+	metrics := map[string]interface{}{
 		"total_requests":  atomic.LoadInt64(&b.totalRequests),
 		"total_failures":  atomic.LoadInt64(&b.totalFailures),
 		"total_successes": atomic.LoadInt64(&b.totalSuccesses),
@@ -108,23 +107,23 @@ func (b *BaseRecoveryMechanism) GetBaseMetrics() map[string]any {
 }
 
 // LogInfo logs an informational message
-func (b *BaseRecoveryMechanism) LogInfo(format string, args ...any) {
+func (b *BaseRecoveryMechanism) LogInfo(format string, args ...interface{}) {
 	if b.logger != nil {
-		b.logger.Infof("%s: "+format, append([]any{b.name}, args...)...)
+		b.logger.Infof("%s: "+format, append([]interface{}{b.name}, args...)...)
 	}
 }
 
 // LogError logs an error message
-func (b *BaseRecoveryMechanism) LogError(format string, args ...any) {
+func (b *BaseRecoveryMechanism) LogError(format string, args ...interface{}) {
 	if b.logger != nil {
-		b.logger.Errorf("%s: "+format, append([]any{b.name}, args...)...)
+		b.logger.Errorf("%s: "+format, append([]interface{}{b.name}, args...)...)
 	}
 }
 
 // LogDebug logs a debug message
-func (b *BaseRecoveryMechanism) LogDebug(format string, args ...any) {
+func (b *BaseRecoveryMechanism) LogDebug(format string, args ...interface{}) {
 	if b.logger != nil {
-		b.logger.Debugf("%s: "+format, append([]any{b.name}, args...)...)
+		b.logger.Debugf("%s: "+format, append([]interface{}{b.name}, args...)...)
 	}
 }
 
@@ -296,7 +295,7 @@ func (cb *CircuitBreaker) IsAvailable() bool {
 }
 
 // GetMetrics returns metrics about the circuit breaker
-func (cb *CircuitBreaker) GetMetrics() map[string]any {
+func (cb *CircuitBreaker) GetMetrics() map[string]interface{} {
 	cb.mutex.RLock()
 	state := cb.state
 	failures := cb.failures
@@ -498,7 +497,7 @@ func (re *RetryExecutor) IsAvailable() bool {
 }
 
 // GetMetrics returns metrics about the retry executor
-func (re *RetryExecutor) GetMetrics() map[string]any {
+func (re *RetryExecutor) GetMetrics() map[string]interface{} {
 	metrics := re.GetBaseMetrics()
 
 	// Add retry executor specific metrics
@@ -526,7 +525,7 @@ func (e *HTTPError) Error() string {
 // GracefulDegradation implements graceful degradation patterns
 type GracefulDegradation struct {
 	*BaseRecoveryMechanism
-	fallbacks        map[string]func() (any, error)
+	fallbacks        map[string]func() (interface{}, error)
 	healthChecks     map[string]func() bool
 	degradedServices map[string]time.Time
 	config           GracefulDegradationConfig
@@ -553,7 +552,7 @@ func DefaultGracefulDegradationConfig() GracefulDegradationConfig {
 func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *GracefulDegradation {
 	gd := &GracefulDegradation{
 		BaseRecoveryMechanism: NewBaseRecoveryMechanism("graceful-degradation", logger),
-		fallbacks:             make(map[string]func() (any, error)),
+		fallbacks:             make(map[string]func() (interface{}, error)),
 		healthChecks:          make(map[string]func() bool),
 		degradedServices:      make(map[string]time.Time),
 		config:                config,
@@ -566,7 +565,7 @@ func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *G
 }
 
 // RegisterFallback registers a fallback function for a service
-func (gd *GracefulDegradation) RegisterFallback(serviceName string, fallback func() (any, error)) {
+func (gd *GracefulDegradation) RegisterFallback(serviceName string, fallback func() (interface{}, error)) {
 	gd.mutex.Lock()
 	defer gd.mutex.Unlock()
 	gd.fallbacks[serviceName] = fallback
@@ -584,7 +583,7 @@ func (gd *GracefulDegradation) ExecuteWithContext(ctx context.Context, fn func()
 	gd.RecordRequest()
 
 	// Execute with a simple wrapper
-	_, err := gd.ExecuteWithFallback("default", func() (any, error) {
+	_, err := gd.ExecuteWithFallback("default", func() (interface{}, error) {
 		return nil, fn()
 	})
 
@@ -598,7 +597,7 @@ func (gd *GracefulDegradation) ExecuteWithContext(ctx context.Context, fn func()
 }
 
 // ExecuteWithFallback executes a function with fallback support
-func (gd *GracefulDegradation) ExecuteWithFallback(serviceName string, primary func() (any, error)) (any, error) {
+func (gd *GracefulDegradation) ExecuteWithFallback(serviceName string, primary func() (interface{}, error)) (interface{}, error) {
 	// Check if service is degraded
 	if gd.isServiceDegraded(serviceName) {
 		gd.LogInfo("Service %s is degraded, using fallback", serviceName)
@@ -656,7 +655,7 @@ func (gd *GracefulDegradation) markServiceDegraded(serviceName string) {
 }
 
 // executeFallback executes the fallback function for a service
-func (gd *GracefulDegradation) executeFallback(serviceName string) (any, error) {
+func (gd *GracefulDegradation) executeFallback(serviceName string) (interface{}, error) {
 	gd.mutex.RLock()
 	fallback, exists := gd.fallbacks[serviceName]
 	gd.mutex.RUnlock()
@@ -684,7 +683,9 @@ func (gd *GracefulDegradation) startHealthCheckRoutine() {
 func (gd *GracefulDegradation) performHealthChecks() {
 	gd.mutex.RLock()
 	healthChecks := make(map[string]func() bool)
-	maps.Copy(healthChecks, gd.healthChecks)
+	for k, v := range gd.healthChecks {
+		healthChecks[k] = v
+	}
 	gd.mutex.RUnlock()
 
 	for serviceName, healthCheck := range healthChecks {
@@ -732,7 +733,7 @@ func (gd *GracefulDegradation) IsAvailable() bool {
 }
 
 // GetMetrics returns metrics about the graceful degradation mechanism
-func (gd *GracefulDegradation) GetMetrics() map[string]any {
+func (gd *GracefulDegradation) GetMetrics() map[string]interface{} {
 	gd.mutex.RLock()
 	degradedCount := len(gd.degradedServices)
 
@@ -805,14 +806,14 @@ func (erm *ErrorRecoveryManager) ExecuteWithRecovery(ctx context.Context, servic
 }
 
 // GetRecoveryMetrics returns metrics for all recovery mechanisms
-func (erm *ErrorRecoveryManager) GetRecoveryMetrics() map[string]any {
+func (erm *ErrorRecoveryManager) GetRecoveryMetrics() map[string]interface{} {
 	erm.mutex.RLock()
 	defer erm.mutex.RUnlock()
 
-	metrics := make(map[string]any)
+	metrics := make(map[string]interface{})
 
 	// Circuit breaker metrics
-	cbMetrics := make(map[string]any)
+	cbMetrics := make(map[string]interface{})
 	for name, cb := range erm.circuitBreakers {
 		cbMetrics[name] = cb.GetMetrics()
 	}

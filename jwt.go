@@ -87,8 +87,8 @@ var ClockSkewTolerance = ClockSkewToleranceFuture
 
 // JWT represents a JSON Web Token as defined in RFC 7519.
 type JWT struct {
-	Header    map[string]any
-	Claims    map[string]any
+	Header    map[string]interface{}
+	Claims    map[string]interface{}
 	Token     string
 	Signature []byte
 }
@@ -276,13 +276,13 @@ func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error 
 // Returns:
 //   - nil if the expected audience is found.
 //   - An error if the claim type is invalid or the expected audience is not present.
-func verifyAudience(tokenAudience any, expectedAudience string) error {
+func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 	switch aud := tokenAudience.(type) {
 	case string:
 		if aud != expectedAudience {
 			return fmt.Errorf("invalid audience")
 		}
-	case []any:
+	case []interface{}:
 		found := false
 		for _, v := range aud {
 			if str, ok := v.(string); ok && str == expectedAudience {

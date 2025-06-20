@@ -11,15 +11,15 @@ func TestTemplateExecution(t *testing.T) {
 	tests := []struct {
 		name          string
 		templateText  string
-		data          map[string]any
+		data          map[string]interface{}
 		expectedValue string
 		expectError   bool
 	}{
 		{
 			name:         "String Claim",
 			templateText: "{{.Claims.email}}",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"email": "user@example.com",
 				},
 			},
@@ -29,8 +29,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Number Claim",
 			templateText: "{{.Claims.age}}",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"age": 30,
 				},
 			},
@@ -40,8 +40,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Boolean Claim",
 			templateText: "{{.Claims.admin}}",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"admin": true,
 				},
 			},
@@ -51,8 +51,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Array Claim",
 			templateText: "{{index .Claims.roles 0}}",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"roles": []string{"admin", "user"},
 				},
 			},
@@ -62,9 +62,9 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Nested Object Claim",
 			templateText: "{{.Claims.user.name}}",
-			data: map[string]any{
-				"Claims": map[string]any{
-					"user": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
+					"user": map[string]interface{}{
 						"name": "John Doe",
 					},
 				},
@@ -75,7 +75,7 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Access Token",
 			templateText: "Bearer {{.AccessToken}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"AccessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
 			},
 			expectedValue: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
@@ -84,7 +84,7 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "ID Token",
 			templateText: "{{.IdToken}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"IdToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
 			},
 			expectedValue: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
@@ -93,7 +93,7 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Refresh Token",
 			templateText: "{{.RefreshToken}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"RefreshToken": "refresh-token-value",
 			},
 			expectedValue: "refresh-token-value",
@@ -102,8 +102,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Conditional Template",
 			templateText: "{{if .Claims.admin}}Admin User{{else}}Regular User{{end}}",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"admin": true,
 				},
 			},
@@ -113,8 +113,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Multiple Claims",
 			templateText: "{{.Claims.firstName}} {{.Claims.lastName}} <{{.Claims.email}}>",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"firstName": "John",
 					"lastName":  "Doe",
 					"email":     "john.doe@example.com",
@@ -126,8 +126,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Missing Claim",
 			templateText: "{{.Claims.missing}}",
-			data: map[string]any{
-				"Claims": map[string]any{},
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{},
 			},
 			expectedValue: "<no value>",
 			expectError:   false, // Go templates don't error on missing values
@@ -135,8 +135,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Invalid Template Syntax",
 			templateText: "{{.Claims.email",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"email": "user@example.com",
 				},
 			},
@@ -146,8 +146,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Custom Claims",
 			templateText: "Role: {{.Claims.role}}, Department: {{.Claims.department}}",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"email":      "user@example.com",
 					"role":       "admin",
 					"department": "engineering",
@@ -159,10 +159,10 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Nested Custom Claims",
 			templateText: "Org: {{.Claims.metadata.organization}}, Team: {{.Claims.metadata.team}}",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"email": "user@example.com",
-					"metadata": map[string]any{
+					"metadata": map[string]interface{}{
 						"organization": "company-name",
 						"team":         "platform",
 					},
@@ -174,8 +174,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Email Claims",
 			templateText: "Email: {{.Claims.email}}, Verified: {{.Claims.email_verified}}",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"email":          "user@example.com",
 					"email_verified": true,
 				},
@@ -186,8 +186,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "User Identity Claims",
 			templateText: "Name: {{.Claims.name}}, Subject: {{.Claims.sub}}, Username: {{.Claims.preferred_username}}",
-			data: map[string]any{
-				"Claims": map[string]any{
+			data: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"name":               "John Doe",
 					"sub":                "user123",
 					"preferred_username": "johndoe",
@@ -233,16 +233,16 @@ func TestTemplateExecutionContext(t *testing.T) {
 	mapTests := []struct {
 		name          string
 		templateText  string
-		data          map[string]any
+		data          map[string]interface{}
 		expectedValue string
 	}{
 		{
 			name:         "Access and ID token distinction with map",
 			templateText: "Access: {{.AccessToken}} ID: {{.IdToken}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"AccessToken":  "access-token-value",
 				"IdToken":      "id-token-value",
-				"Claims":       map[string]any{},
+				"Claims":       map[string]interface{}{},
 				"RefreshToken": "refresh-token-value",
 			},
 			expectedValue: "Access: access-token-value ID: id-token-value",
@@ -250,10 +250,10 @@ func TestTemplateExecutionContext(t *testing.T) {
 		{
 			name:         "Combining tokens and claims with map",
 			templateText: "User: {{.Claims.sub}} Token: {{.AccessToken}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"AccessToken": "access-token",
 				"IdToken":     "id-token",
-				"Claims": map[string]any{
+				"Claims": map[string]interface{}{
 					"sub": "user123",
 				},
 				"RefreshToken": "refresh-token",
@@ -263,17 +263,17 @@ func TestTemplateExecutionContext(t *testing.T) {
 		{
 			name:         "Authorization header with Bearer token",
 			templateText: "Bearer {{.AccessToken}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"AccessToken": "jwt-access-token",
 				"IdToken":     "id-token",
-				"Claims":      map[string]any{},
+				"Claims":      map[string]interface{}{},
 			},
 			expectedValue: "Bearer jwt-access-token",
 		},
 		{
 			name:         "Boolean template data with AccessToken",
 			templateText: "Bearer {{.AccessToken}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"AccessToken": true, // Test boolean values to ensure they render correctly
 			},
 			expectedValue: "Bearer true",
@@ -281,10 +281,10 @@ func TestTemplateExecutionContext(t *testing.T) {
 		{
 			name:         "Custom non-standard claims in ID token",
 			templateText: "X-User-Role: {{.Claims.role}}, X-User-Permissions: {{.Claims.permissions}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"AccessToken": "access-token-value",
 				"IdToken":     "id-token-value",
-				"Claims": map[string]any{
+				"Claims": map[string]interface{}{
 					"email":       "user@example.com",
 					"role":        "admin",
 					"permissions": "read:all,write:own",
@@ -295,11 +295,11 @@ func TestTemplateExecutionContext(t *testing.T) {
 		{
 			name:         "Deeply nested custom claims",
 			templateText: "X-Organization: {{.Claims.app_metadata.organization.name}}, X-Team: {{.Claims.app_metadata.team}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"AccessToken": "access-token-value",
-				"Claims": map[string]any{
-					"app_metadata": map[string]any{
-						"organization": map[string]any{
+				"Claims": map[string]interface{}{
+					"app_metadata": map[string]interface{}{
+						"organization": map[string]interface{}{
 							"name": "acme-corp",
 							"id":   "org-123",
 						},
@@ -312,10 +312,10 @@ func TestTemplateExecutionContext(t *testing.T) {
 		{
 			name:         "Email in claims",
 			templateText: "X-User-Email: {{.Claims.email}}, X-Email-Verified: {{.Claims.email_verified}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"AccessToken": "access-token-value",
 				"IdToken":     "id-token-value",
-				"Claims": map[string]any{
+				"Claims": map[string]interface{}{
 					"email":          "user@example.com",
 					"email_verified": true,
 				},
@@ -325,10 +325,10 @@ func TestTemplateExecutionContext(t *testing.T) {
 		{
 			name:         "User info from claims",
 			templateText: "X-User-ID: {{.Claims.sub}}, X-User-Name: {{.Claims.name}}, X-Username: {{.Claims.preferred_username}}",
-			data: map[string]any{
+			data: map[string]interface{}{
 				"AccessToken": "access-token-value",
 				"IdToken":     "id-token-value",
-				"Claims": map[string]any{
+				"Claims": map[string]interface{}{
 					"sub":                "user123456",
 					"name":               "Jane Doe",
 					"preferred_username": "jane.doe",
@@ -361,7 +361,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 
 	// For backward compatibility, also test the original struct-based implementation
 	type templateData struct {
-		Claims       map[string]any
+		Claims       map[string]interface{}
 		AccessToken  string
 		IdToken      string
 		RefreshToken string
@@ -380,7 +380,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			data: templateData{
 				AccessToken: "access-token-value",
 				IdToken:     "id-token-value", // Now these should be distinct values
-				Claims:      map[string]any{},
+				Claims:      map[string]interface{}{},
 			},
 			expectedValue: "Access: access-token-value ID: id-token-value",
 		},
@@ -390,7 +390,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			data: templateData{
 				AccessToken: "access-token",
 				IdToken:     "access-token",
-				Claims: map[string]any{
+				Claims: map[string]interface{}{
 					"sub": "user123",
 				},
 			},
@@ -402,7 +402,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			data: templateData{
 				AccessToken: "access-token",
 				IdToken:     "id-token",
-				Claims: map[string]any{
+				Claims: map[string]interface{}{
 					"sub":          "user123",
 					"custom_field": "custom-value",
 					"group":        "admins",
@@ -416,7 +416,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			data: templateData{
 				AccessToken: "access-token",
 				IdToken:     "id-token",
-				Claims: map[string]any{
+				Claims: map[string]interface{}{
 					"email": "user@example.com",
 					"name":  "John Smith",
 				},
@@ -454,14 +454,14 @@ func TestRegressionBooleanAccessToken(t *testing.T) {
 	testCases := []struct {
 		name          string
 		templateText  string
-		dataContext   any
+		dataContext   interface{}
 		expectedValue string
 		expectError   bool // Added to skip the test that demonstrates the error
 	}{
 		{
 			name:          "Map with boolean as root",
 			templateText:  "{{.AccessToken}}",
-			dataContext:   map[string]any{"AccessToken": "token-value"},
+			dataContext:   map[string]interface{}{"AccessToken": "token-value"},
 			expectedValue: "token-value",
 			expectError:   false,
 		},
@@ -475,17 +475,17 @@ func TestRegressionBooleanAccessToken(t *testing.T) {
 		{
 			name:          "Bearer with map context",
 			templateText:  "Bearer {{.AccessToken}}",
-			dataContext:   map[string]any{"AccessToken": "token-value"},
+			dataContext:   map[string]interface{}{"AccessToken": "token-value"},
 			expectedValue: "Bearer token-value",
 			expectError:   false,
 		},
 		{
 			name:         "Complex nesting with authorization",
 			templateText: "Authorization: Bearer {{.AccessToken}}",
-			dataContext: map[string]any{
+			dataContext: map[string]interface{}{
 				"AccessToken": "jwt-token-123",
 				"something":   true,
-				"anotherField": map[string]any{
+				"anotherField": map[string]interface{}{
 					"nested": "value",
 				},
 			},
@@ -495,13 +495,13 @@ func TestRegressionBooleanAccessToken(t *testing.T) {
 		{
 			name:         "Custom claims access",
 			templateText: "X-User-Role: {{.Claims.role}}, X-User-Groups: {{.Claims.groups}}",
-			dataContext: map[string]any{
+			dataContext: map[string]interface{}{
 				"AccessToken": "jwt-token-xyz",
-				"Claims": map[string]any{
+				"Claims": map[string]interface{}{
 					"email":  "user@example.com",
 					"role":   "admin",
 					"groups": "group1,group2,group3",
-					"custom_data": map[string]any{
+					"custom_data": map[string]interface{}{
 						"organization": "company-name",
 						"department":   "engineering",
 					},
@@ -513,9 +513,9 @@ func TestRegressionBooleanAccessToken(t *testing.T) {
 		{
 			name:         "Nested custom claims access",
 			templateText: "X-Organization: {{.Claims.custom_data.organization}}, X-Department: {{.Claims.custom_data.department}}",
-			dataContext: map[string]any{
-				"Claims": map[string]any{
-					"custom_data": map[string]any{
+			dataContext: map[string]interface{}{
+				"Claims": map[string]interface{}{
+					"custom_data": map[string]interface{}{
 						"organization": "company-name",
 						"department":   "engineering",
 					},
@@ -527,8 +527,8 @@ func TestRegressionBooleanAccessToken(t *testing.T) {
 		{
 			name:         "Azure AD specific claims",
 			templateText: "X-TenantID: {{.Claims.tid}}, X-Roles: {{.Claims.roles}}",
-			dataContext: map[string]any{
-				"Claims": map[string]any{
+			dataContext: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"tid":   "tenant-id-12345",
 					"roles": "User,Admin,Developer",
 				},
@@ -539,10 +539,10 @@ func TestRegressionBooleanAccessToken(t *testing.T) {
 		{
 			name:         "Auth0 specific claims",
 			templateText: "X-Permissions: {{.Claims.permissions}}, X-AppMetadata: {{.Claims.app_metadata.plan}}",
-			dataContext: map[string]any{
-				"Claims": map[string]any{
+			dataContext: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"permissions": "read:products,write:orders",
-					"app_metadata": map[string]any{
+					"app_metadata": map[string]interface{}{
 						"plan":        "premium",
 						"status":      "active",
 						"trial_ended": false,
@@ -555,8 +555,8 @@ func TestRegressionBooleanAccessToken(t *testing.T) {
 		{
 			name:         "Standard claims with email",
 			templateText: "X-Email: {{.Claims.email}}, X-Name: {{.Claims.name}}, X-Subject: {{.Claims.sub}}",
-			dataContext: map[string]any{
-				"Claims": map[string]any{
+			dataContext: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"email": "user@example.com",
 					"name":  "John Doe",
 					"sub":   "auth0|12345",
@@ -568,8 +568,8 @@ func TestRegressionBooleanAccessToken(t *testing.T) {
 		{
 			name:         "Verified email claim",
 			templateText: "X-Email: {{.Claims.email}}, X-Email-Verified: {{.Claims.email_verified}}",
-			dataContext: map[string]any{
-				"Claims": map[string]any{
+			dataContext: map[string]interface{}{
+				"Claims": map[string]interface{}{
 					"email":          "user@example.com",
 					"email_verified": true,
 				},

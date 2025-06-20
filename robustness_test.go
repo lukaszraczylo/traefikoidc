@@ -22,8 +22,8 @@ func TestConcurrentTokenVerification(t *testing.T) {
 
 	// Create multiple valid tokens to avoid replay detection
 	tokens := make([]string, 10)
-	for i := range 10 {
-		token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	for i := 0; i < 10; i++ {
+		token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 			"iss":   "https://test-issuer.com",
 			"aud":   "test-client-id",
 			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -71,11 +71,11 @@ func TestConcurrentTokenVerification(t *testing.T) {
 	var errorCount int64
 	errors := make(chan error, numGoroutines*verificationsPerGoroutine)
 
-	for i := range numGoroutines {
+	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
-			for j := range verificationsPerGoroutine {
+			for j := 0; j < verificationsPerGoroutine; j++ {
 				tokenIndex := (goroutineID*verificationsPerGoroutine + j) % len(tokens)
 				err := tOidc.VerifyToken(tokens[tokenIndex])
 				if err != nil {
@@ -144,8 +144,8 @@ func TestCacheMemoryExhaustion(t *testing.T) {
 	const numTokens = 500
 	tokens := make([]string, numTokens)
 
-	for i := range numTokens {
-		token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	for i := 0; i < numTokens; i++ {
+		token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 			"iss":   "https://test-issuer.com",
 			"aud":   "test-client-id",
 			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -161,7 +161,7 @@ func TestCacheMemoryExhaustion(t *testing.T) {
 		tokens[i] = token
 
 		// Add to cache
-		claims := map[string]any{
+		claims := map[string]interface{}{
 			"iss":   "https://test-issuer.com",
 			"aud":   "test-client-id",
 			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -210,7 +210,7 @@ func TestSessionConcurrencyProtection(t *testing.T) {
 	var successCount int64
 	var errorCount int64
 
-	for i := range numGoroutines {
+	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
@@ -218,7 +218,7 @@ func TestSessionConcurrencyProtection(t *testing.T) {
 			// Each goroutine gets its own request and session
 			req := httptest.NewRequest("GET", "/test", nil)
 
-			for j := range operationsPerGoroutine {
+			for j := 0; j < operationsPerGoroutine; j++ {
 				// Get a fresh session for each operation
 				s, err := sessionManager.GetSession(req)
 				if err != nil {
@@ -276,11 +276,11 @@ func TestParallelCacheOperations(t *testing.T) {
 	var deleteCount int64
 
 	// Start multiple goroutines performing cache operations
-	for i := range numGoroutines {
+	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
-			for j := range operationsPerGoroutine {
+			for j := 0; j < operationsPerGoroutine; j++ {
 				key := fmt.Sprintf("key-%d-%d", goroutineID, j)
 				value := fmt.Sprintf("value-%d-%d", goroutineID, j)
 
@@ -377,7 +377,7 @@ func TestOversizedTokenHandling(t *testing.T) {
 
 	// Create an oversized token with large claims
 	largeClaim := strings.Repeat("x", 10000) // 10KB claim
-	oversizedClaims := map[string]any{
+	oversizedClaims := map[string]interface{}{
 		"iss":        "https://test-issuer.com",
 		"aud":        "test-client-id",
 		"exp":        float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -411,7 +411,7 @@ func TestOversizedTokenHandling(t *testing.T) {
 
 	// Test extremely long token (beyond reasonable limits)
 	extremelyLongClaim := strings.Repeat("y", 100000) // 100KB claim
-	extremeClaims := map[string]any{
+	extremeClaims := map[string]interface{}{
 		"iss":          "https://test-issuer.com",
 		"aud":          "test-client-id",
 		"exp":          float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -528,7 +528,7 @@ func TestMaliciousInputValidation(t *testing.T) {
 			}
 
 			// Verify the system is still functional after malicious input
-			validToken, createErr := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+			validToken, createErr := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 				"iss":   "https://test-issuer.com",
 				"aud":   "test-client-id",
 				"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -609,7 +609,7 @@ func TestResourceLimits(t *testing.T) {
 	defer cache.Close()
 
 	// Try to overwhelm the cache
-	for i := range 1000 {
+	for i := 0; i < 1000; i++ {
 		key := fmt.Sprintf("key-%d", i)
 		value := fmt.Sprintf("value-%d", i)
 		cache.Set(key, value, time.Minute)
@@ -627,7 +627,7 @@ func TestResourceLimits(t *testing.T) {
 	denied := 0
 
 	// Make many requests quickly
-	for range 100 {
+	for i := 0; i < 100; i++ {
 		if limiter.Allow() {
 			allowed++
 		} else {
@@ -655,7 +655,7 @@ func TestErrorRecoveryPatterns(t *testing.T) {
 		ts.tOidc.tokenCache.cache.Set("corrupted", "invalid-data", time.Hour)
 
 		// System should handle corrupted cache gracefully
-		validToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+		validToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 			"iss":   "https://test-issuer.com",
 			"aud":   "test-client-id",
 			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -681,7 +681,7 @@ func TestErrorRecoveryPatterns(t *testing.T) {
 		ts.tOidc.tokenBlacklist.Set("corrupted-entry", "invalid-data", time.Hour)
 
 		// System should still function
-		validToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+		validToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 			"iss":   "https://test-issuer.com",
 			"aud":   "test-client-id",
 			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -713,8 +713,8 @@ func TestPerformanceUnderLoad(t *testing.T) {
 	// Create multiple valid tokens
 	const numTokens = 100
 	tokens := make([]string, numTokens)
-	for i := range numTokens {
-		token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
+	for i := 0; i < numTokens; i++ {
+		token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 			"iss":   "https://test-issuer.com",
 			"aud":   "test-client-id",
 			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -757,7 +757,7 @@ func TestPerformanceUnderLoad(t *testing.T) {
 	const iterations = 1000
 	start := time.Now()
 
-	for i := range iterations {
+	for i := 0; i < iterations; i++ {
 		tokenIndex := i % numTokens
 		err := tOidc.VerifyToken(tokens[tokenIndex])
 		if err != nil {

@@ -148,7 +148,7 @@ func getPooledObjects(sm *SessionManager) int {
 	var objects []*SessionData
 	maxAttempts := 100 // Safety limit to prevent infinite loops
 
-	for range maxAttempts {
+	for i := 0; i < maxAttempts; i++ {
 		obj := sm.sessionPool.Get()
 		if obj == nil {
 			break
@@ -195,7 +195,7 @@ func TestSessionObjectTracking(t *testing.T) {
 	}
 
 	// Create and discard 5 sessions
-	for range 5 {
+	for i := 0; i < 5; i++ {
 		session, err := sm.GetSession(req)
 		if err != nil {
 			t.Fatalf("GetSession failed: %v", err)
@@ -609,11 +609,11 @@ func TestConcurrentTokenOperations(t *testing.T) {
 	// Test concurrent access and refresh token operations
 	done := make(chan bool, numGoroutines)
 
-	for i := range numGoroutines {
+	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer func() { done <- true }()
 
-			for j := range numOperations {
+			for j := 0; j < numOperations; j++ {
 				// Create unique tokens for each goroutine/operation
 				accessToken := ValidAccessToken
 				refreshToken := fmt.Sprintf("refresh_token_%d_%d", id, j)
@@ -637,7 +637,7 @@ func TestConcurrentTokenOperations(t *testing.T) {
 	}
 
 	// Wait for all goroutines to complete
-	for range numGoroutines {
+	for i := 0; i < numGoroutines; i++ {
 		<-done
 	}
 }

@@ -17,7 +17,7 @@ type mockTraefikOidc struct {
 // Override VerifyToken to avoid JWKS lookup in tests
 func (m *mockTraefikOidc) VerifyToken(token string) error {
 	// Cache test claims to avoid "claims not found" errors
-	testClaims := map[string]any{
+	testClaims := map[string]interface{}{
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
 		"iat":   float64(time.Now().Unix()),
 		"sub":   "test-user",
@@ -30,7 +30,7 @@ func (m *mockTraefikOidc) VerifyToken(token string) error {
 // Override VerifyJWTSignatureAndClaims to avoid JWKS lookup in tests
 func (m *mockTraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error {
 	// Cache test claims to avoid "claims not found" errors
-	testClaims := map[string]any{
+	testClaims := map[string]interface{}{
 		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
 		"iat":   float64(time.Now().Unix()),
 		"sub":   "test-user",
@@ -80,7 +80,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 			// For test tokens, always return success and cache claims
 			if strings.HasPrefix(token, "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0") {
 				// Cache test claims for JWT tokens
-				testClaims := map[string]any{
+				testClaims := map[string]interface{}{
 					"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
 					"iat":   float64(time.Now().Unix()),
 					"sub":   "test-user",
@@ -94,7 +94,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 				return nil
 			}
 			// For JWT tokens, cache basic claims to avoid cache lookup issues
-			testClaims := map[string]any{
+			testClaims := map[string]interface{}{
 				"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
 				"iat":   float64(time.Now().Unix()),
 				"sub":   "test-user",
@@ -109,7 +109,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 	tOidc.jwtVerifier = &mockJWTVerifier{
 		verifyFunc: func(jwt *JWT, token string) error {
 			// Also cache claims here to ensure they're available
-			testClaims := map[string]any{
+			testClaims := map[string]interface{}{
 				"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
 				"iat":   float64(time.Now().Unix()),
 				"sub":   "test-user",
@@ -163,7 +163,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 		session.SetEmail("user@example.com")
 
 		// Create a valid JWT access token for testing
-		accessTokenClaims := map[string]any{
+		accessTokenClaims := map[string]interface{}{
 			"iss":   "https://login.microsoftonline.com/tenant-id/v2.0",
 			"aud":   "test-client-id",
 			"exp":   time.Now().Add(1 * time.Hour).Unix(),
@@ -175,7 +175,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 		session.SetAccessToken(accessToken)
 
 		// Create an invalid/expired ID token
-		idTokenClaims := map[string]any{
+		idTokenClaims := map[string]interface{}{
 			"iss":   "https://login.microsoftonline.com/tenant-id/v2.0",
 			"aud":   "test-client-id",
 			"exp":   time.Now().Add(-1 * time.Hour).Unix(), // Expired
@@ -192,7 +192,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 			verifyFunc: func(token string) error {
 				if token == accessToken {
 					// Access token validation succeeds - cache claims
-					testClaims := map[string]any{
+					testClaims := map[string]interface{}{
 						"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
 						"iat":   float64(time.Now().Unix()),
 						"sub":   "test-user",
@@ -240,7 +240,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 		session.SetAccessToken(ValidAccessToken)
 
 		// Create a valid ID token for claims extraction
-		idTokenClaims := map[string]any{
+		idTokenClaims := map[string]interface{}{
 			"iss":   "https://login.microsoftonline.com/tenant-id/v2.0",
 			"aud":   "test-client-id",
 			"exp":   time.Now().Add(1 * time.Hour).Unix(),
@@ -257,7 +257,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 			verifyFunc: func(token string) error {
 				if token == idToken {
 					// ID token is valid - cache claims
-					testClaims := map[string]any{
+					testClaims := map[string]interface{}{
 						"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
 						"iat":   float64(time.Now().Unix()),
 						"sub":   "test-user",
@@ -336,7 +336,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 }
 
 // createMockJWT creates a basic JWT token for testing purposes
-func createMockJWT(claims map[string]any) (string, error) {
+func createMockJWT(claims map[string]interface{}) (string, error) {
 	// Simple mock JWT - in real tests you'd use a proper JWT library
 	// For this test, we'll create a basic three-part token structure
 	header := "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0" // {"alg":"RS256","kid":"test-key-id","typ":"JWT"}

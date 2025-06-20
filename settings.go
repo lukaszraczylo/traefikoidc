@@ -414,7 +414,7 @@ func NewLogger(logLevel string) *Logger {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Info(format string, args ...any) {
+func (l *Logger) Info(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
@@ -424,7 +424,7 @@ func (l *Logger) Info(format string, args ...any) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Debug(format string, args ...any) {
+func (l *Logger) Debug(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
 
@@ -434,7 +434,7 @@ func (l *Logger) Debug(format string, args ...any) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Error(format string, args ...any) {
+func (l *Logger) Error(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
 
@@ -445,7 +445,7 @@ func (l *Logger) Error(format string, args ...any) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Infof(format string, args ...any) {
+func (l *Logger) Infof(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
@@ -456,7 +456,7 @@ func (l *Logger) Infof(format string, args ...any) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Debugf(format string, args ...any) {
+func (l *Logger) Debugf(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
 
@@ -467,7 +467,7 @@ func (l *Logger) Debugf(format string, args ...any) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Errorf(format string, args ...any) {
+func (l *Logger) Errorf(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
 
