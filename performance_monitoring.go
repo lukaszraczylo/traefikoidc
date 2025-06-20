@@ -10,61 +10,41 @@ import (
 
 // PerformanceMetrics tracks various performance-related metrics
 type PerformanceMetrics struct {
-	// Cache metrics
-	cacheHits      int64
-	cacheMisses    int64
-	cacheEvictions int64
-	cacheSize      int64
-
-	// Token operation metrics
-	tokenVerifications int64
-	tokenValidations   int64
-	tokenRefreshes     int64
-
-	// Success/failure tracking
+	startTime               time.Time
+	logger                  *Logger
+	verificationTimes       []time.Duration
+	refreshTimes            []time.Duration
+	validationTimes         []time.Duration
+	memoryUsage             int64
+	heapSize                int64
 	successfulVerifications int64
 	successfulValidations   int64
 	successfulRefreshes     int64
 	failedVerifications     int64
 	failedValidations       int64
 	failedRefreshes         int64
-
-	// Timing metrics
-	avgVerificationTime time.Duration
-	avgValidationTime   time.Duration
-	avgRefreshTime      time.Duration
-
-	// Resource metrics
-	memoryUsage    int64
-	goroutineCount int64
-	memoryPressure int64 // Memory pressure level (0-100)
-	gcPauseTime    int64 // Last GC pause time in nanoseconds
-	heapSize       int64 // Current heap size
-	heapInUse      int64 // Heap memory in use
-
-	// Error metrics (kept for backward compatibility)
-	verificationErrors int64
-	validationErrors   int64
-	refreshErrors      int64
-
-	// Rate limiting metrics
-	rateLimitedRequests int64
-
-	// Session metrics
-	activeSessions   int64
-	sessionCreations int64
-	sessionDeletions int64
-
-	// Timing tracking
-	timingMutex       sync.RWMutex
-	verificationTimes []time.Duration
-	validationTimes   []time.Duration
-	refreshTimes      []time.Duration
-
-	// Start time for uptime calculation
-	startTime time.Time
-
-	logger *Logger
+	avgVerificationTime     time.Duration
+	avgValidationTime       time.Duration
+	avgRefreshTime          time.Duration
+	cacheHits               int64
+	goroutineCount          int64
+	memoryPressure          int64
+	gcPauseTime             int64
+	tokenRefreshes          int64
+	heapInUse               int64
+	verificationErrors      int64
+	validationErrors        int64
+	refreshErrors           int64
+	rateLimitedRequests     int64
+	activeSessions          int64
+	sessionCreations        int64
+	sessionDeletions        int64
+	cacheMisses             int64
+	tokenValidations        int64
+	tokenVerifications      int64
+	cacheSize               int64
+	cacheEvictions          int64
+	timingMutex             sync.RWMutex
 }
 
 // NewPerformanceMetrics creates a new performance metrics tracker
@@ -441,38 +421,26 @@ func (pm *PerformanceMetrics) calculateTimingStats(times []time.Duration) map[st
 
 // ResourceMonitor tracks resource usage and limits
 type ResourceMonitor struct {
-	// Memory limits
-	maxMemoryBytes int64
-
-	// Cache limits
-	maxCacheSize int64
-
-	// Session limits
-	maxSessions int64
-
-	// Cache size tracking
-	cacheSizes map[string]int64
-	cacheMutex sync.RWMutex
-
-	// Monitoring state
+	cacheSizes      map[string]int64
 	alertThresholds map[string]float64
+	perfMetrics     *PerformanceMetrics
+	logger          *Logger
 	alerts          []ResourceAlert
+	maxMemoryBytes  int64
+	maxCacheSize    int64
+	maxSessions     int64
+	cacheMutex      sync.RWMutex
 	alertsMutex     sync.RWMutex
-
-	// Performance metrics reference
-	perfMetrics *PerformanceMetrics
-
-	logger *Logger
 }
 
 // ResourceAlert represents a resource usage alert
 type ResourceAlert struct {
+	Timestamp    time.Time `json:"timestamp"`
 	Type         string    `json:"type"`
 	Message      string    `json:"message"`
+	Severity     string    `json:"severity"`
 	Threshold    float64   `json:"threshold"`
 	CurrentValue float64   `json:"current_value"`
-	Timestamp    time.Time `json:"timestamp"`
-	Severity     string    `json:"severity"`
 }
 
 // NewResourceMonitor creates a new resource monitor

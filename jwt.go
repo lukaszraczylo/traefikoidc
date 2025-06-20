@@ -89,8 +89,8 @@ var ClockSkewTolerance = ClockSkewToleranceFuture
 type JWT struct {
 	Header    map[string]any
 	Claims    map[string]any
-	Signature []byte
 	Token     string
+	Signature []byte
 }
 
 // parseJWT decodes a raw JWT string into its constituent parts: header, claims, and signature.

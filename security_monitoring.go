@@ -13,67 +13,51 @@ import (
 
 // SecurityEvent represents a security-related event that should be logged and monitored
 type SecurityEvent struct {
+	Timestamp   time.Time      `json:"timestamp"`
+	Details     map[string]any `json:"details,omitempty"`
 	Type        string         `json:"type"`
 	Severity    string         `json:"severity"`
-	Timestamp   time.Time      `json:"timestamp"`
 	ClientIP    string         `json:"client_ip"`
 	UserAgent   string         `json:"user_agent"`
 	RequestPath string         `json:"request_path"`
 	Message     string         `json:"message"`
-	Details     map[string]any `json:"details,omitempty"`
 }
 
 // SecurityMonitor tracks security events and suspicious activity patterns
 type SecurityMonitor struct {
-	// Event counters
+	ipFailures           map[string]*IPFailureTracker
+	patternDetector      *SuspiciousPatternDetector
+	logger               *Logger
+	eventHandlers        []SecurityEventHandler
+	config               SecurityMonitorConfig
 	authFailures         int64
 	tokenValidationFails int64
 	rateLimitHits        int64
 	suspiciousRequests   int64
-
-	// IP-based tracking
-	ipFailures map[string]*IPFailureTracker
-	ipMutex    sync.RWMutex
-
-	// Pattern detection
-	patternDetector *SuspiciousPatternDetector
-
-	// Event handlers
-	eventHandlers []SecurityEventHandler
-
-	// Configuration
-	config SecurityMonitorConfig
-
-	// Logger
-	logger *Logger
+	ipMutex              sync.RWMutex
 }
 
 // IPFailureTracker tracks failures for a specific IP address
 type IPFailureTracker struct {
-	FailureCount int64
 	LastFailure  time.Time
 	FirstFailure time.Time
-	FailureTypes map[string]int64
-	IsBlocked    bool
 	BlockedUntil time.Time
+	FailureTypes map[string]int64
+	FailureCount int64
 	mutex        sync.RWMutex
+	IsBlocked    bool
 }
 
 // SuspiciousPatternDetector identifies patterns that may indicate attacks
 type SuspiciousPatternDetector struct {
-	// Time-based windows for pattern detection
-	shortWindow  time.Duration // 1 minute
-	mediumWindow time.Duration // 5 minutes
-	longWindow   time.Duration // 15 minutes
-
-	// Pattern thresholds
-	rapidFailureThreshold      int // failures in short window
-	distributedAttackThreshold int // failures across IPs in medium window
-	persistentAttackThreshold  int // failures in long window
-
-	// Pattern tracking
-	recentEvents []SecurityEvent
-	eventsMutex  sync.RWMutex
+	recentEvents               []SecurityEvent
+	shortWindow                time.Duration
+	mediumWindow               time.Duration
+	longWindow                 time.Duration
+	rapidFailureThreshold      int
+	distributedAttackThreshold int
+	persistentAttackThreshold  int
+	eventsMutex                sync.RWMutex
 }
 
 // SecurityEventHandler defines the interface for handling security events
@@ -83,22 +67,15 @@ type SecurityEventHandler interface {
 
 // SecurityMonitorConfig contains configuration for the security monitor
 type SecurityMonitorConfig struct {
-	// Failure thresholds
-	MaxFailuresPerIP     int `json:"max_failures_per_ip"`
-	FailureWindowMinutes int `json:"failure_window_minutes"`
-	BlockDurationMinutes int `json:"block_duration_minutes"`
-
-	// Pattern detection settings
-	EnablePatternDetection bool `json:"enable_pattern_detection"`
+	MaxFailuresPerIP       int  `json:"max_failures_per_ip"`
+	FailureWindowMinutes   int  `json:"failure_window_minutes"`
+	BlockDurationMinutes   int  `json:"block_duration_minutes"`
 	RapidFailureThreshold  int  `json:"rapid_failure_threshold"`
-
-	// Monitoring settings
-	EnableDetailedLogging bool `json:"enable_detailed_logging"`
-	LogSuspiciousOnly     bool `json:"log_suspicious_only"`
-
-	// Cleanup settings
-	CleanupIntervalMinutes int `json:"cleanup_interval_minutes"`
-	RetentionHours         int `json:"retention_hours"`
+	CleanupIntervalMinutes int  `json:"cleanup_interval_minutes"`
+	RetentionHours         int  `json:"retention_hours"`
+	EnablePatternDetection bool `json:"enable_pattern_detection"`
+	EnableDetailedLogging  bool `json:"enable_detailed_logging"`
+	LogSuspiciousOnly      bool `json:"log_suspicious_only"`
 }
 
 // DefaultSecurityMonitorConfig returns a default configuration

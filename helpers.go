@@ -72,20 +72,11 @@ func deriveCodeChallenge(codeVerifier string) string {
 // It contains the various tokens and metadata returned after successful
 // code exchange or token refresh operations.
 type TokenResponse struct {
-	// IDToken is the OIDC ID token containing user claims
-	IDToken string `json:"id_token"`
-
-	// AccessToken is the OAuth 2.0 access token for API access
-	AccessToken string `json:"access_token"`
-
-	// RefreshToken is the OAuth 2.0 refresh token for obtaining new tokens
+	IDToken      string `json:"id_token"`
+	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
-
-	// ExpiresIn is the lifetime in seconds of the access token
-	ExpiresIn int `json:"expires_in"`
-
-	// TokenType is the type of token, typically "Bearer"
-	TokenType string `json:"token_type"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
 }
 
 // exchangeTokens performs the OAuth 2.0 token exchange with the OIDC provider's token endpoint.

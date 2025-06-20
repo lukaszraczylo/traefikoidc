@@ -33,13 +33,12 @@ type JWKSet struct {
 }
 
 type JWKCache struct {
-	jwks      *JWKSet
-	expiresAt time.Time
-	mutex     sync.RWMutex
-	// CacheLifetime is configurable to determine how long the JWKS is cached.
+	expiresAt     time.Time
+	jwks          *JWKSet
+	internalCache *Cache
 	CacheLifetime time.Duration
-	internalCache *Cache // To hold the closable Cache instance from cache.go
-	maxSize       int    // Maximum number of items in the cache
+	maxSize       int
+	mutex         sync.RWMutex
 }
 
 type JWKCacheInterface interface {

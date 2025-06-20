@@ -26,96 +26,27 @@ type TemplatedHeader struct {
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
 type Config struct {
-	// ProviderURL is the base URL of the OIDC provider (required)
-	// Example: https://accounts.google.com
-	ProviderURL string `json:"providerURL"`
-
-	// RevocationURL is the endpoint for revoking tokens (optional)
-	// If not provided, it will be discovered from provider metadata
-	RevocationURL string `json:"revocationURL"`
-
-	// EnablePKCE enables Proof Key for Code Exchange (PKCE) for the authorization code flow (optional)
-	// This enhances security but might not be supported by all OIDC providers
-	// Default: false
-	EnablePKCE bool `json:"enablePKCE"`
-
-	// CallbackURL is the path where the OIDC provider will redirect after authentication (required)
-	// Example: /oauth2/callback
-	CallbackURL string `json:"callbackURL"`
-
-	// LogoutURL is the path for handling logout requests (optional)
-	// If not provided, it will be set to CallbackURL + "/logout"
-	LogoutURL string `json:"logoutURL"`
-
-	// ClientID is the OAuth 2.0 client identifier (required)
-	ClientID string `json:"clientID"`
-
-	// ClientSecret is the OAuth 2.0 client secret (required)
-	ClientSecret string `json:"clientSecret"`
-
-	// Scopes defines the OAuth 2.0 scopes to request (optional)
-	// Defaults to ["openid", "profile", "email"] if not provided
-	Scopes []string `json:"scopes"`
-
-	// LogLevel sets the logging verbosity (optional)
-	// Valid values: "debug", "info", "error"
-	// Default: "info"
-	LogLevel string `json:"logLevel"`
-
-	// SessionEncryptionKey is used to encrypt session data (required)
-	// Must be a secure random string
-	SessionEncryptionKey string `json:"sessionEncryptionKey"`
-
-	// ForceHTTPS forces the use of HTTPS for all URLs (optional)
-	// Default: false
-	ForceHTTPS bool `json:"forceHTTPS"`
-
-	// RateLimit sets the maximum number of requests per second (optional)
-	// Default: 100
-	RateLimit int `json:"rateLimit"`
-
-	// ExcludedURLs lists paths that bypass authentication (optional)
-	// Example: ["/health", "/metrics"]
-	ExcludedURLs []string `json:"excludedURLs"`
-
-	// AllowedUserDomains restricts access to specific email domains (optional)
-	// Example: ["company.com", "subsidiary.com"]
-	AllowedUserDomains []string `json:"allowedUserDomains"`
-
-	// AllowedUsers restricts access to specific email addresses (optional)
-	// Example: ["user1@example.com", "user2@example.com"]
-	AllowedUsers []string `json:"allowedUsers"`
-
-	// AllowedRolesAndGroups restricts access to users with specific roles or groups (optional)
-	// Example: ["admin", "developer"]
-	AllowedRolesAndGroups []string `json:"allowedRolesAndGroups"`
-
-	// OIDCEndSessionURL is the provider's end session endpoint (optional)
-	// If not provided, it will be discovered from provider metadata
-	OIDCEndSessionURL string `json:"oidcEndSessionURL"`
-
-	// PostLogoutRedirectURI is the URL to redirect to after logout (optional)
-	// Default: "/"
-	PostLogoutRedirectURI string `json:"postLogoutRedirectURI"`
-
-	// HTTPClient allows customizing the HTTP client used for OIDC operations (optional)
-	HTTPClient *http.Client
-
-	// RefreshGracePeriodSeconds defines how many seconds before a token expires
-	// the plugin should attempt to refresh it proactively (optional)
-	// Default: 60
-	RefreshGracePeriodSeconds int `json:"refreshGracePeriodSeconds"`
-	// Headers defines custom HTTP headers to set with templated values (optional)
-	// Values can reference tokens and claims using Go templates with the following variables:
-	// - {{.AccessToken}} - The access token (ID token)
-	// - {{.IdToken}} - Same as AccessToken (for consistency)
-	// - {{.RefreshToken}} - The refresh token
-	// - {{.Claims.email}} - Access token claims (use proper case for claim names)
-	// Examples:
-	//
-	//	[{Name: "X-Forwarded-Email", Value: "{{.Claims.email}}"}]
-	//	[{Name: "Authorization", Value: "Bearer {{.AccessToken}}"}]
-	Headers []TemplatedHeader `json:"headers"`
+	HTTPClient                *http.Client
+	ProviderURL               string            `json:"providerURL"`
+	RevocationURL             string            `json:"revocationURL"`
+	CallbackURL               string            `json:"callbackURL"`
+	LogoutURL                 string            `json:"logoutURL"`
+	ClientID                  string            `json:"clientID"`
+	ClientSecret              string            `json:"clientSecret"`
+	PostLogoutRedirectURI     string            `json:"postLogoutRedirectURI"`
+	LogLevel                  string            `json:"logLevel"`
+	SessionEncryptionKey      string            `json:"sessionEncryptionKey"`
+	OIDCEndSessionURL         string            `json:"oidcEndSessionURL"`
+	AllowedRolesAndGroups     []string          `json:"allowedRolesAndGroups"`
+	ExcludedURLs              []string          `json:"excludedURLs"`
+	AllowedUserDomains        []string          `json:"allowedUserDomains"`
+	AllowedUsers              []string          `json:"allowedUsers"`
+	Scopes                    []string          `json:"scopes"`
+	Headers                   []TemplatedHeader `json:"headers"`
+	RateLimit                 int               `json:"rateLimit"`
+	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
+	ForceHTTPS                bool              `json:"forceHTTPS"`
+	EnablePKCE                bool              `json:"enablePKCE"`
 }
 
 const (

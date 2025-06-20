@@ -178,10 +178,10 @@ func TestTemplateExecution(t *testing.T) {
 func TestTemplateExecutionContext(t *testing.T) {
 	// Define a test struct that matches the one used in processAuthorizedRequest
 	type templateData struct {
+		Claims       map[string]any
 		AccessToken  string
 		IdToken      string
 		RefreshToken string
-		Claims       map[string]any
 	}
 
 	// Test cases

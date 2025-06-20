@@ -390,8 +390,8 @@ func TestMissingClaims(t *testing.T) {
 	// Test cases for missing claims
 	testCases := []struct {
 		name          string
-		omittedClaims []string
 		expectedError string
+		omittedClaims []string
 	}{
 		{
 			name:          "Missing Issuer",

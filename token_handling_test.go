@@ -19,10 +19,10 @@ import (
 func TestTokenTypeDistinction(t *testing.T) {
 	// Define test data where AccessToken and IdToken are deliberately different
 	type templateData struct {
+		Claims       map[string]any
 		AccessToken  string
 		IdToken      string
 		RefreshToken string
-		Claims       map[string]any
 	}
 
 	testData := templateData{
@@ -323,12 +323,12 @@ func TestTokenCorruptionIntegrationFlows(t *testing.T) {
 	}
 
 	tests := []struct {
+		corruptAction func(*SessionData)
 		name          string
 		accessToken   string
 		refreshToken  string
 		idToken       string
 		expectSuccess bool
-		corruptAction func(*SessionData) // Function to corrupt session after storage
 	}{
 		{
 			name:          "Normal flow - small tokens",

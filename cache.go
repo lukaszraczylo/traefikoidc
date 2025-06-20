@@ -23,24 +23,13 @@ type lruEntry struct {
 // Cache provides a thread-safe in-memory caching mechanism with expiration support.
 // It implements an LRU (Least Recently Used) eviction policy using a doubly-linked list for efficiency.
 type Cache struct {
-	// items stores the cached data with string keys.
-	items map[string]CacheItem
-
-	// order maintains the usage order; most recently used items are at the back.
-	order *list.List
-
-	// elems maps keys to their corresponding list elements for O(1) access.
-	elems map[string]*list.Element
-
-	// mutex protects concurrent access to the cache.
-	mutex sync.RWMutex
-
-	// maxSize is the maximum number of items allowed in the cache.
-	maxSize int
-	// autoCleanupInterval defines how often Cleanup is called automatically.
+	items               map[string]CacheItem
+	order               *list.List
+	elems               map[string]*list.Element
+	stopCleanup         chan struct{}
+	maxSize             int
 	autoCleanupInterval time.Duration
-	// stopCleanup channel to terminate the auto cleanup goroutine.
-	stopCleanup chan struct{}
+	mutex               sync.RWMutex
 }
 
 // DefaultMaxSize is the default maximum number of items in the cache.

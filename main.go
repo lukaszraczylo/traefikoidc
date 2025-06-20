@@ -196,52 +196,51 @@ type TokenExchanger interface {
 
 // TraefikOidc is the main struct for the OIDC middleware
 type TraefikOidc struct {
+	jwkCache                   JWKCacheInterface
+	jwtVerifier                JWTVerifier
+	ctx                        context.Context
+	tokenVerifier              TokenVerifier
 	next                       http.Handler
+	tokenExchanger             TokenExchanger
+	initComplete               chan struct{}
+	limiter                    *rate.Limiter
+	tokenBlacklist             *Cache
+	headerTemplates            map[string]*template.Template
+	sessionManager             *SessionManager
+	tokenCleanupStopChan       chan struct{}
+	excludedURLs               map[string]struct{}
+	extractClaimsFunc          func(tokenString string) (map[string]any, error)
+	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
+	metadataCache              *MetadataCache
+	allowedRolesAndGroups      map[string]struct{}
+	allowedUsers               map[string]struct{}
+	allowedUserDomains         map[string]struct{}
+	tokenCache                 *TokenCache
+	httpClient                 *http.Client
+	tokenHTTPClient            *http.Client
+	logger                     *Logger
+	metadataRefreshStopChan    chan struct{}
+	cancelFunc                 context.CancelFunc
+	clientSecret               string
+	clientID                   string
 	name                       string
 	redirURLPath               string
 	logoutURLPath              string
+	tokenURL                   string
+	authURL                    string
+	endSessionURL              string
+	postLogoutRedirectURI      string
+	scheme                     string
+	jwksURL                    string
 	issuerURL                  string
 	revocationURL              string
-	jwkCache                   JWKCacheInterface
-	metadataCache              *MetadataCache
-	tokenBlacklist             *Cache // Replaced TokenBlacklist with generic Cache
-	jwksURL                    string
-	clientID                   string
-	clientSecret               string
-	authURL                    string
-	tokenURL                   string
 	scopes                     []string
-	limiter                    *rate.Limiter
+	goroutineWG                sync.WaitGroup
+	refreshGracePeriod         time.Duration
+	shutdownOnce               sync.Once
 	forceHTTPS                 bool
 	enablePKCE                 bool
-	scheme                     string
-	tokenCache                 *TokenCache
-	httpClient                 *http.Client
-	tokenHTTPClient            *http.Client // Reusable HTTP client for token operations
-	logger                     *Logger
-	tokenVerifier              TokenVerifier
-	jwtVerifier                JWTVerifier
-	excludedURLs               map[string]struct{}
-	allowedUserDomains         map[string]struct{}
-	allowedUsers               map[string]struct{} // Map for case-insensitive lookup of allowed email addresses
-	allowedRolesAndGroups      map[string]struct{}
-	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
-	// exchangeCodeForTokenFunc   func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) // Replaced by interface
-	extractClaimsFunc       func(tokenString string) (map[string]any, error)
-	initComplete            chan struct{}
-	endSessionURL           string
-	postLogoutRedirectURI   string
-	sessionManager          *SessionManager
-	tokenExchanger          TokenExchanger                // Added field for mocking
-	refreshGracePeriod      time.Duration                 // Configurable grace period for proactive refresh
-	headerTemplates         map[string]*template.Template // Parsed templates for custom headers
-	tokenCleanupStopChan    chan struct{}                 // Channel to stop token cleanup goroutine
-	metadataRefreshStopChan chan struct{}                 // Channel to stop metadata refresh goroutine
-	goroutineWG             sync.WaitGroup                // WaitGroup to track background goroutines
-	ctx                     context.Context
-	cancelFunc              context.CancelFunc
-	shutdownOnce            sync.Once
-	suppressDiagnosticLogs  bool // Flag to suppress diagnostic logs during tests
+	suppressDiagnosticLogs     bool
 }
 
 // ProviderMetadata holds OIDC provider metadata
@@ -1195,11 +1194,10 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 			// Create template data context with available tokens and claims
 			// Fields must be exported (uppercase) to be accessible in templates
 			templateData := struct {
-				// These fields need to be exported (uppercase) for template access
+				Claims       map[string]any
 				AccessToken  string
 				IdToken      string
 				RefreshToken string
-				Claims       map[string]any
 			}{
 				AccessToken:  session.GetAccessToken(), // Provide AccessToken for templates if needed
 				IdToken:      session.GetIDToken(),

@@ -213,17 +213,10 @@ func decompressTokenInternal(compressed string) string {
 // It provides functionality for storing and retrieving authentication state, tokens,
 // and other session-related data across multiple cookies.
 type SessionManager struct {
-	// store is the underlying session store for cookie management.
-	store sessions.Store
-
-	// forceHTTPS enforces secure cookie attributes regardless of request scheme.
-	forceHTTPS bool
-
-	// logger provides structured logging capabilities.
-	logger *Logger
-
-	// sessionPool is a sync.Pool for reusing SessionData objects.
 	sessionPool sync.Pool
+	store       sessions.Store
+	logger      *Logger
+	forceHTTPS  bool
 }
 
 // NewSessionManager creates a new session manager with the specified configuration.

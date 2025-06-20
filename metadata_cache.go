@@ -8,11 +8,11 @@ import (
 )
 
 type MetadataCache struct {
-	metadata            *ProviderMetadata
 	expiresAt           time.Time
-	mutex               sync.RWMutex
-	autoCleanupInterval time.Duration
+	metadata            *ProviderMetadata
 	stopCleanup         chan struct{}
+	autoCleanupInterval time.Duration
+	mutex               sync.RWMutex
 }
 
 // NewMetadataCache creates a new MetadataCache instance.

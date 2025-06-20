@@ -11,35 +11,29 @@ import (
 
 // InputValidator provides comprehensive input validation and sanitization
 type InputValidator struct {
-	// Configuration
-	maxTokenLength    int
-	maxURLLength      int
-	maxHeaderLength   int
-	maxClaimLength    int
-	maxEmailLength    int
-	maxUsernameLength int
-
-	// Compiled regex patterns
-	emailRegex    *regexp.Regexp
-	urlRegex      *regexp.Regexp
-	tokenRegex    *regexp.Regexp
-	usernameRegex *regexp.Regexp
-
-	// Security patterns to detect
+	usernameRegex         *regexp.Regexp
+	tokenRegex            *regexp.Regexp
+	logger                *Logger
+	urlRegex              *regexp.Regexp
+	emailRegex            *regexp.Regexp
 	sqlInjectionPatterns  []string
-	xssPatterns           []string
 	pathTraversalPatterns []string
-
-	logger *Logger
+	xssPatterns           []string
+	maxUsernameLength     int
+	maxURLLength          int
+	maxTokenLength        int
+	maxEmailLength        int
+	maxClaimLength        int
+	maxHeaderLength       int
 }
 
 // ValidationResult represents the result of input validation
 type ValidationResult struct {
-	IsValid        bool     `json:"is_valid"`
-	Errors         []string `json:"errors,omitempty"`
-	Warnings       []string `json:"warnings,omitempty"`
 	SanitizedValue string   `json:"sanitized_value,omitempty"`
 	SecurityRisk   string   `json:"security_risk,omitempty"`
+	Errors         []string `json:"errors,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
+	IsValid        bool     `json:"is_valid"`
 }
 
 // InputValidationConfig holds configuration for input validation

@@ -254,10 +254,10 @@ func TestLogger(t *testing.T) {
 	var debugBuf, infoBuf, errorBuf bytes.Buffer
 
 	tests := []struct {
-		name      string
-		logLevel  string
 		testFunc  func(*Logger)
 		checkFunc func(t *testing.T, debugOut, infoOut, errorOut string)
+		name      string
+		logLevel  string
 	}{
 		{
 			name:     "Debug Level",
@@ -405,9 +405,9 @@ func TestHandleError(t *testing.T) {
 
 // Test helper types
 type testResponseRecorder struct {
-	statusCode int
-	body       string
 	headers    map[string][]string
+	body       string
+	statusCode int
 }
 
 func (r *testResponseRecorder) Header() http.Header {

@@ -30,8 +30,8 @@ type TestSuite struct {
 	ecPrivateKey   *ecdsa.PrivateKey
 	tOidc          *TraefikOidc
 	mockJWKCache   *MockJWKCache
-	token          string
 	sessionManager *SessionManager
+	token          string
 }
 
 // Setup initializes the test suite
@@ -410,15 +410,15 @@ func TestServeHTTP(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                      string
-		requestPath               string
 		sessionValues             map[any]any
-		expectedStatus            int
-		expectedBody              string
 		setupSession              func(*SessionData)
 		mockRefreshTokenFunc      func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error)
-		assertSessionAfterRequest func(t *testing.T, rr *httptest.ResponseRecorder, req *http.Request, sessionManager *SessionManager) // Added for post-request checks
-		requestHeaders            map[string]string                                                                                    // Added for setting headers like Accept
+		assertSessionAfterRequest func(t *testing.T, rr *httptest.ResponseRecorder, req *http.Request, sessionManager *SessionManager)
+		requestHeaders            map[string]string
+		name                      string
+		requestPath               string
+		expectedBody              string
+		expectedStatus            int
 	}{
 		{
 			name:           "Excluded URL",
@@ -873,10 +873,10 @@ func TestJWKToPEM(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name          string
 		jwk           *JWK
-		expectError   bool
+		name          string
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name: "Unsupported Key Type",
@@ -928,8 +928,8 @@ func TestParseJWT(t *testing.T) {
 	tests := []struct {
 		name          string
 		token         string
-		expectError   bool
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name:          "Invalid Format",
@@ -989,11 +989,11 @@ func TestHandleCallback(t *testing.T) {
 	redirectURL := "http://example.com/"
 
 	tests := []struct {
-		name                 string
-		queryParams          string
 		exchangeCodeForToken func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error)
 		extractClaimsFunc    func(tokenString string) (map[string]any, error)
 		sessionSetupFunc     func(*SessionData)
+		name                 string
+		queryParams          string
 		expectedStatus       int
 	}{
 		{
@@ -1256,12 +1256,12 @@ func TestIsAllowedDomain(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name              string
-		email             string
 		allowedDomains    map[string]struct{}
 		allowedUsers      map[string]struct{}
+		name              string
+		email             string
+		expectedLogOutput string
 		allowed           bool
-		expectedLogOutput string // For testing log messages
 	}{
 		{
 			name:           "Allowed domain",
@@ -1343,11 +1343,11 @@ func TestOIDCHandler(t *testing.T) {
 	ts.token = "valid.jwt.token"
 
 	tests := []struct {
-		name                 string
-		queryParams          string
 		exchangeCodeForToken func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error)
 		extractClaimsFunc    func(tokenString string) (map[string]any, error)
 		sessionSetupFunc     func(session *sessions.Session)
+		name                 string
+		queryParams          string
 		expectedStatus       int
 		blacklist            bool
 		rateLimit            bool
@@ -1504,12 +1504,12 @@ func TestHandleLogout(t *testing.T) {
 	defer mockRevocationServer.Close()
 
 	tests := []struct {
-		name           string
 		setupSession   func(*SessionData)
+		name           string
 		endSessionURL  string
-		expectedStatus int
 		expectedURL    string
 		host           string
+		expectedStatus int
 	}{
 		{
 			name: "Successful logout with end session endpoint",
@@ -2104,12 +2104,12 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 	nbf := now.Add(-2 * time.Minute).Unix() // Account for clock skew
 
 	tests := []struct {
-		name                  string
 		allowedRolesAndGroups map[string]struct{}
 		claims                map[string]any
 		setupSession          func(*SessionData)
-		expectedStatus        int
 		expectedHeaders       map[string]string
+		name                  string
+		expectedStatus        int
 	}{
 		{
 			name: "User with allowed role",
@@ -2313,10 +2313,10 @@ func TestExchangeTokensWithRedirects(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name          string
 		setupServer   func() *httptest.Server
-		expectError   bool
+		name          string
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name: "Successful token exchange with redirects",
@@ -2424,9 +2424,9 @@ func TestBuildAuthURL(t *testing.T) {
 		redirectURL    string
 		state          string
 		nonce          string
-		enablePKCE     bool
 		codeChallenge  string
 		expectedPrefix string
+		enablePKCE     bool
 		checkPKCE      bool
 	}{
 		{
@@ -2574,10 +2574,10 @@ func TestExchangeCodeForToken(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name         string
-		enablePKCE   bool
-		codeVerifier string
 		setupMock    func(t *testing.T) *httptest.Server
+		name         string
+		codeVerifier string
+		enablePKCE   bool
 	}{
 		{
 			name:         "With PKCE Enabled and Code Verifier",
@@ -2883,10 +2883,10 @@ func TestJWTVerifyWithSkipReplayCheck(t *testing.T) {
 
 	tests := []struct {
 		name            string
+		errorContains   string
 		skipReplayCheck bool
 		firstCall       bool
 		expectError     bool
-		errorContains   string
 	}{
 		{
 			name:            "First verification with skipReplayCheck=false should succeed",
@@ -3339,10 +3339,10 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 
 	// Test JTI blacklist behavior
 	tests := []struct {
-		name        string
 		action      func() error
-		expectError bool
+		name        string
 		description string
+		expectError bool
 	}{
 		{
 			name: "Initial verification adds JTI to blacklist",
@@ -3495,9 +3495,9 @@ func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 	nbf := now.Unix()
 
 	tests := []struct {
+		claims      map[string]any
 		name        string
 		tokenType   string
-		claims      map[string]any
 		expectError bool
 	}{
 		{
@@ -3697,10 +3697,10 @@ func TestScopeMergingEdgeCases(t *testing.T) {
 
 	tests := []struct {
 		name           string
+		description    string
 		defaultScopes  []string
 		userScopes     []string
 		expectedScopes []string
-		description    string
 	}{
 		{
 			name:           "Case sensitivity preserved",
@@ -3974,8 +3974,8 @@ func TestBuildAuthURLWithMergedScopes(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		scopes         []string
 		expectedScopes string
+		scopes         []string
 	}{
 		{
 			name:           "Default scopes only",

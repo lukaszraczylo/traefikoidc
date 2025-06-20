@@ -441,8 +441,8 @@ func TestTokenChunkingCorruptionResistance(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
 		corruptChunk func(chunks map[int]*sessions.Session)
+		name         string
 		expectEmpty  bool
 	}{
 		{

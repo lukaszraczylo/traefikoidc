@@ -28,11 +28,11 @@ func TestTokenCorruptionScenario(t *testing.T) {
 	validJWT := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImV4cCI6OTk5OTk5OTk5OX0.signature"
 
 	tests := []struct {
+		corruptionScenario func(*SessionData)
 		name               string
 		tokenSize          int
 		iterations         int
 		expectConsistent   bool
-		corruptionScenario func(*SessionData) // Function to simulate corruption
 	}{
 		{
 			name:             "Small token - multiple retrievals",
@@ -207,8 +207,8 @@ func TestChunkReassemblyEdgeCases(t *testing.T) {
 
 	// Test various corruption scenarios
 	corruptionTests := []struct {
-		name        string
 		corruption  func(map[int]*sessions.Session)
+		name        string
 		expectEmpty bool
 	}{
 		{
@@ -367,8 +367,8 @@ func TestRaceConditionProtection(t *testing.T) {
 // TestMemoryExhaustionProtection tests protection against memory exhaustion attacks
 func TestMemoryExhaustionProtection(t *testing.T) {
 	tests := []struct {
-		name            string
 		setupCorruption func() string
+		name            string
 		expectRejection bool
 	}{
 		{

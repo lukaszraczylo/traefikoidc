@@ -20,12 +20,12 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name               string
-		headers            []TemplatedHeader
 		sessionSetup       func(*SessionData)
 		claims             map[string]any
 		expectedHeaders    map[string]string
 		interceptedHeaders map[string]string
+		name               string
+		headers            []TemplatedHeader
 	}{
 		{
 			name: "Basic Email Header",
@@ -423,9 +423,9 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
+		claims             map[string]any
 		name               string
 		headers            []TemplatedHeader
-		claims             map[string]any
 		shouldExecuteCheck bool
 	}{
 		{

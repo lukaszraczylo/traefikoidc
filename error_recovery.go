@@ -26,25 +26,18 @@ const (
 
 // CircuitBreaker implements the circuit breaker pattern for external service calls
 type CircuitBreaker struct {
-	// Configuration
-	maxFailures  int           // Maximum failures before opening
-	timeout      time.Duration // How long to wait before trying again
-	resetTimeout time.Duration // How long to wait in half-open state
-
-	// State
-	state           CircuitBreakerState
-	failures        int64
 	lastFailureTime time.Time
 	lastSuccessTime time.Time
+	logger          *Logger
+	maxFailures     int
+	timeout         time.Duration
+	resetTimeout    time.Duration
+	state           CircuitBreakerState
+	failures        int64
+	totalRequests   int64
+	totalFailures   int64
+	totalSuccesses  int64
 	mutex           sync.RWMutex
-
-	// Metrics
-	totalRequests  int64
-	totalFailures  int64
-	totalSuccesses int64
-
-	// Logger
-	logger *Logger
 }
 
 // CircuitBreakerConfig holds configuration for circuit breakers
@@ -193,12 +186,12 @@ func (cb *CircuitBreaker) GetMetrics() map[string]any {
 
 // RetryConfig holds configuration for retry mechanisms
 type RetryConfig struct {
+	RetryableErrors []string      `json:"retryable_errors"`
 	MaxAttempts     int           `json:"max_attempts"`
 	InitialDelay    time.Duration `json:"initial_delay"`
 	MaxDelay        time.Duration `json:"max_delay"`
 	BackoffFactor   float64       `json:"backoff_factor"`
 	EnableJitter    bool          `json:"enable_jitter"`
-	RetryableErrors []string      `json:"retryable_errors"`
 }
 
 // DefaultRetryConfig returns default retry configuration
@@ -220,8 +213,8 @@ func DefaultRetryConfig() RetryConfig {
 
 // RetryExecutor implements retry logic with exponential backoff
 type RetryExecutor struct {
-	config RetryConfig
 	logger *Logger
+	config RetryConfig
 }
 
 // NewRetryExecutor creates a new retry executor
@@ -344,8 +337,8 @@ func (re *RetryExecutor) calculateDelay(attempt int) time.Duration {
 
 // HTTPError represents an HTTP error with status code
 type HTTPError struct {
-	StatusCode int
 	Message    string
+	StatusCode int
 }
 
 // Error implements the error interface
@@ -355,20 +348,12 @@ func (e *HTTPError) Error() string {
 
 // GracefulDegradation implements graceful degradation patterns
 type GracefulDegradation struct {
-	// Fallback functions for different operations
-	fallbacks map[string]func() (any, error)
-
-	// Health checks for dependencies
-	healthChecks map[string]func() bool
-
-	// Configuration
-	config GracefulDegradationConfig
-
-	// State tracking
+	fallbacks        map[string]func() (any, error)
+	healthChecks     map[string]func() bool
 	degradedServices map[string]time.Time
+	logger           *Logger
+	config           GracefulDegradationConfig
 	mutex            sync.RWMutex
-
-	logger *Logger
 }
 
 // GracefulDegradationConfig holds configuration for graceful degradation
@@ -537,8 +522,8 @@ type ErrorRecoveryManager struct {
 	circuitBreakers     map[string]*CircuitBreaker
 	retryExecutor       *RetryExecutor
 	gracefulDegradation *GracefulDegradation
-	mutex               sync.RWMutex
 	logger              *Logger
+	mutex               sync.RWMutex
 }
 
 // NewErrorRecoveryManager creates a new error recovery manager
