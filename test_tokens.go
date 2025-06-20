@@ -158,7 +158,7 @@ func (tt *TestTokens) CreateIncompressibleToken(targetSize int) string {
 		// ~100 bytes per field
 		remainingSize/100, 1)
 
-	for i := 0; i < fieldCount; i++ {
+	for i := range fieldCount {
 		// Generate truly random data for each field
 		randomBytes := make([]byte, 50)
 		rand.Read(randomBytes)

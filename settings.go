@@ -469,6 +469,17 @@ func (l *Logger) Errorf(format string, args ...any) {
 	l.logError.Printf(format, args...)
 }
 
+// newNoOpLogger creates a silent logger that doesn't output anything.
+// This is useful for internal components that need a logger instance
+// but should not produce any output by default.
+func newNoOpLogger() *Logger {
+	return &Logger{
+		logError: log.New(io.Discard, "", 0),
+		logInfo:  log.New(io.Discard, "", 0),
+		logDebug: log.New(io.Discard, "", 0),
+	}
+}
+
 // handleError logs an error message using the provided logger and sends an HTTP error
 // response to the client with the specified message and status code.
 //

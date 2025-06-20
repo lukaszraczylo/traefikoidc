@@ -651,11 +651,8 @@ func TestErrorRecoveryPatterns(t *testing.T) {
 
 	// Test recovery from cache corruption
 	t.Run("CacheCorruption", func(t *testing.T) {
-		// Corrupt the cache by setting invalid data
-		ts.tOidc.tokenCache.cache.items["corrupted"] = CacheItem{
-			Value:     "invalid-data",
-			ExpiresAt: time.Now().Add(time.Hour),
-		}
+		// Corrupt the cache by using the Set method to avoid data race
+		ts.tOidc.tokenCache.cache.Set("corrupted", "invalid-data", time.Hour)
 
 		// System should handle corrupted cache gracefully
 		validToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{

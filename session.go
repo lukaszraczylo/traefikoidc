@@ -508,6 +508,62 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	return firstErr
 }
 
+// clearSessionValues clears all values from a session and optionally sets MaxAge to -1 to expire the cookie
+// Parameters:
+//   - session: The session to clear
+//   - expire: If true, sets MaxAge to -1 to expire the cookie
+func clearSessionValues(session *sessions.Session, expire bool) {
+	if session == nil {
+		return
+	}
+
+	// Clear all values
+	for k := range session.Values {
+		delete(session.Values, k)
+	}
+
+	// If expiring, set MaxAge to -1
+	if expire {
+		session.Options.MaxAge = -1
+	}
+}
+
+// clearAllSessionData clears values from all session objects (main, token sessions, and chunks)
+// Parameters:
+//   - sd: The SessionData instance containing all sessions
+//   - r: The HTTP request (needed for chunk clearing)
+//   - expire: Whether to expire the cookies (set MaxAge to -1)
+func (sd *SessionData) clearAllSessionData(r *http.Request, expire bool) {
+	// Clear main session and token sessions
+	clearSessionValues(sd.mainSession, expire)
+	clearSessionValues(sd.accessSession, expire)
+	clearSessionValues(sd.refreshSession, expire)
+	clearSessionValues(sd.idTokenSession, expire)
+
+	// If we need to expire cookies, clear token chunks
+	if expire && r != nil {
+		sd.clearTokenChunks(r, sd.accessTokenChunks)
+		sd.clearTokenChunks(r, sd.refreshTokenChunks)
+		sd.clearTokenChunks(r, sd.idTokenChunks)
+	} else {
+		// Just remove the chunks from memory without expiring cookies
+		for k := range sd.accessTokenChunks {
+			delete(sd.accessTokenChunks, k)
+		}
+		for k := range sd.refreshTokenChunks {
+			delete(sd.refreshTokenChunks, k)
+		}
+		for k := range sd.idTokenChunks {
+			delete(sd.idTokenChunks, k)
+		}
+	}
+
+	// Mark session as dirty if we're changing state
+	if expire {
+		sd.dirty = true
+	}
+}
+
 // Clear removes all session data associated with this SessionData instance.
 // It clears the values map of the main, access, and refresh sessions, sets their MaxAge to -1
 // to expire the cookies immediately, and clears any associated token chunk cookies.
@@ -539,38 +595,8 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	sd.dirty = true // Clearing the session means its state is changing and needs to be saved.
-
-	// Clear and expire all sessions.
-	if sd.mainSession != nil {
-		sd.mainSession.Options.MaxAge = -1
-		for k := range sd.mainSession.Values {
-			delete(sd.mainSession.Values, k)
-		}
-	}
-	if sd.accessSession != nil {
-		sd.accessSession.Options.MaxAge = -1
-		for k := range sd.accessSession.Values {
-			delete(sd.accessSession.Values, k)
-		}
-	}
-	if sd.refreshSession != nil {
-		sd.refreshSession.Options.MaxAge = -1
-		for k := range sd.refreshSession.Values {
-			delete(sd.refreshSession.Values, k)
-		}
-	}
-	if sd.idTokenSession != nil {
-		sd.idTokenSession.Options.MaxAge = -1
-		for k := range sd.idTokenSession.Values {
-			delete(sd.idTokenSession.Values, k)
-		}
-	}
-
-	// Clear chunk sessions.
-	sd.clearTokenChunks(r, sd.accessTokenChunks)
-	sd.clearTokenChunks(r, sd.refreshTokenChunks)
-	sd.clearTokenChunks(r, sd.idTokenChunks)
+	// Clear all session data and expire cookies
+	sd.clearAllSessionData(r, true)
 
 	// Create a guaranteed error when the response writer is set
 	// This is primarily for testing - in production w will often be nil
@@ -613,10 +639,7 @@ func (sd *SessionData) returnToPoolSafely() {
 //   - chunks: The map of session chunks (e.g., sd.accessTokenChunks) to clear and expire.
 func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*sessions.Session) {
 	for _, session := range chunks {
-		session.Options.MaxAge = -1
-		for k := range session.Values {
-			delete(session.Values, k)
-		}
+		clearSessionValues(session, true) // Clear and expire the chunks
 	}
 }
 
@@ -711,6 +734,21 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 	return nil
 }
 
+// resetSession resets a session by clearing its values and resetting its ID and IsNew flag
+// This is specifically for pool reuse preparation
+func resetSession(session *sessions.Session) {
+	if session == nil {
+		return
+	}
+
+	// Clear all values
+	clearSessionValues(session, false)
+
+	// Reset session ID and IsNew flag
+	session.ID = ""
+	session.IsNew = true
+}
+
 // Reset clears all session data and prepares the SessionData object for reuse.
 // This method is called when returning objects to the pool to prevent data leakage
 // between different users/sessions.
@@ -718,48 +756,16 @@ func (sd *SessionData) Reset() {
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	if sd.mainSession != nil {
-		for k := range sd.mainSession.Values {
-			delete(sd.mainSession.Values, k)
-		}
-		sd.mainSession.ID = ""
-		sd.mainSession.IsNew = true
-	}
+	// Clear all session data (but don't expire cookies, as this is internal cleanup)
+	sd.clearAllSessionData(nil, false)
 
-	if sd.accessSession != nil {
-		for k := range sd.accessSession.Values {
-			delete(sd.accessSession.Values, k)
-		}
-		sd.accessSession.ID = ""
-		sd.accessSession.IsNew = true
-	}
+	// Reset session state for pool reuse
+	resetSession(sd.mainSession)
+	resetSession(sd.accessSession)
+	resetSession(sd.refreshSession)
+	resetSession(sd.idTokenSession)
 
-	if sd.refreshSession != nil {
-		for k := range sd.refreshSession.Values {
-			delete(sd.refreshSession.Values, k)
-		}
-		sd.refreshSession.ID = ""
-		sd.refreshSession.IsNew = true
-	}
-
-	if sd.idTokenSession != nil {
-		for k := range sd.idTokenSession.Values {
-			delete(sd.idTokenSession.Values, k)
-		}
-		sd.idTokenSession.ID = ""
-		sd.idTokenSession.IsNew = true
-	}
-
-	for k := range sd.accessTokenChunks {
-		delete(sd.accessTokenChunks, k)
-	}
-	for k := range sd.refreshTokenChunks {
-		delete(sd.refreshTokenChunks, k)
-	}
-	for k := range sd.idTokenChunks {
-		delete(sd.idTokenChunks, k)
-	}
-
+	// Reset other state
 	sd.dirty = false
 	sd.inUse = false
 	sd.request = nil

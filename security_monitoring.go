@@ -2,14 +2,56 @@ package traefikoidc
 
 import (
 	"fmt"
-	"maps"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
+
+// SecurityEventType represents different types of security events
+type SecurityEventType string
+
+const (
+	// AuthFailure represents an authentication failure event
+	AuthFailure SecurityEventType = "authentication_failure"
+	// TokenValidFailure represents a token validation failure event
+	TokenValidFailure SecurityEventType = "token_validation_failure"
+	// RateLimitHit represents a rate limit hit event
+	RateLimitHit SecurityEventType = "rate_limit_hit"
+	// SuspiciousActivity represents a suspicious activity event
+	SuspiciousActivity SecurityEventType = "suspicious_activity"
+)
+
+// DefaultSeverity returns the default severity level for a security event type
+func (t SecurityEventType) DefaultSeverity() string {
+	switch t {
+	case AuthFailure:
+		return "medium"
+	case TokenValidFailure:
+		return "medium"
+	case RateLimitHit:
+		return "low"
+	case SuspiciousActivity:
+		return "high"
+	default:
+		return "medium"
+	}
+}
+
+// IPFailureType returns the IP failure tracking type for a security event type
+func (t SecurityEventType) IPFailureType() string {
+	switch t {
+	case AuthFailure:
+		return "auth_failure"
+	case TokenValidFailure:
+		return "token_failure"
+	case SuspiciousActivity:
+		return "suspicious"
+	default:
+		return "general"
+	}
+}
 
 // SecurityEvent represents a security-related event that should be logged and monitored
 type SecurityEvent struct {
@@ -25,16 +67,12 @@ type SecurityEvent struct {
 
 // SecurityMonitor tracks security events and suspicious activity patterns
 type SecurityMonitor struct {
-	ipFailures           map[string]*IPFailureTracker
-	patternDetector      *SuspiciousPatternDetector
-	logger               *Logger
-	eventHandlers        []SecurityEventHandler
-	config               SecurityMonitorConfig
-	authFailures         int64
-	tokenValidationFails int64
-	rateLimitHits        int64
-	suspiciousRequests   int64
-	ipMutex              sync.RWMutex
+	ipFailures      map[string]*IPFailureTracker
+	patternDetector *SuspiciousPatternDetector
+	logger          *Logger
+	eventHandlers   []SecurityEventHandler
+	config          SecurityMonitorConfig
+	ipMutex         sync.RWMutex
 }
 
 // IPFailureTracker tracks failures for a specific IP address
@@ -93,6 +131,9 @@ func DefaultSecurityMonitorConfig() SecurityMonitorConfig {
 	}
 }
 
+// cleanupTask holds the BackgroundTask for security cleanup
+var cleanupTask *BackgroundTask
+
 // NewSecurityMonitor creates a new security monitor instance
 func NewSecurityMonitor(config SecurityMonitorConfig, logger *Logger) *SecurityMonitor {
 	sm := &SecurityMonitor{
@@ -104,7 +145,7 @@ func NewSecurityMonitor(config SecurityMonitorConfig, logger *Logger) *SecurityM
 	}
 
 	// Start cleanup routine
-	go sm.startCleanupRoutine()
+	sm.startCleanupRoutine()
 
 	return sm
 }
@@ -122,29 +163,55 @@ func NewSuspiciousPatternDetector() *SuspiciousPatternDetector {
 	}
 }
 
-// RecordAuthenticationFailure records an authentication failure event
-func (sm *SecurityMonitor) RecordAuthenticationFailure(clientIP, userAgent, requestPath, reason string, details map[string]any) {
-	atomic.AddInt64(&sm.authFailures, 1)
+// RecordSecurityEvent is a generic method to record any type of security event
+func (sm *SecurityMonitor) RecordSecurityEvent(
+	eventType SecurityEventType,
+	clientIP, userAgent, requestPath string,
+	message string,
+	details map[string]any,
+	trackIPFailure bool) {
 
+	// Create event with default values for the event type
 	event := SecurityEvent{
-		Type:        "authentication_failure",
-		Severity:    "medium",
+		Type:        string(eventType),
+		Severity:    eventType.DefaultSeverity(),
 		Timestamp:   time.Now(),
 		ClientIP:    clientIP,
 		UserAgent:   userAgent,
 		RequestPath: requestPath,
-		Message:     fmt.Sprintf("Authentication failed: %s", reason),
+		Message:     message,
 		Details:     details,
 	}
 
-	sm.recordIPFailure(clientIP, "auth_failure")
+	// Track IP failures if requested
+	if trackIPFailure {
+		sm.recordIPFailure(clientIP, eventType.IPFailureType())
+	}
+
+	// Process the event
 	sm.processSecurityEvent(event)
+}
+
+// RecordAuthenticationFailure records an authentication failure event
+func (sm *SecurityMonitor) RecordAuthenticationFailure(clientIP, userAgent, requestPath, reason string, details map[string]any) {
+	if details == nil {
+		details = make(map[string]any)
+	}
+	details["reason"] = reason
+
+	sm.RecordSecurityEvent(
+		AuthFailure,
+		clientIP,
+		userAgent,
+		requestPath,
+		fmt.Sprintf("Authentication failed: %s", reason),
+		details,
+		true,
+	)
 }
 
 // RecordTokenValidationFailure records a token validation failure
 func (sm *SecurityMonitor) RecordTokenValidationFailure(clientIP, userAgent, requestPath, reason string, tokenPrefix string) {
-	atomic.AddInt64(&sm.tokenValidationFails, 1)
-
 	details := map[string]any{
 		"reason": reason,
 	}
@@ -152,59 +219,50 @@ func (sm *SecurityMonitor) RecordTokenValidationFailure(clientIP, userAgent, req
 		details["token_prefix"] = tokenPrefix
 	}
 
-	event := SecurityEvent{
-		Type:        "token_validation_failure",
-		Severity:    "medium",
-		Timestamp:   time.Now(),
-		ClientIP:    clientIP,
-		UserAgent:   userAgent,
-		RequestPath: requestPath,
-		Message:     fmt.Sprintf("Token validation failed: %s", reason),
-		Details:     details,
-	}
-
-	sm.recordIPFailure(clientIP, "token_failure")
-	sm.processSecurityEvent(event)
+	sm.RecordSecurityEvent(
+		TokenValidFailure,
+		clientIP,
+		userAgent,
+		requestPath,
+		fmt.Sprintf("Token validation failed: %s", reason),
+		details,
+		true,
+	)
 }
 
 // RecordRateLimitHit records when rate limiting is triggered
 func (sm *SecurityMonitor) RecordRateLimitHit(clientIP, userAgent, requestPath string) {
-	atomic.AddInt64(&sm.rateLimitHits, 1)
-
-	event := SecurityEvent{
-		Type:        "rate_limit_hit",
-		Severity:    "low",
-		Timestamp:   time.Now(),
-		ClientIP:    clientIP,
-		UserAgent:   userAgent,
-		RequestPath: requestPath,
-		Message:     "Rate limit exceeded",
-		Details: map[string]any{
-			"limit_type": "token_verification",
-		},
+	details := map[string]any{
+		"limit_type": "token_verification",
 	}
 
-	sm.recordIPFailure(clientIP, "rate_limit")
-	sm.processSecurityEvent(event)
+	sm.RecordSecurityEvent(
+		RateLimitHit,
+		clientIP,
+		userAgent,
+		requestPath,
+		"Rate limit exceeded",
+		details,
+		true, // Track IP failure for rate limiting
+	)
 }
 
 // RecordSuspiciousActivity records suspicious activity that doesn't fit other categories
 func (sm *SecurityMonitor) RecordSuspiciousActivity(clientIP, userAgent, requestPath, activityType, description string, details map[string]any) {
-	atomic.AddInt64(&sm.suspiciousRequests, 1)
-
-	event := SecurityEvent{
-		Type:        "suspicious_activity",
-		Severity:    "high",
-		Timestamp:   time.Now(),
-		ClientIP:    clientIP,
-		UserAgent:   userAgent,
-		RequestPath: requestPath,
-		Message:     fmt.Sprintf("Suspicious activity detected: %s - %s", activityType, description),
-		Details:     details,
+	if details == nil {
+		details = make(map[string]any)
 	}
+	details["activity_type"] = activityType
 
-	sm.recordIPFailure(clientIP, "suspicious")
-	sm.processSecurityEvent(event)
+	sm.RecordSecurityEvent(
+		SuspiciousActivity,
+		clientIP,
+		userAgent,
+		requestPath,
+		fmt.Sprintf("Suspicious activity detected: %s - %s", activityType, description),
+		details,
+		true,
+	)
 }
 
 // recordIPFailure tracks failures for a specific IP address
@@ -329,30 +387,11 @@ func (sm *SecurityMonitor) AddEventHandler(handler SecurityEventHandler) {
 	sm.eventHandlers = append(sm.eventHandlers, handler)
 }
 
-// GetSecurityMetrics returns current security metrics
+// GetSecurityMetrics returns minimal security metrics
+// This is kept for API compatibility but doesn't collect actual metrics
 func (sm *SecurityMonitor) GetSecurityMetrics() map[string]any {
-	sm.ipMutex.RLock()
-	defer sm.ipMutex.RUnlock()
-
-	blockedIPs := 0
-	totalTrackedIPs := len(sm.ipFailures)
-
-	for _, tracker := range sm.ipFailures {
-		tracker.mutex.RLock()
-		if tracker.IsBlocked && time.Now().Before(tracker.BlockedUntil) {
-			blockedIPs++
-		}
-		tracker.mutex.RUnlock()
-	}
-
 	return map[string]any{
-		"auth_failures":          atomic.LoadInt64(&sm.authFailures),
-		"token_validation_fails": atomic.LoadInt64(&sm.tokenValidationFails),
-		"rate_limit_hits":        atomic.LoadInt64(&sm.rateLimitHits),
-		"suspicious_requests":    atomic.LoadInt64(&sm.suspiciousRequests),
-		"blocked_ips":            blockedIPs,
-		"tracked_ips":            totalTrackedIPs,
-		"uptime_hours":           time.Since(time.Now().Add(-24 * time.Hour)).Hours(), // Placeholder
+		"tracked_ips": 0,
 	}
 }
 
@@ -434,11 +473,20 @@ func (spd *SuspiciousPatternDetector) DetectSuspiciousPatterns() []string {
 
 // startCleanupRoutine starts the background cleanup routine
 func (sm *SecurityMonitor) startCleanupRoutine() {
-	ticker := time.NewTicker(time.Duration(sm.config.CleanupIntervalMinutes) * time.Minute)
-	defer ticker.Stop()
+	// Use BackgroundTask abstraction for consistent management
+	cleanupTask = NewBackgroundTask(
+		"security-monitor-cleanup",
+		time.Duration(sm.config.CleanupIntervalMinutes)*time.Minute,
+		sm.cleanup,
+		sm.logger)
+	cleanupTask.Start()
+}
 
-	for range ticker.C {
-		sm.cleanup()
+// StopCleanupRoutine stops the background cleanup routine
+func (sm *SecurityMonitor) StopCleanupRoutine() {
+	if cleanupTask != nil {
+		cleanupTask.Stop()
+		cleanupTask = nil
 	}
 }
 
@@ -515,34 +563,4 @@ func (h *LoggingSecurityEventHandler) HandleSecurityEvent(event SecurityEvent) {
 	}
 }
 
-// MetricsSecurityEventHandler tracks security metrics
-type MetricsSecurityEventHandler struct {
-	eventCounts map[string]int64
-	mutex       sync.RWMutex
-}
-
-// NewMetricsSecurityEventHandler creates a new metrics event handler
-func NewMetricsSecurityEventHandler() *MetricsSecurityEventHandler {
-	return &MetricsSecurityEventHandler{
-		eventCounts: make(map[string]int64),
-	}
-}
-
-// HandleSecurityEvent implements SecurityEventHandler
-func (h *MetricsSecurityEventHandler) HandleSecurityEvent(event SecurityEvent) {
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
-
-	h.eventCounts[event.Type]++
-	h.eventCounts[fmt.Sprintf("%s_%s", event.Type, event.Severity)]++
-}
-
-// GetMetrics returns the current metrics
-func (h *MetricsSecurityEventHandler) GetMetrics() map[string]int64 {
-	h.mutex.RLock()
-	defer h.mutex.RUnlock()
-
-	metrics := make(map[string]int64)
-	maps.Copy(metrics, h.eventCounts)
-	return metrics
-}
+// Note: MetricsSecurityEventHandler has been removed as part of metrics cleanup
