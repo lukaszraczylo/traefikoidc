@@ -240,6 +240,7 @@ type TraefikOidc struct {
 	shutdownOnce               sync.Once
 	forceHTTPS                 bool
 	enablePKCE                 bool
+	overrideScopes             bool
 	suppressDiagnosticLogs     bool
 }
 
@@ -652,14 +653,20 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			}
 			return config.PostLogoutRedirectURI
 		}(),
-		tokenBlacklist:        cacheManager.GetSharedTokenBlacklist(),
-		jwkCache:              cacheManager.GetSharedJWKCache(),
-		metadataCache:         cacheManager.GetSharedMetadataCache(),
-		clientID:              config.ClientID,
-		clientSecret:          config.ClientSecret,
-		forceHTTPS:            config.ForceHTTPS,
-		enablePKCE:            config.EnablePKCE,
-		scopes:                mergeScopes([]string{"openid", "profile", "email"}, config.Scopes),
+		tokenBlacklist: cacheManager.GetSharedTokenBlacklist(),
+		jwkCache:       cacheManager.GetSharedJWKCache(),
+		metadataCache:  cacheManager.GetSharedMetadataCache(),
+		clientID:       config.ClientID,
+		clientSecret:   config.ClientSecret,
+		forceHTTPS:     config.ForceHTTPS,
+		enablePKCE:     config.EnablePKCE,
+		overrideScopes: config.OverrideScopes,
+		scopes: func() []string {
+			if config.OverrideScopes {
+				return append([]string(nil), config.Scopes...)
+			}
+			return mergeScopes([]string{"openid", "profile", "email"}, config.Scopes)
+		}(),
 		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:            cacheManager.GetSharedTokenCache(),
 		httpClient:            httpClient,

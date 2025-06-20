@@ -49,6 +49,11 @@ func TestCreateConfig(t *testing.T) {
 		if !config.ForceHTTPS {
 			t.Error("Expected ForceHTTPS to be true by default")
 		}
+
+		// Check OverrideScopes default
+		if config.OverrideScopes {
+			t.Error("Expected OverrideScopes to be false by default")
+		}
 	})
 
 	t.Run("Config Can Hold Custom Values", func(t *testing.T) {
@@ -57,6 +62,7 @@ func TestCreateConfig(t *testing.T) {
 		config.LogLevel = "debug"
 		config.RateLimit = 50
 		config.ForceHTTPS = false
+		config.OverrideScopes = true
 
 		// Verify config struct can hold custom values
 		if len(config.Scopes) != 1 || config.Scopes[0] != "custom_scope" {
@@ -70,6 +76,9 @@ func TestCreateConfig(t *testing.T) {
 		}
 		if config.ForceHTTPS {
 			t.Error("Config struct cannot hold custom ForceHTTPS value")
+		}
+		if !config.OverrideScopes {
+			t.Error("Config struct cannot hold custom OverrideScopes value")
 		}
 	})
 }

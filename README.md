@@ -67,7 +67,8 @@ The middleware supports the following configuration options:
 |-----------|-------------|---------|---------|
 | `logoutURL` | The path for handling logout requests | `callbackURL + "/logout"` | `/oauth2/logout` |
 | `postLogoutRedirectURI` | The URL to redirect to after logout | `/` | `/logged-out-page` |
-| `scopes` | Additional OAuth 2.0 scopes to append to defaults | `["openid", "profile", "email"]` (always included) | `["roles", "custom_scope"]` (appended to defaults) |
+| `scopes` | OAuth 2.0 scopes to use for authentication | `["openid", "profile", "email"]` (always included by default) | `["roles", "custom_scope"]` (appended to defaults) |
+| `overrideScopes` | When true, replaces default scopes with provided scopes instead of appending | `false` | `true` (use only the scopes explicitly provided) |
 | `logLevel` | Sets the logging verbosity | `info` | `debug`, `info`, `error` |
 | `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
 | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
@@ -83,23 +84,35 @@ The middleware supports the following configuration options:
 
 ## Scope Configuration
 
-### Scope Append Behavior
+### Scope Behavior
 
-The middleware uses an **append** behavior for OAuth 2.0 scopes, not replacement. This means:
+The middleware supports two modes for handling OAuth 2.0 scopes, controlled by the `overrideScopes` parameter:
+
+#### Default Append Mode (`overrideScopes: false`)
+
+By default, the middleware uses an **append** behavior for OAuth 2.0 scopes:
 
 - **Default scopes** are always included: `["openid", "profile", "email"]`
 - **User-provided scopes** are appended to the defaults with automatic deduplication
 - The final scope list maintains the order: defaults first, then user scopes
 
-#### Examples:
+#### Override Mode (`overrideScopes: true`)
 
-**No custom scopes specified:**
+When `overrideScopes` is set to `true`, the middleware uses **replacement** behavior:
+
+- Default scopes are **not** automatically included
+- Only the scopes explicitly provided in the `scopes` field are used
+- You must include all required scopes explicitly, including `openid` if needed
+
+### Examples:
+
+**Default behavior (no custom scopes):**
 ```yaml
 # No scopes field specified
 # Result: ["openid", "profile", "email"]
 ```
 
-**Custom scopes appended:**
+**Default append behavior:**
 ```yaml
 scopes:
   - roles
@@ -107,7 +120,7 @@ scopes:
 # Result: ["openid", "profile", "email", "roles", "custom_scope"]
 ```
 
-**Overlapping scopes (automatic deduplication):**
+**Overlapping scopes with append (automatic deduplication):**
 ```yaml
 scopes:
   - openid      # Duplicate - will be deduplicated
@@ -117,13 +130,30 @@ scopes:
 # Result: ["openid", "profile", "email", "roles", "permissions"]
 ```
 
-**Empty scopes list:**
+**Using override mode:**
+```yaml
+overrideScopes: true
+scopes:
+  - openid
+  - profile
+  - custom_scope
+# Result: ["openid", "profile", "custom_scope"]
+```
+
+**Empty scopes list with default behavior:**
 ```yaml
 scopes: []
 # Result: ["openid", "profile", "email"]
 ```
 
-This append behavior ensures that essential OIDC scopes are always present while allowing you to add provider-specific or application-specific scopes as needed.
+**Empty scopes list with override mode:**
+```yaml
+overrideScopes: true
+scopes: []
+# Result: [] (Warning: empty scopes may cause authentication to fail)
+```
+
+The default append behavior ensures essential OIDC scopes are always present, while the override mode gives you complete control over the exact scopes requested from the provider.
 
 ## Usage Examples
 

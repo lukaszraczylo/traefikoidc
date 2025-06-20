@@ -47,6 +47,7 @@ type Config struct {
 	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
 	ForceHTTPS                bool              `json:"forceHTTPS"`
 	EnablePKCE                bool              `json:"enablePKCE"`
+	OverrideScopes            bool              `json:"overrideScopes"`
 }
 
 const (
@@ -87,6 +88,7 @@ func CreateConfig() *Config {
 		RateLimit:                 DefaultRateLimit,
 		ForceHTTPS:                true,  // Secure by default
 		EnablePKCE:                false, // PKCE is opt-in
+		OverrideScopes:            false, // Default to appending scopes, not overriding
 		RefreshGracePeriodSeconds: 60,    // Default grace period of 60 seconds
 	}
 
