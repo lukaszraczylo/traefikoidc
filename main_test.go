@@ -3998,9 +3998,12 @@ func TestBuildAuthURLWithMergedScopes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Configure the test instance with specific scopes
 			tOidc := ts.tOidc
-			tOidc.scopes = tc.scopes
+			tOidc.scopes = tc.scopes // These scopes are already deduplicated by New()
 			tOidc.authURL = "https://auth.example.com/oauth/authorize"
 			tOidc.issuerURL = "https://auth.example.com"
+			// Reset overrideScopes for each test case, as it's part of tOidc state
+			// Default to false, specific tests will set it.
+			tOidc.overrideScopes = false
 
 			// Build auth URL
 			result := tOidc.buildAuthURL("https://app.example.com/callback", "test-state", "test-nonce", "")
@@ -4017,5 +4020,184 @@ func TestBuildAuthURLWithMergedScopes(t *testing.T) {
 				t.Errorf("Expected scopes %q, got %q", tc.expectedScopes, actualScopes)
 			}
 		})
+	}
+}
+
+// TestBuildAuthURL_OverrideScopes_And_OfflineAccess tests the offline_access logic in buildAuthURL
+// considering the overrideScopes flag.
+func TestBuildAuthURL_OverrideScopes_And_OfflineAccess(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup() // Sets up ts.tOidc
+
+	tests := []struct {
+		name           string
+		initialScopes  []string // Scopes as they would be in tOidc.scopes (after New processing)
+		overrideScopes bool
+		isGoogle       bool // To test Google-specific handling
+		isAzure        bool // To test Azure-specific handling
+		expectedParams map[string]string
+		expectedScope  string // The final scope string expected in the URL
+	}{
+		{
+			name:           "Override false, no user scopes, non-Google/Azure",
+			initialScopes:  []string{"openid", "profile", "email"}, // Defaults from New() when config.Scopes is empty
+			overrideScopes: false,
+			expectedScope:  "openid profile email offline_access",
+		},
+		{
+			name:           "Override false, user scopes without offline_access, non-Google/Azure",
+			initialScopes:  []string{"openid", "profile", "email", "custom1"}, // Merged and deduplicated by New()
+			overrideScopes: false,
+			expectedScope:  "openid profile email custom1 offline_access",
+		},
+		{
+			name:           "Override false, user scopes with offline_access, non-Google/Azure",
+			initialScopes:  []string{"openid", "profile", "email", "offline_access", "custom1"},
+			overrideScopes: false,
+			expectedScope:  "openid profile email offline_access custom1", // Order might vary based on merge, but offline_access present
+		},
+		{
+			name:           "Override true, user scopes without offline_access, non-Google/Azure",
+			initialScopes:  []string{"custom1", "custom2"}, // Directly from config.Scopes, deduplicated
+			overrideScopes: true,
+			expectedScope:  "custom1 custom2", // offline_access NOT added
+		},
+		{
+			name:           "Override true, user scopes with offline_access, non-Google/Azure",
+			initialScopes:  []string{"custom1", "offline_access", "custom2"},
+			overrideScopes: true,
+			expectedScope:  "custom1 offline_access custom2", // User explicitly included it
+		},
+		{
+			name:           "Override true, no user scopes (edge case), non-Google/Azure",
+			initialScopes:  []string{}, // config.Scopes was empty
+			overrideScopes: true,
+			// In this edge case, buildAuthURL's logic `(t.overrideScopes && len(t.scopes) == 0)`
+			// will lead to offline_access being added, as it behaves like defaults.
+			expectedScope: "offline_access",
+		},
+		// Google Provider Tests (access_type=offline, prompt=consent)
+		{
+			name:           "Google, Override false, no user scopes",
+			initialScopes:  []string{"openid", "profile", "email"},
+			overrideScopes: false,
+			isGoogle:       true,
+			expectedParams: map[string]string{"access_type": "offline", "prompt": "consent"},
+			expectedScope:  "openid profile email", // No offline_access scope for Google
+		},
+		{
+			name:           "Google, Override true, user scopes",
+			initialScopes:  []string{"custom1", "custom2"},
+			overrideScopes: true,
+			isGoogle:       true,
+			expectedParams: map[string]string{"access_type": "offline", "prompt": "consent"},
+			expectedScope:  "custom1 custom2", // No offline_access scope for Google
+		},
+		// Azure Provider Tests (response_mode=query, offline_access scope added if not present by user)
+		{
+			name:           "Azure, Override false, no user scopes",
+			initialScopes:  []string{"openid", "profile", "email"},
+			overrideScopes: false,
+			isAzure:        true,
+			expectedParams: map[string]string{"response_mode": "query"},
+			expectedScope:  "openid profile email offline_access",
+		},
+		{
+			name:           "Azure, Override true, user scopes without offline_access",
+			initialScopes:  []string{"custom1", "custom2"},
+			overrideScopes: true,
+			isAzure:        true,
+			expectedParams: map[string]string{"response_mode": "query"},
+			expectedScope:  "custom1 custom2", // offline_access NOT added by default when override is true
+		},
+		{
+			name:           "Azure, Override true, user scopes with offline_access",
+			initialScopes:  []string{"custom1", "offline_access"},
+			overrideScopes: true,
+			isAzure:        true,
+			expectedParams: map[string]string{"response_mode": "query"},
+			expectedScope:  "custom1 offline_access",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tOidc := ts.tOidc
+			tOidc.scopes = tc.initialScopes // Set the scopes as if they came from New()
+			tOidc.overrideScopes = tc.overrideScopes
+
+			// Adjust issuerURL for provider-specific tests
+			originalIssuerURL := tOidc.issuerURL
+			if tc.isGoogle {
+				tOidc.issuerURL = "https://accounts.google.com"
+			} else if tc.isAzure {
+				tOidc.issuerURL = "https://login.microsoftonline.com/common"
+			} else {
+				tOidc.issuerURL = "https://generic-provider.com" // Non-Google/Azure
+			}
+
+			authURLString := tOidc.buildAuthURL("http://localhost/callback", "state123", "nonce123", "challenge123")
+			parsedAuthURL, err := url.Parse(authURLString)
+			if err != nil {
+				t.Fatalf("Failed to parse auth URL: %v", err)
+			}
+			query := parsedAuthURL.Query()
+
+			actualScope := query.Get("scope")
+			if actualScope != tc.expectedScope {
+				t.Errorf("Expected scope string %q, got %q", tc.expectedScope, actualScope)
+			}
+
+			if tc.expectedParams != nil {
+				for k, v := range tc.expectedParams {
+					if query.Get(k) != v {
+						t.Errorf("Expected param %s=%s, got %s", k, v, query.Get(k))
+					}
+				}
+			}
+
+			// Restore original issuerURL for next test
+			tOidc.issuerURL = originalIssuerURL
+		})
+	}
+}
+
+// TestBuildAuthURL_SpecificUserCase tests the buildAuthURL function with the specific user-reported scenario.
+func TestBuildAuthURL_SpecificUserCase(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup() // Basic setup for tOidc
+
+	// Configure the TraefikOidc instance for the specific scenario
+	tOidc := ts.tOidc
+	tOidc.scopes = []string{"email", "test3"} // This is what t.scopes should be after New()
+	tOidc.overrideScopes = true
+	tOidc.issuerURL = "https://generic-provider.com"    // Non-Google/Azure
+	tOidc.authURL = "https://generic-provider.com/auth" // Dummy auth URL
+	tOidc.clientID = "test-client-id"
+
+	// Expected scope string in the URL
+	expectedScopeString := "email test3"
+
+	// Call buildAuthURL
+	authURLString := tOidc.buildAuthURL("http://localhost/callback", "test-state", "test-nonce", "")
+
+	// Parse the resulting URL
+	parsedAuthURL, err := url.Parse(authURLString)
+	if err != nil {
+		t.Fatalf("Failed to parse generated auth URL %q: %v", authURLString, err)
+	}
+
+	// Get the 'scope' query parameter
+	actualScopeString := parsedAuthURL.Query().Get("scope")
+
+	// Assert that the scope string is as expected
+	if actualScopeString != expectedScopeString {
+		t.Errorf("Expected scope parameter to be %q, but got %q. Full URL: %s",
+			expectedScopeString, actualScopeString, authURLString)
+	}
+
+	// Additionally, ensure 'offline_access' was not added
+	if strings.Contains(actualScopeString, "offline_access") {
+		t.Errorf("Scope parameter %q should not contain 'offline_access' when overrideScopes is true and it's not in tOidc.scopes", actualScopeString)
 	}
 }

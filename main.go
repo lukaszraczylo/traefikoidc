@@ -614,6 +614,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	// Initialize logger
 	logger := NewLogger(config.LogLevel)
+	// Log the scopes received from Traefik to help diagnose duplication issues
 	// Ensure key meets minimum length requirement
 	if len(config.SessionEncryptionKey) < minEncryptionKeyLength {
 		if runtime.Compiler == "yaegi" {
@@ -660,10 +661,16 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		enablePKCE:     config.EnablePKCE,
 		overrideScopes: config.OverrideScopes,
 		scopes: func() []string {
+			// Deduplicate scopes from config first
+			uniqueConfigScopes := deduplicateScopes(config.Scopes)
 			if config.OverrideScopes {
-				return append([]string(nil), config.Scopes...)
+				return uniqueConfigScopes
 			}
-			return mergeScopes([]string{"openid", "profile", "email"}, config.Scopes)
+			// If not overriding, merge with defaults (which also handles deduplication)
+			defaultInitialScopes := []string{"openid", "profile", "email"} // Explicitly define for logging
+			merged := mergeScopes(defaultInitialScopes, uniqueConfigScopes)
+			return merged
+			// return mergeScopes([]string{"openid", "profile", "email"}, uniqueConfigScopes)
 		}(),
 		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:            cacheManager.GetSharedTokenCache(),
@@ -723,7 +730,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	startReplayCacheCleanup(pluginCtx, logger)
-
+	logger.Debugf("TraefikOidc.New: Final t.scopes initialized to: %v", t.scopes)
 	go t.initializeMetadata(config.ProviderURL)
 
 	return t, nil
@@ -1687,27 +1694,40 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 			}
 		}
 
-		if !hasOfflineAccess {
-			scopes = append(scopes, "offline_access")
-			t.logger.Debug("Azure AD provider detected, added offline_access scope for refresh tokens")
+		// For Azure AD, add offline_access scope if not overriding or if overriding with no user scopes
+		if !t.overrideScopes || (t.overrideScopes && len(t.scopes) == 0) {
+			if !hasOfflineAccess {
+				scopes = append(scopes, "offline_access")
+				t.logger.Debugf("Azure AD provider: Added offline_access scope (overrideScopes: %t, user scopes count: %d)", t.overrideScopes, len(t.scopes))
+			}
+		} else {
+			t.logger.Debugf("Azure AD provider: User is overriding scopes (count: %d), offline_access not automatically added.", len(t.scopes))
 		}
 	} else {
 		// For other providers, use the standard offline_access scope
-		hasOfflineAccess := false
-		for _, scope := range scopes {
-			if scope == "offline_access" {
-				hasOfflineAccess = true
-				break
+		// Only add offline_access if overrideScopes is false,
+		// or if overrideScopes is true AND no scopes were provided by the user (edge case, effectively defaults)
+		if !t.overrideScopes || (t.overrideScopes && len(t.scopes) == 0) {
+			hasOfflineAccess := false
+			for _, scope := range scopes {
+				if scope == "offline_access" {
+					hasOfflineAccess = true
+					break
+				}
 			}
-		}
-
-		if !hasOfflineAccess {
-			scopes = append(scopes, "offline_access")
+			if !hasOfflineAccess {
+				scopes = append(scopes, "offline_access")
+				t.logger.Debugf("Standard provider: Added offline_access scope (overrideScopes: %t, user scopes count: %d)", t.overrideScopes, len(t.scopes))
+			}
+		} else {
+			t.logger.Debugf("Standard provider: User is overriding scopes (count: %d), offline_access not automatically added.", len(t.scopes))
 		}
 	}
 
 	if len(scopes) > 0 {
-		params.Set("scope", strings.Join(scopes, " "))
+		finalScopeString := strings.Join(scopes, " ")
+		params.Set("scope", finalScopeString)
+		t.logger.Debugf("TraefikOidc.buildAuthURL: Final scope string being sent to OIDC provider: %s", finalScopeString)
 	}
 
 	// Use buildURLWithParams which handles potential relative authURL from metadata

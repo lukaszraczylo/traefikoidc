@@ -404,3 +404,20 @@ func BuildLogoutURL(endSessionURL, idToken, postLogoutRedirectURI string) (strin
 
 	return u.String(), nil
 }
+
+// deduplicateScopes removes duplicate strings from a slice while preserving order.
+// The first occurrence of each scope is kept.
+func deduplicateScopes(scopes []string) []string {
+	if len(scopes) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{})
+	result := []string{}
+	for _, scope := range scopes {
+		if _, ok := seen[scope]; !ok {
+			seen[scope] = struct{}{}
+			result = append(result, scope)
+		}
+	}
+	return result
+}
