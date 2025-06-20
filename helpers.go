@@ -196,7 +196,7 @@ func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 // Returns:
 //   - A map representing the JSON claims extracted from the token payload.
 //   - An error if the token format is invalid, decoding fails, or JSON unmarshaling fails.
-func extractClaims(tokenString string) (map[string]interface{}, error) {
+func extractClaims(tokenString string) (map[string]any, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid token format")
@@ -207,7 +207,7 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("failed to decode token payload: %w", err)
 	}
 
-	var claims map[string]interface{}
+	var claims map[string]any
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal claims: %w", err)
 	}
@@ -245,7 +245,7 @@ func NewTokenCache() *TokenCache {
 //   - token: The raw token string (used as the key).
 //   - claims: The map of claims associated with the token.
 //   - expiration: The duration for which the cache entry should be valid.
-func (tc *TokenCache) Set(token string, claims map[string]interface{}, expiration time.Duration) {
+func (tc *TokenCache) Set(token string, claims map[string]any, expiration time.Duration) {
 	token = "t-" + token
 	tc.cache.Set(token, claims, expiration)
 }
@@ -259,13 +259,13 @@ func (tc *TokenCache) Set(token string, claims map[string]interface{}, expiratio
 // Returns:
 //   - The cached claims map if found and valid.
 //   - A boolean indicating whether the token was found in the cache (true if found, false otherwise).
-func (tc *TokenCache) Get(token string) (map[string]interface{}, bool) {
+func (tc *TokenCache) Get(token string) (map[string]any, bool) {
 	token = "t-" + token
 	value, found := tc.cache.Get(token)
 	if !found {
 		return nil, false
 	}
-	claims, ok := value.(map[string]interface{})
+	claims, ok := value.(map[string]any)
 	return claims, ok
 }
 

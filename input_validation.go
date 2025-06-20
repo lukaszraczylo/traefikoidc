@@ -620,7 +620,7 @@ func (iv *InputValidator) SanitizeInput(input string, maxLength int) string {
 }
 
 // ValidateBoundaryValues validates numeric boundary values
-func (iv *InputValidator) ValidateBoundaryValues(value interface{}, min, max int64) ValidationResult {
+func (iv *InputValidator) ValidateBoundaryValues(value any, min, max int64) ValidationResult {
 	result := ValidationResult{IsValid: true, Errors: []string{}, Warnings: []string{}}
 
 	var numValue int64

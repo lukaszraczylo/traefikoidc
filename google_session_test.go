@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -131,9 +132,9 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 			},
 		}
 
-		tOidc.extractClaimsFunc = func(token string) (map[string]interface{}, error) {
+		tOidc.extractClaimsFunc = func(token string) (map[string]any, error) {
 			// Return mock claims
-			return map[string]interface{}{
+			return map[string]any{
 				"email": "test@example.com",
 				"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
 			}, nil
@@ -303,13 +304,7 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 		scopeList := strings.Split(scope, " ")
 		expectedScopes := []string{"openid", "profile", "email"}
 		for _, expectedScope := range expectedScopes {
-			found := false
-			for _, actualScope := range scopeList {
-				if actualScope == expectedScope {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(scopeList, expectedScope)
 			if !found {
 				t.Errorf("Expected scope '%s' not found in scope parameter: %s", expectedScope, scope)
 			}
@@ -385,7 +380,7 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 		nbf := now.Unix()
 
 		// Create initial ID token
-		initialIDToken, err := createTestJWT(rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+		initialIDToken, err := createTestJWT(rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 			"iss":   "https://accounts.google.com",
 			"aud":   "test-client-id",
 			"exp":   exp,
@@ -401,7 +396,7 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 		}
 
 		// Create refresh ID token
-		refreshedIDToken, err := createTestJWT(rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+		refreshedIDToken, err := createTestJWT(rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 			"iss":   "https://accounts.google.com",
 			"aud":   "test-client-id",
 			"exp":   exp,

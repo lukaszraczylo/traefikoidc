@@ -22,14 +22,14 @@ func TestTokenTypeDistinction(t *testing.T) {
 		AccessToken  string
 		IdToken      string
 		RefreshToken string
-		Claims       map[string]interface{}
+		Claims       map[string]any
 	}
 
 	testData := templateData{
 		AccessToken:  "test-access-token-abc123",
 		IdToken:      "test-id-token-xyz789",
 		RefreshToken: "test-refresh-token",
-		Claims: map[string]interface{}{
+		Claims: map[string]any{
 			"sub":   "test-subject",
 			"email": "user@example.com",
 		},
@@ -91,7 +91,7 @@ func TestTokenTypeIntegration(t *testing.T) {
 	ts.Setup()
 
 	// Create different tokens for ID and access tokens
-	idToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	idToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":        "https://test-issuer.com",
 		"aud":        "test-client-id",
 		"exp":        float64(3000000000),
@@ -107,7 +107,7 @@ func TestTokenTypeIntegration(t *testing.T) {
 		t.Fatalf("Failed to create test ID JWT: %v", err)
 	}
 
-	accessToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	accessToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":        "https://test-issuer.com",
 		"aud":        "test-client-id",
 		"exp":        float64(3000000000),
@@ -518,11 +518,11 @@ func TestConcurrentTokenOperationsWithCorruption(t *testing.T) {
 	errorChan := make(chan error, numGoroutines*numOperations)
 
 	// Start concurrent operations
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(goroutineID int) {
 			defer func() { done <- true }()
 
-			for j := 0; j < numOperations; j++ {
+			for j := range numOperations {
 				// Create a unique valid token for each operation
 				token := fmt.Sprintf("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwib3AiOiIxMjMifQ.sig_%d_%d",
 					goroutineID, j)
@@ -563,7 +563,7 @@ func TestConcurrentTokenOperationsWithCorruption(t *testing.T) {
 	}
 
 	// Wait for all goroutines to complete
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		<-done
 	}
 	close(errorChan)
@@ -645,13 +645,10 @@ func createLargeValidJWT(targetSize int) string {
 
 	// Calculate required payload size
 	usedSize := len(header) + len(signature) + 2 // account for dots
-	payloadSize := targetSize - usedSize
-	if payloadSize < 50 {
-		payloadSize = 50
-	}
+	payloadSize := max(targetSize-usedSize, 50)
 
 	// Create a payload with realistic JWT claims
-	claims := map[string]interface{}{
+	claims := map[string]any{
 		"sub":  "user123",
 		"iss":  "https://example.com",
 		"aud":  "client123",

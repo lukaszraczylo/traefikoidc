@@ -83,7 +83,7 @@ func TestPerformanceMetrics(t *testing.T) {
 
 	t.Run("Get detailed timing metrics", func(t *testing.T) {
 		// Add more timing data
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			metrics.RecordTokenVerification(time.Duration(i+1)*time.Millisecond, true)
 		}
 
@@ -93,7 +93,7 @@ func TestPerformanceMetrics(t *testing.T) {
 			t.Error("Expected verification stats to be present")
 		}
 
-		verificationStats := detailed["verification_stats"].(map[string]interface{})
+		verificationStats := detailed["verification_stats"].(map[string]any)
 		if verificationStats["count"].(int) != 6 { // 1 from previous test + 5 new
 			t.Errorf("Expected 6 verifications, got %v", verificationStats["count"])
 		}
@@ -154,7 +154,7 @@ func TestPerformanceMetricsCalculations(t *testing.T) {
 		}
 
 		detailed := metrics.GetDetailedTimingMetrics()
-		verificationStats := detailed["verification_stats"].(map[string]interface{})
+		verificationStats := detailed["verification_stats"].(map[string]any)
 
 		// Average should be 20ms
 		avgMs := verificationStats["average_ms"].(float64)
@@ -178,7 +178,7 @@ func TestPerformanceMetricsCalculations(t *testing.T) {
 		}
 
 		detailed := metrics.GetDetailedTimingMetrics()
-		verificationStats := detailed["verification_stats"].(map[string]interface{})
+		verificationStats := detailed["verification_stats"].(map[string]any)
 
 		minMs := verificationStats["min_ms"].(float64)
 		maxMs := verificationStats["max_ms"].(float64)
@@ -222,11 +222,11 @@ func TestPerformanceMetricsConcurrency(t *testing.T) {
 	// Test concurrent access
 	done := make(chan bool, 10)
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			defer func() { done <- true }()
 
-			for j := 0; j < 100; j++ {
+			for range 100 {
 				metrics.RecordCacheHit()
 				metrics.RecordTokenVerification(time.Millisecond, true)
 			}
@@ -234,7 +234,7 @@ func TestPerformanceMetricsConcurrency(t *testing.T) {
 	}
 
 	// Wait for all goroutines to complete
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		<-done
 	}
 
@@ -303,7 +303,7 @@ func TestPerformanceMetricsEdgeCases(t *testing.T) {
 		metrics.RecordTokenVerification(largeDuration, true)
 
 		detailed := metrics.GetDetailedTimingMetrics()
-		verificationStats := detailed["verification_stats"].(map[string]interface{})
+		verificationStats := detailed["verification_stats"].(map[string]any)
 
 		// Should handle large durations without overflow
 		if verificationStats["max_ms"].(float64) <= 0 {

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -250,8 +251,8 @@ func TestChunkReassemblyEdgeCases(t *testing.T) {
 			corruption: func(chunks map[int]*sessions.Session) {
 				// This test simulates having too many chunks (>50 limit)
 				// We'll create a scenario by adding many fake chunks
-				for i := 0; i < 60; i++ {
-					fakeSession := &sessions.Session{Values: make(map[interface{}]interface{})}
+				for i := range 60 {
+					fakeSession := &sessions.Session{Values: make(map[any]any)}
 					fakeSession.Values["token_chunk"] = "fake_chunk_data"
 					chunks[i] = fakeSession
 				}
@@ -320,12 +321,12 @@ func TestRaceConditionProtection(t *testing.T) {
 	var wg sync.WaitGroup
 	errChan := make(chan error, numGoroutines*numOperations)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
 
-			for j := 0; j < numOperations; j++ {
+			for j := range numOperations {
 				tokenIndex := (goroutineID + j) % len(tokens)
 				expectedToken := tokens[tokenIndex]
 
@@ -344,13 +345,7 @@ func TestRaceConditionProtection(t *testing.T) {
 
 				// The retrieved token should be one of the valid tokens we set
 				// (due to concurrent access, it might not be the exact one we just set)
-				isValidToken := false
-				for _, validToken := range tokens {
-					if retrieved == validToken {
-						isValidToken = true
-						break
-					}
-				}
+				isValidToken := slices.Contains(tokens, retrieved)
 
 				if retrieved != "" && !isValidToken {
 					errChan <- fmt.Errorf("goroutine %d, op %d: retrieved unknown token: %q",

@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"net"
@@ -175,11 +176,11 @@ func (cb *CircuitBreaker) GetState() CircuitBreakerState {
 }
 
 // GetMetrics returns circuit breaker metrics
-func (cb *CircuitBreaker) GetMetrics() map[string]interface{} {
+func (cb *CircuitBreaker) GetMetrics() map[string]any {
 	cb.mutex.RLock()
 	defer cb.mutex.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"state":           cb.state,
 		"failures":        cb.failures,
 		"total_requests":  atomic.LoadInt64(&cb.totalRequests),
@@ -355,7 +356,7 @@ func (e *HTTPError) Error() string {
 // GracefulDegradation implements graceful degradation patterns
 type GracefulDegradation struct {
 	// Fallback functions for different operations
-	fallbacks map[string]func() (interface{}, error)
+	fallbacks map[string]func() (any, error)
 
 	// Health checks for dependencies
 	healthChecks map[string]func() bool
@@ -389,7 +390,7 @@ func DefaultGracefulDegradationConfig() GracefulDegradationConfig {
 // NewGracefulDegradation creates a new graceful degradation manager
 func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *GracefulDegradation {
 	gd := &GracefulDegradation{
-		fallbacks:        make(map[string]func() (interface{}, error)),
+		fallbacks:        make(map[string]func() (any, error)),
 		healthChecks:     make(map[string]func() bool),
 		degradedServices: make(map[string]time.Time),
 		config:           config,
@@ -403,7 +404,7 @@ func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *G
 }
 
 // RegisterFallback registers a fallback function for a service
-func (gd *GracefulDegradation) RegisterFallback(serviceName string, fallback func() (interface{}, error)) {
+func (gd *GracefulDegradation) RegisterFallback(serviceName string, fallback func() (any, error)) {
 	gd.mutex.Lock()
 	defer gd.mutex.Unlock()
 	gd.fallbacks[serviceName] = fallback
@@ -417,7 +418,7 @@ func (gd *GracefulDegradation) RegisterHealthCheck(serviceName string, healthChe
 }
 
 // ExecuteWithFallback executes a function with fallback support
-func (gd *GracefulDegradation) ExecuteWithFallback(serviceName string, primary func() (interface{}, error)) (interface{}, error) {
+func (gd *GracefulDegradation) ExecuteWithFallback(serviceName string, primary func() (any, error)) (any, error) {
 	// Check if service is degraded
 	if gd.isServiceDegraded(serviceName) {
 		return gd.executeFallback(serviceName)
@@ -472,7 +473,7 @@ func (gd *GracefulDegradation) markServiceDegraded(serviceName string) {
 }
 
 // executeFallback executes the fallback function for a service
-func (gd *GracefulDegradation) executeFallback(serviceName string) (interface{}, error) {
+func (gd *GracefulDegradation) executeFallback(serviceName string) (any, error) {
 	gd.mutex.RLock()
 	fallback, exists := gd.fallbacks[serviceName]
 	gd.mutex.RUnlock()
@@ -499,9 +500,7 @@ func (gd *GracefulDegradation) startHealthCheckRoutine() {
 func (gd *GracefulDegradation) performHealthChecks() {
 	gd.mutex.RLock()
 	healthChecks := make(map[string]func() bool)
-	for name, check := range gd.healthChecks {
-		healthChecks[name] = check
-	}
+	maps.Copy(healthChecks, gd.healthChecks)
 	gd.mutex.RUnlock()
 
 	for serviceName, healthCheck := range healthChecks {
@@ -576,14 +575,14 @@ func (erm *ErrorRecoveryManager) ExecuteWithRecovery(ctx context.Context, servic
 }
 
 // GetRecoveryMetrics returns metrics for all recovery mechanisms
-func (erm *ErrorRecoveryManager) GetRecoveryMetrics() map[string]interface{} {
+func (erm *ErrorRecoveryManager) GetRecoveryMetrics() map[string]any {
 	erm.mutex.RLock()
 	defer erm.mutex.RUnlock()
 
-	metrics := make(map[string]interface{})
+	metrics := make(map[string]any)
 
 	// Circuit breaker metrics
-	cbMetrics := make(map[string]interface{})
+	cbMetrics := make(map[string]any)
 	for name, cb := range erm.circuitBreakers {
 		cbMetrics[name] = cb.GetMetrics()
 	}

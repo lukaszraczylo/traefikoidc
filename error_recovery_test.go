@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"testing"
 	"time"
 )
@@ -207,7 +208,7 @@ func TestGracefulDegradation(t *testing.T) {
 	}()
 
 	t.Run("Register fallback and health check", func(t *testing.T) {
-		gd.RegisterFallback("test-service", func() (interface{}, error) {
+		gd.RegisterFallback("test-service", func() (any, error) {
 			return "fallback-result", nil
 		})
 
@@ -222,12 +223,12 @@ func TestGracefulDegradation(t *testing.T) {
 	})
 
 	t.Run("Execute with fallback on failure", func(t *testing.T) {
-		gd.RegisterFallback("failing-service", func() (interface{}, error) {
+		gd.RegisterFallback("failing-service", func() (any, error) {
 			return "fallback-result", nil
 		})
 
 		// First call should fail and mark service as degraded
-		result, err := gd.ExecuteWithFallback("failing-service", func() (interface{}, error) {
+		result, err := gd.ExecuteWithFallback("failing-service", func() (any, error) {
 			return nil, errors.New("service failure")
 		})
 		if err != nil {
@@ -244,7 +245,7 @@ func TestGracefulDegradation(t *testing.T) {
 	})
 
 	t.Run("No fallback available", func(t *testing.T) {
-		_, err := gd.ExecuteWithFallback("no-fallback-service", func() (interface{}, error) {
+		_, err := gd.ExecuteWithFallback("no-fallback-service", func() (any, error) {
 			return nil, errors.New("service failure")
 		})
 
@@ -255,13 +256,7 @@ func TestGracefulDegradation(t *testing.T) {
 
 	t.Run("Get degraded services", func(t *testing.T) {
 		degraded := gd.GetDegradedServices()
-		found := false
-		for _, service := range degraded {
-			if service == "failing-service" {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(degraded, "failing-service")
 		if !found {
 			t.Error("Expected failing-service to be in degraded list")
 		}

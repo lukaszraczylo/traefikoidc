@@ -74,7 +74,7 @@ func (ts *TestSuite) Setup() {
 	iat := now.Add(-2 * time.Minute).Unix() // Account for clock skew
 	nbf := now.Add(-2 * time.Minute).Unix() // Account for clock skew
 
-	ts.token, err = createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	ts.token, err = createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   exp,
@@ -205,8 +205,8 @@ func (m *MockTokenExchanger) RevokeTokenWithProvider(token, tokenType string) er
 }
 
 // Helper function to create a JWT token
-func createTestJWT(privateKey *rsa.PrivateKey, alg, kid string, claims map[string]interface{}) (string, error) {
-	header := map[string]interface{}{
+func createTestJWT(privateKey *rsa.PrivateKey, alg, kid string, claims map[string]any) (string, error) {
+	header := map[string]any{
 		"alg": alg,
 		"kid": kid,
 		"typ": "JWT",
@@ -333,7 +333,7 @@ func TestVerifyToken(t *testing.T) {
 
 			if tc.cacheToken {
 				// Use more realistic claims for cached token
-				ts.tOidc.tokenCache.Set(tc.token, map[string]interface{}{
+				ts.tOidc.tokenCache.Set(tc.token, map[string]any{
 					"iss": "https://test-issuer.com",
 					"sub": "test-subject",
 					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -376,7 +376,7 @@ func TestServeHTTP(t *testing.T) {
 		exp := time.Now().Add(-1 * time.Hour).Unix() // Expired 1 hour ago
 		iat := time.Now().Add(-2 * time.Hour).Unix()
 		nbf := time.Now().Add(-2 * time.Hour).Unix()
-		expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+		expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 			"iss":   "https://test-issuer.com",
 			"aud":   "test-client-id",
 			"exp":   exp,
@@ -395,7 +395,7 @@ func TestServeHTTP(t *testing.T) {
 		exp := time.Now().Add(1 * time.Hour).Unix() // Valid for 1 hour
 		iat := time.Now().Unix()
 		nbf := time.Now().Unix()
-		newToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+		newToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 			"iss":   "https://test-issuer.com",
 			"aud":   "test-client-id",
 			"exp":   exp,
@@ -412,7 +412,7 @@ func TestServeHTTP(t *testing.T) {
 	tests := []struct {
 		name                      string
 		requestPath               string
-		sessionValues             map[interface{}]interface{}
+		sessionValues             map[any]any
 		expectedStatus            int
 		expectedBody              string
 		setupSession              func(*SessionData)
@@ -481,7 +481,7 @@ func TestServeHTTP(t *testing.T) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@example.com")
 				// Generate a fresh valid token for this test case to avoid replay issues
-				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
 					"iat": time.Now().Unix(), "nbf": time.Now().Unix(), "sub": "test-subject", "email": "user@example.com",
 					"jti": generateRandomString(16), // Unique JTI
@@ -504,7 +504,7 @@ func TestServeHTTP(t *testing.T) {
 				session.SetAuthenticated(true) // Set flag initially, though isUserAuthenticated will override based on token
 				session.SetEmail("user@example.com")
 				// Create an expired token for this test
-				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
 					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
 					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
@@ -561,7 +561,7 @@ func TestServeHTTP(t *testing.T) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@example.com")
 				// Generate a fresh valid token for this test case
-				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
 					"iat": time.Now().Unix(), "nbf": time.Now().Unix(), "sub": "test-subject", "email": "user@example.com",
 					"jti": generateRandomString(16), // Unique JTI
@@ -579,7 +579,7 @@ func TestServeHTTP(t *testing.T) {
 				session.SetAuthenticated(true) // Set flag initially
 				session.SetEmail("user@example.com")
 				// Create an expired token for this test
-				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
 					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
 					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
@@ -607,7 +607,7 @@ func TestServeHTTP(t *testing.T) {
 				session.SetAuthenticated(true) // Set flag initially
 				session.SetEmail("user@example.com")
 				// Create an expired token for this test
-				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
 					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
 					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
@@ -635,7 +635,7 @@ func TestServeHTTP(t *testing.T) {
 				exp := time.Now().Add(30 * time.Second).Unix()
 				iat := time.Now().Add(-1 * time.Minute).Unix()
 				nbf := time.Now().Add(-1 * time.Minute).Unix()
-				nearExpiryToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				nearExpiryToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": exp, "iat": iat, "nbf": nbf,
 					"sub": "test-subject", "email": "user@example.com", "jti": generateRandomString(16),
 				})
@@ -666,7 +666,7 @@ func TestServeHTTP(t *testing.T) {
 				exp := time.Now().Add(10 * time.Minute).Unix()
 				iat := time.Now().Add(-1 * time.Minute).Unix()
 				nbf := time.Now().Add(-1 * time.Minute).Unix()
-				validToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				validToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": exp, "iat": iat, "nbf": nbf,
 					"sub": "test-subject", "email": "user@example.com", "jti": generateRandomString(16),
 				})
@@ -693,7 +693,7 @@ func TestServeHTTP(t *testing.T) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@disallowed.com") // Use disallowed domain
 				// Generate a fresh valid token for this test case
-				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
 					"iat": time.Now().Unix(), "nbf": time.Now().Unix(), "sub": "test-subject", "email": "user@disallowed.com", // Match email
 					"jti": generateRandomString(16), // Unique JTI
@@ -715,7 +715,7 @@ func TestServeHTTP(t *testing.T) {
 				session.SetAuthenticated(true)
 				session.SetEmail("user@disallowed.com") // Use disallowed domain
 				// Generate a fresh valid token for this test case
-				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
 					"iat": time.Now().Unix(), "nbf": time.Now().Unix(), "sub": "test-subject", "email": "user@disallowed.com", // Match email
 					"jti": generateRandomString(16), // Unique JTI
@@ -967,11 +967,11 @@ func TestJWTVerify_MissingClaims(t *testing.T) {
 	ts.Setup()
 
 	jwt := &JWT{
-		Header: map[string]interface{}{
+		Header: map[string]any{
 			"alg": "RS256",
 			"kid": "test-key-id",
 		},
-		Claims: map[string]interface{}{
+		Claims: map[string]any{
 			// Missing 'iss', 'aud', 'exp', 'iat', 'sub'
 		},
 	}
@@ -992,7 +992,7 @@ func TestHandleCallback(t *testing.T) {
 		name                 string
 		queryParams          string
 		exchangeCodeForToken func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error)
-		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
+		extractClaimsFunc    func(tokenString string) (map[string]any, error)
 		sessionSetupFunc     func(*SessionData)
 		expectedStatus       int
 	}{
@@ -1005,8 +1005,8 @@ func TestHandleCallback(t *testing.T) {
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
-			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
-				return map[string]interface{}{
+			extractClaimsFunc: func(tokenString string) (map[string]any, error) {
+				return map[string]any{
 					"email": "user@example.com",
 					"nonce": "test-nonce",
 				}, nil
@@ -1060,7 +1060,7 @@ func TestHandleCallback(t *testing.T) {
 				exp := now.Add(1 * time.Hour).Unix()
 				iat := now.Unix()
 				nbf := now.Unix()
-				disallowedToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				disallowedToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss":   "https://test-issuer.com",
 					"aud":   "test-client-id",
 					"exp":   exp,
@@ -1102,8 +1102,8 @@ func TestHandleCallback(t *testing.T) {
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
-			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
-				return map[string]interface{}{
+			extractClaimsFunc: func(tokenString string) (map[string]any, error) {
+				return map[string]any{
 					"email": "user@example.com",
 					"nonce": "test-nonce",
 				}, nil
@@ -1123,8 +1123,8 @@ func TestHandleCallback(t *testing.T) {
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
-			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
-				return map[string]interface{}{
+			extractClaimsFunc: func(tokenString string) (map[string]any, error) {
+				return map[string]any{
 					"email": "user@example.com",
 					"nonce": "invalid-nonce",
 				}, nil
@@ -1144,8 +1144,8 @@ func TestHandleCallback(t *testing.T) {
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
-			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
-				return map[string]interface{}{
+			extractClaimsFunc: func(tokenString string) (map[string]any, error) {
+				return map[string]any{
 					"email": "user@example.com",
 					// Missing nonce
 				}, nil
@@ -1159,7 +1159,7 @@ func TestHandleCallback(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc // Capture range variable
+		// Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			// Clear the global replay cache before each test run
 			replayCacheMu.Lock()
@@ -1346,7 +1346,7 @@ func TestOIDCHandler(t *testing.T) {
 		name                 string
 		queryParams          string
 		exchangeCodeForToken func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error)
-		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
+		extractClaimsFunc    func(tokenString string) (map[string]any, error)
 		sessionSetupFunc     func(session *sessions.Session)
 		expectedStatus       int
 		blacklist            bool
@@ -1368,9 +1368,9 @@ func TestOIDCHandler(t *testing.T) {
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
-			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+			extractClaimsFunc: func(tokenString string) (map[string]any, error) {
 				// Simulate extraction of claims with invalid nonce
-				return map[string]interface{}{
+				return map[string]any{
 					"email": "user@example.com",
 					"nonce": "invalid-nonce",
 				}, nil
@@ -1392,9 +1392,9 @@ func TestOIDCHandler(t *testing.T) {
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
-			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+			extractClaimsFunc: func(tokenString string) (map[string]any, error) {
 				// Simulate extraction of claims without nonce
-				return map[string]interface{}{
+				return map[string]any{
 					"email": "user@example.com",
 				}, nil
 			},
@@ -1415,9 +1415,9 @@ func TestOIDCHandler(t *testing.T) {
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
-			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+			extractClaimsFunc: func(tokenString string) (map[string]any, error) {
 				// Simulate extraction of claims
-				return map[string]interface{}{
+				return map[string]any{
 					"email": "user@example.com",
 					"nonce": "test-nonce",
 				}, nil
@@ -1439,9 +1439,9 @@ func TestOIDCHandler(t *testing.T) {
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
-			extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
+			extractClaimsFunc: func(tokenString string) (map[string]any, error) {
 				// Simulate extraction of claims with mismatched nonce
-				return map[string]interface{}{
+				return map[string]any{
 					"email": "user@example.com",
 					"nonce": "invalid-nonce",
 				}, nil
@@ -1451,7 +1451,7 @@ func TestOIDCHandler(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc // Capture range variable
+		// Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset token blacklist and cache
 			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
@@ -1471,7 +1471,7 @@ func TestOIDCHandler(t *testing.T) {
 
 			if tc.cacheToken {
 				// Cache the token with dummy claims
-				ts.tOidc.tokenCache.Set(ts.token, map[string]interface{}{
+				ts.tOidc.tokenCache.Set(ts.token, map[string]any{
 					"empty": "claim",
 				}, 60)
 			}
@@ -1732,7 +1732,7 @@ func TestRevokeToken(t *testing.T) {
 	ts.Setup()
 
 	token := "test.token.with.claims"
-	claims := map[string]interface{}{
+	claims := map[string]any{
 		"exp": float64(time.Now().Add(time.Hour).Unix()),
 	}
 
@@ -1833,7 +1833,7 @@ func TestHandleExpiredToken(t *testing.T) {
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
 				// Create an expired token for this test
-				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
 					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
 					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
@@ -1848,7 +1848,7 @@ func TestHandleExpiredToken(t *testing.T) {
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
 				// Create an expired token for this test
-				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
 					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
 					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
@@ -1933,16 +1933,16 @@ func TestExtractGroupsAndRoles(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		claims       map[string]interface{}
+		claims       map[string]any
 		expectGroups []string
 		expectRoles  []string
 		expectError  bool
 	}{
 		{
 			name: "Valid groups and roles",
-			claims: map[string]interface{}{
-				"groups": []interface{}{"group1", "group2"},
-				"roles":  []interface{}{"role1", "role2"},
+			claims: map[string]any{
+				"groups": []any{"group1", "group2"},
+				"roles":  []any{"role1", "role2"},
 			},
 			expectGroups: []string{"group1", "group2"},
 			expectRoles:  []string{"role1", "role2"},
@@ -1950,9 +1950,9 @@ func TestExtractGroupsAndRoles(t *testing.T) {
 		},
 		{
 			name: "Empty groups and roles",
-			claims: map[string]interface{}{
-				"groups": []interface{}{},
-				"roles":  []interface{}{},
+			claims: map[string]any{
+				"groups": []any{},
+				"roles":  []any{},
 			},
 			expectGroups: []string{},
 			expectRoles:  []string{},
@@ -1960,9 +1960,9 @@ func TestExtractGroupsAndRoles(t *testing.T) {
 		},
 		{
 			name: "Invalid groups format",
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"groups": "not-an-array",
-				"roles":  []interface{}{"role1"},
+				"roles":  []any{"role1"},
 			},
 			expectError: true,
 		},
@@ -2106,7 +2106,7 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 	tests := []struct {
 		name                  string
 		allowedRolesAndGroups map[string]struct{}
-		claims                map[string]interface{}
+		claims                map[string]any
 		setupSession          func(*SessionData)
 		expectedStatus        int
 		expectedHeaders       map[string]string
@@ -2116,15 +2116,15 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			allowedRolesAndGroups: map[string]struct{}{
 				"admin": {},
 			},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
 				"exp":    exp,
 				"iat":    iat,
 				"nbf":    nbf,
 				"sub":    "test-subject",
-				"roles":  []interface{}{"admin", "user"},
-				"groups": []interface{}{"group1"},
+				"roles":  []any{"admin", "user"},
+				"groups": []any{"group1"},
 				"jti":    generateRandomString(16),
 			},
 			setupSession: func(session *SessionData) {
@@ -2142,15 +2142,15 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			allowedRolesAndGroups: map[string]struct{}{
 				"allowed-group": {},
 			},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
 				"exp":    exp,
 				"iat":    iat,
 				"nbf":    nbf,
 				"sub":    "test-subject",
-				"roles":  []interface{}{"user"},
-				"groups": []interface{}{"allowed-group"},
+				"roles":  []any{"user"},
+				"groups": []any{"allowed-group"},
 				"jti":    generateRandomString(16),
 			},
 			setupSession: func(session *SessionData) {
@@ -2169,15 +2169,15 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 				"admin":         {},
 				"allowed-group": {},
 			},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
 				"exp":    exp,
 				"iat":    iat,
 				"nbf":    nbf,
 				"sub":    "test-subject",
-				"roles":  []interface{}{"user"},
-				"groups": []interface{}{"regular-group"},
+				"roles":  []any{"user"},
+				"groups": []any{"regular-group"},
 				"jti":    generateRandomString(16),
 			},
 			setupSession: func(session *SessionData) {
@@ -2189,15 +2189,15 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 		{
 			name:                  "No role/group restrictions",
 			allowedRolesAndGroups: map[string]struct{}{},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"iss":    "https://test-issuer.com",
 				"aud":    "test-client-id",
 				"exp":    exp,
 				"iat":    iat,
 				"nbf":    nbf,
 				"sub":    "test-subject",
-				"roles":  []interface{}{"user"},
-				"groups": []interface{}{"regular-group"},
+				"roles":  []any{"user"},
+				"groups": []any{"regular-group"},
 				"jti":    generateRandomString(16),
 			},
 			setupSession: func(session *SessionData) {
@@ -2213,7 +2213,7 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 		{
 			name:                  "Claims without roles and groups",
 			allowedRolesAndGroups: map[string]struct{}{},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"iss": "https://test-issuer.com",
 				"aud": "test-client-id",
 				"exp": exp,
@@ -2340,7 +2340,7 @@ func TestExchangeTokensWithRedirects(t *testing.T) {
 					if len(cookies) != 3 {
 						t.Errorf("Expected 3 cookies, got %d", len(cookies))
 					}
-					for i := 0; i < 3; i++ {
+					for i := range 3 {
 						found := false
 						expectedName := fmt.Sprintf("redirect-cookie-%d", i)
 						for _, cookie := range cookies {
@@ -2861,7 +2861,7 @@ func TestJWTVerifyWithSkipReplayCheck(t *testing.T) {
 	iat := now.Unix()
 	nbf := now.Unix()
 
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   exp,
@@ -2954,7 +2954,7 @@ func TestJWTVerifyBackwardCompatibility(t *testing.T) {
 	iat := now.Unix()
 	nbf := now.Unix()
 
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   exp,
@@ -3007,7 +3007,7 @@ func TestTokenReplayDetectionFalsePositiveFix(t *testing.T) {
 	iat := now.Unix()
 	nbf := now.Unix()
 
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   exp,
@@ -3080,7 +3080,7 @@ func TestAuthenticationFlowReplayDetection(t *testing.T) {
 	iat := now.Unix()
 	nbf := now.Unix()
 
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   exp,
@@ -3116,7 +3116,7 @@ func TestAuthenticationFlowReplayDetection(t *testing.T) {
 
 	// Step 2: Subsequent requests (simulate normal request processing)
 	// These should use the token cache and skip replay detection
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		err = ts.tOidc.VerifyToken(token)
 		if err != nil {
 			t.Errorf("Subsequent request %d should succeed: %v", i+1, err)
@@ -3155,7 +3155,7 @@ func TestActualReplayAttackDetection(t *testing.T) {
 	iat := now.Unix()
 	nbf := now.Unix()
 
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   exp,
@@ -3237,11 +3237,11 @@ func TestConcurrentTokenValidation(t *testing.T) {
 	iat := now.Unix()
 	nbf := now.Unix()
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		jti := generateRandomString(16)
 		jtis = append(jtis, jti)
 
-		token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+		token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 			"iss":   "https://test-issuer.com",
 			"aud":   "test-client-id",
 			"exp":   exp,
@@ -3264,9 +3264,9 @@ func TestConcurrentTokenValidation(t *testing.T) {
 
 	results := make(chan error, numGoroutines*numIterations)
 
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(goroutineID int) {
-			for i := 0; i < numIterations; i++ {
+			for i := range numIterations {
 				tokenIndex := (goroutineID + i) % len(tokens)
 				token := tokens[tokenIndex]
 
@@ -3283,7 +3283,7 @@ func TestConcurrentTokenValidation(t *testing.T) {
 
 	// Collect results
 	var errors []error
-	for i := 0; i < numGoroutines*numIterations*2; i++ {
+	for range numGoroutines * numIterations * 2 {
 		if err := <-results; err != nil {
 			errors = append(errors, err)
 		}
@@ -3322,7 +3322,7 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 	iat := now.Unix()
 	nbf := now.Unix()
 
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   exp,
@@ -3422,7 +3422,7 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 	iat := now.Unix()
 	nbf := now.Unix()
 
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]any{
 		"iss":   "https://test-issuer.com",
 		"aud":   "test-client-id",
 		"exp":   exp,
@@ -3448,7 +3448,7 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 
 	// Step 2: Multiple session-based requests (normal request processing)
 	// These should not trigger replay detection false positives
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		err = ts.tOidc.VerifyToken(token)
 		if err != nil {
 			t.Errorf("Session request %d should succeed: %v", i+1, err)
@@ -3497,13 +3497,13 @@ func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 	tests := []struct {
 		name        string
 		tokenType   string
-		claims      map[string]interface{}
+		claims      map[string]any
 		expectError bool
 	}{
 		{
 			name:      "ID Token with JTI",
 			tokenType: "id_token",
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"iss":        "https://test-issuer.com",
 				"aud":        "test-client-id",
 				"exp":        exp,
@@ -3520,7 +3520,7 @@ func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 		{
 			name:      "Access Token with JTI",
 			tokenType: "access_token",
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"iss":        "https://test-issuer.com",
 				"aud":        "test-client-id",
 				"exp":        exp,
@@ -3536,7 +3536,7 @@ func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 		{
 			name:      "Token without JTI",
 			tokenType: "no_jti",
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"iss":   "https://test-issuer.com",
 				"aud":   "test-client-id",
 				"exp":   exp,
@@ -3793,7 +3793,7 @@ func TestScopeMergingEdgeCases(t *testing.T) {
 // generateLargeUserScopes creates a large list of user scopes for performance testing
 func generateLargeUserScopes() []string {
 	scopes := make([]string, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		scopes[i] = fmt.Sprintf("scope_%d", i)
 	}
 	// Add some duplicates to test deduplication performance
@@ -3808,7 +3808,7 @@ func TestScopeMergingPerformance(t *testing.T) {
 
 	// Create 1000 user scopes with some duplicates
 	userScopes := make([]string, 1000)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		if i%10 == 0 {
 			// Add some duplicates of defaults
 			userScopes[i] = defaultScopes[i%len(defaultScopes)]

@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,7 +23,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 		name               string
 		headers            []TemplatedHeader
 		sessionSetup       func(*SessionData)
-		claims             map[string]interface{}
+		claims             map[string]any
 		expectedHeaders    map[string]string
 		interceptedHeaders map[string]string
 	}{
@@ -31,7 +32,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			headers: []TemplatedHeader{
 				{Name: "X-User-Email", Value: "{{.Claims.email}}"},
 			},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"email": "user@example.com",
 			},
 			expectedHeaders: map[string]string{
@@ -45,7 +46,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 				{Name: "X-User-ID", Value: "{{.Claims.sub}}"},
 				{Name: "X-User-Name", Value: "{{.Claims.given_name}} {{.Claims.family_name}}"},
 			},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"email":       "user@example.com",
 				"sub":         "user123",
 				"given_name":  "John",
@@ -94,7 +95,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			headers: []TemplatedHeader{
 				{Name: "X-User-Role", Value: "{{.Claims.role}}"},
 			},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"email": "user@example.com",
 				// role claim is missing
 			},
@@ -107,7 +108,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			headers: []TemplatedHeader{
 				{Name: "X-User-Admin", Value: "{{if .Claims.is_admin}}true{{else}}false{{end}}"},
 			},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"email":    "admin@example.com",
 				"is_admin": true,
 			},
@@ -120,7 +121,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			headers: []TemplatedHeader{
 				{Name: "X-Auth-Info", Value: "User={{.Claims.email}}, Token={{.AccessToken}}"},
 			},
-			claims: map[string]interface{}{
+			claims: map[string]any{
 				"email": "user@example.com",
 			},
 			expectedHeaders: map[string]string{
@@ -133,7 +134,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			headers: []TemplatedHeader{
 				{Name: "X-User-AccessToken", Value: "{{.AccessToken}}"},
 			},
-			claims: map[string]interface{}{ // For ID Token
+			claims: map[string]any{ // For ID Token
 				"email": "opaque_user@example.com",
 				"sub":   "opaque_sub_for_id_token",
 			},
@@ -149,7 +150,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			token := ts.token
 			if len(tc.claims) > 0 {
 				var err error
-				baseClaims := map[string]interface{}{
+				baseClaims := map[string]any{
 					"iss":   "https://test-issuer.com",
 					"aud":   "test-client-id",
 					"exp":   float64(3000000000), // Far future timestamp
@@ -161,9 +162,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 				}
 
 				// Add the test-specific claims
-				for k, v := range tc.claims {
-					baseClaims[k] = v
-				}
+				maps.Copy(baseClaims, tc.claims)
 
 				token, err = createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", baseClaims)
 				if err != nil {
@@ -267,7 +266,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			session.SetRefreshToken("test-refresh-token")
 
 			if tc.name == "ID Token Header" || tc.name == "Both Token Types" {
-				idTokenClaims := map[string]interface{}{
+				idTokenClaims := map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": float64(3000000000),
 					"iat": float64(1000000000), "nbf": float64(1000000000), "sub": "test-subject",
 					"nonce": "test-nonce", "jti": generateRandomString(16), "type": "id_token",
@@ -285,7 +284,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 					t.Fatalf("Failed to create test ID JWT: %v", idErr)
 				}
 
-				accessTokenClaims := map[string]interface{}{
+				accessTokenClaims := map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": float64(3000000000),
 					"iat": float64(1000000000), "nbf": float64(1000000000), "sub": "test-subject",
 					"jti": generateRandomString(16), "type": "access_token", "scope": "openid email profile",
@@ -316,15 +315,13 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 					tc.expectedHeaders["X-Access-Token"] = accessTokenForSession
 				}
 			} else if tc.name == "Opaque Access Token with AccessTokenField" {
-				idTokenClaims := map[string]interface{}{
+				idTokenClaims := map[string]any{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": float64(3000000000),
 					"iat": float64(1000000000), "nbf": float64(1000000000), "sub": "test-subject", // Default sub
 					"nonce": "test-nonce", "jti": generateRandomString(16), "type": "id_token",
 				}
 				// Populate ID token claims from tc.claims
-				for k, v := range tc.claims {
-					idTokenClaims[k] = v
-				}
+				maps.Copy(idTokenClaims, tc.claims)
 				// Ensure email from tc.claims is used for the ID token
 				session.SetEmail(tc.claims["email"].(string)) // Also set it directly for initial session state
 
@@ -428,7 +425,7 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 	tests := []struct {
 		name               string
 		headers            []TemplatedHeader
-		claims             map[string]interface{}
+		claims             map[string]any
 		shouldExecuteCheck bool
 	}{
 		{
@@ -447,8 +444,8 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 			headers: []TemplatedHeader{
 				{Name: "X-Roles", Value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"},
 			},
-			claims: map[string]interface{}{
-				"roles": []interface{}{"admin", "user", "manager"},
+			claims: map[string]any{
+				"roles": []any{"admin", "user", "manager"},
 			},
 			shouldExecuteCheck: true,
 		},
@@ -457,7 +454,7 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create token with the test claims
-			claims := map[string]interface{}{
+			claims := map[string]any{
 				"iss":   "https://test-issuer.com",
 				"aud":   "test-client-id",
 				"exp":   float64(3000000000), // Far future timestamp
@@ -469,9 +466,7 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 			}
 
 			// Add the test-specific claims
-			for k, v := range tc.claims {
-				claims[k] = v
-			}
+			maps.Copy(claims, tc.claims)
 
 			token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", claims)
 			if err != nil {
@@ -576,7 +571,7 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 // createLargeTemplate creates a template with many variable references
 func createLargeTemplate(size int) string {
 	template := "{{with .Claims}}"
-	for i := 0; i < size; i++ {
+	for i := range size {
 		if i > 0 {
 			template += ","
 		}
@@ -587,9 +582,9 @@ func createLargeTemplate(size int) string {
 }
 
 // createLargeClaims creates a map with many claims for testing large templates
-func createLargeClaims(size int) map[string]interface{} {
-	claims := make(map[string]interface{})
-	for i := 0; i < size; i++ {
+func createLargeClaims(size int) map[string]any {
+	claims := make(map[string]any)
+	for i := range size {
 		claims["email"] = "largeclaimsuser@example.com" // Add email claim
 		key := "field" + string(rune('a'+i%26)) + string(rune('0'+i%10))
 		claims[key] = "value" + string(rune('a'+i%26)) + string(rune('0'+i%10))

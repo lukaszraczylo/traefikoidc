@@ -246,7 +246,7 @@ func TestValidateBoundaryValues(t *testing.T) {
 	}
 
 	t.Run("Valid boundary values", func(t *testing.T) {
-		validValues := []interface{}{
+		validValues := []any{
 			int(50),
 			int64(100),
 			float64(75.5),
@@ -261,7 +261,7 @@ func TestValidateBoundaryValues(t *testing.T) {
 	})
 
 	t.Run("Invalid boundary values", func(t *testing.T) {
-		invalidValues := []interface{}{
+		invalidValues := []any{
 			int(-1),
 			int64(2000),
 			"not a number",

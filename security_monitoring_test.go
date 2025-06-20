@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestSecurityMonitor(t *testing.T) {
 	})
 
 	t.Run("Suspicious activity", func(t *testing.T) {
-		details := map[string]interface{}{"pattern": "unusual"}
+		details := map[string]any{"pattern": "unusual"}
 		monitor.RecordSuspiciousActivity("192.168.1.5", "test-agent", "/admin", "unusual pattern", "high frequency requests", details)
 
 		metrics := monitor.GetSecurityMetrics()
@@ -86,7 +87,7 @@ func TestSuspiciousPatternDetector(t *testing.T) {
 
 	t.Run("Add events and detect patterns", func(t *testing.T) {
 		// Add multiple events from same IP
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			event := SecurityEvent{
 				Type:      "authentication_failure",
 				ClientIP:  "192.168.1.100",
@@ -97,13 +98,7 @@ func TestSuspiciousPatternDetector(t *testing.T) {
 
 		patterns := detector.DetectSuspiciousPatterns()
 
-		found := false
-		for _, pattern := range patterns {
-			if pattern == "rapid_failures_from_ip_192.168.1.100" {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(patterns, "rapid_failures_from_ip_192.168.1.100")
 		if !found {
 			t.Error("Expected to detect rapid failure pattern")
 		}
@@ -111,7 +106,7 @@ func TestSuspiciousPatternDetector(t *testing.T) {
 
 	t.Run("Detect distributed attack pattern", func(t *testing.T) {
 		// Add failures from many different IPs
-		for i := 0; i < 25; i++ {
+		for i := range 25 {
 			event := SecurityEvent{
 				Type:      "authentication_failure",
 				ClientIP:  "192.168.1." + strconv.Itoa(100+i),
@@ -122,13 +117,7 @@ func TestSuspiciousPatternDetector(t *testing.T) {
 
 		patterns := detector.DetectSuspiciousPatterns()
 
-		found := false
-		for _, pattern := range patterns {
-			if pattern == "distributed_attack_pattern" {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(patterns, "distributed_attack_pattern")
 		if !found {
 			t.Error("Expected to detect distributed attack pattern")
 		}
@@ -317,7 +306,7 @@ func TestSecurityEventTypes(t *testing.T) {
 	monitor.RecordTokenValidationFailure("192.168.1.200", "test-agent", "/api", "expired token", "abc123")
 	monitor.RecordRateLimitHit("192.168.1.200", "test-agent", "/api")
 
-	details := map[string]interface{}{"pattern": "test"}
+	details := map[string]any{"pattern": "test"}
 	monitor.RecordSuspiciousActivity("192.168.1.200", "test-agent", "/admin", "unusual pattern", "multiple failed logins", details)
 
 	metrics := monitor.GetSecurityMetrics()

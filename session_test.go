@@ -148,7 +148,7 @@ func getPooledObjects(sm *SessionManager) int {
 	var objects []*SessionData
 	maxAttempts := 100 // Safety limit to prevent infinite loops
 
-	for i := 0; i < maxAttempts; i++ {
+	for range maxAttempts {
 		obj := sm.sessionPool.Get()
 		if obj == nil {
 			break
@@ -195,7 +195,7 @@ func TestSessionObjectTracking(t *testing.T) {
 	}
 
 	// Create and discard 5 sessions
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		session, err := sm.GetSession(req)
 		if err != nil {
 			t.Fatalf("GetSession failed: %v", err)
@@ -425,7 +425,7 @@ func TestTokenChunkingCorruptionResistance(t *testing.T) {
 
 	// Create a large token that will be chunked
 	largeToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9." +
-		base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"sub":"test","data":"%s"}`, strings.Repeat("A", 5000)))) +
+		base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"sub":"test","data":"%s"}`, strings.Repeat("A", 5000))) +
 		".signature"
 
 	req := httptest.NewRequest("GET", "http://example.com/foo", nil)
@@ -609,11 +609,11 @@ func TestConcurrentTokenOperations(t *testing.T) {
 	// Test concurrent access and refresh token operations
 	done := make(chan bool, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
 			defer func() { done <- true }()
 
-			for j := 0; j < numOperations; j++ {
+			for j := range numOperations {
 				// Create unique tokens for each goroutine/operation
 				accessToken := ValidAccessToken
 				refreshToken := fmt.Sprintf("refresh_token_%d_%d", id, j)
@@ -637,7 +637,7 @@ func TestConcurrentTokenOperations(t *testing.T) {
 	}
 
 	// Wait for all goroutines to complete
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		<-done
 	}
 }

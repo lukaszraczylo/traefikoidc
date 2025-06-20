@@ -11,15 +11,15 @@ func TestTemplateExecution(t *testing.T) {
 	tests := []struct {
 		name          string
 		templateText  string
-		data          map[string]interface{}
+		data          map[string]any
 		expectedValue string
 		expectError   bool
 	}{
 		{
 			name:         "String Claim",
 			templateText: "{{.Claims.email}}",
-			data: map[string]interface{}{
-				"Claims": map[string]interface{}{
+			data: map[string]any{
+				"Claims": map[string]any{
 					"email": "user@example.com",
 				},
 			},
@@ -29,8 +29,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Number Claim",
 			templateText: "{{.Claims.age}}",
-			data: map[string]interface{}{
-				"Claims": map[string]interface{}{
+			data: map[string]any{
+				"Claims": map[string]any{
 					"age": 30,
 				},
 			},
@@ -40,8 +40,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Boolean Claim",
 			templateText: "{{.Claims.admin}}",
-			data: map[string]interface{}{
-				"Claims": map[string]interface{}{
+			data: map[string]any{
+				"Claims": map[string]any{
 					"admin": true,
 				},
 			},
@@ -51,8 +51,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Array Claim",
 			templateText: "{{index .Claims.roles 0}}",
-			data: map[string]interface{}{
-				"Claims": map[string]interface{}{
+			data: map[string]any{
+				"Claims": map[string]any{
 					"roles": []string{"admin", "user"},
 				},
 			},
@@ -62,9 +62,9 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Nested Object Claim",
 			templateText: "{{.Claims.user.name}}",
-			data: map[string]interface{}{
-				"Claims": map[string]interface{}{
-					"user": map[string]interface{}{
+			data: map[string]any{
+				"Claims": map[string]any{
+					"user": map[string]any{
 						"name": "John Doe",
 					},
 				},
@@ -75,7 +75,7 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Access Token",
 			templateText: "Bearer {{.AccessToken}}",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"AccessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
 			},
 			expectedValue: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
@@ -84,7 +84,7 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "ID Token",
 			templateText: "{{.IdToken}}",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"IdToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
 			},
 			expectedValue: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
@@ -93,7 +93,7 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Refresh Token",
 			templateText: "{{.RefreshToken}}",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"RefreshToken": "refresh-token-value",
 			},
 			expectedValue: "refresh-token-value",
@@ -102,8 +102,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Conditional Template",
 			templateText: "{{if .Claims.admin}}Admin User{{else}}Regular User{{end}}",
-			data: map[string]interface{}{
-				"Claims": map[string]interface{}{
+			data: map[string]any{
+				"Claims": map[string]any{
 					"admin": true,
 				},
 			},
@@ -113,8 +113,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Multiple Claims",
 			templateText: "{{.Claims.firstName}} {{.Claims.lastName}} <{{.Claims.email}}>",
-			data: map[string]interface{}{
-				"Claims": map[string]interface{}{
+			data: map[string]any{
+				"Claims": map[string]any{
 					"firstName": "John",
 					"lastName":  "Doe",
 					"email":     "john.doe@example.com",
@@ -126,8 +126,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Missing Claim",
 			templateText: "{{.Claims.missing}}",
-			data: map[string]interface{}{
-				"Claims": map[string]interface{}{},
+			data: map[string]any{
+				"Claims": map[string]any{},
 			},
 			expectedValue: "<no value>",
 			expectError:   false, // Go templates don't error on missing values
@@ -135,8 +135,8 @@ func TestTemplateExecution(t *testing.T) {
 		{
 			name:         "Invalid Template Syntax",
 			templateText: "{{.Claims.email",
-			data: map[string]interface{}{
-				"Claims": map[string]interface{}{
+			data: map[string]any{
+				"Claims": map[string]any{
 					"email": "user@example.com",
 				},
 			},
@@ -181,7 +181,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 		AccessToken  string
 		IdToken      string
 		RefreshToken string
-		Claims       map[string]interface{}
+		Claims       map[string]any
 	}
 
 	// Test cases
@@ -197,7 +197,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			data: templateData{
 				AccessToken: "access-token-value",
 				IdToken:     "id-token-value", // Now these should be distinct values
-				Claims:      map[string]interface{}{},
+				Claims:      map[string]any{},
 			},
 			expectedValue: "Access: access-token-value ID: id-token-value",
 		},
@@ -207,7 +207,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			data: templateData{
 				AccessToken: "access-token",
 				IdToken:     "access-token",
-				Claims: map[string]interface{}{
+				Claims: map[string]any{
 					"sub": "user123",
 				},
 			},

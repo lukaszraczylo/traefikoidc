@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"text/template"
@@ -225,7 +227,7 @@ type TraefikOidc struct {
 	allowedRolesAndGroups      map[string]struct{}
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
 	// exchangeCodeForTokenFunc   func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) // Replaced by interface
-	extractClaimsFunc       func(tokenString string) (map[string]interface{}, error)
+	extractClaimsFunc       func(tokenString string) (map[string]any, error)
 	initComplete            chan struct{}
 	endSessionURL           string
 	postLogoutRedirectURI   string
@@ -439,7 +441,7 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 // Parameters:
 //   - token: The raw token string (used as the cache key).
 //   - claims: The map of claims extracted from the verified token.
-func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interface{}) {
+func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]any) {
 	expClaim, ok := claims["exp"].(float64)
 	if !ok {
 		t.logger.Errorf("Failed to cache token: invalid 'exp' claim type")
@@ -690,9 +692,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	// Add default excluded URLs
-	for k, v := range defaultExcludedURLs {
-		t.excludedURLs[k] = v
-	}
+	maps.Copy(t.excludedURLs, defaultExcludedURLs)
 
 	t.tokenVerifier = t
 	t.jwtVerifier = t
@@ -837,7 +837,7 @@ func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Lo
 	start := time.Now()
 
 	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		if time.Since(start) > totalTimeout {
 			l.Errorf("Timeout exceeded while fetching provider metadata")
 			return nil, fmt.Errorf("timeout exceeded while fetching provider metadata: %w", lastErr)
@@ -1037,7 +1037,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if idToken != "" {
 			jwt, err := parseJWT(idToken)
 			if err == nil {
-				// jwt.Claims is already map[string]interface{}, no type assertion needed
+				// jwt.Claims is already map[string]any, no type assertion needed
 				claims := jwt.Claims
 				// STABILITY FIX: Safe type assertion with proper error handling
 				if expClaim, ok := claims["exp"].(float64); ok {
@@ -1199,7 +1199,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 				AccessToken  string
 				IdToken      string
 				RefreshToken string
-				Claims       map[string]interface{}
+				Claims       map[string]any
 			}{
 				AccessToken:  session.GetAccessToken(), // Provide AccessToken for templates if needed
 				IdToken:      session.GetIDToken(),
@@ -1378,7 +1378,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	}
 
 	// Verify ID token and claims
-	if err := t.verifyToken(tokenResponse.IDToken); err != nil {
+	if err = t.verifyToken(tokenResponse.IDToken); err != nil {
 		t.logger.Errorf("Failed to verify id_token during callback: %v", err)
 		t.sendErrorResponse(rw, req, "Authentication failed: Could not verify ID token", http.StatusInternalServerError)
 		return
@@ -1674,11 +1674,9 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		t.logger.Debug("Azure AD provider detected, added response_mode=query")
 
 		hasOfflineAccess := false
-		for _, scope := range scopes {
-			if scope == "offline_access" {
-				hasOfflineAccess = true
-				break
-			}
+
+		if slices.Contains(scopes, "offline_access") {
+			hasOfflineAccess = true
 		}
 
 		if !hasOfflineAccess {
@@ -1687,13 +1685,7 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		}
 	} else {
 		// For other providers, use the standard offline_access scope
-		hasOfflineAccess := false
-		for _, scope := range scopes {
-			if scope == "offline_access" {
-				hasOfflineAccess = true
-				break
-			}
-		}
+		hasOfflineAccess := slices.Contains(scopes, "offline_access")
 
 		if !hasOfflineAccess {
 			scopes = append(scopes, "offline_access")
@@ -2031,7 +2023,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 			t.logger.Errorf("Refresh token appears to be expired or revoked: %v", err)
 			// Don't keep trying with an invalid refresh token
 			session.SetRefreshToken("")
-			if err := session.Save(req, rw); err != nil {
+			if err = session.Save(req, rw); err != nil {
 				t.logger.Errorf("Failed to remove invalid refresh token from session: %v", err)
 			}
 		} else if strings.Contains(errMsg, "invalid_client") {
@@ -2050,7 +2042,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	}
 
 	// Verify the new ID token
-	if err := t.verifyToken(newToken.IDToken); err != nil {
+	if err = t.verifyToken(newToken.IDToken); err != nil {
 		truncatedToken := newToken.IDToken
 		if len(newToken.IDToken) > 10 {
 			truncatedToken = newToken.IDToken[:10]
@@ -2217,7 +2209,7 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 
 	// Extract groups with type checking
 	if groupsClaim, exists := claims["groups"]; exists {
-		groupsSlice, ok := groupsClaim.([]interface{})
+		groupsSlice, ok := groupsClaim.([]any)
 		if !ok {
 			// Strictly expect an array
 			return nil, nil, fmt.Errorf("groups claim is not an array")
@@ -2235,7 +2227,7 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 
 	// Extract roles with type checking
 	if rolesClaim, exists := claims["roles"]; exists {
-		rolesSlice, ok := rolesClaim.([]interface{})
+		rolesSlice, ok := rolesClaim.([]any)
 		if !ok {
 			// Strictly expect an array
 			return nil, nil, fmt.Errorf("roles claim is not an array")
@@ -2319,7 +2311,7 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(code)
 		// Use a simple error structure - ensure this matches the expected response format in tests
-		json.NewEncoder(rw).Encode(map[string]interface{}{
+		json.NewEncoder(rw).Encode(map[string]any{
 			"error":             http.StatusText(code), // Use standard text for the code
 			"error_description": message,               // Provide specific detail here
 			"status_code":       code,

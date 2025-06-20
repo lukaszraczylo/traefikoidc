@@ -245,7 +245,7 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 		logger:     logger,
 	}
 
-	sm.sessionPool.New = func() interface{} {
+	sm.sessionPool.New = func() any {
 		sd := &SessionData{
 			manager:            sm,
 			accessTokenChunks:  make(map[int]*sessions.Session),
@@ -683,7 +683,7 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 		}
 
 		maxRetries := 5
-		for retry := 0; retry < maxRetries; retry++ {
+		for retry := range maxRetries {
 			if sd.mainSession.ID != id {
 				break
 			}
@@ -870,7 +870,7 @@ func (sd *SessionData) getAccessTokenUnsafe() string {
 	totalSize := 0
 
 	// Sequential chunk validation with gap detection
-	for i := 0; i < expectedChunkCount; i++ {
+	for i := range expectedChunkCount {
 		session, ok := sd.accessTokenChunks[i]
 		if !ok {
 			sd.manager.logger.Errorf("CRITICAL: Access token chunk %d missing - gap in sequence detected", i)
@@ -1206,7 +1206,7 @@ func (sd *SessionData) GetRefreshToken() string {
 	totalSize := 0
 
 	// Sequential chunk validation with gap detection
-	for i := 0; i < expectedChunkCount; i++ {
+	for i := range expectedChunkCount {
 		session, ok := sd.refreshTokenChunks[i]
 		if !ok {
 			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d missing - gap in sequence detected", i)
@@ -1461,7 +1461,7 @@ func (sd *SessionData) expireAccessTokenChunksEnhanced(w http.ResponseWriter) {
 	const maxChunkSearchLimit = 50 // Limit search to prevent infinite loops from corrupted state
 	orphanedChunks := 0
 
-	for i := 0; i < maxChunkSearchLimit; i++ {
+	for i := range maxChunkSearchLimit {
 		sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
@@ -1491,7 +1491,7 @@ func (sd *SessionData) expireAccessTokenChunksEnhanced(w http.ResponseWriter) {
 
 		// Expire the chunk regardless of orphan status
 		session.Options.MaxAge = -1
-		session.Values = make(map[interface{}]interface{})
+		session.Values = make(map[any]any)
 		if w != nil {
 			if err := session.Save(sd.request, w); err != nil {
 				sd.manager.logger.Errorf("failed to save expired access token chunk %d: %v", i, err)
@@ -1514,7 +1514,7 @@ func (sd *SessionData) expireRefreshTokenChunksEnhanced(w http.ResponseWriter) {
 	const maxChunkSearchLimit = 50 // Limit search to prevent infinite loops from corrupted state
 	orphanedChunks := 0
 
-	for i := 0; i < maxChunkSearchLimit; i++ {
+	for i := range maxChunkSearchLimit {
 		sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
@@ -1544,7 +1544,7 @@ func (sd *SessionData) expireRefreshTokenChunksEnhanced(w http.ResponseWriter) {
 
 		// Expire the chunk regardless of orphan status
 		session.Options.MaxAge = -1
-		session.Values = make(map[interface{}]interface{})
+		session.Values = make(map[any]any)
 		if w != nil {
 			if err := session.Save(sd.request, w); err != nil {
 				sd.manager.logger.Errorf("failed to save expired refresh token chunk %d: %v", i, err)
@@ -1567,7 +1567,7 @@ func (sd *SessionData) expireIDTokenChunksEnhanced(w http.ResponseWriter) {
 	const maxChunkSearchLimit = 50 // Limit search to prevent infinite loops from corrupted state
 	orphanedChunks := 0
 
-	for i := 0; i < maxChunkSearchLimit; i++ {
+	for i := range maxChunkSearchLimit {
 		sessionName := fmt.Sprintf("%s_%d", idTokenCookie, i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
@@ -1597,7 +1597,7 @@ func (sd *SessionData) expireIDTokenChunksEnhanced(w http.ResponseWriter) {
 
 		// Expire the chunk regardless of orphan status
 		session.Options.MaxAge = -1
-		session.Values = make(map[interface{}]interface{})
+		session.Values = make(map[any]any)
 		if w != nil {
 			if err := session.Save(sd.request, w); err != nil {
 				sd.manager.logger.Errorf("failed to save expired ID token chunk %d: %v", i, err)
@@ -1897,7 +1897,7 @@ func (sd *SessionData) getIDTokenUnsafe() string {
 	totalSize := 0
 
 	// Sequential chunk validation with gap detection
-	for i := 0; i < expectedChunkCount; i++ {
+	for i := range expectedChunkCount {
 		session, ok := sd.idTokenChunks[i]
 		if !ok {
 			sd.manager.logger.Errorf("CRITICAL: ID token chunk %d missing - gap in sequence detected", i)

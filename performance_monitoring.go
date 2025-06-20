@@ -1,6 +1,7 @@
 package traefikoidc
 
 import (
+	"maps"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -288,7 +289,7 @@ func (pm *PerformanceMetrics) collectSystemMetrics() {
 }
 
 // GetMetrics returns all current performance metrics
-func (pm *PerformanceMetrics) GetMetrics() map[string]interface{} {
+func (pm *PerformanceMetrics) GetMetrics() map[string]any {
 	pm.timingMutex.RLock()
 	defer pm.timingMutex.RUnlock()
 
@@ -317,7 +318,7 @@ func (pm *PerformanceMetrics) GetMetrics() map[string]interface{} {
 		refreshErrorRate = float64(atomic.LoadInt64(&pm.refreshErrors)) / float64(refreshes)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		// Cache metrics
 		"cache_hits":      hits,
 		"cache_misses":    misses,
@@ -370,11 +371,11 @@ func (pm *PerformanceMetrics) GetMetrics() map[string]interface{} {
 }
 
 // GetDetailedTimingMetrics returns detailed timing statistics
-func (pm *PerformanceMetrics) GetDetailedTimingMetrics() map[string]interface{} {
+func (pm *PerformanceMetrics) GetDetailedTimingMetrics() map[string]any {
 	pm.timingMutex.RLock()
 	defer pm.timingMutex.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"verification_stats":  pm.calculateTimingStats(pm.verificationTimes),
 		"verification_timing": pm.calculateTimingStats(pm.verificationTimes),
 		"validation_stats":    pm.calculateTimingStats(pm.validationTimes),
@@ -385,9 +386,9 @@ func (pm *PerformanceMetrics) GetDetailedTimingMetrics() map[string]interface{} 
 }
 
 // calculateTimingStats calculates statistical metrics for timing data
-func (pm *PerformanceMetrics) calculateTimingStats(times []time.Duration) map[string]interface{} {
+func (pm *PerformanceMetrics) calculateTimingStats(times []time.Duration) map[string]any {
 	if len(times) == 0 {
-		return map[string]interface{}{
+		return map[string]any{
 			"count":      0,
 			"min_ms":     float64(0),
 			"max_ms":     float64(0),
@@ -404,7 +405,7 @@ func (pm *PerformanceMetrics) calculateTimingStats(times []time.Duration) map[st
 	copy(sortedTimes, times)
 
 	// Simple bubble sort for small arrays
-	for i := 0; i < len(sortedTimes); i++ {
+	for i := range sortedTimes {
 		for j := i + 1; j < len(sortedTimes); j++ {
 			if sortedTimes[i] > sortedTimes[j] {
 				sortedTimes[i], sortedTimes[j] = sortedTimes[j], sortedTimes[i]
@@ -426,7 +427,7 @@ func (pm *PerformanceMetrics) calculateTimingStats(times []time.Duration) map[st
 	p95 := sortedTimes[int(float64(len(sortedTimes))*0.95)]
 	p99 := sortedTimes[int(float64(len(sortedTimes))*0.99)]
 
-	return map[string]interface{}{
+	return map[string]any{
 		"count":      len(sortedTimes),
 		"min_ms":     float64(min.Nanoseconds()) / 1e6,
 		"max_ms":     float64(max.Nanoseconds()) / 1e6,
@@ -527,9 +528,7 @@ func (rm *ResourceMonitor) GetCacheSizes() map[string]int64 {
 	defer rm.cacheMutex.RUnlock()
 
 	sizes := make(map[string]int64)
-	for name, size := range rm.cacheSizes {
-		sizes[name] = size
-	}
+	maps.Copy(sizes, rm.cacheSizes)
 	return sizes
 }
 
@@ -665,12 +664,12 @@ func (rm *ResourceMonitor) GetAlerts() []ResourceAlert {
 }
 
 // GetResourceStatus returns current resource status
-func (rm *ResourceMonitor) GetResourceStatus() map[string]interface{} {
+func (rm *ResourceMonitor) GetResourceStatus() map[string]any {
 	metrics := rm.perfMetrics.GetMetrics()
 	cacheSizes := rm.GetCacheSizes()
 
-	status := map[string]interface{}{
-		"limits": map[string]interface{}{
+	status := map[string]any{
+		"limits": map[string]any{
 			"max_memory_bytes": rm.maxMemoryBytes,
 			"max_cache_size":   rm.maxCacheSize,
 			"max_sessions":     rm.maxSessions,

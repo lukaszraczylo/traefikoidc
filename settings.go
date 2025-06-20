@@ -481,7 +481,7 @@ func NewLogger(logLevel string) *Logger {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Info(format string, args ...interface{}) {
+func (l *Logger) Info(format string, args ...any) {
 	l.logInfo.Printf(format, args...)
 }
 
@@ -491,7 +491,7 @@ func (l *Logger) Info(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Debug(format string, args ...interface{}) {
+func (l *Logger) Debug(format string, args ...any) {
 	l.logDebug.Printf(format, args...)
 }
 
@@ -501,7 +501,7 @@ func (l *Logger) Debug(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Error(format string, args ...interface{}) {
+func (l *Logger) Error(format string, args ...any) {
 	l.logError.Printf(format, args...)
 }
 
@@ -512,7 +512,7 @@ func (l *Logger) Error(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Infof(format string, args ...interface{}) {
+func (l *Logger) Infof(format string, args ...any) {
 	l.logInfo.Printf(format, args...)
 }
 
@@ -523,7 +523,7 @@ func (l *Logger) Infof(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Debugf(format string, args ...interface{}) {
+func (l *Logger) Debugf(format string, args ...any) {
 	l.logDebug.Printf(format, args...)
 }
 
@@ -534,7 +534,7 @@ func (l *Logger) Debugf(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
-func (l *Logger) Errorf(format string, args ...interface{}) {
+func (l *Logger) Errorf(format string, args ...any) {
 	l.logError.Printf(format, args...)
 }
 
