@@ -661,16 +661,19 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		enablePKCE:     config.EnablePKCE,
 		overrideScopes: config.OverrideScopes,
 		scopes: func() []string {
-			// Deduplicate scopes from config first
-			uniqueConfigScopes := deduplicateScopes(config.Scopes)
+			// Deduplicate user-provided scopes from the configuration.
+			userProvidedScopes := deduplicateScopes(config.Scopes)
+
 			if config.OverrideScopes {
-				return uniqueConfigScopes
+				// When overriding, only the explicitly user-provided scopes are used.
+				// Default scopes like "openid", "profile", "email" are NOT added.
+				return userProvidedScopes
 			}
-			// If not overriding, merge with defaults (which also handles deduplication)
-			defaultInitialScopes := []string{"openid", "profile", "email"} // Explicitly define for logging
-			merged := mergeScopes(defaultInitialScopes, uniqueConfigScopes)
-			return merged
-			// return mergeScopes([]string{"openid", "profile", "email"}, uniqueConfigScopes)
+
+			// When not overriding (overrideScopes is false), merge user-provided scopes
+			// with the system's default scopes.
+			defaultSystemScopes := []string{"openid", "profile", "email"}
+			return deduplicateScopes(mergeScopes(defaultSystemScopes, userProvidedScopes))
 		}(),
 		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:            cacheManager.GetSharedTokenCache(),

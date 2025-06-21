@@ -13,6 +13,8 @@ The Traefik OIDC middleware provides a complete OIDC authentication solution wit
 - Rate limiting
 - Excluded paths (public URLs)
 
+**Important Note on Token Validation:** This middleware performs authentication and claim extraction based on the **ID Token** provided by the OIDC provider. It does not primarily use the Access Token for these purposes (though the Access Token is available for templated headers if needed). Therefore, ensure that all necessary claims (e.g., email, roles, custom attributes) are included in the ID Token by your OIDC provider's configuration.
+
 The middleware has been tested with Auth0, Logto, Google and other standard OIDC providers. It includes special handling for Google's OAuth implementation.
 
 ## Traefik Version Compatibility
@@ -725,6 +727,21 @@ logLevel: debug
    - Your Google Cloud OAuth consent screen is set to "External" and "Production" mode. "Testing" mode often limits refresh token validity.
    - Verify you're using a version of the middleware that includes the Google OAuth compatibility fix.
    - For more details, see the [Google OAuth Compatibility Fix](#google-oauth-compatibility-fix) section or the [detailed documentation](docs/google-oauth-fix.md).
+
+7.  **Keycloak: Claims Missing from ID Token (e.g., email)**
+
+    If you are using Keycloak as your OIDC provider and encounter issues where claims (like `email`) seem to be missing, leading to authentication failures or unexpected behavior (e.g., domain restrictions not working), it's important to understand how this plugin validates tokens:
+
+    *   **ID Token Validation**: This plugin validates the **ID Token**, not the Access Token, for user authentication and claim extraction.
+    *   **Claims Must Be in ID Token**: Any claims required by the plugin (e.g., `email` for domain/user allowlists, `roles` for RBAC, or custom claims for templated headers) **must** be present in the ID Token.
+    *   **Common Keycloak Issue**: By default, Keycloak might be configured to include certain claims (like `email` or custom attributes) only in the Access Token, not the ID Token. This can lead to the plugin not finding the expected claims, even if they are technically available from Keycloak.
+    *   **Solution**: You need to configure Keycloak to include the necessary claims in the ID Token. This is typically done by:
+        1.  Navigating to your Keycloak realm and client configuration.
+        2.  Finding the "Mappers" section for your client.
+        3.  Ensuring that mappers for required claims (e.g., "email") are configured to be "Add to ID token". You might need to create new mappers or modify existing ones. For example, a "User Property" mapper for "email" should have "Add to ID token" enabled.
+        4.  Similarly, for roles or group claims, ensure the relevant mappers also include these in the ID token.
+
+    Ensuring claims are correctly mapped to the ID token in Keycloak will resolve issues where the plugin cannot access necessary user information for validation or header templating.
 
 ## Contributing
 

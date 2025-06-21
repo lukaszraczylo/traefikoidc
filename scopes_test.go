@@ -165,6 +165,12 @@ func TestScopesConfiguration(t *testing.T) {
 			overrideScopes: true,
 			expectedResult: []string{}, // Deduplicate will handle nil as empty
 		},
+		{
+			name:           "Override Behavior - Single user scope",
+			configScopes:   []string{"email"},
+			overrideScopes: true,
+			expectedResult: []string{"email"},
+		},
 	}
 
 	for _, tc := range testCases {
