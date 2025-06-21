@@ -704,6 +704,89 @@ The middleware also sets the following security headers:
 - `X-XSS-Protection: 1; mode=block`
 - `Referrer-Policy: strict-origin-when-cross-origin`
 
+## Provider Configuration Recommendations
+
+**Important: ID Token Validation**
+
+This Traefik OIDC plugin performs authentication and extracts user claims (like email, roles, groups) exclusively from the **ID Token** provided by your OIDC provider. It does not primarily use the Access Token for these critical functions. Therefore, it is crucial to ensure that all necessary claims are included in the ID Token itself. A common issue is that some OIDC providers might, by default, place certain claims only in the Access Token or UserInfo endpoint.
+
+This section provides guidance on configuring popular OIDC providers to work optimally with this plugin.
+
+### Keycloak
+
+Keycloak is highly configurable, which means you need to ensure your client mappers are set up correctly to include necessary claims in the ID Token.
+
+*   **Ensure Claims in ID Token**:
+    *   **Email**: Navigate to your Keycloak realm -> Clients -> Your Client ID -> Mappers. Ensure there's a mapper for 'email' (e.g., a "User Property" mapper for the `email` property) and that "Add to ID token" is **ON**.
+    *   **Roles**: For client roles or realm roles, create or edit mappers (e.g., "User Client Role" or "User Realm Role"). Ensure "Add to ID token" is **ON**. You might want to customize the "Token Claim Name" (e.g., to `roles` or `groups`).
+    *   **Groups**: Similarly, for group membership, use a "Group Membership" mapper and ensure "Add to ID token" is **ON**. Customize the "Token Claim Name" as needed (e.g., `groups`).
+*   **Scopes**: Ensure your client requests appropriate scopes that trigger the inclusion of these claims if your mappers are scope-dependent. The default `openid`, `profile`, `email` scopes are a good starting point.
+*   **Troubleshooting**: If claims are missing, double-check the "Mappers" tab for your client in Keycloak. The "Token Claim Name" you define here is what you'll use in the `allowedRolesAndGroups` or `headers` configuration in this plugin. (See also the [Troubleshooting](#troubleshooting) section for Keycloak).
+
+### Azure AD (Microsoft Entra ID)
+
+Azure AD generally works well with standard OIDC configurations.
+
+*   **ID Token Claims**: Azure AD typically includes standard claims like `email`, `name`, `preferred_username`, and `oid` (Object ID) in the ID Token by default when `openid profile email` scopes are requested.
+*   **Group Claims**: To include group claims in the ID Token, you need to configure this in the Azure AD application registration:
+    *   Go to your App Registration -> Token configuration -> Add groups claim.
+    *   You can choose which types of groups (Security groups, Directory roles, All groups) to include.
+    *   Be aware of the "overage" issue: If a user is a member of too many groups, Azure AD will send a link to fetch groups instead of embedding them. This plugin currently expects group claims to be directly in the ID token. For users with many groups, consider alternative role/permission management strategies.
+    *   The claim name for groups is typically `groups`.
+*   **Optional Claims**: You can add other optional claims via the "Token configuration" section of your App Registration. Ensure these are configured for the ID token.
+*   **Endpoints**: The `providerURL` should be `https://login.microsoftonline.com/{your-tenant-id}/v2.0`. The plugin will auto-discover the necessary endpoints.
+*   **Optimization**: Ensure your application manifest in Azure AD is configured for the desired token version (v1.0 or v2.0). This plugin works with v2.0 endpoints.
+
+### Google Workspace / Google Cloud Identity
+
+Google's OIDC implementation is well-supported.
+
+*   **Optimal Configuration**: The plugin automatically handles Google-specific requirements, such as using `access_type=offline` and `prompt=consent` to ensure refresh tokens are issued for long-lived sessions. You do not need to add `offline_access` to scopes.
+*   **ID Token Claims**: Google includes standard claims like `email`, `sub`, `name`, `given_name`, `family_name`, `picture` in the ID Token by default with `openid profile email` scopes.
+*   **Hosted Domain (hd claim)**: If you are using Google Workspace and want to restrict access to users within your organization's domain, Google includes an `hd` (hosted domain) claim in the ID Token. You can use this with the `allowedUserDomains` setting or for custom header logic.
+*   **Best Practices**:
+    *   Use the `providerURL`: `https://accounts.google.com`.
+    *   Ensure your OAuth consent screen in Google Cloud Console is configured correctly and published. For production, it should be "External" and in "Production" status. "Testing" status limits refresh token lifetime.
+    *   Refer to the [Google OAuth Compatibility Fix](#google-oauth-compatibility-fix) section for more details on how the plugin handles Google's specifics.
+
+### Auth0
+
+Auth0 is generally OIDC compliant and works well.
+
+*   **ID Token Claims**:
+    *   To add custom claims or standard claims not included by default (like roles or permissions) to the ID Token, you'll need to use Auth0 Rules or Actions.
+    *   **Using Actions (Recommended)**: Create a custom Action that runs after login to add claims to the ID Token. Example:
+        ```javascript
+        // Auth0 Action to add email and roles to ID Token
+        exports.onExecutePostLogin = async (event, api) => {
+          const namespace = 'https://your-app.com/'; // Or your custom namespace
+          if (event.authorization) {
+            api.idToken.setCustomClaim(namespace + 'roles', event.authorization.roles);
+            api.idToken.setCustomClaim('email', event.user.email); // Standard claim, ensure it's there
+            // Add other claims as needed
+          }
+        };
+        ```
+    *   Ensure the claims you add (e.g., `https://your-app.com/roles`) are then used in the plugin's `allowedRolesAndGroups` or `headers` configuration.
+*   **Scopes**: Request appropriate scopes. You might need custom scopes if your Actions/Rules depend on them to add specific claims.
+*   **Endpoints**: Your `providerURL` will be `https://your-auth0-domain.auth0.com`.
+*   **Logout**: Ensure `postLogoutRedirectURI` is registered in your Auth0 application settings under "Allowed Logout URLs".
+
+### Generic OIDC Providers
+
+For other OIDC providers (e.g., Okta, Zitadel, self-hosted solutions):
+
+*   **ID Token is Key**: The primary requirement is that all claims needed for authentication decisions (email, roles, groups, custom attributes for headers) **must** be included in the ID Token.
+*   **Check Provider Documentation**: Consult your OIDC provider's documentation on how to:
+    *   Configure client applications.
+    *   Map user attributes, roles, or group memberships to claims in the ID Token.
+    *   Define custom scopes if they are necessary to include certain claims.
+*   **Standard Endpoints**: Ensure your provider exposes a standard OIDC discovery document (`.well-known/openid-configuration`) at the `providerURL`. The plugin uses this to find authorization, token, JWKS, and end_session endpoints.
+*   **Scopes**: Always include `openid` in your scopes. `profile` and `email` are generally recommended. Add other scopes as required by your provider to release specific claims to the ID Token.
+*   **Troubleshooting**: If the plugin isn't working as expected (e.g., access denied, claims missing), the first step is to decode the ID Token received from your provider (e.g., using jwt.io) to verify its contents. This will show you exactly what claims the plugin is seeing.
+
+For common issues and general troubleshooting, please refer to the [Troubleshooting](#troubleshooting) section.
+
 ## Troubleshooting
 
 ### Logging
@@ -728,20 +811,11 @@ logLevel: debug
    - Verify you're using a version of the middleware that includes the Google OAuth compatibility fix.
    - For more details, see the [Google OAuth Compatibility Fix](#google-oauth-compatibility-fix) section or the [detailed documentation](docs/google-oauth-fix.md).
 
-7.  **Keycloak: Claims Missing from ID Token (e.g., email)**
+7.  **Keycloak: Claims Missing from ID Token (e.g., email, roles)**
 
-    If you are using Keycloak as your OIDC provider and encounter issues where claims (like `email`) seem to be missing, leading to authentication failures or unexpected behavior (e.g., domain restrictions not working), it's important to understand how this plugin validates tokens:
-
-    *   **ID Token Validation**: This plugin validates the **ID Token**, not the Access Token, for user authentication and claim extraction.
-    *   **Claims Must Be in ID Token**: Any claims required by the plugin (e.g., `email` for domain/user allowlists, `roles` for RBAC, or custom claims for templated headers) **must** be present in the ID Token.
-    *   **Common Keycloak Issue**: By default, Keycloak might be configured to include certain claims (like `email` or custom attributes) only in the Access Token, not the ID Token. This can lead to the plugin not finding the expected claims, even if they are technically available from Keycloak.
-    *   **Solution**: You need to configure Keycloak to include the necessary claims in the ID Token. This is typically done by:
-        1.  Navigating to your Keycloak realm and client configuration.
-        2.  Finding the "Mappers" section for your client.
-        3.  Ensuring that mappers for required claims (e.g., "email") are configured to be "Add to ID token". You might need to create new mappers or modify existing ones. For example, a "User Property" mapper for "email" should have "Add to ID token" enabled.
-        4.  Similarly, for roles or group claims, ensure the relevant mappers also include these in the ID token.
-
-    Ensuring claims are correctly mapped to the ID token in Keycloak will resolve issues where the plugin cannot access necessary user information for validation or header templating.
+    If you are using Keycloak and claims like `email`, `roles`, or `groups` are missing from the ID Token, this plugin may not function as expected (e.g., for domain restrictions or RBAC).
+    *   **Solution**: This plugin validates the **ID Token**. You **must** configure Keycloak client mappers to add all necessary claims (email, roles, groups, etc.) to the ID Token.
+    *   For detailed instructions, please see the [Keycloak](#keycloak) section under [Provider Configuration Recommendations](#provider-configuration-recommendations).
 
 ## Contributing
 

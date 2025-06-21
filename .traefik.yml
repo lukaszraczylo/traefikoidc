@@ -76,6 +76,99 @@ testData:
   oidcEndSessionURL: https://accounts.google.com/logout # Provider's end session endpoint
   enablePKCE: false # Enables PKCE (Proof Key for Code Exchange) for additional security
 
+# --- Provider Specific Configuration Examples ---
+#
+# Below are example configurations tailored for specific OIDC providers.
+# Uncomment and adapt the relevant section for your provider.
+# Remember to replace placeholder values (like client IDs, secrets, domains)
+# with your actual credentials and settings.
+#
+# For all providers, ensure claims like email, roles, and groups are
+# configured to be included in the ID TOKEN. This plugin validates ID tokens.
+
+# --- Keycloak Example ---
+# testDataKeycloak:
+#   providerURL: https://your-keycloak-domain/realms/your-realm # e.g., http://localhost:8080/realms/master
+#   clientID: your-keycloak-client-id
+#   clientSecret: your-keycloak-client-secret # Store securely, e.g., urn:k8s:secret:namespace:secret-name:key
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-keycloak"
+#   scopes: # Default ["openid", "profile", "email"] are usually sufficient. Add others if mappers depend on them.
+#     - roles # Example: if you mapped Keycloak roles to a 'roles' claim in the ID token
+#     - groups # Example: if you mapped Keycloak groups to a 'groups' claim in the ID token
+#   allowedRolesAndGroups: # Corresponds to 'Token Claim Name' in Keycloak mappers
+#     - admin
+#     - editor
+#   # Ensure Keycloak client mappers add 'email', 'roles', 'groups' etc. to the ID Token.
+#   # See README.md "Provider Configuration Recommendations" for Keycloak.
+
+# --- Azure AD (Microsoft Entra ID) Example ---
+# testDataAzureAD:
+#   providerURL: https://login.microsoftonline.com/your-tenant-id/v2.0 # Replace your-tenant-id
+#   clientID: your-azure-ad-client-id
+#   clientSecret: your-azure-ad-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-azure"
+#   scopes: # Defaults ["openid", "profile", "email"] are good.
+#     # Azure AD may require specific scopes for certain graph API permissions if you were to use the access token,
+#     # but for ID token claims, defaults are often enough.
+#     # Group claims need to be configured in Azure AD App Registration -> Token Configuration -> Add groups claim.
+#   allowedUserDomains:
+#     - yourcompany.com
+#   allowedRolesAndGroups: # If you configured group claims (typically 'groups') or app roles in Azure AD
+#     - "group-object-id-1" # Azure AD group claims can be Object IDs by default
+#     - "AppRoleName"
+#   # See README.md "Provider Configuration Recommendations" for Azure AD.
+
+# --- Google Workspace / Google Cloud Identity Example ---
+# testDataGoogle:
+#   providerURL: https://accounts.google.com # This is standard for Google
+#   clientID: your-google-client-id.apps.googleusercontent.com
+#   clientSecret: your-google-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-google"
+#   scopes: # Defaults ["openid", "profile", "email"] are handled. Plugin manages Google-specifics.
+#     # Do NOT add 'offline_access' - plugin handles this.
+#   allowedUserDomains: # Useful for Google Workspace users
+#     - your-gsuite-domain.com
+#   # Google includes 'hd' (hosted domain) claim which can be used with allowedUserDomains.
+#   # Other claims like 'email', 'sub', 'name' are standard.
+#   # See README.md "Provider Configuration Recommendations" for Google.
+
+# --- Auth0 Example ---
+# testDataAuth0:
+#   providerURL: https://your-auth0-domain.auth0.com # Replace with your Auth0 domain
+#   clientID: your-auth0-client-id
+#   clientSecret: your-auth0-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-auth0"
+#   scopes: # Defaults ["openid", "profile", "email"]. Add custom scopes if your Auth0 Rules/Actions require them.
+#     - read:custom_data # Example custom scope
+#   allowedRolesAndGroups: # Based on claims added via Auth0 Rules or Actions (e.g. namespaced claims)
+#     - "https://your-app.com/roles:admin"
+#     - editor
+#   # Use Auth0 Rules or Actions to add custom claims (roles, permissions) to the ID Token.
+#   # Ensure postLogoutRedirectURI is in Auth0 app's "Allowed Logout URLs".
+#   # See README.md "Provider Configuration Recommendations" for Auth0.
+
+# --- Generic OIDC Provider Example ---
+# testDataGenericOIDC:
+#   providerURL: https://your-generic-oidc-provider.com/oidc # Issuer URL for your provider
+#   clientID: your-generic-client-id
+#   clientSecret: your-generic-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-generic"
+#   scopes: # Must include "openid". "profile" and "email" are common.
+#     - openid
+#     - profile
+#     - email
+#     - custom_scope_for_claims # If your provider needs specific scopes for ID token claims
+#   allowedRolesAndGroups:
+#     - user_role_from_id_token
+#   # Consult your provider's documentation on how to map attributes/roles/groups to ID Token claims.
+#   # Verify ID Token contents (e.g. jwt.io) to see available claims.
+#   # See README.md "Provider Configuration Recommendations" for Generic OIDC.
+
 # Configuration documentation
 configuration:
   providerURL:
