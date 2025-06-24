@@ -15,19 +15,19 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// TestTokenTypeDistinction tests that AccessToken and IdToken are correctly distinguished in templates
+// TestTokenTypeDistinction tests that AccessToken and IDToken are correctly distinguished in templates
 func TestTokenTypeDistinction(t *testing.T) {
-	// Define test data where AccessToken and IdToken are deliberately different
+	// Define test data where AccessToken and IDToken are deliberately different
 	type templateData struct {
 		Claims       map[string]interface{}
 		AccessToken  string
-		IdToken      string
+		IDToken      string
 		RefreshToken string
 	}
 
 	testData := templateData{
 		AccessToken:  "test-access-token-abc123",
-		IdToken:      "test-id-token-xyz789",
+		IDToken:      "test-id-token-xyz789",
 		RefreshToken: "test-refresh-token",
 		Claims: map[string]interface{}{
 			"sub":   "test-subject",
@@ -48,17 +48,17 @@ func TestTokenTypeDistinction(t *testing.T) {
 		},
 		{
 			name:          "ID Token Only",
-			templateText:  "ID: {{.IdToken}}",
+			templateText:  "ID: {{.IDToken}}",
 			expectedValue: "ID: test-id-token-xyz789",
 		},
 		{
 			name:          "Both Tokens",
-			templateText:  "Access: {{.AccessToken}} ID: {{.IdToken}}",
+			templateText:  "Access: {{.AccessToken}} ID: {{.IDToken}}",
 			expectedValue: "Access: test-access-token-abc123 ID: test-id-token-xyz789",
 		},
 		{
 			name:          "Both Tokens in Authorization Format",
-			templateText:  "Bearer {{.AccessToken}} and Bearer {{.IdToken}}",
+			templateText:  "Bearer {{.AccessToken}} and Bearer {{.IDToken}}",
 			expectedValue: "Bearer test-access-token-abc123 and Bearer test-id-token-xyz789",
 		},
 	}
@@ -125,7 +125,7 @@ func TestTokenTypeIntegration(t *testing.T) {
 
 	// Define test headers that use both token types
 	headers := []TemplatedHeader{
-		{Name: "X-ID-Token", Value: "{{.IdToken}}"},
+		{Name: "X-ID-Token", Value: "{{.IDToken}}"},
 		{Name: "X-Access-Token", Value: "{{.AccessToken}}"},
 		{Name: "Authorization", Value: "Bearer {{.AccessToken}}"},
 		{Name: "X-Email-From-Claims", Value: "{{.Claims.email}}"},

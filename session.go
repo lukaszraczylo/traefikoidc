@@ -183,6 +183,7 @@ func decompressTokenInternal(compressed string) string {
 	defer func() {
 		if closeErr := gz.Close(); closeErr != nil {
 			// Log error but don't fail the operation
+			_ = closeErr // Explicitly ignore the error
 		}
 	}()
 

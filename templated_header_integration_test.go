@@ -70,7 +70,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 		{
 			name: "ID Token Header",
 			headers: []TemplatedHeader{
-				{Name: "X-ID-Token", Value: "{{.IdToken}}"},
+				{Name: "X-ID-Token", Value: "{{.IDToken}}"},
 			},
 			expectedHeaders: map[string]string{
 				// We'll update this dynamically after generating the token
@@ -81,7 +81,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			name: "Both Token Types",
 			headers: []TemplatedHeader{
 				{Name: "X-Access-Token", Value: "{{.AccessToken}}"},
-				{Name: "X-ID-Token", Value: "{{.IdToken}}"},
+				{Name: "X-ID-Token", Value: "{{.IDToken}}"},
 			},
 			expectedHeaders: map[string]string{
 				// We'll update these dynamically after generating the tokens
@@ -389,6 +389,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 						// The current test expects the literal string "<no value>".
 						// Let's assume for now that if it's missing, it's an error unless specifically handled.
 						// The test as written expects "<no value>" to be present.
+						t.Logf("Header %s not set, but expected '<no value>' for missing claim", name)
 					}
 					t.Errorf("Expected header %s was not set", name)
 

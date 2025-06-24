@@ -1,3 +1,6 @@
+// Package providers implements a universal OIDC provider abstraction system.
+// It provides a clean interface for different OIDC providers (Google, Azure, Generic)
+// with provider-specific logic encapsulated in separate implementations.
 package providers
 
 import (

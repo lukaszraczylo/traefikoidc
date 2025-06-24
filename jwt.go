@@ -65,6 +65,7 @@ func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
 
 				replayCacheMu.RLock()
 				if replayCache != nil {
+					replayCache.Cleanup()
 				}
 				replayCacheMu.RUnlock()
 

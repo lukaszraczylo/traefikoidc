@@ -1,3 +1,6 @@
+// Package traefikoidc provides OIDC authentication middleware for Traefik.
+// It supports multiple OIDC providers including Google, Azure AD, and generic OIDC providers
+// with features like token refresh, session management, and provider-specific optimizations.
 package traefikoidc
 
 import (
@@ -1217,7 +1220,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 			// Fields must be exported (uppercase) to be accessible in templates
 			templateData := map[string]interface{}{
 				"AccessToken":  session.GetAccessToken(),
-				"IdToken":      session.GetIDToken(),
+				"IDToken":      session.GetIDToken(),
 				"RefreshToken": session.GetRefreshToken(),
 				"Claims":       claims,
 			}

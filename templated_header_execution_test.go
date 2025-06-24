@@ -83,9 +83,9 @@ func TestTemplateExecution(t *testing.T) {
 		},
 		{
 			name:         "ID Token",
-			templateText: "{{.IdToken}}",
+			templateText: "{{.IDToken}}",
 			data: map[string]interface{}{
-				"IdToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
+				"IDToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
 			},
 			expectedValue: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.Et9HFtf9R3GEMA0IICOfFMVXY7kkTX1wr4qCyhIf58U",
 			expectError:   false,
@@ -238,10 +238,10 @@ func TestTemplateExecutionContext(t *testing.T) {
 	}{
 		{
 			name:         "Access and ID token distinction with map",
-			templateText: "Access: {{.AccessToken}} ID: {{.IdToken}}",
+			templateText: "Access: {{.AccessToken}} ID: {{.IDToken}}",
 			data: map[string]interface{}{
 				"AccessToken":  "access-token-value",
-				"IdToken":      "id-token-value",
+				"IDToken":      "id-token-value",
 				"Claims":       map[string]interface{}{},
 				"RefreshToken": "refresh-token-value",
 			},
@@ -252,7 +252,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			templateText: "User: {{.Claims.sub}} Token: {{.AccessToken}}",
 			data: map[string]interface{}{
 				"AccessToken": "access-token",
-				"IdToken":     "id-token",
+				"IDToken":     "id-token",
 				"Claims": map[string]interface{}{
 					"sub": "user123",
 				},
@@ -265,7 +265,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			templateText: "Bearer {{.AccessToken}}",
 			data: map[string]interface{}{
 				"AccessToken": "jwt-access-token",
-				"IdToken":     "id-token",
+				"IDToken":     "id-token",
 				"Claims":      map[string]interface{}{},
 			},
 			expectedValue: "Bearer jwt-access-token",
@@ -283,7 +283,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			templateText: "X-User-Role: {{.Claims.role}}, X-User-Permissions: {{.Claims.permissions}}",
 			data: map[string]interface{}{
 				"AccessToken": "access-token-value",
-				"IdToken":     "id-token-value",
+				"IDToken":     "id-token-value",
 				"Claims": map[string]interface{}{
 					"email":       "user@example.com",
 					"role":        "admin",
@@ -314,7 +314,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			templateText: "X-User-Email: {{.Claims.email}}, X-Email-Verified: {{.Claims.email_verified}}",
 			data: map[string]interface{}{
 				"AccessToken": "access-token-value",
-				"IdToken":     "id-token-value",
+				"IDToken":     "id-token-value",
 				"Claims": map[string]interface{}{
 					"email":          "user@example.com",
 					"email_verified": true,
@@ -327,7 +327,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			templateText: "X-User-ID: {{.Claims.sub}}, X-User-Name: {{.Claims.name}}, X-Username: {{.Claims.preferred_username}}",
 			data: map[string]interface{}{
 				"AccessToken": "access-token-value",
-				"IdToken":     "id-token-value",
+				"IDToken":     "id-token-value",
 				"Claims": map[string]interface{}{
 					"sub":                "user123456",
 					"name":               "Jane Doe",
@@ -363,7 +363,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 	type templateData struct {
 		Claims       map[string]interface{}
 		AccessToken  string
-		IdToken      string
+		IDToken      string
 		RefreshToken string
 	}
 
@@ -376,10 +376,10 @@ func TestTemplateExecutionContext(t *testing.T) {
 	}{
 		{
 			name:         "Access and ID token distinction with struct",
-			templateText: "Access: {{.AccessToken}} ID: {{.IdToken}}",
+			templateText: "Access: {{.AccessToken}} ID: {{.IDToken}}",
 			data: templateData{
 				AccessToken: "access-token-value",
-				IdToken:     "id-token-value", // Now these should be distinct values
+				IDToken:     "id-token-value", // Now these should be distinct values
 				Claims:      map[string]interface{}{},
 			},
 			expectedValue: "Access: access-token-value ID: id-token-value",
@@ -389,7 +389,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			templateText: "User: {{.Claims.sub}} Token: {{.AccessToken}}",
 			data: templateData{
 				AccessToken: "access-token",
-				IdToken:     "access-token",
+				IDToken:     "access-token",
 				Claims: map[string]interface{}{
 					"sub": "user123",
 				},
@@ -401,7 +401,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			templateText: "X-Custom: {{.Claims.custom_field}}, X-Group: {{.Claims.group}}",
 			data: templateData{
 				AccessToken: "access-token",
-				IdToken:     "id-token",
+				IDToken:     "id-token",
 				Claims: map[string]interface{}{
 					"sub":          "user123",
 					"custom_field": "custom-value",
@@ -415,7 +415,7 @@ func TestTemplateExecutionContext(t *testing.T) {
 			templateText: "X-Email: {{.Claims.email}}, X-Name: {{.Claims.name}}",
 			data: templateData{
 				AccessToken: "access-token",
-				IdToken:     "id-token",
+				IDToken:     "id-token",
 				Claims: map[string]interface{}{
 					"email": "user@example.com",
 					"name":  "John Smith",

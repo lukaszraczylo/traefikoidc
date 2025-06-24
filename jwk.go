@@ -62,6 +62,9 @@ type JWKCacheInterface interface {
 // Returns:
 //   - A pointer to the JWKSet containing the keys.
 //   - An error if fetching fails or the response cannot be decoded.
+
+// NewJWKCache creates a new JWK cache with default configuration.
+// It initializes a cache with a 1-hour lifetime and maximum size of 100 entries.
 func NewJWKCache() *JWKCache {
 	cache := &JWKCache{
 		CacheLifetime: 1 * time.Hour,
