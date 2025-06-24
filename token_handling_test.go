@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -332,9 +333,9 @@ func TestTokenCorruptionIntegrationFlows(t *testing.T) {
 	}{
 		{
 			name:          "Normal flow - small tokens",
-			accessToken:   "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.access_sig",
+			accessToken:   "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.access_signature_data_here",
 			refreshToken:  "refresh_token_12345",
-			idToken:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.id_sig",
+			idToken:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.id_token_signature_data_here",
 			expectSuccess: true,
 		},
 		{
@@ -348,7 +349,7 @@ func TestTokenCorruptionIntegrationFlows(t *testing.T) {
 			name:          "Corrupted access token compression",
 			accessToken:   createLargeValidJWT(3000),
 			refreshToken:  "refresh_token_12345",
-			idToken:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.id_sig",
+			idToken:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.id_token_signature_data_here",
 			expectSuccess: false,
 			corruptAction: func(session *SessionData) {
 				// Corrupt compressed access token
@@ -362,7 +363,7 @@ func TestTokenCorruptionIntegrationFlows(t *testing.T) {
 			name:          "Corrupted chunk in large token",
 			accessToken:   createLargeValidJWT(15000), // Force chunking with larger size
 			refreshToken:  "refresh_token_12345",
-			idToken:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.id_sig",
+			idToken:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.id_token_signature_data_here",
 			expectSuccess: false,
 			corruptAction: func(session *SessionData) {
 				// Corrupt first chunk if chunked, otherwise corrupt single token
@@ -647,7 +648,10 @@ func TestTokenValidationEdgeCases(t *testing.T) {
 // createLargeValidJWT creates a JWT of approximately the specified size
 func createLargeValidJWT(targetSize int) string {
 	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
-	signature := "signature_" + generateRandomString(32)
+	// Create a valid base64url signature
+	signatureBytes := make([]byte, 32)
+	rand.Read(signatureBytes)
+	signature := base64.RawURLEncoding.EncodeToString(signatureBytes)
 
 	// Calculate required payload size
 	usedSize := len(header) + len(signature) + 2 // account for dots

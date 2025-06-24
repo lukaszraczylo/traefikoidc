@@ -1,9 +1,12 @@
 package traefikoidc
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/sessions"
 )
@@ -13,6 +16,8 @@ type TokenConfig struct {
 	Type              string
 	MinLength         int
 	MaxLength         int
+	MaxChunks         int // Maximum number of chunks allowed
+	MaxChunkSize      int // Maximum size per chunk
 	AllowOpaqueTokens bool
 	RequireJWTFormat  bool
 }
@@ -22,7 +27,9 @@ var (
 	AccessTokenConfig = TokenConfig{
 		Type:              "access",
 		MinLength:         5,
-		MaxLength:         50 * 1024,
+		MaxLength:         100 * 1024,    // 100KB total limit
+		MaxChunks:         25,            // Maximum 25 chunks
+		MaxChunkSize:      maxCookieSize, // Use global chunk size limit
 		AllowOpaqueTokens: true,
 		RequireJWTFormat:  false,
 	}
@@ -30,7 +37,9 @@ var (
 	RefreshTokenConfig = TokenConfig{
 		Type:              "refresh",
 		MinLength:         5,
-		MaxLength:         50 * 1024,
+		MaxLength:         50 * 1024, // 50KB total limit (refresh tokens are typically smaller)
+		MaxChunks:         15,        // Maximum 15 chunks
+		MaxChunkSize:      maxCookieSize,
 		AllowOpaqueTokens: true,
 		RequireJWTFormat:  false,
 	}
@@ -38,7 +47,9 @@ var (
 	IDTokenConfig = TokenConfig{
 		Type:              "id",
 		MinLength:         5,
-		MaxLength:         50 * 1024,
+		MaxLength:         75 * 1024, // 75KB total limit
+		MaxChunks:         20,        // Maximum 20 chunks
+		MaxChunkSize:      maxCookieSize,
 		AllowOpaqueTokens: false,
 		RequireJWTFormat:  true,
 	}
@@ -118,28 +129,48 @@ func (cm *ChunkManager) processSingleToken(token string, compressed bool, config
 
 // validateToken performs comprehensive token validation
 func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRetrievalResult {
-	// Length validation
-	if len(token) < config.MinLength || len(token) > config.MaxLength {
-		err := fmt.Errorf("CRITICAL: %s token has invalid length %d", config.Type, len(token))
-		cm.logger.Error(err.Error())
-		return TokenRetrievalResult{Token: "", Error: err}
+	// Enhanced size validation
+	if sizeErr := cm.validateTokenSize(token, config); sizeErr != nil {
+		return TokenRetrievalResult{Token: "", Error: sizeErr}
 	}
 
-	// JWT format validation (if required)
+	// Chunking efficiency validation (for pre-storage analysis)
+	if chunkErr := cm.validateChunkingEfficiency(token, config); chunkErr != nil {
+		return TokenRetrievalResult{Token: "", Error: chunkErr}
+	}
+
+	// Comprehensive content validation
+	if contentErr := cm.validateTokenContent(token, config); contentErr != nil {
+		return TokenRetrievalResult{Token: "", Error: contentErr}
+	}
+
+	// Token expiration validation
+	if expErr := cm.validateTokenExpiration(token, config); expErr != nil {
+		return TokenRetrievalResult{Token: "", Error: expErr}
+	}
+
+	// Token freshness validation
+	if freshnessErr := cm.validateTokenFreshness(token, config); freshnessErr != nil {
+		return TokenRetrievalResult{Token: "", Error: freshnessErr}
+	}
+
+	// Enhanced JWT format validation
 	if config.RequireJWTFormat && !config.AllowOpaqueTokens {
-		dotCount := strings.Count(token, ".")
-		if dotCount != 2 {
-			err := fmt.Errorf("CRITICAL: %s token invalid JWT format (dots: %d)", config.Type, dotCount)
-			cm.logger.Error(err.Error())
-			return TokenRetrievalResult{Token: "", Error: err}
+		if validationErr := cm.validateJWTFormat(token, config.Type); validationErr != nil {
+			return TokenRetrievalResult{Token: "", Error: validationErr}
 		}
 	} else if config.RequireJWTFormat && config.AllowOpaqueTokens {
 		// For tokens that can be either JWT or opaque, validate JWT format only if it has dots
 		dotCount := strings.Count(token, ".")
-		if dotCount > 0 && dotCount != 2 {
-			err := fmt.Errorf("CRITICAL: %s token invalid JWT format (dots: %d)", config.Type, dotCount)
-			cm.logger.Error(err.Error())
-			return TokenRetrievalResult{Token: "", Error: err}
+		if dotCount > 0 {
+			if validationErr := cm.validateJWTFormat(token, config.Type); validationErr != nil {
+				return TokenRetrievalResult{Token: "", Error: validationErr}
+			}
+		} else {
+			// Validate as opaque token
+			if validationErr := cm.validateOpaqueToken(token, config.Type); validationErr != nil {
+				return TokenRetrievalResult{Token: "", Error: validationErr}
+			}
 		}
 	}
 
@@ -148,9 +179,16 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 
 // processChunkedToken handles tokens stored across multiple chunks
 func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, config TokenConfig) TokenRetrievalResult {
-	// Pre-validate chunk count to prevent excessive memory usage
-	if len(chunks) > 50 {
-		err := fmt.Errorf("CRITICAL: Too many %s token chunks (%d)", config.Type, len(chunks))
+	// Enhanced chunk count validation using config limits
+	if len(chunks) > config.MaxChunks {
+		err := fmt.Errorf("CRITICAL: Too many %s token chunks (%d, max: %d)", config.Type, len(chunks), config.MaxChunks)
+		cm.logger.Error(err.Error())
+		return TokenRetrievalResult{Token: "", Error: err}
+	}
+
+	// Additional safety check for extremely large chunk counts
+	if len(chunks) > 100 {
+		err := fmt.Errorf("CRITICAL: Excessive %s token chunks (%d), potential security issue", config.Type, len(chunks))
 		cm.logger.Error(err.Error())
 		return TokenRetrievalResult{Token: "", Error: err}
 	}
@@ -180,8 +218,18 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
-		if len(chunk) > maxCookieSize+100 {
-			err := fmt.Errorf("CRITICAL: %s token chunk %d too large", config.Type, i)
+		// Enhanced chunk size validation using config limits
+		if len(chunk) > config.MaxChunkSize {
+			err := fmt.Errorf("CRITICAL: %s token chunk %d exceeds size limit (%d bytes, max: %d)",
+				config.Type, i, len(chunk), config.MaxChunkSize)
+			cm.logger.Error(err.Error())
+			return TokenRetrievalResult{Token: "", Error: err}
+		}
+
+		// Additional safety check for extremely large chunks
+		if len(chunk) > maxBrowserCookieSize {
+			err := fmt.Errorf("CRITICAL: %s token chunk %d exceeds browser limit (%d bytes)",
+				config.Type, i, len(chunk))
 			cm.logger.Error(err.Error())
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
@@ -213,4 +261,618 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 	}
 
 	return cm.validateToken(reassembledToken, config)
+}
+
+// validateJWTFormat performs enhanced JWT format validation
+func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error {
+	// Check for exactly 2 dots
+	dotCount := strings.Count(token, ".")
+	if dotCount != 2 {
+		err := fmt.Errorf("CRITICAL: %s token invalid JWT format (dots: %d)", tokenType, dotCount)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Split into parts
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		err := fmt.Errorf("CRITICAL: %s token invalid JWT structure", tokenType)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Validate each part is non-empty and contains valid base64url characters
+	for i, part := range parts {
+		if part == "" {
+			err := fmt.Errorf("CRITICAL: %s token has empty JWT part %d", tokenType, i)
+			cm.logger.Error(err.Error())
+			return err
+		}
+
+		// Check for valid base64url characters only (RFC 4648)
+		// Valid characters: A-Z, a-z, 0-9, -, _, and = for padding
+		for _, char := range part {
+			if !((char >= 'A' && char <= 'Z') ||
+				(char >= 'a' && char <= 'z') ||
+				(char >= '0' && char <= '9') ||
+				char == '-' || char == '_' || char == '=') {
+				err := fmt.Errorf("CRITICAL: %s token contains invalid base64url character in part %d", tokenType, i)
+				cm.logger.Error(err.Error())
+				return err
+			}
+		}
+
+		// Validate base64url padding rules
+		if strings.Contains(part, "=") {
+			// Padding can only be at the end
+			paddingIndex := strings.Index(part, "=")
+			if paddingIndex != len(part)-1 && paddingIndex != len(part)-2 {
+				err := fmt.Errorf("CRITICAL: %s token has invalid base64url padding in part %d", tokenType, i)
+				cm.logger.Error(err.Error())
+				return err
+			}
+			// Check that after padding, no other characters exist
+			for j := paddingIndex; j < len(part); j++ {
+				if part[j] != '=' {
+					err := fmt.Errorf("CRITICAL: %s token has characters after padding in part %d", tokenType, i)
+					cm.logger.Error(err.Error())
+					return err
+				}
+			}
+		}
+	}
+
+	// Additional length checks for JWT parts
+	if len(parts[0]) < 10 { // Header too short
+		err := fmt.Errorf("CRITICAL: %s token header too short", tokenType)
+		cm.logger.Error(err.Error())
+		return err
+	}
+	if len(parts[1]) < 10 { // Payload too short
+		err := fmt.Errorf("CRITICAL: %s token payload too short", tokenType)
+		cm.logger.Error(err.Error())
+		return err
+	}
+	if len(parts[2]) < 10 { // Signature too short
+		err := fmt.Errorf("CRITICAL: %s token signature too short", tokenType)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	return nil
+}
+
+// validateOpaqueToken performs validation for opaque (non-JWT) tokens
+func (cm *ChunkManager) validateOpaqueToken(token string, tokenType string) error {
+	// Check for obviously invalid characters for opaque tokens
+	if strings.Contains(token, " ") {
+		err := fmt.Errorf("CRITICAL: %s opaque token contains spaces", tokenType)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Check for control characters
+	for _, char := range token {
+		if char < 32 || char == 127 {
+			err := fmt.Errorf("CRITICAL: %s opaque token contains control characters", tokenType)
+			cm.logger.Error(err.Error())
+			return err
+		}
+	}
+
+	// Ensure minimum entropy for opaque tokens (basic check)
+	if len(token) >= 20 {
+		uniqueChars := make(map[rune]bool)
+		for _, char := range token {
+			uniqueChars[char] = true
+		}
+		// Require at least 8 unique characters for reasonable entropy
+		if len(uniqueChars) < 8 {
+			err := fmt.Errorf("CRITICAL: %s opaque token has insufficient entropy", tokenType)
+			cm.logger.Error(err.Error())
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateTokenSize performs comprehensive token size validation
+func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) error {
+	tokenLen := len(token)
+
+	// Basic length validation
+	if tokenLen < config.MinLength {
+		err := fmt.Errorf("CRITICAL: %s token below minimum length (%d bytes, min: %d)",
+			config.Type, tokenLen, config.MinLength)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	if tokenLen > config.MaxLength {
+		err := fmt.Errorf("CRITICAL: %s token exceeds maximum length (%d bytes, max: %d)",
+			config.Type, tokenLen, config.MaxLength)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// JWT-specific size validation
+	if config.RequireJWTFormat || (config.AllowOpaqueTokens && strings.Contains(token, ".")) {
+		parts := strings.Split(token, ".")
+		if len(parts) == 3 {
+			// Validate individual JWT part sizes
+			headerLen := len(parts[0])
+			payloadLen := len(parts[1])
+			signatureLen := len(parts[2])
+
+			// Check for unreasonably large JWT parts (potential security issue)
+			if headerLen > 5*1024 { // 5KB header limit
+				err := fmt.Errorf("CRITICAL: %s token header too large (%d bytes)", config.Type, headerLen)
+				cm.logger.Error(err.Error())
+				return err
+			}
+
+			if payloadLen > config.MaxLength-10*1024 { // Leave room for header and signature
+				err := fmt.Errorf("CRITICAL: %s token payload too large (%d bytes)", config.Type, payloadLen)
+				cm.logger.Error(err.Error())
+				return err
+			}
+
+			if signatureLen > 2*1024 { // 2KB signature limit
+				err := fmt.Errorf("CRITICAL: %s token signature too large (%d bytes)", config.Type, signatureLen)
+				cm.logger.Error(err.Error())
+				return err
+			}
+		}
+	}
+
+	// Opaque token size validation
+	if config.AllowOpaqueTokens && !strings.Contains(token, ".") {
+		// For opaque tokens, check for reasonable size limits
+		if tokenLen > 8*1024 { // 8KB limit for opaque tokens
+			err := fmt.Errorf("CRITICAL: %s opaque token unusually large (%d bytes)", config.Type, tokenLen)
+			cm.logger.Error(err.Error())
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateChunkingEfficiency ensures that chunking is used appropriately
+func (cm *ChunkManager) validateChunkingEfficiency(token string, config TokenConfig) error {
+	tokenLen := len(token)
+
+	// If token is small enough to fit in a single chunk, warn about unnecessary chunking
+	if tokenLen <= config.MaxChunkSize && tokenLen <= maxCookieSize {
+		// This is just informational - not an error, but helps with monitoring
+		cm.logger.Debugf("INFO: %s token (%d bytes) could fit in single chunk", config.Type, tokenLen)
+	}
+
+	// Calculate expected number of chunks
+	expectedChunks := (tokenLen + config.MaxChunkSize - 1) / config.MaxChunkSize
+	if expectedChunks > config.MaxChunks {
+		err := fmt.Errorf("CRITICAL: %s token would require %d chunks (max: %d)",
+			config.Type, expectedChunks, config.MaxChunks)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Check for potential storage efficiency issues
+	if expectedChunks > 10 && tokenLen < 50*1024 {
+		cm.logger.Infof("WARNING: %s token requires many chunks (%d) for size (%d bytes) - consider token optimization",
+			config.Type, expectedChunks, tokenLen)
+	}
+
+	return nil
+}
+
+// validateTokenContent performs comprehensive token content validation
+func (cm *ChunkManager) validateTokenContent(token string, config TokenConfig) error {
+	// Basic content sanitization checks
+	if err := cm.validateTokenSanitization(token, config); err != nil {
+		return err
+	}
+
+	// JWT-specific content validation
+	if config.RequireJWTFormat || (config.AllowOpaqueTokens && strings.Contains(token, ".")) {
+		if err := cm.validateJWTContent(token, config); err != nil {
+			return err
+		}
+	}
+
+	// Opaque token content validation
+	if config.AllowOpaqueTokens && !strings.Contains(token, ".") {
+		if err := cm.validateOpaqueTokenContent(token, config); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateTokenSanitization checks for basic security issues in token content
+func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConfig) error {
+	// Check for null bytes (potential injection attacks)
+	if strings.Contains(token, "\x00") {
+		err := fmt.Errorf("CRITICAL: %s token contains null bytes", config.Type)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Check for line feed/carriage return (header injection attacks)
+	if strings.ContainsAny(token, "\r\n") {
+		err := fmt.Errorf("CRITICAL: %s token contains line breaks", config.Type)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Check for suspicious escape sequences
+	suspiciousPatterns := []string{
+		"\\x", "\\u", "\\n", "\\r", "\\t", "\\0",
+		"<script", "</script", "javascript:", "data:",
+		"file://", "ftp://", "ldap://",
+	}
+
+	tokenLower := strings.ToLower(token)
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(tokenLower, pattern) {
+			err := fmt.Errorf("CRITICAL: %s token contains suspicious pattern: %s", config.Type, pattern)
+			cm.logger.Error(err.Error())
+			return err
+		}
+	}
+
+	// Check for excessive repeated characters (potential buffer overflow attempts)
+	if err := cm.detectRepeatedCharacters(token, config); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateJWTContent performs JWT-specific content validation
+func (cm *ChunkManager) validateJWTContent(token string, config TokenConfig) error {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		err := fmt.Errorf("CRITICAL: %s JWT token malformed for content validation", config.Type)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Validate header content
+	if err := cm.validateJWTHeader(parts[0], config); err != nil {
+		return err
+	}
+
+	// Validate payload content
+	if err := cm.validateJWTPayload(parts[1], config); err != nil {
+		return err
+	}
+
+	// Validate signature content
+	if err := cm.validateJWTSignature(parts[2], config); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateJWTHeader validates JWT header content
+func (cm *ChunkManager) validateJWTHeader(header string, config TokenConfig) error {
+	// Basic header structure validation
+	if len(header) == 0 {
+		err := fmt.Errorf("CRITICAL: %s JWT header is empty", config.Type)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Validate base64url encoding
+	if _, err := base64.RawURLEncoding.DecodeString(header); err != nil {
+		err := fmt.Errorf("CRITICAL: %s JWT header not valid base64url", config.Type)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	return nil
+}
+
+// validateJWTPayload validates JWT payload content
+func (cm *ChunkManager) validateJWTPayload(payload string, config TokenConfig) error {
+	// Basic payload structure validation
+	if len(payload) == 0 {
+		err := fmt.Errorf("CRITICAL: %s JWT payload is empty", config.Type)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Payload should be decodable (basic structural check)
+	if _, err := base64.RawURLEncoding.DecodeString(payload); err != nil {
+		err := fmt.Errorf("CRITICAL: %s JWT payload not valid base64url", config.Type)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	return nil
+}
+
+// validateJWTSignature validates JWT signature content
+func (cm *ChunkManager) validateJWTSignature(signature string, config TokenConfig) error {
+	// Basic signature structure validation
+	if len(signature) == 0 {
+		err := fmt.Errorf("CRITICAL: %s JWT signature is empty", config.Type)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Validate base64url encoding
+	if _, err := base64.RawURLEncoding.DecodeString(signature); err != nil {
+		err := fmt.Errorf("CRITICAL: %s JWT signature not valid base64url", config.Type)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	return nil
+}
+
+// validateOpaqueTokenContent validates opaque token content
+func (cm *ChunkManager) validateOpaqueTokenContent(token string, config TokenConfig) error {
+	// Check for reasonable character distribution in opaque tokens
+	if len(token) >= 10 {
+		alphabetic := 0
+		numeric := 0
+		special := 0
+
+		for _, char := range token {
+			if (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') {
+				alphabetic++
+			} else if char >= '0' && char <= '9' {
+				numeric++
+			} else {
+				special++
+			}
+		}
+
+		total := alphabetic + numeric + special
+		if total > 0 {
+			// Require some distribution of character types for legitimate tokens
+			alphaRatio := float64(alphabetic) / float64(total)
+			numericRatio := float64(numeric) / float64(total)
+
+			// Opaque tokens should have reasonable character distribution
+			if alphaRatio < 0.1 && numericRatio < 0.1 {
+				err := fmt.Errorf("CRITICAL: %s opaque token has suspicious character distribution", config.Type)
+				cm.logger.Error(err.Error())
+				return err
+			}
+		}
+	}
+
+	// Check for common token prefixes/suffixes that might indicate legitimate tokens
+	legitimatePrefixes := []string{
+		"Bearer ", "bearer ", "eyJ", // JWT prefix
+		"refresh_", "access_", "id_",
+		"token_", "oauth_", "oidc_",
+	}
+
+	hasLegitimatePrefix := false
+	for _, prefix := range legitimatePrefixes {
+		if strings.HasPrefix(token, prefix) {
+			hasLegitimatePrefix = true
+			break
+		}
+	}
+
+	// For longer tokens without legitimate prefixes, be more suspicious
+	if len(token) > 50 && !hasLegitimatePrefix {
+		cm.logger.Debugf("WARNING: %s opaque token lacks common token prefixes", config.Type)
+	}
+
+	return nil
+}
+
+// detectRepeatedCharacters detects potential buffer overflow attempts
+func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfig) error {
+	if len(token) < 10 {
+		return nil // Too short to analyze meaningfully
+	}
+
+	// Count consecutive repeated characters
+	maxRepeated := 0
+	currentRepeated := 1
+	var lastChar rune
+
+	for i, char := range token {
+		if i > 0 && char == lastChar {
+			currentRepeated++
+			if currentRepeated > maxRepeated {
+				maxRepeated = currentRepeated
+			}
+		} else {
+			currentRepeated = 1
+		}
+		lastChar = char
+	}
+
+	// Flag tokens with excessive character repetition
+	threshold := 20 // Allow up to 20 consecutive identical characters
+	if maxRepeated > threshold {
+		err := fmt.Errorf("CRITICAL: %s token has excessive repeated characters (%d consecutive)",
+			config.Type, maxRepeated)
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Check for overall character frequency (detect padding attacks)
+	charFreq := make(map[rune]int)
+	for _, char := range token {
+		charFreq[char]++
+	}
+
+	tokenLen := len(token)
+	for char, count := range charFreq {
+		frequency := float64(count) / float64(tokenLen)
+
+		// Flag if any single character makes up more than 70% of the token
+		if frequency > 0.7 && tokenLen > 20 {
+			err := fmt.Errorf("CRITICAL: %s token has suspicious character frequency (char '%c': %.1f%%)",
+				config.Type, char, frequency*100)
+			cm.logger.Error(err.Error())
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateTokenExpiration validates token expiration during storage/retrieval
+func (cm *ChunkManager) validateTokenExpiration(token string, config TokenConfig) error {
+	// Only validate expiration for JWT tokens
+	if !strings.Contains(token, ".") {
+		return nil // Opaque tokens don't have embedded expiration
+	}
+
+	// Parse JWT expiration claim
+	expiration, err := cm.extractJWTExpiration(token)
+	if err != nil {
+		// If we can't parse expiration, log it but don't fail - the token might be valid but malformed
+		cm.logger.Debugf("Could not extract expiration from %s token: %v", config.Type, err)
+		return nil
+	}
+
+	// Check if token is expired
+	if expiration != nil && time.Now().After(*expiration) {
+		err := fmt.Errorf("CRITICAL: %s token is expired (expired at: %v)", config.Type, expiration.Format(time.RFC3339))
+		cm.logger.Error(err.Error())
+		return err
+	}
+
+	// Check if token expires too far in the future (potential security issue)
+	if expiration != nil {
+		maxFutureTime := time.Now().Add(10 * 365 * 24 * time.Hour) // 10 years
+		if expiration.After(maxFutureTime) {
+			cm.logger.Infof("WARNING: %s token expires very far in future (%v) - potential security issue",
+				config.Type, expiration.Format(time.RFC3339))
+		}
+	}
+
+	return nil
+}
+
+// extractJWTExpiration extracts the expiration time from a JWT token
+func (cm *ChunkManager) extractJWTExpiration(token string) (*time.Time, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT format")
+	}
+
+	// Decode the payload (second part)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
+	}
+
+	// Parse the JSON payload
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	// Extract expiration claim
+	exp, exists := claims["exp"]
+	if !exists {
+		return nil, nil // No expiration claim
+	}
+
+	// Convert expiration to time.Time
+	var expTime time.Time
+	switch v := exp.(type) {
+	case float64:
+		expTime = time.Unix(int64(v), 0)
+	case int64:
+		expTime = time.Unix(v, 0)
+	case int:
+		expTime = time.Unix(int64(v), 0)
+	default:
+		return nil, fmt.Errorf("invalid expiration format: %T", exp)
+	}
+
+	return &expTime, nil
+}
+
+// validateTokenFreshness checks if token is fresh enough for storage
+func (cm *ChunkManager) validateTokenFreshness(token string, config TokenConfig) error {
+	// Only validate freshness for JWT tokens
+	if !strings.Contains(token, ".") {
+		return nil
+	}
+
+	// Extract issued at time
+	issuedAt, err := cm.extractJWTIssuedAt(token)
+	if err != nil {
+		cm.logger.Debugf("Could not extract issued time from %s token: %v", config.Type, err)
+		return nil
+	}
+
+	if issuedAt != nil {
+		now := time.Now()
+
+		// Check if token was issued in the future (clock skew tolerance: 5 minutes)
+		if issuedAt.After(now.Add(5 * time.Minute)) {
+			err := fmt.Errorf("CRITICAL: %s token issued in future (issued at: %v)",
+				config.Type, issuedAt.Format(time.RFC3339))
+			cm.logger.Error(err.Error())
+			return err
+		}
+
+		// Check if token is too old (potential replay attack)
+		maxAge := 24 * time.Hour // Tokens older than 24 hours are suspicious
+		if now.Sub(*issuedAt) > maxAge {
+			cm.logger.Infof("WARNING: %s token is quite old (issued: %v) - potential replay",
+				config.Type, issuedAt.Format(time.RFC3339))
+		}
+	}
+
+	return nil
+}
+
+// extractJWTIssuedAt extracts the issued at time from a JWT token
+func (cm *ChunkManager) extractJWTIssuedAt(token string) (*time.Time, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT format")
+	}
+
+	// Decode the payload (second part)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
+	}
+
+	// Parse the JSON payload
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	// Extract issued at claim
+	iat, exists := claims["iat"]
+	if !exists {
+		return nil, nil // No issued at claim
+	}
+
+	// Convert issued at to time.Time
+	var iatTime time.Time
+	switch v := iat.(type) {
+	case float64:
+		iatTime = time.Unix(int64(v), 0)
+	case int64:
+		iatTime = time.Unix(v, 0)
+	case int:
+		iatTime = time.Unix(int64(v), 0)
+	default:
+		return nil, fmt.Errorf("invalid issued at format: %T", iat)
+	}
+
+	return &iatTime, nil
 }

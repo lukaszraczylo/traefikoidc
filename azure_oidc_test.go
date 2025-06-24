@@ -162,19 +162,11 @@ func TestAzureOIDCRegression(t *testing.T) {
 		session.SetAuthenticated(true)
 		session.SetEmail("user@example.com")
 
-		// Create a valid JWT access token for testing
-		accessTokenClaims := map[string]interface{}{
-			"iss":   "https://login.microsoftonline.com/tenant-id/v2.0",
-			"aud":   "test-client-id",
-			"exp":   time.Now().Add(1 * time.Hour).Unix(),
-			"iat":   time.Now().Unix(),
-			"sub":   "user123",
-			"email": "user@example.com",
-		}
-		accessToken, _ := createMockJWT(accessTokenClaims)
+		// Use standardized test tokens with valid future expiration dates
+		accessToken := ValidAccessToken // This token expires in 2065
 		session.SetAccessToken(accessToken)
 
-		// Create an invalid/expired ID token
+		// Create an expired ID token using a mock JWT with past expiration
 		idTokenClaims := map[string]interface{}{
 			"iss":   "https://login.microsoftonline.com/tenant-id/v2.0",
 			"aud":   "test-client-id",
@@ -234,28 +226,19 @@ func TestAzureOIDCRegression(t *testing.T) {
 		req := httptest.NewRequest("GET", "/protected", nil)
 		session, _ := tOidc.sessionManager.GetSession(req)
 
-		// Set up session with opaque access token (non-JWT)
+		// Set up session with JWT access token (not opaque for this test)
 		session.SetAuthenticated(true)
 		session.SetEmail("user@example.com")
-		session.SetAccessToken(ValidAccessToken)
+		session.SetAccessToken(ValidAccessToken) // This is actually a JWT token
 
-		// Create a valid ID token for claims extraction
-		idTokenClaims := map[string]interface{}{
-			"iss":   "https://login.microsoftonline.com/tenant-id/v2.0",
-			"aud":   "test-client-id",
-			"exp":   time.Now().Add(1 * time.Hour).Unix(),
-			"iat":   time.Now().Unix(),
-			"sub":   "user123",
-			"email": "user@example.com",
-		}
-		idToken, _ := createMockJWT(idTokenClaims)
-		session.SetIDToken(idToken)
+		// Use a valid ID token from test tokens
+		session.SetIDToken(ValidIDToken) // This token expires in 2065
 
 		// Mock the token verification
 		originalTokenVerifier := tOidc.tokenVerifier
 		tOidc.tokenVerifier = &mockTokenVerifier{
 			verifyFunc: func(token string) error {
-				if token == idToken {
+				if token == ValidIDToken {
 					// ID token is valid - cache claims
 					testClaims := map[string]interface{}{
 						"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
@@ -337,16 +320,17 @@ func TestAzureOIDCRegression(t *testing.T) {
 
 // createMockJWT creates a basic JWT token for testing purposes
 func createMockJWT(claims map[string]interface{}) (string, error) {
-	// Simple mock JWT - in real tests you'd use a proper JWT library
-	// For this test, we'll create a basic three-part token structure
-	header := "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0" // {"alg":"RS256","kid":"test-key-id","typ":"JWT"}
+	// For testing purposes, create a JWT with expired claims when needed
+	// Use the test tokens infrastructure for most cases, but allow expired tokens for specific tests
+	testTokens := NewTestTokens()
 
-	// Create a simple payload with test claims
-	payload := "eyJpc3MiOiJ0ZXN0LWlzc3VlciIsImF1ZCI6InRlc3QtY2xpZW50LWlkIiwiZXhwIjoxNjM4MzYwMDAwLCJpYXQiOjE2MzgzNTY0MDAsInN1YiI6InVzZXIxMjMiLCJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifQ" // Basic claims
+	// Check if this is meant to be an expired token
+	if exp, ok := claims["exp"].(int64); ok && exp < time.Now().Unix() {
+		return testTokens.CreateExpiredJWT(), nil
+	}
 
-	signature := "test-signature"
-
-	return header + "." + payload + "." + signature, nil
+	// Otherwise return a valid token
+	return ValidIDToken, nil
 }
 
 // Mock error type for testing

@@ -20,16 +20,16 @@ func NewTestTokens() *TestTokens {
 // Valid JWT tokens for testing
 const (
 	// ValidAccessToken - A properly formatted JWT access token for testing
-	ValidAccessToken = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0.eyJhdWQiOiJ0ZXN0LWNsaWVudC1pZCIsImVtYWlsIjoidXNlckBleGFtcGxlLmNvbSIsImV4cCI6MTc1MDI5NDYyOCwiaWF0IjoxNzUwMjkxMDI4LCJpc3MiOiJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20iLCJqdGkiOiJlNDcxN2RhZDBmZjAyOTNkIiwibmJmIjoxNzUwMjkxMDI4LCJub25jZSI6Im5vbmNlMTIzIiwic3ViIjoidGVzdC1zdWJqZWN0In0.bmwp-vk0B7Ir9UiUkzib8L7yJbebJ00o3U9QrB6gP2H9-RfqyCbN8M9Rkx7Rb8Vdh3YzqkBBoLS_G0i414rs2I9uABnTC4E6-63qkGdUrLB7p-XbjcRW2RoIBwXHk7lfumi8eX0uWzBsJ9CY0__UECVsex5XORfBb4Bcqj0LK4y-glxkpI51I7BPySfciWC_PkdaQ1Qe5pCAlxeNs2E9NMGXp-Ox6vAufUzoC2cws1LswGPPP6icQ-Zlzd5WMCIWhdIkN4yTxk8FMqsTC52k2zskRHNSSd4DDVETonfzawZNqDcMpnTyN53sCJ9UHiQTl9mCm61ttYW-W9Gc-ze4Xw"
+	ValidAccessToken = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0.eyJhdWQiOiJ0ZXN0LWNsaWVudC1pZCIsImVtYWlsIjoidXNlckBleGFtcGxlLmNvbSIsImV4cCI6MzAwMDAwMDAwMCwiaWF0IjoxMDAwMDAwMDAwLCJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImp0aSI6ImU0NzE3ZGFkMGZmMDI5M2QiLCJuYmYiOjEwMDAwMDAwMDAsIm5vbmNlIjoibm9uY2UxMjMiLCJzdWIiOiJ0ZXN0LXN1YmplY3QifQ.bmwp-vk0B7Ir9UiUkzib8L7yJbebJ00o3U9QrB6gP2H9-RfqyCbN8M9Rkx7Rb8Vdh3YzqkBBoLS_G0i414rs2I9uABnTC4E6-63qkGdUrLB7p-XbjcRW2RoIBwXHk7lfumi8eX0uWzBsJ9CY0__UECVsex5XORfBb4Bcqj0LK4y-glxkpI51I7BPySfciWC_PkdaQ1Qe5pCAlxeNs2E9NMGXp-Ox6vAufUzoC2cws1LswGPPP6icQ-Zlzd5WMCIWhdIkN4yTxk8FMqsTC52k2zskRHNSSd4DDVETonfzawZNqDcMpnTyN53sCJ9UHiQTl9mCm61ttYW-W9Gc-ze4Xw"
 
 	// ValidIDToken - A properly formatted JWT ID token for testing
-	ValidIDToken = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0.eyJhdWQiOiJ0ZXN0LWNsaWVudC1pZCIsImVtYWlsIjoidXNlckBleGFtcGxlLmNvbSIsImV4cCI6MTc1MDI5NDYyOCwiaWF0IjoxNzUwMjkxMDI4LCJpc3MiOiJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20iLCJqdGkiOiI2YzBjZTZmMTM4Y2EzMzc2IiwibmJmIjoxNzUwMjkxMDI4LCJub25jZSI6Im5vbmNlMTIzIiwic3ViIjoidGVzdC1zdWJqZWN0In0.RBQYejA9vP4lnh2EhFqWerePWaCyDTF0ZE1jlU2xm4g2wWVeaEHpv5SNg92_gwk633N9xx7ugS0UrlEu4qbT7wSb1HBDR00q_andyYnyFk4OoxPpD0AqHkVr-pjS-Z7UCGF3sLgQ4ECmU9695PIys3XvgUGMzEn_mK-PHcpY5AnbBGFsbj7epUld_sb6WfjjjwAa8kKfKObPvaIpuJ4TlxI1Uf0wYOoIA0zh5ipeAn-i8Ud-GErxis1Hp8UQK7IRolXpToiXnFcnf3vI3eCS7Yu3oPl7LRxTxKMCI9h0MCwu25ZNsOg2C9ohyebpU0jbURX9Q74GNOaphv-Lz9rCRA"
+	ValidIDToken = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0.eyJhdWQiOiJ0ZXN0LWNsaWVudC1pZCIsImVtYWlsIjoidXNlckBleGFtcGxlLmNvbSIsImV4cCI6MzAwMDAwMDAwMCwiaWF0IjoxMDAwMDAwMDAwLCJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImp0aSI6IjZjMGNlNmYxMzhjYTMzNzYiLCJuYmYiOjEwMDAwMDAwMDAsIm5vbmNlIjoibm9uY2UxMjMiLCJzdWIiOiJ0ZXN0LXN1YmplY3QifQ.RBQYejA9vP4lnh2EhFqWerePWaCyDTF0ZE1jlU2xm4g2wWVeaEHpv5SNg92_gwk633N9xx7ugS0UrlEu4qbT7wSb1HBDR00q_andyYnyFk4OoxPpD0AqHkVr-pjS-Z7UCGF3sLgQ4ECmU9695PIys3XvgUGMzEn_mK-PHcpY5AnbBGFsbj7epUld_sb6WfjjjwAa8kKfKObPvaIpuJ4TlxI1Uf0wYOoIA0zh5ipeAn-i8Ud-GErxis1Hp8UQK7IRolXpToiXnFcnf3vI3eCS7Yu3oPl7LRxTxKMCI9h0MCwu25ZNsOg2C9ohyebpU0jbURX9Q74GNOaphv-Lz9rCRA"
 
 	// ValidRefreshToken - A properly formatted refresh token for testing
 	ValidRefreshToken = "valid-refresh-token-12345"
 
-	// MinimalValidJWT - The shortest valid JWT for testing
-	MinimalValidJWT = "h.p.s"
+	// MinimalValidJWT - The shortest valid JWT for testing (actual base64url)
+	MinimalValidJWT = "eyJ0eXAiOiJKV1QifQ.eyJzdWIiOiIxMjMifQ.abc123def456ghi789jkl012mno345pqr678stu901vwx234yz"
 
 	// ValidRefreshTokenGoogle - A Google-style refresh token for testing
 	ValidRefreshTokenGoogle = "google_refresh_token_12345"
@@ -57,7 +57,10 @@ const (
 // This replaces the ad-hoc createLargeValidJWT function in tests
 func (tt *TestTokens) CreateLargeValidJWT(targetSize int) string {
 	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
-	signature := "signature_" + tt.generateRandomString(32)
+	// Create a valid base64url signature
+	signatureBytes := make([]byte, 32)
+	rand.Read(signatureBytes)
+	signature := base64.RawURLEncoding.EncodeToString(signatureBytes)
 
 	// Calculate required payload size
 	usedSize := len(header) + len(signature) + 2 // account for dots
@@ -110,7 +113,10 @@ func (tt *TestTokens) CreateExpiredJWT() string {
 
 	claimsJSON, _ := json.Marshal(claims)
 	payload := base64.RawURLEncoding.EncodeToString(claimsJSON)
-	signature := "expired_signature"
+	// Create a valid base64url signature
+	signatureBytes := make([]byte, 16)
+	rand.Read(signatureBytes)
+	signature := base64.RawURLEncoding.EncodeToString(signatureBytes)
 
 	return fmt.Sprintf("%s.%s.%s", header, payload, signature)
 }
@@ -130,7 +136,10 @@ func (tt *TestTokens) CreateUniqueValidJWT(id string) string {
 
 	claimsJSON, _ := json.Marshal(claims)
 	payload := base64.RawURLEncoding.EncodeToString(claimsJSON)
-	signature := "sig_" + id
+	// Create a valid base64url signature
+	signatureBytes := make([]byte, 16)
+	rand.Read(signatureBytes)
+	signature := base64.RawURLEncoding.EncodeToString(signatureBytes)
 
 	return fmt.Sprintf("%s.%s.%s", header, payload, signature)
 }
@@ -139,7 +148,10 @@ func (tt *TestTokens) CreateUniqueValidJWT(id string) string {
 // This is useful for testing chunking scenarios where compression doesn't help
 func (tt *TestTokens) CreateIncompressibleToken(targetSize int) string {
 	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
-	signature := "incompressible_signature_" + tt.generateRandomString(32)
+	// Create a valid base64url signature
+	signatureBytes := make([]byte, 32)
+	rand.Read(signatureBytes)
+	signature := base64.RawURLEncoding.EncodeToString(signatureBytes)
 
 	// Calculate required payload size
 	usedSize := len(header) + len(signature) + 2 // account for dots

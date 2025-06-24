@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -222,6 +221,7 @@ type TraefikOidc struct {
 	logger                     *Logger
 	metadataRefreshStopChan    chan struct{}
 	cancelFunc                 context.CancelFunc
+	errorRecoveryManager       *ErrorRecoveryManager
 	clientSecret               string
 	clientID                   string
 	name                       string
@@ -702,6 +702,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
+	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 	t.extractClaimsFunc = extractClaims
 	// t.exchangeCodeForTokenFunc = t.exchangeCodeForToken // Removed, using interface now
 	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
@@ -754,8 +755,15 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.logger.Debug("Starting provider metadata discovery")
 
-	// Get metadata from cache or fetch it
-	metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+	// Get metadata from cache or fetch it with error recovery if available
+	var metadata *ProviderMetadata
+	var err error
+	if t.errorRecoveryManager != nil {
+		metadata, err = t.metadataCache.GetMetadataWithRecovery(providerURL, t.httpClient, t.logger, t.errorRecoveryManager)
+	} else {
+		// Fallback for test scenarios without error recovery manager
+		metadata, err = t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+	}
 	if err != nil {
 		t.logger.Errorf("Failed to get provider metadata: %v", err)
 		// Consider retrying or handling this more gracefully
@@ -812,7 +820,14 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 			select {
 			case <-ticker.C:
 				t.logger.Debug("Refreshing OIDC metadata")
-				metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+				var metadata *ProviderMetadata
+				var err error
+				if t.errorRecoveryManager != nil {
+					metadata, err = t.metadataCache.GetMetadataWithRecovery(providerURL, t.httpClient, t.logger, t.errorRecoveryManager)
+				} else {
+					// Fallback for test scenarios without error recovery manager
+					metadata, err = t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+				}
 				if err != nil {
 					t.logger.Errorf("Failed to refresh metadata: %v", err)
 					continue
@@ -852,45 +867,45 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Logger) (*ProviderMetadata, error) {
 	wellKnownURL := strings.TrimSuffix(providerURL, "/") + "/.well-known/openid-configuration"
 
-	// Use shorter delays for tests to prevent timeouts
-	maxRetries := 4 // Increased to 4 to allow for recovery after 3 failures
-	baseDelay := 10 * time.Millisecond
-	maxDelay := 100 * time.Millisecond
-	totalTimeout := 5 * time.Second
-
-	start := time.Now()
-
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if time.Since(start) > totalTimeout {
-			l.Errorf("Timeout exceeded while fetching provider metadata")
-			return nil, fmt.Errorf("timeout exceeded while fetching provider metadata: %w", lastErr)
-		}
-
-		metadata, err := fetchMetadata(wellKnownURL, httpClient)
-		if err == nil {
-			l.Debug("Provider metadata fetched successfully")
-			return metadata, nil
-		}
-
-		lastErr = err
-
-		// Don't sleep after the last attempt
-		if attempt < maxRetries-1 {
-			// Exponential backoff
-			delay := time.Duration(math.Pow(2, float64(attempt))) * baseDelay
-			if delay > maxDelay {
-				delay = maxDelay
-			}
-			l.Debugf("Failed to fetch provider metadata (attempt %d/%d), retrying in %s. Error: %v", attempt+1, maxRetries, delay, err)
-			time.Sleep(delay)
-		} else {
-			l.Debugf("Failed to fetch provider metadata (attempt %d/%d). Error: %v", attempt+1, maxRetries, err)
-		}
+	// Create retry executor with configuration optimized for test and production environments
+	retryConfig := RetryConfig{
+		MaxAttempts:   4,
+		InitialDelay:  10 * time.Millisecond,
+		MaxDelay:      100 * time.Millisecond,
+		BackoffFactor: 2.0,
+		EnableJitter:  true,
+		RetryableErrors: []string{
+			"connection refused",
+			"timeout",
+			"temporary failure",
+			"network unreachable",
+			"no route to host",
+			"connection reset",
+			"status code 500",
+			"status code 502",
+			"status code 503",
+			"status code 504",
+		},
 	}
 
-	l.Errorf("Max retries exceeded while fetching provider metadata")
-	return nil, fmt.Errorf("max retries exceeded while fetching provider metadata: %w", lastErr)
+	retryExecutor := NewRetryExecutor(retryConfig, l)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var metadata *ProviderMetadata
+	err := retryExecutor.ExecuteWithContext(ctx, func() error {
+		var fetchErr error
+		metadata, fetchErr = fetchMetadata(wellKnownURL, httpClient)
+		return fetchErr
+	})
+
+	if err != nil {
+		l.Errorf("Failed to fetch provider metadata after retries: %v", err)
+		return nil, fmt.Errorf("failed to fetch provider metadata: %w", err)
+	}
+
+	l.Debug("Provider metadata fetched successfully")
+	return metadata, nil
 }
 
 // fetchMetadata performs a single attempt to fetch and decode the OIDC provider metadata
@@ -1986,8 +2001,19 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json") // Prefer JSON response if available
 
-	// Send the request
-	resp, err := t.httpClient.Do(req)
+	// Send the request with circuit breaker protection if available
+	var resp *http.Response
+	if t.errorRecoveryManager != nil {
+		serviceName := fmt.Sprintf("token-revocation-%s", t.issuerURL)
+		err = t.errorRecoveryManager.ExecuteWithRecovery(context.Background(), serviceName, func() error {
+			var reqErr error
+			resp, reqErr = t.httpClient.Do(req)
+			return reqErr
+		})
+	} else {
+		// Fallback for test scenarios without error recovery manager
+		resp, err = t.httpClient.Do(req)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to send token revocation request: %w", err)
 	}

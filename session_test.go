@@ -549,7 +549,7 @@ func TestTokenSizeLimits(t *testing.T) {
 		},
 		{
 			name:         "Large but acceptable token",
-			tokenSize:    30000, // FIXED: 30KB to ensure final size < 100KB limit
+			tokenSize:    20000, // 20KB to ensure it fits within chunk limits (≤25 chunks)
 			expectStored: true,
 		},
 		{

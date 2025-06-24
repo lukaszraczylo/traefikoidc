@@ -3,7 +3,6 @@ package traefikoidc
 import (
 	"bytes"
 	"compress/gzip"
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"net/http/httptest"
@@ -23,8 +22,9 @@ func TestTokenCorruptionScenario(t *testing.T) {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
 
-	// Create a valid JWT token
-	validJWT := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImV4cCI6OTk5OTk5OTk5OX0.signature"
+	// Create a valid JWT token with proper base64url signature
+	testTokens := NewTestTokens()
+	validJWT := testTokens.CreateLargeValidJWT(100) // Create a small valid token
 
 	tests := []struct {
 		corruptionScenario func(*SessionData)
@@ -146,7 +146,7 @@ func TestCompressionIntegrityFailure(t *testing.T) {
 	}{
 		{
 			name:       "Valid JWT",
-			token:      "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig",
+			token:      NewTestTokens().CreateLargeValidJWT(100),
 			expectSame: true,
 		},
 		{
@@ -193,7 +193,8 @@ func TestChunkReassemblyEdgeCases(t *testing.T) {
 	defer session.ReturnToPool()
 
 	// Create a large token that will definitely be chunked
-	largeToken := createTokenOfSize("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig", 8000)
+	testTokens := NewTestTokens()
+	largeToken := testTokens.CreateLargeValidJWT(8000)
 
 	// Store the token to create chunks
 	session.SetAccessToken(largeToken)
@@ -311,10 +312,11 @@ func TestRaceConditionProtection(t *testing.T) {
 	const numOperations = 50
 
 	// Create tokens of different sizes
+	testTokens := NewTestTokens()
 	tokens := []string{
-		"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig1",
-		createTokenOfSize("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig2", 3000),
-		createTokenOfSize("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig3", 6000),
+		testTokens.CreateUniqueValidJWT("token1"),
+		testTokens.CreateLargeValidJWT(3000),
+		testTokens.CreateLargeValidJWT(6000),
 	}
 
 	var wg sync.WaitGroup
@@ -443,7 +445,8 @@ func TestBackwardCompatibility(t *testing.T) {
 	defer session.ReturnToPool()
 
 	// Simulate old-style session data (without new validation fields)
-	oldStyleToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.oldsig"
+	testTokens := NewTestTokens()
+	oldStyleToken := testTokens.CreateUniqueValidJWT("old")
 
 	// Manually set token without going through new SetAccessToken validation
 	session.accessSession.Values["token"] = oldStyleToken
@@ -467,41 +470,8 @@ func TestBackwardCompatibility(t *testing.T) {
 }
 
 // createTokenOfSize creates a JWT token of approximately the specified size
+// This function is deprecated - use TestTokens.CreateLargeValidJWT instead
 func createTokenOfSize(baseToken string, targetSize int) string {
-	parts := strings.Split(baseToken, ".")
-	if len(parts) != 3 {
-		return baseToken
-	}
-
-	header, payload, signature := parts[0], parts[1], parts[2]
-	currentSize := len(baseToken)
-
-	if currentSize >= targetSize {
-		return baseToken
-	}
-
-	// Expand the payload to reach target size
-	paddingNeeded := targetSize - len(header) - len(signature) - 2 // Account for dots
-	if paddingNeeded > 0 {
-		// Decode current payload, add padding, re-encode
-		decoded, err := base64.RawURLEncoding.DecodeString(payload)
-		if err != nil {
-			// If we can't decode, just pad with random base64-safe characters to resist compression
-			randomBytes := make([]byte, paddingNeeded)
-			rand.Read(randomBytes)
-			// Encode as base64 to make it base64-safe
-			padData := base64.RawURLEncoding.EncodeToString(randomBytes)
-			payload = payload + padData
-		} else {
-			// Add padding to the JSON - use random data to resist compression
-			randomBytes := make([]byte, paddingNeeded/2)
-			rand.Read(randomBytes)
-			// Encode as base64 to make it JSON-safe
-			padData := base64.StdEncoding.EncodeToString(randomBytes)
-			newPayload := fmt.Sprintf(`{"original":%s,"padding":"%s"}`, string(decoded), padData)
-			payload = base64.RawURLEncoding.EncodeToString([]byte(newPayload))
-		}
-	}
-
-	return fmt.Sprintf("%s.%s.%s", header, payload, signature)
+	testTokens := NewTestTokens()
+	return testTokens.CreateLargeValidJWT(targetSize)
 }
