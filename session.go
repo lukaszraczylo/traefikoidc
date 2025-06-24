@@ -214,10 +214,11 @@ func decompressTokenInternal(compressed string) string {
 // It provides functionality for storing and retrieving authentication state, tokens,
 // and other session-related data across multiple cookies.
 type SessionManager struct {
-	sessionPool sync.Pool
-	store       sessions.Store
-	logger      *Logger
-	forceHTTPS  bool
+	sessionPool  sync.Pool
+	store        sessions.Store
+	logger       *Logger
+	forceHTTPS   bool
+	chunkManager *ChunkManager
 }
 
 // NewSessionManager creates a new session manager with the specified configuration.
@@ -234,9 +235,10 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 	}
 
 	sm := &SessionManager{
-		store:      sessions.NewCookieStore([]byte(encryptionKey)),
-		forceHTTPS: forceHTTPS,
-		logger:     logger,
+		store:        sessions.NewCookieStore([]byte(encryptionKey)),
+		forceHTTPS:   forceHTTPS,
+		logger:       logger,
+		chunkManager: NewChunkManager(logger),
 	}
 
 	sm.sessionPool.New = func() interface{} {
@@ -802,192 +804,22 @@ func (sd *SessionData) GetAccessToken() string {
 // getAccessTokenUnsafe is the internal implementation without mutex protection
 // Enhanced token retrieval with comprehensive integrity checks and recovery mechanisms
 func (sd *SessionData) getAccessTokenUnsafe() string {
-	// Handle single-cookie token storage with robust validation
 	token, _ := sd.accessSession.Values["token"].(string)
-	if token != "" {
-		// Detect obvious corruption markers first
-		if isCorruptionMarker(token) {
-			sd.manager.logger.Errorf("CRITICAL: Access token contains corruption marker - returning empty")
-			return ""
-		}
+	compressed, _ := sd.accessSession.Values["compressed"].(bool)
 
-		compressed, _ := sd.accessSession.Values["compressed"].(bool)
-		if compressed {
-			decompressed := decompressToken(token)
-			// decompressToken handles backward compatibility by returning original token if decompression fails
+	result := sd.manager.chunkManager.GetToken(
+		token,
+		compressed,
+		sd.accessTokenChunks,
+		AccessTokenConfig,
+	)
 
-			// Check if decompression failed and returned a corruption marker
-			if isCorruptionMarker(decompressed) {
-				sd.manager.logger.Errorf("CRITICAL: Decompressed access token contains corruption marker - returning empty")
-				return ""
-			}
-
-			// Validate JWT format after decompression, but allow opaque tokens
-			if decompressed != "" {
-				dotCount := strings.Count(decompressed, ".")
-				// If token has dots, it should be a valid JWT (exactly 2 dots)
-				// If token has no dots, it's likely an opaque token which is valid
-				if dotCount > 0 && dotCount != 2 {
-					sd.manager.logger.Errorf("CRITICAL: Decompressed access token invalid JWT format (dots: %d) - corruption detected", dotCount)
-					return ""
-				}
-			}
-
-			// Validate token has reasonable length
-			if len(decompressed) < 50 || len(decompressed) > 50*1024 {
-				sd.manager.logger.Errorf("CRITICAL: Decompressed access token has invalid length %d - likely corrupted", len(decompressed))
-				return ""
-			}
-
-			return decompressed
-		}
-
-		// Validate JWT format for uncompressed access token, but allow opaque tokens
-		dotCount := strings.Count(token, ".")
-		// If token has dots, it should be a valid JWT (exactly 2 dots)
-		// If token has no dots, it's likely an opaque token which is valid
-		if dotCount > 0 && dotCount != 2 {
-			sd.manager.logger.Errorf("CRITICAL: Uncompressed access token invalid JWT format (dots: %d) - corruption detected", dotCount)
-			return ""
-		}
-
-		return token
-	}
-
-	// Enhanced chunked token reassembly with comprehensive validation
-	if len(sd.accessTokenChunks) == 0 {
-		return ""
-	}
-	// Pre-validate chunk count to prevent excessive memory usage
-	if len(sd.accessTokenChunks) > 50 { // Reasonable limit
-		sd.manager.logger.Errorf("CRITICAL: Too many access token chunks (%d) - possible corruption or attack", len(sd.accessTokenChunks))
+	if result.Error != nil {
+		// Error already logged by ChunkManager
 		return ""
 	}
 
-	var chunks []string
-	expectedChunkCount := len(sd.accessTokenChunks)
-	actualChunkCount := 0
-	totalSize := 0
-
-	// Sequential chunk validation with gap detection
-	for i := 0; i < expectedChunkCount; i++ {
-		session, ok := sd.accessTokenChunks[i]
-		if !ok {
-			sd.manager.logger.Errorf("CRITICAL: Access token chunk %d missing - gap in sequence detected", i)
-			return ""
-		}
-
-		chunk, chunkOk := session.Values["token_chunk"].(string)
-		if !chunkOk {
-			sd.manager.logger.Errorf("CRITICAL: Access token chunk %d has invalid type - corruption detected", i)
-			return ""
-		}
-
-		if chunk == "" {
-			sd.manager.logger.Errorf("CRITICAL: Access token chunk %d is empty - corruption detected", i)
-			return ""
-		}
-
-		// Detect corruption markers in chunks
-		if isCorruptionMarker(chunk) {
-			sd.manager.logger.Errorf("CRITICAL: Access token chunk %d contains corruption marker - corruption detected", i)
-			return ""
-		}
-
-		// Validate chunk size to prevent memory exhaustion
-		if len(chunk) > maxCookieSize+100 {
-			sd.manager.logger.Errorf("CRITICAL: Access token chunk %d too large (%d bytes) - corruption detected", i, len(chunk))
-			return ""
-		}
-
-		totalSize += len(chunk)
-
-		// Prevent excessive total size
-		if totalSize > 500*1024 { // 500KB limit
-			sd.manager.logger.Errorf("CRITICAL: Access token chunks total size %d exceeds limit - possible attack", totalSize)
-			return ""
-		}
-
-		chunks = append(chunks, chunk)
-		actualChunkCount++
-	}
-
-	// Final chunk count validation
-	if actualChunkCount != expectedChunkCount {
-		sd.manager.logger.Errorf("CRITICAL: Access token chunk count mismatch - expected %d, got %d", expectedChunkCount, actualChunkCount)
-		return ""
-	}
-
-	// Safe token reassembly
-	token = strings.Join(chunks, "")
-
-	// Validate reassembled token size
-	if len(token) == 0 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled access token is empty")
-		return ""
-	}
-
-	if len(token) > 500*1024 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled access token too large (%d bytes) - corruption or attack", len(token))
-		return ""
-	}
-
-	// Check compression flag to validate reassembled token
-	chunkCompressed, _ := sd.accessSession.Values["compressed"].(bool)
-	if chunkCompressed {
-		// Check if the reassembled token contains invalid characters that would indicate corruption
-		if strings.ContainsAny(token, " \t\n\r") {
-			sd.manager.logger.Errorf("CRITICAL: Reassembled access token contains invalid characters - chunk corruption detected")
-			return ""
-		}
-
-		// Proceed with decompression
-		decompressed := decompressToken(token)
-
-		// decompressToken handles corruption detection by returning original if decompression fails
-
-		// Validate JWT format after decompression, but allow opaque tokens
-		if decompressed != "" {
-			dotCount := strings.Count(decompressed, ".")
-			// If token has dots, it should be a valid JWT (exactly 2 dots)
-			// If token has no dots, it could be an opaque token, but must be reasonably long (20+ chars)
-			if dotCount > 0 && dotCount != 2 {
-				sd.manager.logger.Errorf("CRITICAL: Reassembled decompressed access token invalid JWT format (dots: %d)", dotCount)
-				return ""
-			} else if dotCount == 0 && len(decompressed) < 20 {
-				sd.manager.logger.Errorf("CRITICAL: Reassembled decompressed access token too short for opaque token (length: %d)", len(decompressed))
-				return ""
-			}
-		}
-
-		// Final size validation
-		if len(decompressed) < 50 || len(decompressed) > 50*1024 {
-			sd.manager.logger.Errorf("CRITICAL: Reassembled decompressed access token invalid length %d", len(decompressed))
-			return ""
-		}
-
-		sd.manager.logger.Debugf("SUCCESS: Reassembled and decompressed access token from %d chunks", expectedChunkCount)
-		return decompressed
-	}
-
-	// Validate uncompressed chunked token format - allow both JWT and opaque tokens
-	dotCount := strings.Count(token, ".")
-	if dotCount > 0 && dotCount != 2 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled uncompressed access token invalid JWT format (dots: %d)", dotCount)
-		return ""
-	} else if dotCount == 0 && len(token) < 20 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled uncompressed access token too short for opaque token (length: %d)", len(token))
-		return ""
-	}
-
-	// Final length validation for uncompressed token
-	if len(token) < 50 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled uncompressed access token too short (%d bytes)", len(token))
-		return ""
-	}
-
-	sd.manager.logger.Debugf("SUCCESS: Reassembled uncompressed access token from %d chunks", expectedChunkCount)
-	return token
+	return result.Token
 }
 
 // SetAccessToken stores the provided access token in the session.
@@ -1130,6 +962,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 			}
 
 			session.Values["token_chunk"] = chunkData
+			session.Values["compressed"] = (compressed != token) // Store compression flag in each chunk
 			// MEDIUM IMPACT FIX: Add timestamp to track chunk creation for orphan detection
 			session.Values["chunk_created_at"] = time.Now().Unix()
 			sd.accessTokenChunks[i] = session
@@ -1145,153 +978,25 @@ func (sd *SessionData) SetAccessToken(token string) {
 // Returns:
 //   - The complete, decompressed refresh token string, or an empty string if not found.
 func (sd *SessionData) GetRefreshToken() string {
-	// Add mutex protection for refresh token access
 	sd.sessionMutex.RLock()
 	defer sd.sessionMutex.RUnlock()
 
-	// Handle single-cookie token storage with robust validation
 	token, _ := sd.refreshSession.Values["token"].(string)
-	if token != "" {
-		// Detect obvious corruption markers first
-		if isCorruptionMarker(token) {
-			sd.manager.logger.Errorf("CRITICAL: Refresh token contains corruption marker - returning empty")
-			return ""
-		}
-
-		compressed, _ := sd.refreshSession.Values["compressed"].(bool)
-		if compressed {
-			decompressed := decompressToken(token)
-			// decompressToken handles backward compatibility by returning original token if decompression fails
-
-			// Check if decompression failed and returned a corruption marker
-			if isCorruptionMarker(decompressed) {
-				sd.manager.logger.Errorf("CRITICAL: Decompressed refresh token contains corruption marker - returning empty")
-				return ""
-			}
-
-			// Validate token has reasonable length (allow shorter tokens for testing)
-			if len(decompressed) < 10 || len(decompressed) > 50*1024 {
-				sd.manager.logger.Errorf("CRITICAL: Decompressed refresh token has invalid length %d - likely corrupted", len(decompressed))
-				return ""
-			}
-
-			return decompressed
-		}
-
-		// Validate uncompressed single refresh token (allow shorter tokens for testing)
-		if len(token) < 10 || len(token) > 50*1024 {
-			sd.manager.logger.Errorf("CRITICAL: Uncompressed refresh token has invalid length %d - likely corrupted", len(token))
-			return ""
-		}
-
-		return token
-	}
-
-	// Enhanced chunked token reassembly with comprehensive validation
-	if len(sd.refreshTokenChunks) == 0 {
-		return ""
-	}
-
-	sd.manager.logger.Debugf("CRITICAL: Reassembling refresh token from %d chunks", len(sd.refreshTokenChunks))
-
-	// Pre-validate chunk count to prevent excessive memory usage
-	if len(sd.refreshTokenChunks) > 50 { // Reasonable limit
-		sd.manager.logger.Errorf("CRITICAL: Too many refresh token chunks (%d) - possible corruption or attack", len(sd.refreshTokenChunks))
-		return ""
-	}
-
-	var chunks []string
-	expectedChunkCount := len(sd.refreshTokenChunks)
-	actualChunkCount := 0
-	totalSize := 0
-
-	// Sequential chunk validation with gap detection
-	for i := 0; i < expectedChunkCount; i++ {
-		session, ok := sd.refreshTokenChunks[i]
-		if !ok {
-			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d missing - gap in sequence detected", i)
-			return ""
-		}
-
-		chunk, chunkOk := session.Values["token_chunk"].(string)
-		if !chunkOk {
-			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d has invalid type - corruption detected", i)
-			return ""
-		}
-
-		if chunk == "" {
-			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d is empty - corruption detected", i)
-			return ""
-		}
-
-		// Detect corruption markers in chunks
-		if isCorruptionMarker(chunk) {
-			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d contains corruption marker - corruption detected", i)
-			return ""
-		}
-
-		// Validate chunk size to prevent memory exhaustion
-		if len(chunk) > maxCookieSize+100 {
-			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d too large (%d bytes) - corruption detected", i, len(chunk))
-			return ""
-		}
-
-		totalSize += len(chunk)
-
-		// Prevent excessive total size
-		if totalSize > 500*1024 { // 500KB limit
-			sd.manager.logger.Errorf("CRITICAL: Refresh token chunks total size %d exceeds limit - possible attack", totalSize)
-			return ""
-		}
-
-		chunks = append(chunks, chunk)
-		actualChunkCount++
-	}
-
-	// Final chunk count validation
-	if actualChunkCount != expectedChunkCount {
-		sd.manager.logger.Errorf("CRITICAL: Refresh token chunk count mismatch - expected %d, got %d", expectedChunkCount, actualChunkCount)
-		return ""
-	}
-
-	// Safe token reassembly
-	token = strings.Join(chunks, "")
-
-	// Validate reassembled token size
-	if len(token) == 0 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled refresh token is empty")
-		return ""
-	}
-
-	if len(token) > 500*1024 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled refresh token too large (%d bytes) - corruption or attack", len(token))
-		return ""
-	}
-
 	compressed, _ := sd.refreshSession.Values["compressed"].(bool)
-	if compressed {
-		decompressed := decompressToken(token)
 
-		// decompressToken handles corruption detection by returning original if decompression fails
+	result := sd.manager.chunkManager.GetToken(
+		token,
+		compressed,
+		sd.refreshTokenChunks,
+		RefreshTokenConfig,
+	)
 
-		// Final size validation (allow shorter tokens for testing)
-		if len(decompressed) < 10 || len(decompressed) > 50*1024 {
-			sd.manager.logger.Errorf("CRITICAL: Reassembled decompressed refresh token invalid length %d", len(decompressed))
-			return ""
-		}
-
-		sd.manager.logger.Debugf("SUCCESS: Reassembled and decompressed refresh token from %d chunks", expectedChunkCount)
-		return decompressed
-	}
-
-	// Final length validation for uncompressed token (allow shorter tokens for testing)
-	if len(token) < 10 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled uncompressed refresh token too short (%d bytes)", len(token))
+	if result.Error != nil {
+		// Error already logged by ChunkManager
 		return ""
 	}
 
-	sd.manager.logger.Debugf("SUCCESS: Reassembled uncompressed refresh token from %d chunks", expectedChunkCount)
-	return token
+	return result.Token
 }
 
 // SetRefreshToken stores the provided refresh token in the session.
@@ -1442,6 +1147,7 @@ func (sd *SessionData) SetRefreshToken(token string) {
 			}
 
 			session.Values["token_chunk"] = chunkData
+			session.Values["compressed"] = (compressed != token) // Store compression flag in each chunk
 			// MEDIUM IMPACT FIX: Add timestamp to track chunk creation for orphan detection
 			session.Values["chunk_created_at"] = time.Now().Unix()
 			sd.refreshTokenChunks[i] = session
@@ -1666,23 +1372,18 @@ func isCorruptionMarker(data string) bool {
 		return false
 	}
 
-	// List of obvious corruption markers used in tests and real-world corruption scenarios
+	// List of very specific corruption markers that are unlikely to appear in real data
 	corruptionMarkers := []string{
-		"corrupted",
-		"invalid_base64",
-		"corrupted_base64",
-		"corrupted_compressed_data",
-		"corrupted_chunk_data",
-		"intentionally_corrupted",
-		"!@#", // Invalid base64 characters
-		"$%^", // Invalid base64 characters
+		"__CORRUPTION_MARKER_TEST__",
+		"__INVALID_BASE64_DATA__",
+		"__CORRUPTED_CHUNK_DATA__",
+		"!@#$%^&*()",      // Invalid base64 characters
+		"<<<CORRUPTED>>>", // Very specific marker
 	}
 
-	// Convert to lowercase for case-insensitive matching
-	lowerData := strings.ToLower(data)
-
+	// For exact matches (avoid false positives in compressed data)
 	for _, marker := range corruptionMarkers {
-		if strings.Contains(lowerData, marker) {
+		if data == marker {
 			return true
 		}
 	}
@@ -1839,170 +1540,22 @@ func (sd *SessionData) GetIDToken() string {
 // getIDTokenUnsafe is the internal implementation without mutex protection
 // Enhanced ID token retrieval with comprehensive integrity checks and chunking support
 func (sd *SessionData) getIDTokenUnsafe() string {
-	// Handle single-cookie token storage with robust validation
 	token, _ := sd.idTokenSession.Values["token"].(string)
-	if token != "" {
-		compressed, _ := sd.idTokenSession.Values["compressed"].(bool)
-		if compressed {
-			decompressed := decompressToken(token)
-			// decompressToken handles backward compatibility by returning original token if decompression fails
+	compressed, _ := sd.idTokenSession.Values["compressed"].(bool)
 
-			// Validate JWT format after decompression
-			if decompressed != "" && strings.Count(decompressed, ".") != 2 {
-				sd.manager.logger.Errorf("CRITICAL: Decompressed ID token invalid JWT format (dots: %d) - corruption detected", strings.Count(decompressed, "."))
-				return ""
-			}
+	result := sd.manager.chunkManager.GetToken(
+		token,
+		compressed,
+		sd.idTokenChunks,
+		IDTokenConfig,
+	)
 
-			// Validate token has reasonable length
-			if len(decompressed) < 50 || len(decompressed) > 50*1024 {
-				sd.manager.logger.Errorf("CRITICAL: Decompressed ID token has invalid length %d - likely corrupted", len(decompressed))
-				return ""
-			}
-
-			sd.manager.logger.Debugf("SUCCESS: Retrieved and decompressed ID token")
-			return decompressed
-		}
-
-		// Validate JWT format for uncompressed ID token
-		if strings.Count(token, ".") != 2 {
-			sd.manager.logger.Errorf("CRITICAL: Uncompressed ID token invalid JWT format (dots: %d) - corruption detected", strings.Count(token, "."))
-			return ""
-		}
-
-		// Validate ID token has reasonable length
-		if len(token) < 50 || len(token) > 50*1024 {
-			sd.manager.logger.Errorf("CRITICAL: ID token has invalid length %d - likely corrupted", len(token))
-			return ""
-		}
-
-		return token
-	}
-
-	// Enhanced chunked token reassembly with comprehensive validation
-	if len(sd.idTokenChunks) == 0 {
+	if result.Error != nil {
+		// Error already logged by ChunkManager
 		return ""
 	}
 
-	sd.manager.logger.Debugf("CRITICAL: Reassembling ID token from %d chunks", len(sd.idTokenChunks))
-
-	// Pre-validate chunk count to prevent excessive memory usage
-	if len(sd.idTokenChunks) > 50 { // Reasonable limit
-		sd.manager.logger.Errorf("CRITICAL: Too many ID token chunks (%d) - possible corruption or attack", len(sd.idTokenChunks))
-		return ""
-	}
-
-	var chunks []string
-	expectedChunkCount := len(sd.idTokenChunks)
-	actualChunkCount := 0
-	totalSize := 0
-
-	// Sequential chunk validation with gap detection
-	for i := 0; i < expectedChunkCount; i++ {
-		session, ok := sd.idTokenChunks[i]
-		if !ok {
-			sd.manager.logger.Errorf("CRITICAL: ID token chunk %d missing - gap in sequence detected", i)
-			return ""
-		}
-
-		chunk, chunkOk := session.Values["token_chunk"].(string)
-		if !chunkOk {
-			sd.manager.logger.Errorf("CRITICAL: ID token chunk %d has invalid type - corruption detected", i)
-			return ""
-		}
-
-		if chunk == "" {
-			sd.manager.logger.Errorf("CRITICAL: ID token chunk %d is empty - corruption detected", i)
-			return ""
-		}
-
-		// Detect corruption markers in chunks
-		if isCorruptionMarker(chunk) {
-			sd.manager.logger.Errorf("CRITICAL: ID token chunk %d contains corruption marker - corruption detected", i)
-			return ""
-		}
-
-		// Validate chunk size to prevent memory exhaustion
-		if len(chunk) > maxCookieSize+100 {
-			sd.manager.logger.Errorf("CRITICAL: ID token chunk %d too large (%d bytes) - corruption detected", i, len(chunk))
-			return ""
-		}
-
-		totalSize += len(chunk)
-
-		// Prevent excessive total size
-		if totalSize > 500*1024 { // 500KB limit
-			sd.manager.logger.Errorf("CRITICAL: ID token chunks total size %d exceeds limit - possible attack", totalSize)
-			return ""
-		}
-
-		chunks = append(chunks, chunk)
-		actualChunkCount++
-	}
-
-	// Final chunk count validation
-	if actualChunkCount != expectedChunkCount {
-		sd.manager.logger.Errorf("CRITICAL: ID token chunk count mismatch - expected %d, got %d", expectedChunkCount, actualChunkCount)
-		return ""
-	}
-
-	// Safe token reassembly
-	token = strings.Join(chunks, "")
-
-	// Validate reassembled token size
-	if len(token) == 0 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled ID token is empty")
-		return ""
-	}
-
-	if len(token) > 500*1024 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled ID token too large (%d bytes) - corruption or attack", len(token))
-		return ""
-	}
-
-	// Check compression flag to validate reassembled token
-	chunkCompressed, _ := sd.idTokenSession.Values["compressed"].(bool)
-	if chunkCompressed {
-		// Check if the reassembled token contains invalid characters that would indicate corruption
-		if strings.ContainsAny(token, " \t\n\r") {
-			sd.manager.logger.Errorf("CRITICAL: Reassembled ID token contains invalid characters - chunk corruption detected")
-			return ""
-		}
-
-		// Proceed with decompression
-		decompressed := decompressToken(token)
-
-		// decompressToken handles corruption detection by returning original if decompression fails
-
-		// Validate JWT format after decompression
-		if decompressed != "" && strings.Count(decompressed, ".") != 2 {
-			sd.manager.logger.Errorf("CRITICAL: Reassembled decompressed ID token invalid JWT format (dots: %d)", strings.Count(decompressed, "."))
-			return ""
-		}
-
-		// Final size validation
-		if len(decompressed) < 50 || len(decompressed) > 50*1024 {
-			sd.manager.logger.Errorf("CRITICAL: Reassembled decompressed ID token invalid length %d", len(decompressed))
-			return ""
-		}
-
-		sd.manager.logger.Debugf("SUCCESS: Reassembled and decompressed ID token from %d chunks", expectedChunkCount)
-		return decompressed
-	}
-
-	// Validate uncompressed chunked token
-	if strings.Count(token, ".") != 2 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled uncompressed ID token invalid JWT format (dots: %d)", strings.Count(token, "."))
-		return ""
-	}
-
-	// Final length validation for uncompressed token
-	if len(token) < 50 {
-		sd.manager.logger.Errorf("CRITICAL: Reassembled uncompressed ID token too short (%d bytes)", len(token))
-		return ""
-	}
-
-	sd.manager.logger.Debugf("SUCCESS: Reassembled uncompressed ID token from %d chunks", expectedChunkCount)
-	return token
+	return result.Token
 }
 
 // SetIDToken stores the provided ID token in the session.
@@ -2140,6 +1693,7 @@ func (sd *SessionData) SetIDToken(token string) {
 			}
 
 			session.Values["token_chunk"] = chunkData
+			session.Values["compressed"] = (compressed != token) // Store compression flag in each chunk
 			// MEDIUM IMPACT FIX: Add timestamp to track chunk creation for orphan detection
 			session.Values["chunk_created_at"] = time.Now().Unix()
 			sd.idTokenChunks[i] = session
