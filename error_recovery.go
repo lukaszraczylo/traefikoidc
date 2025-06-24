@@ -374,7 +374,7 @@ func (re *RetryExecutor) ExecuteWithContext(ctx context.Context, fn func() error
 		err := fn()
 		if err == nil {
 			if attempt > 1 {
-				re.LogInfo("Operation succeeded on attempt %d", attempt)
+				re.LogInfo("Operation succeeded after %d attempts", attempt)
 			}
 			re.RecordSuccess()
 			return nil
@@ -384,7 +384,7 @@ func (re *RetryExecutor) ExecuteWithContext(ctx context.Context, fn func() error
 
 		// Check if error is retryable
 		if !re.isRetryableError(err) {
-			re.LogDebug("Non-retryable error on attempt %d: %v", attempt, err)
+			// Only log non-retryable errors once
 			re.RecordFailure()
 			return err
 		}
@@ -397,8 +397,11 @@ func (re *RetryExecutor) ExecuteWithContext(ctx context.Context, fn func() error
 
 		// Calculate delay with exponential backoff
 		delay := re.calculateDelay(attempt)
-		re.LogDebug("Retrying operation after %v (attempt %d/%d): %v",
-			delay, attempt, re.config.MaxAttempts, err)
+		// Only log on first retry and then every 3rd attempt to reduce spam
+		if attempt == 1 || attempt%3 == 0 {
+			re.LogDebug("Retrying operation after %v (attempt %d/%d): %v",
+				delay, attempt, re.config.MaxAttempts, err)
+		}
 
 		// Wait with context cancellation support
 		select {

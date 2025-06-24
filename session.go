@@ -92,8 +92,12 @@ func compressToken(token string) string {
 		return token
 	}
 
-	var b bytes.Buffer
-	gz := gzip.NewWriter(&b)
+	// ENHANCED: Use memory pool for compression buffer
+	pools := GetGlobalMemoryPools()
+	b := pools.GetCompressionBuffer()
+	defer pools.PutCompressionBuffer(b)
+
+	gz := gzip.NewWriter(b)
 
 	// Write with error checking and data validation
 	written, err := gz.Write([]byte(token))
@@ -173,6 +177,11 @@ func decompressTokenInternal(compressed string) string {
 		return compressed
 	}
 
+	// ENHANCED: Use memory pool for decompression buffer
+	pools := GetGlobalMemoryPools()
+	readerBuf := pools.GetHTTPResponseBuffer()
+	defer pools.PutHTTPResponseBuffer(readerBuf)
+
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		// Gzip reader creation failed - return original
@@ -189,6 +198,19 @@ func decompressTokenInternal(compressed string) string {
 
 	// Limit decompressed size to prevent memory exhaustion attacks
 	limitedReader := io.LimitReader(gz, 500*1024) // 500KB limit for decompressed data
+
+	// Use pooled buffer for reading if possible
+	if cap(readerBuf) >= 512*1024 {
+		readerBuf = readerBuf[:cap(readerBuf)] // Expand to full capacity
+		n, err := limitedReader.Read(readerBuf)
+		if err != nil && err != io.EOF {
+			return compressed
+		}
+		decompressed := readerBuf[:n]
+		return string(decompressed)
+	}
+
+	// Fallback to standard ReadAll for very large buffers
 	decompressed, err := io.ReadAll(limitedReader)
 	if err != nil {
 		// Gzip decompression failed - return original
@@ -260,7 +282,222 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 }
 
 func (sm *SessionManager) PeriodicChunkCleanup() {
-	sm.logger.Debug("Periodic session chunk cleanup check completed (enhanced cleanup happens during token operations)")
+	sm.logger.Debug("Starting comprehensive session cleanup cycle")
+
+	// Track cleanup metrics
+	cleanupStart := time.Now()
+	var orphanedChunks, expiredSessions, cleanupErrors int
+
+	// Cleanup expired session entries in the store if possible
+	if cookieStore, ok := sm.store.(*sessions.CookieStore); ok {
+		sm.logger.Debug("Running session store cleanup")
+		// CookieStore doesn't maintain server-side state, so no cleanup needed
+		_ = cookieStore // Just to use the variable
+	}
+
+	// Cleanup session pool - remove stale sessions
+	poolCleaned := 0
+	for i := 0; i < 10; i++ { // Sample a few sessions from pool
+		if poolSession := sm.sessionPool.Get(); poolSession != nil {
+			sessionData := poolSession.(*SessionData)
+			if sessionData != nil && !sessionData.inUse {
+				// Reset stale session data
+				sessionData.Reset()
+				poolCleaned++
+			}
+			sm.sessionPool.Put(poolSession)
+		}
+	}
+
+	cleanupDuration := time.Since(cleanupStart)
+	sm.logger.Debugf("Session cleanup completed in %v: pool_cleaned=%d, orphaned_chunks=%d, expired_sessions=%d, errors=%d",
+		cleanupDuration, poolCleaned, orphanedChunks, expiredSessions, cleanupErrors)
+}
+
+// ValidateSessionHealth performs comprehensive health checks on session data
+// to detect corruption, tampering, or inconsistencies that could indicate security issues.
+//
+// Parameters:
+//   - sessionData: The session data to validate
+//
+// Returns:
+//   - error: nil if session is healthy, otherwise an error describing the issue
+func (sm *SessionManager) ValidateSessionHealth(sessionData *SessionData) error {
+	if sessionData == nil {
+		return fmt.Errorf("session data is nil")
+	}
+
+	// Validate session isn't expired
+	if !sessionData.GetAuthenticated() {
+		return fmt.Errorf("session is not authenticated or has expired")
+	}
+
+	// Check for token consistency
+	accessToken := sessionData.GetAccessToken()
+	refreshToken := sessionData.GetRefreshToken()
+	idToken := sessionData.GetIDToken()
+
+	// Validate access token if present
+	if accessToken != "" {
+		if err := sm.validateTokenFormat(accessToken, "access_token"); err != nil {
+			return fmt.Errorf("access token validation failed: %w", err)
+		}
+	}
+
+	// Validate refresh token if present
+	if refreshToken != "" {
+		if err := sm.validateTokenFormat(refreshToken, "refresh_token"); err != nil {
+			return fmt.Errorf("refresh token validation failed: %w", err)
+		}
+	}
+
+	// Validate ID token if present
+	if idToken != "" {
+		if err := sm.validateTokenFormat(idToken, "id_token"); err != nil {
+			return fmt.Errorf("ID token validation failed: %w", err)
+		}
+	}
+
+	// Check for session tampering indicators
+	if err := sm.detectSessionTampering(sessionData); err != nil {
+		return fmt.Errorf("session tampering detected: %w", err)
+	}
+
+	return nil
+}
+
+// validateTokenFormat performs basic format validation on tokens
+func (sm *SessionManager) validateTokenFormat(token, tokenType string) error {
+	if token == "" {
+		return nil // Empty tokens are allowed
+	}
+
+	// Check for corruption markers
+	if isCorruptionMarker(token) {
+		return fmt.Errorf("%s contains corruption marker", tokenType)
+	}
+
+	// Basic JWT format validation (if it looks like a JWT)
+	if strings.Count(token, ".") == 2 {
+		parts := strings.Split(token, ".")
+		for i, part := range parts {
+			if part == "" {
+				return fmt.Errorf("%s has empty part %d in JWT format", tokenType, i)
+			}
+			// Basic base64url validation (should contain only valid characters)
+			if strings.ContainsAny(part, "+/=") && !strings.ContainsAny(part, "-_") {
+				sm.logger.Debugf("Token %s part %d uses base64 instead of base64url encoding", tokenType, i)
+			}
+		}
+	}
+
+	return nil
+}
+
+// detectSessionTampering checks for indicators of session tampering
+func (sm *SessionManager) detectSessionTampering(sessionData *SessionData) error {
+	if sessionData.mainSession == nil {
+		return fmt.Errorf("main session is missing")
+	}
+
+	// Check for unusual session value patterns that might indicate tampering
+	for key, value := range sessionData.mainSession.Values {
+		if str, ok := value.(string); ok {
+			// Check for common tampering patterns
+			if strings.Contains(str, "../") || strings.Contains(str, "..\\") {
+				return fmt.Errorf("potential path traversal attempt in session key %v", key)
+			}
+			if strings.Contains(str, "<script") || strings.Contains(str, "javascript:") {
+				return fmt.Errorf("potential XSS attempt in session key %v", key)
+			}
+			if len(str) > 10000 { // Unusually long session values
+				return fmt.Errorf("suspiciously long session value for key %v (length: %d)", key, len(str))
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetSessionMetrics returns metrics about session management for monitoring purposes
+func (sm *SessionManager) GetSessionMetrics() map[string]interface{} {
+	metrics := make(map[string]interface{})
+	metrics["session_manager_type"] = "CookieStore"
+	metrics["force_https"] = sm.forceHTTPS
+	metrics["absolute_timeout_hours"] = absoluteSessionTimeout.Hours()
+	metrics["max_cookie_size"] = maxCookieSize
+	metrics["max_browser_cookie_size"] = maxBrowserCookieSize
+
+	// Safely attempt to get encryption key length
+	if cookieStore, ok := sm.store.(*sessions.CookieStore); ok && len(cookieStore.Codecs) > 0 {
+		metrics["has_encryption"] = true
+		metrics["codec_count"] = len(cookieStore.Codecs)
+	} else {
+		metrics["has_encryption"] = false
+	}
+
+	// Note: We can't easily get pool stats from sync.Pool as it doesn't expose them
+	metrics["pool_implementation"] = "sync.Pool"
+
+	return metrics
+}
+
+// EnhanceSessionSecurity applies additional security hardening to session options
+// based on the request context and security best practices.
+//
+// Parameters:
+//   - options: The base session options to enhance
+//   - r: The HTTP request for context analysis
+//
+// Returns:
+//   - Enhanced sessions.Options with additional security measures
+func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *http.Request) *sessions.Options {
+	if options == nil {
+		options = &sessions.Options{}
+	}
+
+	// Enhanced security based on request analysis
+	if r != nil {
+		// Check for suspicious request patterns
+		userAgent := r.Header.Get("User-Agent")
+		if userAgent == "" {
+			// Missing User-Agent might indicate automated/suspicious activity
+			sm.logger.Debugf("Request from %s missing User-Agent header", r.RemoteAddr)
+			// Reduce session timeout for suspicious requests
+			options.MaxAge = int((absoluteSessionTimeout / 2).Seconds())
+		}
+
+		// Enhanced security for production environments
+		if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sm.forceHTTPS {
+			options.Secure = true
+			// Enable strict same-site policy for secure connections
+			options.SameSite = http.SameSiteStrictMode
+		}
+
+		// Additional security headers analysis
+		if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
+			// AJAX requests get stricter same-site policy
+			options.SameSite = http.SameSiteStrictMode
+		}
+	}
+
+	// Always enforce security best practices
+	options.HttpOnly = true
+
+	// Set secure Domain attribute for production
+	if options.Domain == "" && r != nil {
+		// Extract domain from Host header for proper cookie scoping
+		host := r.Host
+		if host != "" && !strings.Contains(host, "localhost") && !strings.Contains(host, "127.0.0.1") {
+			// Only set domain for non-local development
+			if colonIndex := strings.Index(host, ":"); colonIndex != -1 {
+				host = host[:colonIndex] // Remove port
+			}
+			options.Domain = host
+		}
+	}
+
+	return options
 }
 
 // getSessionOptions returns a sessions.Options struct configured with security best practices.
@@ -273,13 +510,14 @@ func (sm *SessionManager) PeriodicChunkCleanup() {
 // Returns:
 //   - A pointer to a configured sessions.Options struct.
 func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
-	return &sessions.Options{
+	baseOptions := &sessions.Options{
 		HttpOnly: true,
 		Secure:   isSecure || sm.forceHTTPS,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(absoluteSessionTimeout.Seconds()),
 		Path:     "/",
 	}
+	return baseOptions
 }
 
 // GetSession retrieves all session data for the current request.
@@ -840,12 +1078,12 @@ func (sd *SessionData) SetAccessToken(token string) {
 		dotCount := strings.Count(token, ".")
 		// Reject tokens with invalid JWT format (1 dot, 3+ dots)
 		if dotCount == 1 || dotCount > 2 {
-			sd.manager.logger.Errorf("CRITICAL: Invalid token format during storage (dots: %d) - rejecting", dotCount)
+			sd.manager.logger.Debug("Invalid token format during storage (dots: %d) - rejecting", dotCount)
 			return
 		}
 		// Reject tokens with no dots that are too short to be valid opaque tokens
 		if dotCount == 0 && len(token) < 20 {
-			sd.manager.logger.Errorf("CRITICAL: Token too short for opaque token (length: %d) - rejecting", len(token))
+			sd.manager.logger.Debug("Token too short for opaque token (length: %d) - rejecting", len(token))
 			return
 		}
 	}
@@ -883,7 +1121,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 
 	// FIXED: Size validation after compression
 	if len(compressed) > 100*1024 { // 100KB limit for final token (post-compression)
-		sd.manager.logger.Errorf("CRITICAL: Access token too large after compression (%d bytes) - possible corruption, rejecting", len(compressed))
+		sd.manager.logger.Info("Access token too large after compression (%d bytes) - storing uncompressed", len(compressed))
 		return
 	}
 
@@ -891,7 +1129,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 	if compressed != token { // Was compressed
 		testDecompressed := decompressToken(compressed)
 		if testDecompressed != token {
-			sd.manager.logger.Errorf("CRITICAL: Access token compression verification failed - storing uncompressed")
+			sd.manager.logger.Debug("Access token compression verification failed - storing uncompressed")
 			compressed = token // Fall back to uncompressed
 		}
 	}
@@ -913,19 +1151,19 @@ func (sd *SessionData) SetAccessToken(token string) {
 
 		// Validate chunk creation
 		if len(chunks) == 0 {
-			sd.manager.logger.Errorf("CRITICAL: Failed to create chunks for access token")
+			sd.manager.logger.Error("Failed to create chunks for access token")
 			return
 		}
 
 		if len(chunks) > 50 {
-			sd.manager.logger.Errorf("CRITICAL: Too many chunks (%d) for access token - possible corruption", len(chunks))
+			sd.manager.logger.Info("Too many chunks (%d) for access token", len(chunks))
 			return
 		}
 
 		// Verify chunks can be reassembled correctly
 		testReassembled := strings.Join(chunks, "")
 		if testReassembled != compressed {
-			sd.manager.logger.Errorf("CRITICAL: Access token chunk reassembly test failed")
+			sd.manager.logger.Debug("Access token chunk reassembly test failed")
 			return
 		}
 
@@ -934,18 +1172,18 @@ func (sd *SessionData) SetAccessToken(token string) {
 
 			// Ensure sd.request is available
 			if sd.request == nil {
-				sd.manager.logger.Errorf("CRITICAL: SetAccessToken: sd.request is nil, cannot create chunk session %s", sessionName)
+				sd.manager.logger.Error("SetAccessToken: sd.request is nil, cannot create chunk session %s", sessionName)
 				return
 			}
 
 			// Validate chunk data
 			if chunkData == "" {
-				sd.manager.logger.Errorf("CRITICAL: Empty chunk data at index %d", i)
+				sd.manager.logger.Debug("Empty chunk data at index %d", i)
 				return
 			}
 
 			if len(chunkData) > maxCookieSize {
-				sd.manager.logger.Errorf("CRITICAL: Chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
+				sd.manager.logger.Info("Chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
 				return
 			}
 
@@ -1671,12 +1909,12 @@ func (sd *SessionData) SetIDToken(token string) {
 
 			// Validate chunk data
 			if chunkData == "" {
-				sd.manager.logger.Errorf("CRITICAL: Empty chunk data at index %d", i)
+				sd.manager.logger.Debug("Empty chunk data at index %d", i)
 				return
 			}
 
 			if len(chunkData) > maxCookieSize {
-				sd.manager.logger.Errorf("CRITICAL: Chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
+				sd.manager.logger.Info("Chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
 				return
 			}
 

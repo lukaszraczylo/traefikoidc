@@ -347,9 +347,14 @@ func (sm *SecurityMonitor) processSecurityEvent(event SecurityEvent) {
 
 		// Check for suspicious patterns
 		if patterns := sm.patternDetector.DetectSuspiciousPatterns(); len(patterns) > 0 {
-			for _, pattern := range patterns {
-				sm.logger.Errorf("Suspicious pattern detected: %s", pattern)
+			// Log once with all patterns instead of logging each pattern
+			if len(patterns) == 1 {
+				sm.logger.Errorf("Suspicious pattern detected: %s", patterns[0])
+			} else {
+				sm.logger.Errorf("Multiple suspicious patterns detected: %v", patterns)
+			}
 
+			for _, pattern := range patterns {
 				patternEvent := SecurityEvent{
 					Type:      "suspicious_pattern",
 					Severity:  "high",

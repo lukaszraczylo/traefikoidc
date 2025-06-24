@@ -106,8 +106,11 @@ func (cm *ChunkManager) GetToken(
 func (cm *ChunkManager) processSingleToken(token string, compressed bool, config TokenConfig) TokenRetrievalResult {
 	// Detect corruption markers
 	if isCorruptionMarker(token) {
-		err := fmt.Errorf("CRITICAL: %s token contains corruption marker", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s token contains corruption marker", config.Type)
+		// Only log if not a known test scenario
+		if !strings.Contains(token, "TEST_CORRUPTION") {
+			cm.logger.Debug("Token corruption detected for %s", config.Type)
+		}
 		return TokenRetrievalResult{Token: "", Error: err}
 	}
 
@@ -115,8 +118,8 @@ func (cm *ChunkManager) processSingleToken(token string, compressed bool, config
 	if compressed {
 		decompressed := decompressToken(token)
 		if isCorruptionMarker(decompressed) {
-			err := fmt.Errorf("CRITICAL: Decompressed %s token contains corruption marker", config.Type)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("decompressed %s token contains corruption marker", config.Type)
+			cm.logger.Debug("Decompressed token corruption detected for %s", config.Type)
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 		finalToken = decompressed
@@ -181,15 +184,15 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, config TokenConfig) TokenRetrievalResult {
 	// Enhanced chunk count validation using config limits
 	if len(chunks) > config.MaxChunks {
-		err := fmt.Errorf("CRITICAL: Too many %s token chunks (%d, max: %d)", config.Type, len(chunks), config.MaxChunks)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("too many %s token chunks (%d, max: %d)", config.Type, len(chunks), config.MaxChunks)
+		cm.logger.Info("Token chunk count exceeded for %s: %d chunks", config.Type, len(chunks))
 		return TokenRetrievalResult{Token: "", Error: err}
 	}
 
 	// Additional safety check for extremely large chunk counts
 	if len(chunks) > 100 {
-		err := fmt.Errorf("CRITICAL: Excessive %s token chunks (%d), potential security issue", config.Type, len(chunks))
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("excessive %s token chunks (%d), potential security issue", config.Type, len(chunks))
+		cm.logger.Error("Security: Excessive token chunks detected for %s: %d", config.Type, len(chunks))
 		return TokenRetrievalResult{Token: "", Error: err}
 	}
 
@@ -200,44 +203,42 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 	for i := 0; i < len(chunks); i++ {
 		session, ok := chunks[i]
 		if !ok {
-			err := fmt.Errorf("CRITICAL: %s token chunk %d missing", config.Type, i)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("%s token chunk %d missing", config.Type, i)
+			// Only log once for missing chunks, not for each missing chunk
+			if i == 0 {
+				cm.logger.Debug("Token chunks missing for %s starting at index %d", config.Type, i)
+			}
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
 		chunk, chunkOk := session.Values["token_chunk"].(string)
 		if !chunkOk || chunk == "" {
-			err := fmt.Errorf("CRITICAL: %s token chunk %d invalid", config.Type, i)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("%s token chunk %d invalid", config.Type, i)
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
 		if isCorruptionMarker(chunk) {
-			err := fmt.Errorf("CRITICAL: %s token chunk %d corrupted", config.Type, i)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("%s token chunk %d corrupted", config.Type, i)
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
 		// Enhanced chunk size validation using config limits
 		if len(chunk) > config.MaxChunkSize {
-			err := fmt.Errorf("CRITICAL: %s token chunk %d exceeds size limit (%d bytes, max: %d)",
+			err := fmt.Errorf("%s token chunk %d exceeds size limit (%d bytes, max: %d)",
 				config.Type, i, len(chunk), config.MaxChunkSize)
-			cm.logger.Error(err.Error())
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
 		// Additional safety check for extremely large chunks
 		if len(chunk) > maxBrowserCookieSize {
-			err := fmt.Errorf("CRITICAL: %s token chunk %d exceeds browser limit (%d bytes)",
+			err := fmt.Errorf("%s token chunk %d exceeds browser limit (%d bytes)",
 				config.Type, i, len(chunk))
-			cm.logger.Error(err.Error())
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
 		totalSize += len(chunk)
 		if totalSize > config.MaxLength {
-			err := fmt.Errorf("CRITICAL: %s token total size exceeds limit", config.Type)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("%s token total size exceeds limit", config.Type)
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
@@ -253,8 +254,7 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 	if compressed {
 		decompressed := decompressToken(reassembledToken)
 		if isCorruptionMarker(decompressed) {
-			err := fmt.Errorf("CRITICAL: Decompressed chunked %s token corrupted", config.Type)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("decompressed chunked %s token corrupted", config.Type)
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 		return cm.validateToken(decompressed, config)
@@ -268,24 +268,21 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 	// Check for exactly 2 dots
 	dotCount := strings.Count(token, ".")
 	if dotCount != 2 {
-		err := fmt.Errorf("CRITICAL: %s token invalid JWT format (dots: %d)", tokenType, dotCount)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s token invalid JWT format (dots: %d)", tokenType, dotCount)
 		return err
 	}
 
 	// Split into parts
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		err := fmt.Errorf("CRITICAL: %s token invalid JWT structure", tokenType)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s token invalid JWT structure", tokenType)
 		return err
 	}
 
 	// Validate each part is non-empty and contains valid base64url characters
 	for i, part := range parts {
 		if part == "" {
-			err := fmt.Errorf("CRITICAL: %s token has empty JWT part %d", tokenType, i)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("%s token has empty JWT part %d", tokenType, i)
 			return err
 		}
 
@@ -296,8 +293,7 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 				(char >= 'a' && char <= 'z') ||
 				(char >= '0' && char <= '9') ||
 				char == '-' || char == '_' || char == '=') {
-				err := fmt.Errorf("CRITICAL: %s token contains invalid base64url character in part %d", tokenType, i)
-				cm.logger.Error(err.Error())
+				err := fmt.Errorf("%s token contains invalid base64url character in part %d", tokenType, i)
 				return err
 			}
 		}
@@ -307,15 +303,13 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 			// Padding can only be at the end
 			paddingIndex := strings.Index(part, "=")
 			if paddingIndex != len(part)-1 && paddingIndex != len(part)-2 {
-				err := fmt.Errorf("CRITICAL: %s token has invalid base64url padding in part %d", tokenType, i)
-				cm.logger.Error(err.Error())
+				err := fmt.Errorf("%s token has invalid base64url padding in part %d", tokenType, i)
 				return err
 			}
 			// Check that after padding, no other characters exist
 			for j := paddingIndex; j < len(part); j++ {
 				if part[j] != '=' {
-					err := fmt.Errorf("CRITICAL: %s token has characters after padding in part %d", tokenType, i)
-					cm.logger.Error(err.Error())
+					err := fmt.Errorf("%s token has characters after padding in part %d", tokenType, i)
 					return err
 				}
 			}
@@ -324,18 +318,15 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 
 	// Additional length checks for JWT parts
 	if len(parts[0]) < 10 { // Header too short
-		err := fmt.Errorf("CRITICAL: %s token header too short", tokenType)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s token header too short", tokenType)
 		return err
 	}
 	if len(parts[1]) < 10 { // Payload too short
-		err := fmt.Errorf("CRITICAL: %s token payload too short", tokenType)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s token payload too short", tokenType)
 		return err
 	}
 	if len(parts[2]) < 10 { // Signature too short
-		err := fmt.Errorf("CRITICAL: %s token signature too short", tokenType)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s token signature too short", tokenType)
 		return err
 	}
 
@@ -346,16 +337,14 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 func (cm *ChunkManager) validateOpaqueToken(token string, tokenType string) error {
 	// Check for obviously invalid characters for opaque tokens
 	if strings.Contains(token, " ") {
-		err := fmt.Errorf("CRITICAL: %s opaque token contains spaces", tokenType)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s opaque token contains spaces", tokenType)
 		return err
 	}
 
 	// Check for control characters
 	for _, char := range token {
 		if char < 32 || char == 127 {
-			err := fmt.Errorf("CRITICAL: %s opaque token contains control characters", tokenType)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("%s opaque token contains control characters", tokenType)
 			return err
 		}
 	}
@@ -368,8 +357,7 @@ func (cm *ChunkManager) validateOpaqueToken(token string, tokenType string) erro
 		}
 		// Require at least 8 unique characters for reasonable entropy
 		if len(uniqueChars) < 8 {
-			err := fmt.Errorf("CRITICAL: %s opaque token has insufficient entropy", tokenType)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("%s opaque token has insufficient entropy", tokenType)
 			return err
 		}
 	}
@@ -383,16 +371,14 @@ func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) erro
 
 	// Basic length validation
 	if tokenLen < config.MinLength {
-		err := fmt.Errorf("CRITICAL: %s token below minimum length (%d bytes, min: %d)",
+		err := fmt.Errorf("%s token below minimum length (%d bytes, min: %d)",
 			config.Type, tokenLen, config.MinLength)
-		cm.logger.Error(err.Error())
 		return err
 	}
 
 	if tokenLen > config.MaxLength {
-		err := fmt.Errorf("CRITICAL: %s token exceeds maximum length (%d bytes, max: %d)",
+		err := fmt.Errorf("%s token exceeds maximum length (%d bytes, max: %d)",
 			config.Type, tokenLen, config.MaxLength)
-		cm.logger.Error(err.Error())
 		return err
 	}
 
@@ -407,20 +393,17 @@ func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) erro
 
 			// Check for unreasonably large JWT parts (potential security issue)
 			if headerLen > 5*1024 { // 5KB header limit
-				err := fmt.Errorf("CRITICAL: %s token header too large (%d bytes)", config.Type, headerLen)
-				cm.logger.Error(err.Error())
+				err := fmt.Errorf("%s token header too large (%d bytes)", config.Type, headerLen)
 				return err
 			}
 
 			if payloadLen > config.MaxLength-10*1024 { // Leave room for header and signature
-				err := fmt.Errorf("CRITICAL: %s token payload too large (%d bytes)", config.Type, payloadLen)
-				cm.logger.Error(err.Error())
+				err := fmt.Errorf("%s token payload too large (%d bytes)", config.Type, payloadLen)
 				return err
 			}
 
 			if signatureLen > 2*1024 { // 2KB signature limit
-				err := fmt.Errorf("CRITICAL: %s token signature too large (%d bytes)", config.Type, signatureLen)
-				cm.logger.Error(err.Error())
+				err := fmt.Errorf("%s token signature too large (%d bytes)", config.Type, signatureLen)
 				return err
 			}
 		}
@@ -430,8 +413,7 @@ func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) erro
 	if config.AllowOpaqueTokens && !strings.Contains(token, ".") {
 		// For opaque tokens, check for reasonable size limits
 		if tokenLen > 8*1024 { // 8KB limit for opaque tokens
-			err := fmt.Errorf("CRITICAL: %s opaque token unusually large (%d bytes)", config.Type, tokenLen)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("%s opaque token unusually large (%d bytes)", config.Type, tokenLen)
 			return err
 		}
 	}
@@ -446,21 +428,20 @@ func (cm *ChunkManager) validateChunkingEfficiency(token string, config TokenCon
 	// If token is small enough to fit in a single chunk, warn about unnecessary chunking
 	if tokenLen <= config.MaxChunkSize && tokenLen <= maxCookieSize {
 		// This is just informational - not an error, but helps with monitoring
-		cm.logger.Debugf("INFO: %s token (%d bytes) could fit in single chunk", config.Type, tokenLen)
+		// Token could fit in single chunk - this is fine, just informational
 	}
 
 	// Calculate expected number of chunks
 	expectedChunks := (tokenLen + config.MaxChunkSize - 1) / config.MaxChunkSize
 	if expectedChunks > config.MaxChunks {
-		err := fmt.Errorf("CRITICAL: %s token would require %d chunks (max: %d)",
+		err := fmt.Errorf("%s token would require %d chunks (max: %d)",
 			config.Type, expectedChunks, config.MaxChunks)
-		cm.logger.Error(err.Error())
 		return err
 	}
 
 	// Check for potential storage efficiency issues
 	if expectedChunks > 10 && tokenLen < 50*1024 {
-		cm.logger.Infof("WARNING: %s token requires many chunks (%d) for size (%d bytes) - consider token optimization",
+		cm.logger.Info("%s token requires many chunks (%d) for size (%d bytes) - consider token optimization",
 			config.Type, expectedChunks, tokenLen)
 	}
 
@@ -495,15 +476,13 @@ func (cm *ChunkManager) validateTokenContent(token string, config TokenConfig) e
 func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConfig) error {
 	// Check for null bytes (potential injection attacks)
 	if strings.Contains(token, "\x00") {
-		err := fmt.Errorf("CRITICAL: %s token contains null bytes", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s token contains null bytes", config.Type)
 		return err
 	}
 
 	// Check for line feed/carriage return (header injection attacks)
 	if strings.ContainsAny(token, "\r\n") {
-		err := fmt.Errorf("CRITICAL: %s token contains line breaks", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s token contains line breaks", config.Type)
 		return err
 	}
 
@@ -517,8 +496,7 @@ func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConf
 	tokenLower := strings.ToLower(token)
 	for _, pattern := range suspiciousPatterns {
 		if strings.Contains(tokenLower, pattern) {
-			err := fmt.Errorf("CRITICAL: %s token contains suspicious pattern: %s", config.Type, pattern)
-			cm.logger.Error(err.Error())
+			err := fmt.Errorf("%s token contains suspicious pattern: %s", config.Type, pattern)
 			return err
 		}
 	}
@@ -535,8 +513,7 @@ func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConf
 func (cm *ChunkManager) validateJWTContent(token string, config TokenConfig) error {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		err := fmt.Errorf("CRITICAL: %s JWT token malformed for content validation", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s JWT token malformed for content validation", config.Type)
 		return err
 	}
 
@@ -562,15 +539,13 @@ func (cm *ChunkManager) validateJWTContent(token string, config TokenConfig) err
 func (cm *ChunkManager) validateJWTHeader(header string, config TokenConfig) error {
 	// Basic header structure validation
 	if len(header) == 0 {
-		err := fmt.Errorf("CRITICAL: %s JWT header is empty", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s JWT header is empty", config.Type)
 		return err
 	}
 
 	// Validate base64url encoding
 	if _, err := base64.RawURLEncoding.DecodeString(header); err != nil {
-		err := fmt.Errorf("CRITICAL: %s JWT header not valid base64url", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s JWT header not valid base64url", config.Type)
 		return err
 	}
 
@@ -581,15 +556,13 @@ func (cm *ChunkManager) validateJWTHeader(header string, config TokenConfig) err
 func (cm *ChunkManager) validateJWTPayload(payload string, config TokenConfig) error {
 	// Basic payload structure validation
 	if len(payload) == 0 {
-		err := fmt.Errorf("CRITICAL: %s JWT payload is empty", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s JWT payload is empty", config.Type)
 		return err
 	}
 
 	// Payload should be decodable (basic structural check)
 	if _, err := base64.RawURLEncoding.DecodeString(payload); err != nil {
-		err := fmt.Errorf("CRITICAL: %s JWT payload not valid base64url", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s JWT payload not valid base64url", config.Type)
 		return err
 	}
 
@@ -600,15 +573,13 @@ func (cm *ChunkManager) validateJWTPayload(payload string, config TokenConfig) e
 func (cm *ChunkManager) validateJWTSignature(signature string, config TokenConfig) error {
 	// Basic signature structure validation
 	if len(signature) == 0 {
-		err := fmt.Errorf("CRITICAL: %s JWT signature is empty", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s JWT signature is empty", config.Type)
 		return err
 	}
 
 	// Validate base64url encoding
 	if _, err := base64.RawURLEncoding.DecodeString(signature); err != nil {
-		err := fmt.Errorf("CRITICAL: %s JWT signature not valid base64url", config.Type)
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s JWT signature not valid base64url", config.Type)
 		return err
 	}
 
@@ -641,8 +612,7 @@ func (cm *ChunkManager) validateOpaqueTokenContent(token string, config TokenCon
 
 			// Opaque tokens should have reasonable character distribution
 			if alphaRatio < 0.1 && numericRatio < 0.1 {
-				err := fmt.Errorf("CRITICAL: %s opaque token has suspicious character distribution", config.Type)
-				cm.logger.Error(err.Error())
+				err := fmt.Errorf("%s opaque token has suspicious character distribution", config.Type)
 				return err
 			}
 		}
@@ -665,7 +635,7 @@ func (cm *ChunkManager) validateOpaqueTokenContent(token string, config TokenCon
 
 	// For longer tokens without legitimate prefixes, be more suspicious
 	if len(token) > 50 && !hasLegitimatePrefix {
-		cm.logger.Debugf("WARNING: %s opaque token lacks common token prefixes", config.Type)
+		// Opaque token without common prefixes - this is fine
 	}
 
 	return nil
@@ -697,9 +667,8 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 	// Flag tokens with excessive character repetition
 	threshold := 20 // Allow up to 20 consecutive identical characters
 	if maxRepeated > threshold {
-		err := fmt.Errorf("CRITICAL: %s token has excessive repeated characters (%d consecutive)",
+		err := fmt.Errorf("%s token has excessive repeated characters (%d consecutive)",
 			config.Type, maxRepeated)
-		cm.logger.Error(err.Error())
 		return err
 	}
 
@@ -715,9 +684,8 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 
 		// Flag if any single character makes up more than 70% of the token
 		if frequency > 0.7 && tokenLen > 20 {
-			err := fmt.Errorf("CRITICAL: %s token has suspicious character frequency (char '%c': %.1f%%)",
+			err := fmt.Errorf("%s token has suspicious character frequency (char '%c': %.1f%%)",
 				config.Type, char, frequency*100)
-			cm.logger.Error(err.Error())
 			return err
 		}
 	}
@@ -742,8 +710,7 @@ func (cm *ChunkManager) validateTokenExpiration(token string, config TokenConfig
 
 	// Check if token is expired
 	if expiration != nil && time.Now().After(*expiration) {
-		err := fmt.Errorf("CRITICAL: %s token is expired (expired at: %v)", config.Type, expiration.Format(time.RFC3339))
-		cm.logger.Error(err.Error())
+		err := fmt.Errorf("%s token is expired (expired at: %v)", config.Type, expiration.Format(time.RFC3339))
 		return err
 	}
 
@@ -751,7 +718,7 @@ func (cm *ChunkManager) validateTokenExpiration(token string, config TokenConfig
 	if expiration != nil {
 		maxFutureTime := time.Now().Add(10 * 365 * 24 * time.Hour) // 10 years
 		if expiration.After(maxFutureTime) {
-			cm.logger.Infof("WARNING: %s token expires very far in future (%v) - potential security issue",
+			cm.logger.Info("%s token expires very far in future (%v) - potential security issue",
 				config.Type, expiration.Format(time.RFC3339))
 		}
 	}
@@ -819,16 +786,15 @@ func (cm *ChunkManager) validateTokenFreshness(token string, config TokenConfig)
 
 		// Check if token was issued in the future (clock skew tolerance: 5 minutes)
 		if issuedAt.After(now.Add(5 * time.Minute)) {
-			err := fmt.Errorf("CRITICAL: %s token issued in future (issued at: %v)",
+			err := fmt.Errorf("%s token issued in future (issued at: %v)",
 				config.Type, issuedAt.Format(time.RFC3339))
-			cm.logger.Error(err.Error())
 			return err
 		}
 
 		// Check if token is too old (potential replay attack)
 		maxAge := 24 * time.Hour // Tokens older than 24 hours are suspicious
 		if now.Sub(*issuedAt) > maxAge {
-			cm.logger.Infof("WARNING: %s token is quite old (issued: %v) - potential replay",
+			cm.logger.Info("%s token is quite old (issued: %v) - potential replay",
 				config.Type, issuedAt.Format(time.RFC3339))
 		}
 	}

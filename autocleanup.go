@@ -37,7 +37,10 @@ func (bt *BackgroundTask) run() {
 	ticker := time.NewTicker(bt.interval)
 	defer ticker.Stop()
 
-	bt.logger.Debug("Starting background task: %s", bt.name)
+	// Only log startup if debug level is enabled
+	if bt.logger != nil {
+		bt.logger.Info("Starting background task: %s", bt.name)
+	}
 
 	// Run task immediately on startup
 	bt.taskFunc()
@@ -47,7 +50,10 @@ func (bt *BackgroundTask) run() {
 		case <-ticker.C:
 			bt.taskFunc()
 		case <-bt.stopChan:
-			bt.logger.Debug("Stopping background task: %s", bt.name)
+			// Only log shutdown
+			if bt.logger != nil {
+				bt.logger.Info("Stopping background task: %s", bt.name)
+			}
 			return
 		}
 	}

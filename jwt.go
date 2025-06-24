@@ -112,14 +112,29 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
+	// ENHANCED: Use memory pool for JWT parsing buffers
+	pools := GetGlobalMemoryPools()
+	jwtBuf := pools.GetJWTParsingBuffer()
+	defer pools.PutJWTParsingBuffer(jwtBuf)
+
 	jwt := &JWT{
 		Token: tokenString,
 	}
 
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	// Decode header using pooled buffer
+	headerLen := base64.RawURLEncoding.DecodedLen(len(parts[0]))
+	if headerLen > cap(jwtBuf.HeaderBuf) {
+		jwtBuf.HeaderBuf = make([]byte, headerLen)
+	} else {
+		jwtBuf.HeaderBuf = jwtBuf.HeaderBuf[:headerLen]
+	}
+
+	n, err := base64.RawURLEncoding.Decode(jwtBuf.HeaderBuf, []byte(parts[0]))
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode header: %v", err)
 	}
+	headerBytes := jwtBuf.HeaderBuf[:n]
+
 	if err := json.Unmarshal(headerBytes, &jwt.Header); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal header: %v", err)
 	}
@@ -128,10 +143,19 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: header is nil after unmarshaling")
 	}
 
-	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	// Decode claims using pooled buffer
+	claimsLen := base64.RawURLEncoding.DecodedLen(len(parts[1]))
+	if claimsLen > cap(jwtBuf.PayloadBuf) {
+		jwtBuf.PayloadBuf = make([]byte, claimsLen)
+	} else {
+		jwtBuf.PayloadBuf = jwtBuf.PayloadBuf[:claimsLen]
+	}
+
+	n, err = base64.RawURLEncoding.Decode(jwtBuf.PayloadBuf, []byte(parts[1]))
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode claims: %v", err)
 	}
+	claimsBytes := jwtBuf.PayloadBuf[:n]
 
 	if err := json.Unmarshal(claimsBytes, &jwt.Claims); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal claims: %v", err)
@@ -141,11 +165,22 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: claims is nil after unmarshaling")
 	}
 
-	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	// Decode signature using pooled buffer
+	sigLen := base64.RawURLEncoding.DecodedLen(len(parts[2]))
+	if sigLen > cap(jwtBuf.SignatureBuf) {
+		jwtBuf.SignatureBuf = make([]byte, sigLen)
+	} else {
+		jwtBuf.SignatureBuf = jwtBuf.SignatureBuf[:sigLen]
+	}
+
+	n, err = base64.RawURLEncoding.Decode(jwtBuf.SignatureBuf, []byte(parts[2]))
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode signature: %v", err)
 	}
-	jwt.Signature = signatureBytes
+
+	// Copy signature to JWT struct (create new slice to avoid pool retention)
+	jwt.Signature = make([]byte, n)
+	copy(jwt.Signature, jwtBuf.SignatureBuf[:n])
 
 	return jwt, nil
 }
