@@ -1,6 +1,9 @@
 package traefikoidc
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -216,6 +219,167 @@ func TestSessionObjectTracking(t *testing.T) {
 
 	// Success - if we got here without crashing, the pool is working as expected
 	t.Log("Session pool handling verified")
+}
+
+// TestLargeIDTokenChunking tests that large ID tokens are properly chunked across multiple cookies
+func TestLargeIDTokenChunking(t *testing.T) {
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+	// Create a large ID token (>4KB) to force chunking
+	largeIDToken := createLargeIDToken(20000) // 20KB token to ensure chunking after compression
+	t.Logf("Created large ID token with length: %d", len(largeIDToken))
+
+	// Create a request and response recorder
+	req := httptest.NewRequest("GET", "http://example.com/foo", nil)
+	rr := httptest.NewRecorder()
+
+	// Get session and set large ID token
+	session, err := sm.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+
+	// Set the large ID token
+	session.SetIDToken(largeIDToken)
+	t.Logf("Set large ID token in session")
+
+	// Let's check what the GetIDToken returns to confirm it's set
+	retrievedToken := session.GetIDToken()
+	t.Logf("Retrieved ID token length: %d", len(retrievedToken))
+	if len(retrievedToken) != len(largeIDToken) {
+		t.Errorf("Token length mismatch: expected %d, got %d", len(largeIDToken), len(retrievedToken))
+	}
+
+	// Let's check what's in the main session directly
+	if idToken, ok := session.mainSession.Values["id_token"].(string); ok {
+		t.Logf("Main session id_token length: %d", len(idToken))
+		if compressed, ok := session.mainSession.Values["id_token_compressed"].(bool); ok {
+			t.Logf("Main session id_token_compressed: %v", compressed)
+		}
+	} else {
+		t.Logf("Main session id_token not found or not a string")
+	}
+
+	// Save the session to trigger chunking
+	err = session.Save(req, rr)
+	if err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	// Verify that chunked cookies were created
+	cookies := rr.Result().Cookies()
+	t.Logf("Total cookies in response: %d", len(cookies))
+
+	for _, cookie := range cookies {
+		valuePreview := cookie.Value
+		if len(valuePreview) > 50 {
+			valuePreview = valuePreview[:50] + "..."
+		}
+		t.Logf("Cookie: %s = %s (len=%d)", cookie.Name, valuePreview, len(cookie.Value))
+	}
+
+	var mainCookie *http.Cookie
+	var chunkCookies []*http.Cookie
+
+	for _, cookie := range cookies {
+		if cookie.Name == mainCookieName {
+			mainCookie = cookie
+		} else if strings.HasPrefix(cookie.Name, mainCookieName+"_") {
+			chunkCookies = append(chunkCookies, cookie)
+		}
+	}
+
+	// Verify main cookie exists
+	if mainCookie == nil {
+		t.Fatal("Main cookie not found in response")
+	}
+
+	// Verify chunk cookies exist (should be at least 2 for a 5KB token)
+	if len(chunkCookies) < 2 {
+		t.Fatalf("Expected at least 2 chunk cookies, got %d", len(chunkCookies))
+	}
+
+	// Verify chunk cookie naming convention
+	expectedChunkNames := make(map[string]bool)
+	for i := 0; i < len(chunkCookies); i++ {
+		expectedChunkNames[mainCookieName+"_"+fmt.Sprintf("%d", i)] = true
+	}
+
+	for _, cookie := range chunkCookies {
+		if !expectedChunkNames[cookie.Name] {
+			t.Errorf("Unexpected chunk cookie name: %s", cookie.Name)
+		}
+	}
+
+	// Test token retrieval from chunked cookies
+	// Create a new request with all the cookies
+	newReq := httptest.NewRequest("GET", "http://example.com/foo", nil)
+	for _, cookie := range cookies {
+		newReq.AddCookie(cookie)
+	}
+
+	// Get session and retrieve the ID token
+	retrievedSession, err := sm.GetSession(newReq)
+	if err != nil {
+		t.Fatalf("Failed to get session from chunked cookies: %v", err)
+	}
+
+	retrievedToken2 := retrievedSession.GetIDToken()
+
+	// Verify the retrieved token matches the original
+	if retrievedToken2 != largeIDToken {
+		t.Errorf("Retrieved ID token doesn't match original. Expected length: %d, got: %d", len(largeIDToken), len(retrievedToken2))
+	}
+
+	// Test clearing the ID token removes all chunks
+	retrievedSession.SetIDToken("")
+
+	clearRR := httptest.NewRecorder()
+	err = retrievedSession.Save(newReq, clearRR)
+	if err != nil {
+		t.Fatalf("Failed to save session after clearing ID token: %v", err)
+	}
+
+	// Verify chunks are expired (MaxAge = -1)
+	clearCookies := clearRR.Result().Cookies()
+	for _, cookie := range clearCookies {
+		if strings.HasPrefix(cookie.Name, mainCookieName+"_") {
+			if cookie.MaxAge != -1 {
+				t.Errorf("Expected chunk cookie %s to be expired (MaxAge=-1), got MaxAge=%d", cookie.Name, cookie.MaxAge)
+			}
+		}
+	}
+}
+
+// createLargeIDToken creates a JWT-like token of specified size for testing
+func createLargeIDToken(size int) string {
+	// Create truly random data that won't compress well
+	randomBytes := make([]byte, size*3/4) // base64 encoding increases size by ~4/3
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		// Fallback to pseudo-random if crypto/rand fails
+		for i := range randomBytes {
+			randomBytes[i] = byte(i % 256)
+		}
+	}
+
+	// Base64 encode the random data to make it look like a JWT
+	encoded := base64.StdEncoding.EncodeToString(randomBytes)
+
+	// Create JWT-like structure with truly random data
+	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+
+	// Truncate or pad to desired size
+	if len(encoded) > size-len(header)-100 {
+		encoded = encoded[:size-len(header)-100]
+	}
+
+	signature := "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+
+	return header + "." + encoded + "." + signature
 }
 
 // This is intentionally left empty to remove unused code
