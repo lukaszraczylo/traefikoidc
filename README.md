@@ -1,3 +1,7 @@
+## Forked for testing from https://github.com/lukaszraczylo/traefikoidc, pls use the original repo
+
+Plugin Catalog link: https://plugins.traefik.io/plugins/6613338ea28c508f411a44d5/traefik-oidc 
+
 # Traefik OIDC Middleware
 
 This middleware replaces the need for forward-auth and oauth2-proxy when using Traefik as a reverse proxy to support OpenID Connect (OIDC) authentication.

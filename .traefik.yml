@@ -1,9 +1,13 @@
-displayName: Traefik OIDC
+displayName: Traefik OIDC, forked for testing
 type: middleware
 
-import: github.com/lukaszraczylo/traefikoidc
+import: github.com/sergiuciorba/traefikoidc
 
 summary: |
+  Forked for testing from https://github.com/lukaszraczylo/traefikoidc, pls use the original repo.
+  
+  Plugin Catalog link: https://plugins.traefik.io/plugins/6613338ea28c508f411a44d5/traefik-oidc 
+
   Middleware adding OpenID Connect (OIDC) authentication to Traefik routes.
 
   This middleware replaces the need for forward-auth and oauth2-proxy when using Traefik as a reverse proxy.
