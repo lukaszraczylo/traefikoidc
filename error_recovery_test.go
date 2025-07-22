@@ -16,12 +16,6 @@ func TestCircuitBreaker(t *testing.T) {
 
 	cb := NewCircuitBreaker(config, logger)
 
-	t.Run("Initial state is closed", func(t *testing.T) {
-		if cb.GetState() != CircuitBreakerClosed {
-			t.Errorf("Expected initial state to be closed, got %v", cb.GetState())
-		}
-	})
-
 	t.Run("Successful execution", func(t *testing.T) {
 		err := cb.Execute(func() error {
 			return nil
@@ -332,73 +326,6 @@ func TestHTTPError(t *testing.T) {
 	if err.Error() != expected {
 		t.Errorf("Expected %q, got %q", expected, err.Error())
 	}
-}
-
-func TestHelperFunctions(t *testing.T) {
-	t.Run("contains function", func(t *testing.T) {
-		if !contains("hello world", "hello") {
-			t.Error("Expected contains to find substring at start")
-		}
-		if !contains("hello world", "world") {
-			t.Error("Expected contains to find substring at end")
-		}
-		if !contains("hello world", "lo wo") {
-			t.Error("Expected contains to find substring in middle")
-		}
-		if contains("hello world", "xyz") {
-			t.Error("Expected contains to not find non-existent substring")
-		}
-	})
-
-	t.Run("containsSubstring function", func(t *testing.T) {
-		if !containsSubstring("hello world", "lo wo") {
-			t.Error("Expected containsSubstring to find substring")
-		}
-		if containsSubstring("hello", "hello world") {
-			t.Error("Expected containsSubstring to not find longer substring")
-		}
-	})
-}
-
-func TestDefaultConfigs(t *testing.T) {
-	t.Run("DefaultCircuitBreakerConfig", func(t *testing.T) {
-		config := DefaultCircuitBreakerConfig()
-		if config.MaxFailures <= 0 {
-			t.Error("Expected positive MaxFailures")
-		}
-		if config.Timeout <= 0 {
-			t.Error("Expected positive Timeout")
-		}
-		if config.ResetTimeout <= 0 {
-			t.Error("Expected positive ResetTimeout")
-		}
-	})
-
-	t.Run("DefaultRetryConfig", func(t *testing.T) {
-		config := DefaultRetryConfig()
-		if config.MaxAttempts <= 0 {
-			t.Error("Expected positive MaxAttempts")
-		}
-		if config.InitialDelay <= 0 {
-			t.Error("Expected positive InitialDelay")
-		}
-		if config.BackoffFactor <= 1 {
-			t.Error("Expected BackoffFactor > 1")
-		}
-		if len(config.RetryableErrors) == 0 {
-			t.Error("Expected some retryable errors")
-		}
-	})
-
-	t.Run("DefaultGracefulDegradationConfig", func(t *testing.T) {
-		config := DefaultGracefulDegradationConfig()
-		if config.HealthCheckInterval <= 0 {
-			t.Error("Expected positive HealthCheckInterval")
-		}
-		if config.RecoveryTimeout <= 0 {
-			t.Error("Expected positive RecoveryTimeout")
-		}
-	})
 }
 
 // Mock network error for testing

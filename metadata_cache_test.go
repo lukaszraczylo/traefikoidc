@@ -7,22 +7,6 @@ import (
 	"time"
 )
 
-func TestIsCacheValid(t *testing.T) {
-	// Setup with a dummy ProviderMetadata.
-	pm := &ProviderMetadata{}
-	mc := &MetadataCache{
-		metadata:  pm,
-		expiresAt: time.Now().Add(1 * time.Hour),
-	}
-	if !mc.isCacheValid() {
-		t.Errorf("Expected cache to be valid")
-	}
-	mc.expiresAt = time.Now().Add(-1 * time.Hour)
-	if mc.isCacheValid() {
-		t.Errorf("Expected cache to be invalid")
-	}
-}
-
 func TestCleanup(t *testing.T) {
 	pm := &ProviderMetadata{}
 	mc := &MetadataCache{

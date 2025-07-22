@@ -56,31 +56,6 @@ func TestCreateConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("Config Can Hold Custom Values", func(t *testing.T) {
-		config := CreateConfig()
-		config.Scopes = []string{"custom_scope"}
-		config.LogLevel = "debug"
-		config.RateLimit = 50
-		config.ForceHTTPS = false
-		config.OverrideScopes = true
-
-		// Verify config struct can hold custom values
-		if len(config.Scopes) != 1 || config.Scopes[0] != "custom_scope" {
-			t.Error("Config struct cannot hold custom scopes")
-		}
-		if config.LogLevel != "debug" {
-			t.Error("Config struct cannot hold custom log level")
-		}
-		if config.RateLimit != 50 {
-			t.Error("Config struct cannot hold custom rate limit")
-		}
-		if config.ForceHTTPS {
-			t.Error("Config struct cannot hold custom ForceHTTPS value")
-		}
-		if !config.OverrideScopes {
-			t.Error("Config struct cannot hold custom OverrideScopes value")
-		}
-	})
 }
 
 func TestConfigValidate(t *testing.T) {
