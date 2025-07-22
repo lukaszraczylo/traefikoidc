@@ -62,6 +62,8 @@ testData:
     - /metrics
     
   headers: # Custom headers to set with templated values from claims and tokens
+    # NOTE: If you encounter "can't evaluate field AccessToken in type bool" errors,
+    # you may need to escape the templates. See the headers section in configuration below.
     - name: "X-User-Email"
       value: "{{.Claims.email}}"
     - name: "X-User-ID"
@@ -383,6 +385,28 @@ configuration:
 
       Templates support Go template syntax including conditionals and iteration.
       Variable names are case-sensitive - use .Claims not .claims.
+
+      IMPORTANT: Template Escaping
+      If you encounter the error "can't evaluate field AccessToken in type bool" when
+      starting Traefik, this means Traefik is trying to evaluate the template expressions
+      before passing them to the plugin. To fix this, you need to escape the templates
+      using one of these methods:
+
+      1. Use YAML literal style (recommended):
+         headers:
+           - name: "Authorization"
+             value: |
+               Bearer {{.AccessToken}}
+
+      2. Use single quotes:
+         headers:
+           - name: "Authorization"
+             value: 'Bearer {{.AccessToken}}'
+
+      3. For inline double quotes, escape the braces:
+         headers:
+           - name: "Authorization"
+             value: "Bearer {{"{{.AccessToken}}"}}"
 
       Examples:
       - name: "X-User-Email", value: "{{.Claims.email}}"

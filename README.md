@@ -377,16 +377,22 @@ spec:
       scopes:
         - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       headers:
+        # Using YAML literal style to prevent Traefik from pre-evaluating templates
         - name: "X-User-Email"
-          value: "{{.Claims.email}}"
+          value: |
+            {{.Claims.email}}
         - name: "X-User-ID"
-          value: "{{.Claims.sub}}"
+          value: |
+            {{.Claims.sub}}
         - name: "Authorization"
-          value: "Bearer {{.AccessToken}}"
+          value: |
+            Bearer {{.AccessToken}}
         - name: "X-User-Roles"
-          value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+          value: |
+            {{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}
         - name: "X-Is-Admin"
-          value: "{{if eq .Claims.role \"admin\"}}true{{else}}false{{end}}"
+          value: |
+            {{if eq .Claims.role "admin"}}true{{else}}false{{end}}
 ```
 
 ### With PKCE Enabled
@@ -577,14 +583,19 @@ http:
             - /health
             - /metrics
           headers:
+            # Using YAML literal style to prevent Traefik from pre-evaluating templates
             - name: "X-User-Email"
-              value: "{{.Claims.email}}"
+              value: |
+                {{.Claims.email}}
             - name: "X-User-ID"
-              value: "{{.Claims.sub}}"
+              value: |
+                {{.Claims.sub}}
             - name: "Authorization"
-              value: "Bearer {{.AccessToken}}"
+              value: |
+                Bearer {{.AccessToken}}
             - name: "X-User-Roles"
-              value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+              value: |
+                {{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}
 ```
 
 ## Advanced Configuration
@@ -649,17 +660,49 @@ Templates can access the following variables:
 - `{{.IdToken}}` - The raw ID token string (same as AccessToken in most configurations)
 - `{{.RefreshToken}}` - The raw refresh token string
 
-**Example configuration:**
+**⚠️ Important: Template Escaping**
+
+If you encounter the error `can't evaluate field AccessToken in type bool` when starting Traefik, this indicates that Traefik is attempting to evaluate the template expressions before passing them to the plugin. This is a known issue when using template syntax in Traefik plugin configurations.
+
+**Solution:** Use one of these escaping methods:
+
+1. **Use YAML literal style (recommended):**
+```yaml
+headers:
+  - name: "Authorization"
+    value: |
+      Bearer {{.AccessToken}}
+```
+
+2. **Use single quotes:**
+```yaml
+headers:
+  - name: "Authorization"
+    value: 'Bearer {{.AccessToken}}'
+```
+
+3. **Escape the template braces (for inline double quotes):**
+```yaml
+headers:
+  - name: "Authorization"
+    value: "Bearer {{"{{.AccessToken}}"}}"
+```
+
+**Working example configuration:**
 ```yaml
 headers:
   - name: "X-User-Email"
-    value: "{{.Claims.email}}"
+    value: |
+      {{.Claims.email}}
   - name: "X-User-ID"
-    value: "{{.Claims.sub}}"
+    value: |
+      {{.Claims.sub}}
   - name: "Authorization"
-    value: "Bearer {{.AccessToken}}"
+    value: |
+      Bearer {{.AccessToken}}
   - name: "X-User-Name"
-    value: "{{.Claims.given_name}} {{.Claims.family_name}}"
+    value: |
+      {{.Claims.given_name}} {{.Claims.family_name}}
 ```
 
 **Advanced template examples:**
@@ -668,20 +711,23 @@ Conditional logic:
 ```yaml
 headers:
   - name: "X-Is-Admin"
-    value: "{{if eq .Claims.role \"admin\"}}true{{else}}false{{end}}"
+    value: |
+      {{if eq .Claims.role "admin"}}true{{else}}false{{end}}
 ```
 
 Array handling:
 ```yaml
 headers:
   - name: "X-User-Roles"
-    value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+    value: |
+      {{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}
 ```
 
 **Notes:**
 - Variable names are case-sensitive (use `.Claims`, not `.claims`)
 - Missing claims will result in `<no value>` in the header value
 - The middleware validates templates during startup and logs errors for invalid templates
+- If templates are not properly escaped, Traefik may attempt to evaluate them during configuration parsing, leading to errors
 
 ### Default Headers Set for Downstream Services
 
@@ -804,14 +850,18 @@ logLevel: debug
 3. **No matching public key found**: The JWKS endpoint might be unavailable or the token's key ID (kid) doesn't match any key in the JWKS.
 4. **Access denied: Your email domain is not allowed**: The user's email domain is not in the `allowedUserDomains` list.
 5. **Access denied: You do not have any of the allowed roles or groups**: The user doesn't have any of the roles or groups specified in `allowedRolesAndGroups`.
-6. **Google sessions expire after ~1 hour**: If using Google as the OIDC provider and sessions expire prematurely (around 1 hour instead of longer), ensure:
+6. **"can't evaluate field AccessToken in type bool" error**: This error occurs when Traefik attempts to evaluate template expressions in the headers configuration before passing them to the plugin. To fix this:
+   - Use YAML literal style for header values: `value: |` followed by the template on the next line
+   - Or use single quotes: `value: 'Bearer {{.AccessToken}}'`
+   - See the [Templated Headers](#templated-headers) section for complete examples
+7. **Google sessions expire after ~1 hour**: If using Google as the OIDC provider and sessions expire prematurely (around 1 hour instead of longer), ensure:
    - Do NOT manually add the `offline_access` scope. Google rejects this scope as invalid.
    - The middleware automatically applies the required Google parameters (`access_type=offline` and `prompt=consent`).
    - Your Google Cloud OAuth consent screen is set to "External" and "Production" mode. "Testing" mode often limits refresh token validity.
    - Verify you're using a version of the middleware that includes the Google OAuth compatibility fix.
    - For more details, see the [Google OAuth Compatibility Fix](#google-oauth-compatibility-fix) section or the [detailed documentation](docs/google-oauth-fix.md).
 
-7.  **Keycloak: Claims Missing from ID Token (e.g., email, roles)**
+8.  **Keycloak: Claims Missing from ID Token (e.g., email, roles)**
 
     If you are using Keycloak and claims like `email`, `roles`, or `groups` are missing from the ID Token, this plugin may not function as expected (e.g., for domain restrictions or RBAC).
     *   **Solution**: This plugin validates the **ID Token**. You **must** configure Keycloak client mappers to add all necessary claims (email, roles, groups, etc.) to the ID Token.
