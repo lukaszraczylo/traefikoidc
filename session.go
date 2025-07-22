@@ -269,10 +269,10 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 			accessTokenChunks:  make(map[int]*sessions.Session),
 			refreshTokenChunks: make(map[int]*sessions.Session),
 			idTokenChunks:      make(map[int]*sessions.Session),
-			refreshMutex:       sync.Mutex{},
-			sessionMutex:       sync.RWMutex{},
-			dirty:              false,
-			inUse:              false,
+			refreshMutex:       sync.Mutex{},   // Initialize the mutex
+			sessionMutex:       sync.RWMutex{}, // Initialize the session mutex
+			dirty:              false,          // Initialize dirty flag
+			inUse:              false,          // Initialize in-use flag
 		}
 		sd.Reset()
 		return sd
@@ -741,6 +741,12 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	for i, sessionChunk := range sd.refreshTokenChunks {
 		sessionChunk.Options = options
 		saveOrLogError(sessionChunk, fmt.Sprintf("refresh token chunk %d", i))
+	}
+
+	// Save ID token chunks.
+	for i, sessionChunk := range sd.idTokenChunks {
+		sessionChunk.Options = options
+		saveOrLogError(sessionChunk, fmt.Sprintf("ID token chunk %d", i))
 	}
 
 	if firstErr == nil {
@@ -1824,7 +1830,6 @@ func (sd *SessionData) SetIDToken(token string) {
 		sd.manager.logger.Errorf("CRITICAL: ID token too large (%d bytes) - possible corruption, rejecting", len(token))
 		return
 	}
-
 	currentIDToken := sd.getIDTokenUnsafe()
 	if currentIDToken == token {
 		// If token is empty, and current is also empty, it's not a change.
