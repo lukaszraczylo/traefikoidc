@@ -175,7 +175,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 			"sub":   "user123",
 			"email": "user@example.com",
 		}
-		idToken, _ := createMockJWT(idTokenClaims)
+		idToken, _ := createAzureMockJWT(idTokenClaims)
 		session.SetIDToken(idToken)
 
 		// Mock the token verification to simulate Azure behavior
@@ -318,8 +318,8 @@ func TestAzureOIDCRegression(t *testing.T) {
 	})
 }
 
-// createMockJWT creates a basic JWT token for testing purposes
-func createMockJWT(claims map[string]interface{}) (string, error) {
+// createAzureMockJWT creates a basic JWT token for testing purposes
+func createAzureMockJWT(claims map[string]interface{}) (string, error) {
 	// For testing purposes, create a JWT with expired claims when needed
 	// Use the test tokens infrastructure for most cases, but allow expired tokens for specific tests
 	testTokens := NewTestTokens()
