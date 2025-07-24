@@ -7,22 +7,6 @@ import (
 	"time"
 )
 
-func TestIsCacheValid(t *testing.T) {
-	// Setup with a dummy ProviderMetadata.
-	pm := &ProviderMetadata{}
-	mc := &MetadataCache{
-		metadata:  pm,
-		expiresAt: time.Now().Add(1 * time.Hour),
-	}
-	if !mc.isCacheValid() {
-		t.Errorf("Expected cache to be valid")
-	}
-	mc.expiresAt = time.Now().Add(-1 * time.Hour)
-	if mc.isCacheValid() {
-		t.Errorf("Expected cache to be invalid")
-	}
-}
-
 func TestCleanup(t *testing.T) {
 	pm := &ProviderMetadata{}
 	mc := &MetadataCache{
@@ -41,8 +25,8 @@ func TestGetMetadata_Cached(t *testing.T) {
 	mc := &MetadataCache{
 		metadata:            dummyData,
 		expiresAt:           time.Now().Add(1 * time.Hour),
-		stopCleanup:         make(chan struct{}),
 		autoCleanupInterval: 5 * time.Minute,
+		logger:              newNoOpLogger(),
 	}
 	// Use NewLogger to create a logger that writes errors only.
 	logger := NewLogger("error")
@@ -58,10 +42,10 @@ func TestGetMetadata_Cached(t *testing.T) {
 func TestMetadataCacheAutoCleanup(t *testing.T) {
 	mc := &MetadataCache{
 		autoCleanupInterval: 50 * time.Millisecond,
-		stopCleanup:         make(chan struct{}),
+		logger:              newNoOpLogger(),
 	}
 	// Start auto cleanup.
-	go mc.startAutoCleanup()
+	mc.startAutoCleanup()
 	mc.mutex.Lock()
 	mc.metadata = &ProviderMetadata{}
 	mc.expiresAt = time.Now().Add(-50 * time.Millisecond)
@@ -93,7 +77,7 @@ func TestGetMetadata_FetchError(t *testing.T) {
 
 	// Case 1: Cache is empty.
 	mc := &MetadataCache{
-		stopCleanup: make(chan struct{}),
+		logger: newNoOpLogger(),
 	}
 	logger := NewLogger("error")
 	metadata, err := mc.GetMetadata("http://example.com", errorClient, logger)

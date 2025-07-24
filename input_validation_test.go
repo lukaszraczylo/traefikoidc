@@ -204,8 +204,8 @@ func TestSanitizeInput(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxLen   int
 		expected string
+		maxLen   int
 	}{
 		{
 			name:     "Normal text",

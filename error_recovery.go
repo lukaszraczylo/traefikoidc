@@ -11,6 +11,137 @@ import (
 	"time"
 )
 
+// ErrorRecoveryMechanism defines the common interface for all error recovery strategies
+// including circuit breakers, retry logic, and rate limiters. Implementations provide
+// resilience patterns to handle transient failures and protect downstream services.
+type ErrorRecoveryMechanism interface {
+	// ExecuteWithContext executes a function with error recovery
+	ExecuteWithContext(ctx context.Context, fn func() error) error
+	// GetMetrics returns metrics about the error recovery mechanism
+	GetMetrics() map[string]interface{}
+	// Reset resets the state of the error recovery mechanism
+	Reset()
+	// IsAvailable returns whether the mechanism is available for use
+	IsAvailable() bool
+}
+
+// BaseRecoveryMechanism provides common functionality shared by all error recovery
+// implementations. It tracks metrics, manages state, and provides base logging
+// capabilities for derived recovery mechanisms.
+type BaseRecoveryMechanism struct {
+	startTime       time.Time
+	lastFailureTime time.Time
+	lastSuccessTime time.Time
+	logger          *Logger
+	name            string
+	totalRequests   int64
+	totalFailures   int64
+	totalSuccesses  int64
+	mutex           sync.RWMutex
+}
+
+// NewBaseRecoveryMechanism creates a new base recovery mechanism with the specified name.
+//
+// Parameters:
+//   - name: Identifier for the recovery mechanism.
+//   - logger: Logger instance for recording events.
+//
+// Returns:
+//   - A configured BaseRecoveryMechanism instance.
+func NewBaseRecoveryMechanism(name string, logger *Logger) *BaseRecoveryMechanism {
+	if logger == nil {
+		logger = newNoOpLogger()
+	}
+
+	return &BaseRecoveryMechanism{
+		name:      name,
+		logger:    logger,
+		startTime: time.Now(),
+	}
+}
+
+// RecordRequest increments the total request counter.
+// This method is thread-safe using atomic operations.
+func (b *BaseRecoveryMechanism) RecordRequest() {
+	atomic.AddInt64(&b.totalRequests, 1)
+}
+
+// RecordSuccess records a successful operation by incrementing the success counter
+// and updating the last success timestamp. This method is thread-safe.
+func (b *BaseRecoveryMechanism) RecordSuccess() {
+	atomic.AddInt64(&b.totalSuccesses, 1)
+
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.lastSuccessTime = time.Now()
+}
+
+// RecordFailure records a failed operation by incrementing the failure counter
+// and updating the last failure timestamp. This method is thread-safe.
+func (b *BaseRecoveryMechanism) RecordFailure() {
+	atomic.AddInt64(&b.totalFailures, 1)
+
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.lastFailureTime = time.Now()
+}
+
+// GetBaseMetrics returns metrics common to all recovery mechanisms including
+// request counts, success/failure rates, and timing information.
+func (b *BaseRecoveryMechanism) GetBaseMetrics() map[string]interface{} {
+	b.mutex.RLock()
+	defer b.mutex.RUnlock()
+
+	metrics := map[string]interface{}{
+		"total_requests":  atomic.LoadInt64(&b.totalRequests),
+		"total_failures":  atomic.LoadInt64(&b.totalFailures),
+		"total_successes": atomic.LoadInt64(&b.totalSuccesses),
+		"uptime_seconds":  time.Since(b.startTime).Seconds(),
+		"name":            b.name,
+	}
+
+	if !b.lastFailureTime.IsZero() {
+		metrics["last_failure_time"] = b.lastFailureTime.Format(time.RFC3339)
+		metrics["seconds_since_last_failure"] = time.Since(b.lastFailureTime).Seconds()
+	}
+
+	if !b.lastSuccessTime.IsZero() {
+		metrics["last_success_time"] = b.lastSuccessTime.Format(time.RFC3339)
+		metrics["seconds_since_last_success"] = time.Since(b.lastSuccessTime).Seconds()
+	}
+
+	// Calculate success rate
+	if metrics["total_requests"].(int64) > 0 {
+		successRate := float64(metrics["total_successes"].(int64)) / float64(metrics["total_requests"].(int64))
+		metrics["success_rate"] = successRate
+	} else {
+		metrics["success_rate"] = 1.0 // Default to 100% if no requests
+	}
+
+	return metrics
+}
+
+// LogInfo logs an informational message
+func (b *BaseRecoveryMechanism) LogInfo(format string, args ...interface{}) {
+	if b.logger != nil {
+		b.logger.Infof("%s: "+format, append([]interface{}{b.name}, args...)...)
+	}
+}
+
+// LogError logs an error message
+func (b *BaseRecoveryMechanism) LogError(format string, args ...interface{}) {
+	if b.logger != nil {
+		b.logger.Errorf("%s: "+format, append([]interface{}{b.name}, args...)...)
+	}
+}
+
+// LogDebug logs a debug message
+func (b *BaseRecoveryMechanism) LogDebug(format string, args ...interface{}) {
+	if b.logger != nil {
+		b.logger.Debugf("%s: "+format, append([]interface{}{b.name}, args...)...)
+	}
+}
+
 // CircuitBreakerState represents the current state of a circuit breaker
 type CircuitBreakerState int
 
@@ -25,25 +156,12 @@ const (
 
 // CircuitBreaker implements the circuit breaker pattern for external service calls
 type CircuitBreaker struct {
-	// Configuration
-	maxFailures  int           // Maximum failures before opening
-	timeout      time.Duration // How long to wait before trying again
-	resetTimeout time.Duration // How long to wait in half-open state
-
-	// State
-	state           CircuitBreakerState
-	failures        int64
-	lastFailureTime time.Time
-	lastSuccessTime time.Time
-	mutex           sync.RWMutex
-
-	// Metrics
-	totalRequests  int64
-	totalFailures  int64
-	totalSuccesses int64
-
-	// Logger
-	logger *Logger
+	*BaseRecoveryMechanism
+	maxFailures  int
+	timeout      time.Duration
+	resetTimeout time.Duration
+	state        CircuitBreakerState
+	failures     int64
 }
 
 // CircuitBreakerConfig holds configuration for circuit breakers
@@ -65,17 +183,17 @@ func DefaultCircuitBreakerConfig() CircuitBreakerConfig {
 // NewCircuitBreaker creates a new circuit breaker with the given configuration
 func NewCircuitBreaker(config CircuitBreakerConfig, logger *Logger) *CircuitBreaker {
 	return &CircuitBreaker{
-		maxFailures:  config.MaxFailures,
-		timeout:      config.Timeout,
-		resetTimeout: config.ResetTimeout,
-		state:        CircuitBreakerClosed,
-		logger:       logger,
+		BaseRecoveryMechanism: NewBaseRecoveryMechanism("circuit-breaker", logger),
+		maxFailures:           config.MaxFailures,
+		timeout:               config.Timeout,
+		resetTimeout:          config.ResetTimeout,
+		state:                 CircuitBreakerClosed,
 	}
 }
 
-// Execute runs the given function with circuit breaker protection
-func (cb *CircuitBreaker) Execute(fn func() error) error {
-	atomic.AddInt64(&cb.totalRequests, 1)
+// ExecuteWithContext implements the ErrorRecoveryMechanism interface
+func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() error) error {
+	cb.RecordRequest()
 
 	// Check if circuit breaker allows the request
 	if !cb.allowRequest() {
@@ -87,13 +205,18 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 	// Record the result
 	if err != nil {
 		cb.recordFailure()
-		atomic.AddInt64(&cb.totalFailures, 1)
+		cb.RecordFailure()
 		return err
 	}
 
 	cb.recordSuccess()
-	atomic.AddInt64(&cb.totalSuccesses, 1)
+	cb.RecordSuccess()
 	return nil
+}
+
+// Execute is the original method for backward compatibility
+func (cb *CircuitBreaker) Execute(fn func() error) error {
+	return cb.ExecuteWithContext(context.Background(), fn)
 }
 
 // allowRequest checks if the circuit breaker allows the request
@@ -131,19 +254,18 @@ func (cb *CircuitBreaker) recordFailure() {
 	defer cb.mutex.Unlock()
 
 	cb.failures++
-	cb.lastFailureTime = time.Now()
 
 	switch cb.state {
 	case CircuitBreakerClosed:
 		if cb.failures >= int64(cb.maxFailures) {
 			cb.state = CircuitBreakerOpen
-			cb.logger.Errorf("Circuit breaker opened after %d failures", cb.failures)
+			cb.LogError("Circuit breaker opened after %d failures", cb.failures)
 		}
 
 	case CircuitBreakerHalfOpen:
 		// Go back to open state on any failure in half-open
 		cb.state = CircuitBreakerOpen
-		cb.logger.Errorf("Circuit breaker returned to open state after failure in half-open")
+		cb.LogError("Circuit breaker returned to open state after failure in half-open")
 	}
 }
 
@@ -152,14 +274,12 @@ func (cb *CircuitBreaker) recordSuccess() {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
 
-	cb.lastSuccessTime = time.Now()
-
 	switch cb.state {
 	case CircuitBreakerHalfOpen:
 		// Reset failures and close circuit on success in half-open
 		cb.failures = 0
 		cb.state = CircuitBreakerClosed
-		cb.logger.Infof("Circuit breaker closed after successful request in half-open state")
+		cb.LogInfo("Circuit breaker closed after successful request in half-open state")
 
 	case CircuitBreakerClosed:
 		// Reset failure count on success
@@ -174,30 +294,58 @@ func (cb *CircuitBreaker) GetState() CircuitBreakerState {
 	return cb.state
 }
 
-// GetMetrics returns circuit breaker metrics
+// Reset resets the circuit breaker to its initial state
+func (cb *CircuitBreaker) Reset() {
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	cb.state = CircuitBreakerClosed
+	atomic.StoreInt64(&cb.failures, 0)
+	cb.LogInfo("Circuit breaker has been reset")
+}
+
+// IsAvailable returns whether the circuit breaker is allowing requests
+func (cb *CircuitBreaker) IsAvailable() bool {
+	return cb.allowRequest()
+}
+
+// GetMetrics returns metrics about the circuit breaker
 func (cb *CircuitBreaker) GetMetrics() map[string]interface{} {
 	cb.mutex.RLock()
-	defer cb.mutex.RUnlock()
+	state := cb.state
+	failures := cb.failures
+	cb.mutex.RUnlock()
 
-	return map[string]interface{}{
-		"state":           cb.state,
-		"failures":        cb.failures,
-		"total_requests":  atomic.LoadInt64(&cb.totalRequests),
-		"total_failures":  atomic.LoadInt64(&cb.totalFailures),
-		"total_successes": atomic.LoadInt64(&cb.totalSuccesses),
-		"last_failure":    cb.lastFailureTime,
-		"last_success":    cb.lastSuccessTime,
+	metrics := cb.GetBaseMetrics()
+
+	// Add circuit breaker specific metrics
+	stateStr := "unknown"
+	switch state {
+	case CircuitBreakerClosed:
+		stateStr = "closed"
+	case CircuitBreakerOpen:
+		stateStr = "open"
+	case CircuitBreakerHalfOpen:
+		stateStr = "half-open"
 	}
+
+	metrics["state"] = stateStr
+	metrics["max_failures"] = cb.maxFailures
+	metrics["current_failures"] = failures
+	metrics["timeout_ms"] = cb.timeout.Milliseconds()
+	metrics["reset_timeout_ms"] = cb.resetTimeout.Milliseconds()
+
+	return metrics
 }
 
 // RetryConfig holds configuration for retry mechanisms
 type RetryConfig struct {
+	RetryableErrors []string      `json:"retryable_errors"`
 	MaxAttempts     int           `json:"max_attempts"`
 	InitialDelay    time.Duration `json:"initial_delay"`
 	MaxDelay        time.Duration `json:"max_delay"`
 	BackoffFactor   float64       `json:"backoff_factor"`
 	EnableJitter    bool          `json:"enable_jitter"`
-	RetryableErrors []string      `json:"retryable_errors"`
 }
 
 // DefaultRetryConfig returns default retry configuration
@@ -219,20 +367,21 @@ func DefaultRetryConfig() RetryConfig {
 
 // RetryExecutor implements retry logic with exponential backoff
 type RetryExecutor struct {
+	*BaseRecoveryMechanism
 	config RetryConfig
-	logger *Logger
 }
 
 // NewRetryExecutor creates a new retry executor
 func NewRetryExecutor(config RetryConfig, logger *Logger) *RetryExecutor {
 	return &RetryExecutor{
-		config: config,
-		logger: logger,
+		BaseRecoveryMechanism: NewBaseRecoveryMechanism("retry-executor", logger),
+		config:                config,
 	}
 }
 
-// Execute runs the given function with retry logic
-func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
+// ExecuteWithContext implements the ErrorRecoveryMechanism interface
+func (re *RetryExecutor) ExecuteWithContext(ctx context.Context, fn func() error) error {
+	re.RecordRequest()
 	var lastErr error
 
 	for attempt := 1; attempt <= re.config.MaxAttempts; attempt++ {
@@ -240,8 +389,9 @@ func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
 		err := fn()
 		if err == nil {
 			if attempt > 1 {
-				re.logger.Infof("Operation succeeded on attempt %d", attempt)
+				re.LogInfo("Operation succeeded after %d attempts", attempt)
 			}
+			re.RecordSuccess()
 			return nil
 		}
 
@@ -249,30 +399,42 @@ func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
 
 		// Check if error is retryable
 		if !re.isRetryableError(err) {
-			re.logger.Debugf("Non-retryable error on attempt %d: %v", attempt, err)
+			// Only log non-retryable errors once
+			re.RecordFailure()
 			return err
 		}
 
 		// Don't wait after the last attempt
 		if attempt == re.config.MaxAttempts {
+			re.RecordFailure()
 			break
 		}
 
 		// Calculate delay with exponential backoff
 		delay := re.calculateDelay(attempt)
-		re.logger.Debugf("Retrying operation after %v (attempt %d/%d): %v",
-			delay, attempt, re.config.MaxAttempts, err)
+		// Only log on first retry and then every 3rd attempt to reduce spam
+		if attempt == 1 || attempt%3 == 0 {
+			re.LogDebug("Retrying operation after %v (attempt %d/%d): %v",
+				delay, attempt, re.config.MaxAttempts, err)
+		}
 
 		// Wait with context cancellation support
 		select {
 		case <-ctx.Done():
+			re.RecordFailure()
 			return ctx.Err()
 		case <-time.After(delay):
 			// Continue to next attempt
 		}
 	}
 
-	return fmt.Errorf("operation failed after %d attempts: %w", re.config.MaxAttempts, lastErr)
+	finalErr := fmt.Errorf("operation failed after %d attempts: %w", re.config.MaxAttempts, lastErr)
+	return finalErr
+}
+
+// Execute runs the given function with retry logic (for backward compatibility)
+func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
+	return re.ExecuteWithContext(ctx, fn)
 }
 
 // isRetryableError checks if an error should trigger a retry
@@ -341,10 +503,36 @@ func (re *RetryExecutor) calculateDelay(attempt int) time.Duration {
 	return time.Duration(delay)
 }
 
+// Reset resets the retry executor state
+func (re *RetryExecutor) Reset() {
+	// Nothing to reset for RetryExecutor
+	re.LogDebug("Retry executor reset")
+}
+
+// IsAvailable always returns true for RetryExecutor
+func (re *RetryExecutor) IsAvailable() bool {
+	return true
+}
+
+// GetMetrics returns metrics about the retry executor
+func (re *RetryExecutor) GetMetrics() map[string]interface{} {
+	metrics := re.GetBaseMetrics()
+
+	// Add retry executor specific metrics
+	metrics["max_attempts"] = re.config.MaxAttempts
+	metrics["initial_delay_ms"] = re.config.InitialDelay.Milliseconds()
+	metrics["max_delay_ms"] = re.config.MaxDelay.Milliseconds()
+	metrics["backoff_factor"] = re.config.BackoffFactor
+	metrics["enable_jitter"] = re.config.EnableJitter
+	metrics["retryable_errors"] = re.config.RetryableErrors
+
+	return metrics
+}
+
 // HTTPError represents an HTTP error with status code
 type HTTPError struct {
-	StatusCode int
 	Message    string
+	StatusCode int
 }
 
 // Error implements the error interface
@@ -354,20 +542,12 @@ func (e *HTTPError) Error() string {
 
 // GracefulDegradation implements graceful degradation patterns
 type GracefulDegradation struct {
-	// Fallback functions for different operations
-	fallbacks map[string]func() (interface{}, error)
-
-	// Health checks for dependencies
-	healthChecks map[string]func() bool
-
-	// Configuration
-	config GracefulDegradationConfig
-
-	// State tracking
+	*BaseRecoveryMechanism
+	fallbacks        map[string]func() (interface{}, error)
+	healthChecks     map[string]func() bool
 	degradedServices map[string]time.Time
+	config           GracefulDegradationConfig
 	mutex            sync.RWMutex
-
-	logger *Logger
 }
 
 // GracefulDegradationConfig holds configuration for graceful degradation
@@ -389,11 +569,11 @@ func DefaultGracefulDegradationConfig() GracefulDegradationConfig {
 // NewGracefulDegradation creates a new graceful degradation manager
 func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *GracefulDegradation {
 	gd := &GracefulDegradation{
-		fallbacks:        make(map[string]func() (interface{}, error)),
-		healthChecks:     make(map[string]func() bool),
-		degradedServices: make(map[string]time.Time),
-		config:           config,
-		logger:           logger,
+		BaseRecoveryMechanism: NewBaseRecoveryMechanism("graceful-degradation", logger),
+		fallbacks:             make(map[string]func() (interface{}, error)),
+		healthChecks:          make(map[string]func() bool),
+		degradedServices:      make(map[string]time.Time),
+		config:                config,
 	}
 
 	// Start health check routine
@@ -416,10 +596,29 @@ func (gd *GracefulDegradation) RegisterHealthCheck(serviceName string, healthChe
 	gd.healthChecks[serviceName] = healthCheck
 }
 
+// ExecuteWithContext implements the ErrorRecoveryMechanism interface
+func (gd *GracefulDegradation) ExecuteWithContext(ctx context.Context, fn func() error) error {
+	gd.RecordRequest()
+
+	// Execute with a simple wrapper
+	_, err := gd.ExecuteWithFallback("default", func() (interface{}, error) {
+		return nil, fn()
+	})
+
+	if err != nil {
+		gd.RecordFailure()
+	} else {
+		gd.RecordSuccess()
+	}
+
+	return err
+}
+
 // ExecuteWithFallback executes a function with fallback support
 func (gd *GracefulDegradation) ExecuteWithFallback(serviceName string, primary func() (interface{}, error)) (interface{}, error) {
 	// Check if service is degraded
 	if gd.isServiceDegraded(serviceName) {
+		gd.LogInfo("Service %s is degraded, using fallback", serviceName)
 		return gd.executeFallback(serviceName)
 	}
 
@@ -428,9 +627,11 @@ func (gd *GracefulDegradation) ExecuteWithFallback(serviceName string, primary f
 	if err != nil {
 		// Mark service as degraded
 		gd.markServiceDegraded(serviceName)
+		gd.LogError("Service %s failed: %v", serviceName, err)
 
 		// Try fallback if available
 		if gd.config.EnableFallbacks {
+			gd.LogInfo("Using fallback for service %s", serviceName)
 			return gd.executeFallback(serviceName)
 		}
 
@@ -465,7 +666,7 @@ func (gd *GracefulDegradation) markServiceDegraded(serviceName string) {
 	defer gd.mutex.Unlock()
 
 	if _, exists := gd.degradedServices[serviceName]; !exists {
-		gd.logger.Errorf("Service %s marked as degraded", serviceName)
+		gd.LogError("Service %s marked as degraded", serviceName)
 	}
 
 	gd.degradedServices[serviceName] = time.Now()
@@ -481,26 +682,27 @@ func (gd *GracefulDegradation) executeFallback(serviceName string) (interface{},
 		return nil, fmt.Errorf("no fallback available for service %s", serviceName)
 	}
 
-	gd.logger.Infof("Executing fallback for degraded service %s", serviceName)
+	gd.LogInfo("Executing fallback for degraded service %s", serviceName)
 	return fallback()
 }
 
 // startHealthCheckRoutine starts the background health check routine
 func (gd *GracefulDegradation) startHealthCheckRoutine() {
-	ticker := time.NewTicker(gd.config.HealthCheckInterval)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		gd.performHealthChecks()
-	}
+	healthCheckTask := NewBackgroundTask(
+		"graceful-degradation-health-check",
+		gd.config.HealthCheckInterval,
+		gd.performHealthChecks,
+		gd.BaseRecoveryMechanism.logger,
+	)
+	healthCheckTask.Start()
 }
 
 // performHealthChecks runs health checks for all registered services
 func (gd *GracefulDegradation) performHealthChecks() {
 	gd.mutex.RLock()
 	healthChecks := make(map[string]func() bool)
-	for name, check := range gd.healthChecks {
-		healthChecks[name] = check
+	for k, v := range gd.healthChecks {
+		healthChecks[k] = v
 	}
 	gd.mutex.RUnlock()
 
@@ -533,13 +735,59 @@ func (gd *GracefulDegradation) GetDegradedServices() []string {
 	return degraded
 }
 
+// Reset resets the state of all degraded services
+func (gd *GracefulDegradation) Reset() {
+	gd.mutex.Lock()
+	defer gd.mutex.Unlock()
+
+	// Clear degraded services
+	gd.degradedServices = make(map[string]time.Time)
+	gd.LogInfo("Graceful degradation state has been reset")
+}
+
+// IsAvailable returns whether the mechanism is available for use
+func (gd *GracefulDegradation) IsAvailable() bool {
+	return true
+}
+
+// GetMetrics returns metrics about the graceful degradation mechanism
+func (gd *GracefulDegradation) GetMetrics() map[string]interface{} {
+	gd.mutex.RLock()
+	degradedCount := len(gd.degradedServices)
+
+	// Get the names of degraded services
+	degradedServices := make([]string, 0, degradedCount)
+	for service := range gd.degradedServices {
+		degradedServices = append(degradedServices, service)
+	}
+
+	// Get total count of registered fallbacks and health checks
+	fallbackCount := len(gd.fallbacks)
+	healthCheckCount := len(gd.healthChecks)
+	gd.mutex.RUnlock()
+
+	// Get base metrics
+	metrics := gd.GetBaseMetrics()
+
+	// Add graceful degradation specific metrics
+	metrics["degraded_services_count"] = degradedCount
+	metrics["degraded_services"] = degradedServices
+	metrics["registered_fallbacks_count"] = fallbackCount
+	metrics["registered_health_checks_count"] = healthCheckCount
+	metrics["health_check_interval_seconds"] = gd.config.HealthCheckInterval.Seconds()
+	metrics["recovery_timeout_seconds"] = gd.config.RecoveryTimeout.Seconds()
+	metrics["fallbacks_enabled"] = gd.config.EnableFallbacks
+
+	return metrics
+}
+
 // ErrorRecoveryManager coordinates all error recovery mechanisms
 type ErrorRecoveryManager struct {
 	circuitBreakers     map[string]*CircuitBreaker
 	retryExecutor       *RetryExecutor
 	gracefulDegradation *GracefulDegradation
-	mutex               sync.RWMutex
 	logger              *Logger
+	mutex               sync.RWMutex
 }
 
 // NewErrorRecoveryManager creates a new error recovery manager

@@ -76,24 +76,3 @@ func TestCache_SetMaxSize(t *testing.T) {
 		t.Error("Expected oldest item 'keyA' to be evicted, but it still exists")
 	}
 }
-
-func TestJWKCache_WithInternalCache(t *testing.T) {
-	cache := NewJWKCache()
-
-	// Check that the internal cache is properly initialized
-	if cache.internalCache == nil {
-		t.Error("internalCache field was not initialized")
-	}
-
-	// Test max size configuration
-	testSize := 50
-	cache.SetMaxSize(testSize)
-
-	if cache.maxSize != testSize {
-		t.Errorf("JWKCache maxSize not updated, expected %d, got %d", testSize, cache.maxSize)
-	}
-
-	if cache.internalCache.maxSize != testSize {
-		t.Errorf("internalCache maxSize not updated, expected %d, got %d", testSize, cache.internalCache.maxSize)
-	}
-}

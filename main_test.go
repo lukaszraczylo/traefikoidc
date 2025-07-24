@@ -30,8 +30,8 @@ type TestSuite struct {
 	ecPrivateKey   *ecdsa.PrivateKey
 	tOidc          *TraefikOidc
 	mockJWKCache   *MockJWKCache
-	token          string
 	sessionManager *SessionManager
+	token          string
 }
 
 // Setup initializes the test suite
@@ -410,15 +410,15 @@ func TestServeHTTP(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                      string
-		requestPath               string
 		sessionValues             map[interface{}]interface{}
-		expectedStatus            int
-		expectedBody              string
 		setupSession              func(*SessionData)
 		mockRefreshTokenFunc      func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error)
-		assertSessionAfterRequest func(t *testing.T, rr *httptest.ResponseRecorder, req *http.Request, sessionManager *SessionManager) // Added for post-request checks
-		requestHeaders            map[string]string                                                                                    // Added for setting headers like Accept
+		assertSessionAfterRequest func(t *testing.T, rr *httptest.ResponseRecorder, req *http.Request, sessionManager *SessionManager)
+		requestHeaders            map[string]string
+		name                      string
+		requestPath               string
+		expectedBody              string
+		expectedStatus            int
 	}{
 		{
 			name:           "Excluded URL",
@@ -503,7 +503,13 @@ func TestServeHTTP(t *testing.T) {
 				// We rely on needsRefresh=true and the presence of the refresh token to trigger the refresh attempt.
 				session.SetAuthenticated(true) // Set flag initially, though isUserAuthenticated will override based on token
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(createExpiredToken())   // Set expired token
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)           // Set expired token
 				session.SetRefreshToken("valid-refresh-token") // Set valid refresh token
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
@@ -572,7 +578,13 @@ func TestServeHTTP(t *testing.T) {
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true) // Set flag initially
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(createExpiredToken())   // Expired access token
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)           // Expired access token
 				session.SetRefreshToken("valid-refresh-token") // Valid refresh token
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
@@ -594,7 +606,13 @@ func TestServeHTTP(t *testing.T) {
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true) // Set flag initially
 				session.SetEmail("user@example.com")
-				session.SetAccessToken(createExpiredToken())   // Expired access token
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)           // Expired access token
 				session.SetRefreshToken("valid-refresh-token") // Valid refresh token
 			},
 			mockRefreshTokenFunc: func(originalFunc func(refreshToken string) (*TokenResponse, error)) func(refreshToken string) (*TokenResponse, error) {
@@ -855,10 +873,10 @@ func TestJWKToPEM(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name          string
 		jwk           *JWK
-		expectError   bool
+		name          string
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name: "Unsupported Key Type",
@@ -910,8 +928,8 @@ func TestParseJWT(t *testing.T) {
 	tests := []struct {
 		name          string
 		token         string
-		expectError   bool
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name:          "Invalid Format",
@@ -971,11 +989,11 @@ func TestHandleCallback(t *testing.T) {
 	redirectURL := "http://example.com/"
 
 	tests := []struct {
-		name                 string
-		queryParams          string
 		exchangeCodeForToken func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error)
 		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
 		sessionSetupFunc     func(*SessionData)
+		name                 string
+		queryParams          string
 		expectedStatus       int
 	}{
 		{
@@ -1141,7 +1159,7 @@ func TestHandleCallback(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc // Capture range variable
+		// Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			// Clear the global replay cache before each test run
 			replayCacheMu.Lock()
@@ -1238,12 +1256,12 @@ func TestIsAllowedDomain(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name              string
-		email             string
 		allowedDomains    map[string]struct{}
 		allowedUsers      map[string]struct{}
+		name              string
+		email             string
+		expectedLogOutput string
 		allowed           bool
-		expectedLogOutput string // For testing log messages
 	}{
 		{
 			name:           "Allowed domain",
@@ -1325,11 +1343,11 @@ func TestOIDCHandler(t *testing.T) {
 	ts.token = "valid.jwt.token"
 
 	tests := []struct {
-		name                 string
-		queryParams          string
 		exchangeCodeForToken func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error)
 		extractClaimsFunc    func(tokenString string) (map[string]interface{}, error)
 		sessionSetupFunc     func(session *sessions.Session)
+		name                 string
+		queryParams          string
 		expectedStatus       int
 		blacklist            bool
 		rateLimit            bool
@@ -1433,7 +1451,7 @@ func TestOIDCHandler(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc // Capture range variable
+		// Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset token blacklist and cache
 			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
@@ -1486,31 +1504,33 @@ func TestHandleLogout(t *testing.T) {
 	defer mockRevocationServer.Close()
 
 	tests := []struct {
-		name           string
 		setupSession   func(*SessionData)
+		name           string
 		endSessionURL  string
-		expectedStatus int
 		expectedURL    string
 		host           string
+		expectedStatus int
 	}{
 		{
 			name: "Successful logout with end session endpoint",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("test.id.token")
-				session.SetRefreshToken("test-refresh-token")
+				session.SetAccessToken(ValidAccessToken)
+				session.SetIDToken(ValidIDToken)
+				session.SetRefreshToken(ValidRefreshToken)
 			},
 			endSessionURL:  "https://provider/end-session",
 			expectedStatus: http.StatusFound,
-			expectedURL:    "https://provider/end-session?id_token_hint=test.id.token&post_logout_redirect_uri=http%3A%2F%2Fexample.com%2F",
+			expectedURL:    "https://provider/end-session?id_token_hint=" + url.QueryEscape(ValidIDToken) + "&post_logout_redirect_uri=http%3A%2F%2Fexample.com%2F",
 			host:           "test-host",
 		},
 		{
 			name: "Successful logout without end session endpoint",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("test.id.token")
-				session.SetRefreshToken("test-refresh-token")
+				session.SetAccessToken(ValidAccessToken)
+				session.SetIDToken(ValidIDToken)
+				session.SetRefreshToken(ValidRefreshToken)
 			},
 			endSessionURL:  "",
 			expectedStatus: http.StatusFound,
@@ -1528,8 +1548,9 @@ func TestHandleLogout(t *testing.T) {
 			name: "Logout with invalid end session URL",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("test.id.token")
-				session.SetRefreshToken("test-refresh-token")
+				session.SetAccessToken(ValidAccessToken)
+				session.SetIDToken(ValidIDToken)
+				session.SetRefreshToken(ValidRefreshToken)
 			},
 			endSessionURL:  ":\\invalid-url",
 			expectedStatus: http.StatusInternalServerError,
@@ -1811,7 +1832,13 @@ func TestHandleExpiredToken(t *testing.T) {
 			name: "Basic expired token",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("expired.token")
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)
 				session.SetEmail("test@example.com")
 			},
 			expectedPath: "/original/path",
@@ -1820,7 +1847,13 @@ func TestHandleExpiredToken(t *testing.T) {
 			name: "Session with additional values",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetAccessToken("expired.token")
+				// Create an expired token for this test
+				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
+					"iat": time.Now().Add(-2 * time.Hour).Unix(), "nbf": time.Now().Add(-2 * time.Hour).Unix(),
+					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
+				})
+				session.SetAccessToken(expiredToken)
 				session.mainSession.Values["custom_value"] = "should-be-cleared"
 			},
 			expectedPath: "/another/path",
@@ -2071,12 +2104,12 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 	nbf := now.Add(-2 * time.Minute).Unix() // Account for clock skew
 
 	tests := []struct {
-		name                  string
 		allowedRolesAndGroups map[string]struct{}
 		claims                map[string]interface{}
 		setupSession          func(*SessionData)
-		expectedStatus        int
 		expectedHeaders       map[string]string
+		name                  string
+		expectedStatus        int
 	}{
 		{
 			name: "User with allowed role",
@@ -2280,10 +2313,10 @@ func TestExchangeTokensWithRedirects(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name          string
 		setupServer   func() *httptest.Server
-		expectError   bool
+		name          string
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name: "Successful token exchange with redirects",
@@ -2307,7 +2340,7 @@ func TestExchangeTokensWithRedirects(t *testing.T) {
 					if len(cookies) != 3 {
 						t.Errorf("Expected 3 cookies, got %d", len(cookies))
 					}
-					for i := 0; i < 3; i++ {
+					for i := range 3 {
 						found := false
 						expectedName := fmt.Sprintf("redirect-cookie-%d", i)
 						for _, cookie := range cookies {
@@ -2391,9 +2424,9 @@ func TestBuildAuthURL(t *testing.T) {
 		redirectURL    string
 		state          string
 		nonce          string
-		enablePKCE     bool
 		codeChallenge  string
 		expectedPrefix string
+		enablePKCE     bool
 		checkPKCE      bool
 	}{
 		{
@@ -2541,10 +2574,10 @@ func TestExchangeCodeForToken(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name         string
-		enablePKCE   bool
-		codeVerifier string
 		setupMock    func(t *testing.T) *httptest.Server
+		name         string
+		codeVerifier string
+		enablePKCE   bool
 	}{
 		{
 			name:         "With PKCE Enabled and Code Verifier",
@@ -2850,10 +2883,10 @@ func TestJWTVerifyWithSkipReplayCheck(t *testing.T) {
 
 	tests := []struct {
 		name            string
+		errorContains   string
 		skipReplayCheck bool
 		firstCall       bool
 		expectError     bool
-		errorContains   string
 	}{
 		{
 			name:            "First verification with skipReplayCheck=false should succeed",
@@ -3083,7 +3116,7 @@ func TestAuthenticationFlowReplayDetection(t *testing.T) {
 
 	// Step 2: Subsequent requests (simulate normal request processing)
 	// These should use the token cache and skip replay detection
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		err = ts.tOidc.VerifyToken(token)
 		if err != nil {
 			t.Errorf("Subsequent request %d should succeed: %v", i+1, err)
@@ -3204,7 +3237,7 @@ func TestConcurrentTokenValidation(t *testing.T) {
 	iat := now.Unix()
 	nbf := now.Unix()
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		jti := generateRandomString(16)
 		jtis = append(jtis, jti)
 
@@ -3231,9 +3264,9 @@ func TestConcurrentTokenValidation(t *testing.T) {
 
 	results := make(chan error, numGoroutines*numIterations)
 
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(goroutineID int) {
-			for i := 0; i < numIterations; i++ {
+			for i := range numIterations {
 				tokenIndex := (goroutineID + i) % len(tokens)
 				token := tokens[tokenIndex]
 
@@ -3250,7 +3283,7 @@ func TestConcurrentTokenValidation(t *testing.T) {
 
 	// Collect results
 	var errors []error
-	for i := 0; i < numGoroutines*numIterations*2; i++ {
+	for range numGoroutines * numIterations * 2 {
 		if err := <-results; err != nil {
 			errors = append(errors, err)
 		}
@@ -3306,10 +3339,10 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 
 	// Test JTI blacklist behavior
 	tests := []struct {
-		name        string
 		action      func() error
-		expectError bool
+		name        string
 		description string
+		expectError bool
 	}{
 		{
 			name: "Initial verification adds JTI to blacklist",
@@ -3415,7 +3448,7 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 
 	// Step 2: Multiple session-based requests (normal request processing)
 	// These should not trigger replay detection false positives
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		err = ts.tOidc.VerifyToken(token)
 		if err != nil {
 			t.Errorf("Session request %d should succeed: %v", i+1, err)
@@ -3462,9 +3495,9 @@ func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 	nbf := now.Unix()
 
 	tests := []struct {
+		claims      map[string]interface{}
 		name        string
 		tokenType   string
-		claims      map[string]interface{}
 		expectError bool
 	}{
 		{
@@ -3562,5 +3595,609 @@ func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestScopeMerging tests the scope append functionality
+func TestScopeMerging(t *testing.T) {
+	// Helper function to compare string slices
+	equalSlices := func(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i, v := range a {
+			if v != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	tests := []struct {
+		name           string
+		defaultScopes  []string
+		userScopes     []string
+		expectedScopes []string
+	}{
+		{
+			name:           "Empty user scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{},
+			expectedScopes: []string{"openid", "profile", "email"},
+		},
+		{
+			name:           "Nil user scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     nil,
+			expectedScopes: []string{"openid", "profile", "email"},
+		},
+		{
+			name:           "New scopes are appended",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"custom_scope", "another_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+		},
+		{
+			name:           "Deduplication - user scope already in defaults",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"openid", "custom_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope"},
+		},
+		{
+			name:           "Duplicate user scopes are removed",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"custom_scope", "custom_scope", "another_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+		},
+		{
+			name:           "Multiple overlapping scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"profile", "custom_scope", "email", "another_scope", "profile"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+		},
+		{
+			name:           "Only custom scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"read:users", "write:users", "admin"},
+			expectedScopes: []string{"openid", "profile", "email", "read:users", "write:users", "admin"},
+		},
+		{
+			name:           "Empty defaults",
+			defaultScopes:  []string{},
+			userScopes:     []string{"custom1", "custom2"},
+			expectedScopes: []string{"custom1", "custom2"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test the mergeScopes function directly
+			result := mergeScopes(tc.defaultScopes, tc.userScopes)
+			if !equalSlices(result, tc.expectedScopes) {
+				t.Errorf("Expected %v, got %v", tc.expectedScopes, result)
+			}
+		})
+	}
+}
+
+// TestScopeMergingEdgeCases tests additional edge cases for scope deduplication
+func TestScopeMergingEdgeCases(t *testing.T) {
+	// Helper function to compare string slices
+	equalSlices := func(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i, v := range a {
+			if v != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	tests := []struct {
+		name           string
+		description    string
+		defaultScopes  []string
+		userScopes     []string
+		expectedScopes []string
+	}{
+		{
+			name:           "Case sensitivity preserved",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"OpenID", "PROFILE", "custom"},
+			expectedScopes: []string{"openid", "profile", "email", "OpenID", "PROFILE", "custom"},
+			description:    "OAuth scopes are case-sensitive, so different cases should be preserved",
+		},
+		{
+			name:           "Empty strings in user scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"", "custom", "", "another"},
+			expectedScopes: []string{"openid", "profile", "email", "", "custom", "another"},
+			description:    "Empty strings should be preserved (though invalid in OAuth)",
+		},
+		{
+			name:           "Whitespace scopes",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{" ", "custom", "  ", "another"},
+			expectedScopes: []string{"openid", "profile", "email", " ", "custom", "  ", "another"},
+			description:    "Whitespace-only scopes should be preserved as distinct",
+		},
+		{
+			name:          "Large number of scopes",
+			defaultScopes: []string{"openid", "profile", "email"},
+			userScopes:    generateLargeUserScopes(),
+			expectedScopes: func() []string {
+				// Manually calculate expected result with proper deduplication
+				defaults := []string{"openid", "profile", "email"}
+				userScopes := generateLargeUserScopes()
+				return mergeScopes(defaults, userScopes)
+			}(),
+			description: "Performance test with larger scope lists",
+		},
+		{
+			name:           "Complex OAuth scopes with special characters",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"read:users", "write:users", "admin:*", "scope/with/slashes", "scope-with-dashes"},
+			expectedScopes: []string{"openid", "profile", "email", "read:users", "write:users", "admin:*", "scope/with/slashes", "scope-with-dashes"},
+			description:    "Real-world OAuth scopes with colons, slashes, and special characters",
+		},
+		{
+			name:           "Duplicate defaults in user scopes multiple times",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"openid", "profile", "openid", "custom", "email", "profile", "custom"},
+			expectedScopes: []string{"openid", "profile", "email", "custom"},
+			description:    "Multiple duplicates of default scopes should be completely deduplicated",
+		},
+		{
+			name:           "All user scopes are duplicates of defaults",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"email", "openid", "profile", "openid"},
+			expectedScopes: []string{"openid", "profile", "email"},
+			description:    "When all user scopes duplicate defaults, result should be just defaults",
+		},
+		{
+			name:           "Single scope scenarios",
+			defaultScopes:  []string{"openid"},
+			userScopes:     []string{"custom"},
+			expectedScopes: []string{"openid", "custom"},
+			description:    "Minimal case with single scopes",
+		},
+		{
+			name:           "Identical scopes in same order",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"openid", "profile", "email"},
+			expectedScopes: []string{"openid", "profile", "email"},
+			description:    "When user scopes exactly match defaults, no duplication",
+		},
+		{
+			name:           "Identical scopes in different order",
+			defaultScopes:  []string{"openid", "profile", "email"},
+			userScopes:     []string{"email", "profile", "openid"},
+			expectedScopes: []string{"openid", "profile", "email"},
+			description:    "Order of defaults is preserved when user scopes are reordered duplicates",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test the mergeScopes function directly
+			result := mergeScopes(tc.defaultScopes, tc.userScopes)
+			if !equalSlices(result, tc.expectedScopes) {
+				t.Errorf("Expected %v, got %v\nDescription: %s", tc.expectedScopes, result, tc.description)
+			}
+		})
+	}
+}
+
+// generateLargeUserScopes creates a large list of user scopes for performance testing
+func generateLargeUserScopes() []string {
+	scopes := make([]string, 100)
+	for i := range 100 {
+		scopes[i] = fmt.Sprintf("scope_%d", i)
+	}
+	// Add some duplicates to test deduplication performance
+	scopes = append(scopes, "scope_1", "scope_5", "scope_10", "openid") // Include a default duplicate
+	return scopes
+}
+
+// TestScopeMergingPerformance tests performance with large scope lists
+func TestScopeMergingPerformance(t *testing.T) {
+	// Create large scope lists
+	defaultScopes := []string{"openid", "profile", "email"}
+
+	// Create 1000 user scopes with some duplicates
+	userScopes := make([]string, 1000)
+	for i := range 1000 {
+		if i%10 == 0 {
+			// Add some duplicates of defaults
+			userScopes[i] = defaultScopes[i%len(defaultScopes)]
+		} else if i%7 == 0 {
+			// Add some internal duplicates
+			userScopes[i] = fmt.Sprintf("scope_%d", i%50)
+		} else {
+			userScopes[i] = fmt.Sprintf("scope_%d", i)
+		}
+	}
+
+	// Measure performance
+	start := time.Now()
+	result := mergeScopes(defaultScopes, userScopes)
+	duration := time.Since(start)
+
+	// Verify result correctness
+	if len(result) < len(defaultScopes) {
+		t.Errorf("Result should contain at least the default scopes")
+	}
+
+	// Verify no duplicates exist
+	seen := make(map[string]bool)
+	for _, scope := range result {
+		if seen[scope] {
+			t.Errorf("Duplicate scope found in result: %s", scope)
+		}
+		seen[scope] = true
+	}
+
+	// Performance assertion (should be very fast)
+	if duration > time.Millisecond*10 {
+		t.Logf("Performance note: mergeScopes took %v for 1000+ scopes (still acceptable)", duration)
+	}
+
+	t.Logf("Performance: processed %d user scopes in %v, result has %d unique scopes",
+		len(userScopes), duration, len(result))
+}
+
+// TestScopeMergingMemoryEfficiency tests memory efficiency of the mergeScopes function
+func TestScopeMergingMemoryEfficiency(t *testing.T) {
+	defaultScopes := []string{"openid", "profile", "email"}
+	userScopes := []string{"custom1", "custom2"}
+
+	// Test that the function doesn't modify input slices
+	originalDefaults := make([]string, len(defaultScopes))
+	copy(originalDefaults, defaultScopes)
+	originalUser := make([]string, len(userScopes))
+	copy(originalUser, userScopes)
+
+	result := mergeScopes(defaultScopes, userScopes)
+
+	// Verify input slices are unchanged
+	for i, scope := range defaultScopes {
+		if scope != originalDefaults[i] {
+			t.Errorf("Default scopes were modified: expected %s, got %s", originalDefaults[i], scope)
+		}
+	}
+	for i, scope := range userScopes {
+		if scope != originalUser[i] {
+			t.Errorf("User scopes were modified: expected %s, got %s", originalUser[i], scope)
+		}
+	}
+
+	// Verify result is independent
+	result[0] = "modified"
+	if defaultScopes[0] == "modified" {
+		t.Error("Modifying result affected input defaults")
+	}
+
+	expectedLength := len(defaultScopes) + len(userScopes)
+	if len(result) != expectedLength {
+		t.Errorf("Expected result length %d, got %d", expectedLength, len(result))
+	}
+}
+
+// TestNewWithScopeAppending tests that the New function properly merges scopes
+func TestNewWithScopeAppending(t *testing.T) {
+	// Create mock provider metadata server
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metadata := ProviderMetadata{
+			Issuer:        "https://test-issuer.com",
+			AuthURL:       "https://test-issuer.com/auth",
+			TokenURL:      "https://test-issuer.com/token",
+			JWKSURL:       "https://test-issuer.com/jwks",
+			RevokeURL:     "https://test-issuer.com/revoke",
+			EndSessionURL: "https://test-issuer.com/end-session",
+		}
+		json.NewEncoder(w).Encode(metadata)
+	}))
+	defer mockServer.Close()
+
+	tests := []struct {
+		name           string
+		configScopes   []string
+		expectedScopes []string
+	}{
+		{
+			name:           "Default scopes only",
+			configScopes:   []string{},
+			expectedScopes: []string{"openid", "profile", "email"},
+		},
+		{
+			name:           "Custom scopes appended",
+			configScopes:   []string{"custom_scope", "another_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+		},
+		{
+			name:           "Overlapping scopes deduplicated",
+			configScopes:   []string{"openid", "custom_scope"},
+			expectedScopes: []string{"openid", "profile", "email", "custom_scope"},
+		},
+		{
+			name:           "OAuth scopes",
+			configScopes:   []string{"read:users", "write:users", "admin"},
+			expectedScopes: []string{"openid", "profile", "email", "read:users", "write:users", "admin"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create config with test scopes
+			config := &Config{
+				ProviderURL:          mockServer.URL,
+				ClientID:             "test-client",
+				ClientSecret:         "test-secret",
+				CallbackURL:          "/callback",
+				SessionEncryptionKey: "test-encryption-key-thats-long-enough",
+				Scopes:               tc.configScopes,
+			}
+
+			// Create middleware instance
+			middleware, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}), config, "test")
+			if err != nil {
+				t.Fatalf("Failed to create middleware: %v", err)
+			}
+
+			// Wait for initialization
+			if m, ok := middleware.(*TraefikOidc); ok {
+				select {
+				case <-m.initComplete:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("Middleware failed to initialize")
+				}
+
+				// Check that scopes were properly merged
+				if !equalSlices(m.scopes, tc.expectedScopes) {
+					t.Errorf("Expected scopes %v, got %v", tc.expectedScopes, m.scopes)
+				}
+			} else {
+				t.Fatalf("Middleware is not of type *TraefikOidc")
+			}
+		})
+	}
+}
+
+// TestBuildAuthURLWithMergedScopes tests that the auth URL includes the properly merged scopes
+func TestBuildAuthURLWithMergedScopes(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup()
+
+	tests := []struct {
+		name           string
+		expectedScopes string
+		scopes         []string
+	}{
+		{
+			name:           "Default scopes only",
+			scopes:         []string{"openid", "profile", "email"},
+			expectedScopes: "openid profile email offline_access",
+		},
+		{
+			name:           "Custom scopes appended",
+			scopes:         []string{"openid", "profile", "email", "custom_scope", "another_scope"},
+			expectedScopes: "openid profile email custom_scope another_scope offline_access",
+		},
+		{
+			name:           "OAuth scopes",
+			scopes:         []string{"openid", "profile", "email", "read:users", "write:users"},
+			expectedScopes: "openid profile email read:users write:users offline_access",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Configure the test instance with specific scopes
+			tOidc := ts.tOidc
+			tOidc.scopes = tc.scopes // These scopes are already deduplicated by New()
+			tOidc.authURL = "https://auth.example.com/oauth/authorize"
+			tOidc.issuerURL = "https://auth.example.com"
+			// Reset overrideScopes for each test case, as it's part of tOidc state
+			// Default to false, specific tests will set it.
+			tOidc.overrideScopes = false
+
+			// Build auth URL
+			result := tOidc.buildAuthURL("https://app.example.com/callback", "test-state", "test-nonce", "")
+
+			// Parse the resulting URL to verify scopes
+			parsedURL, err := url.Parse(result)
+			if err != nil {
+				t.Fatalf("Failed to parse resulting URL: %v", err)
+			}
+
+			query := parsedURL.Query()
+			actualScopes := query.Get("scope")
+			if actualScopes != tc.expectedScopes {
+				t.Errorf("Expected scopes %q, got %q", tc.expectedScopes, actualScopes)
+			}
+		})
+	}
+}
+
+// TestBuildAuthURL_OverrideScopes_And_OfflineAccess tests the offline_access logic in buildAuthURL
+// considering the overrideScopes flag.
+func TestBuildAuthURL_OverrideScopes_And_OfflineAccess(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup() // Sets up ts.tOidc
+
+	tests := []struct {
+		name           string
+		initialScopes  []string // Scopes as they would be in tOidc.scopes (after New processing)
+		overrideScopes bool
+		isGoogle       bool // To test Google-specific handling
+		isAzure        bool // To test Azure-specific handling
+		expectedParams map[string]string
+		expectedScope  string // The final scope string expected in the URL
+	}{
+		{
+			name:           "Override false, no user scopes, non-Google/Azure",
+			initialScopes:  []string{"openid", "profile", "email"}, // Defaults from New() when config.Scopes is empty
+			overrideScopes: false,
+			expectedScope:  "openid profile email offline_access",
+		},
+		{
+			name:           "Override false, user scopes without offline_access, non-Google/Azure",
+			initialScopes:  []string{"openid", "profile", "email", "custom1"}, // Merged and deduplicated by New()
+			overrideScopes: false,
+			expectedScope:  "openid profile email custom1 offline_access",
+		},
+		{
+			name:           "Override false, user scopes with offline_access, non-Google/Azure",
+			initialScopes:  []string{"openid", "profile", "email", "offline_access", "custom1"},
+			overrideScopes: false,
+			expectedScope:  "openid profile email offline_access custom1", // Order might vary based on merge, but offline_access present
+		},
+		{
+			name:           "Override true, user scopes without offline_access, non-Google/Azure",
+			initialScopes:  []string{"custom1", "custom2"}, // Directly from config.Scopes, deduplicated
+			overrideScopes: true,
+			expectedScope:  "custom1 custom2", // offline_access NOT added
+		},
+		{
+			name:           "Override true, user scopes with offline_access, non-Google/Azure",
+			initialScopes:  []string{"custom1", "offline_access", "custom2"},
+			overrideScopes: true,
+			expectedScope:  "custom1 offline_access custom2", // User explicitly included it
+		},
+		{
+			name:           "Override true, no user scopes (edge case), non-Google/Azure",
+			initialScopes:  []string{}, // config.Scopes was empty
+			overrideScopes: true,
+			// In this edge case, buildAuthURL's logic `(t.overrideScopes && len(t.scopes) == 0)`
+			// will lead to offline_access being added, as it behaves like defaults.
+			expectedScope: "offline_access",
+		},
+		// Google Provider Tests (access_type=offline, prompt=consent)
+		{
+			name:           "Google, Override false, no user scopes",
+			initialScopes:  []string{"openid", "profile", "email"},
+			overrideScopes: false,
+			isGoogle:       true,
+			expectedParams: map[string]string{"access_type": "offline", "prompt": "consent"},
+			expectedScope:  "openid profile email", // No offline_access scope for Google
+		},
+		{
+			name:           "Google, Override true, user scopes",
+			initialScopes:  []string{"custom1", "custom2"},
+			overrideScopes: true,
+			isGoogle:       true,
+			expectedParams: map[string]string{"access_type": "offline", "prompt": "consent"},
+			expectedScope:  "custom1 custom2", // No offline_access scope for Google
+		},
+		// Azure Provider Tests (response_mode=query, offline_access scope added if not present by user)
+		{
+			name:           "Azure, Override false, no user scopes",
+			initialScopes:  []string{"openid", "profile", "email"},
+			overrideScopes: false,
+			isAzure:        true,
+			expectedParams: map[string]string{"response_mode": "query"},
+			expectedScope:  "openid profile email offline_access",
+		},
+		{
+			name:           "Azure, Override true, user scopes without offline_access",
+			initialScopes:  []string{"custom1", "custom2"},
+			overrideScopes: true,
+			isAzure:        true,
+			expectedParams: map[string]string{"response_mode": "query"},
+			expectedScope:  "custom1 custom2", // offline_access NOT added by default when override is true
+		},
+		{
+			name:           "Azure, Override true, user scopes with offline_access",
+			initialScopes:  []string{"custom1", "offline_access"},
+			overrideScopes: true,
+			isAzure:        true,
+			expectedParams: map[string]string{"response_mode": "query"},
+			expectedScope:  "custom1 offline_access",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tOidc := ts.tOidc
+			tOidc.scopes = tc.initialScopes // Set the scopes as if they came from New()
+			tOidc.overrideScopes = tc.overrideScopes
+
+			// Adjust issuerURL for provider-specific tests
+			originalIssuerURL := tOidc.issuerURL
+			if tc.isGoogle {
+				tOidc.issuerURL = "https://accounts.google.com"
+			} else if tc.isAzure {
+				tOidc.issuerURL = "https://login.microsoftonline.com/common"
+			} else {
+				tOidc.issuerURL = "https://generic-provider.com" // Non-Google/Azure
+			}
+
+			authURLString := tOidc.buildAuthURL("http://localhost/callback", "state123", "nonce123", "challenge123")
+			parsedAuthURL, err := url.Parse(authURLString)
+			if err != nil {
+				t.Fatalf("Failed to parse auth URL: %v", err)
+			}
+			query := parsedAuthURL.Query()
+
+			actualScope := query.Get("scope")
+			if actualScope != tc.expectedScope {
+				t.Errorf("Expected scope string %q, got %q", tc.expectedScope, actualScope)
+			}
+
+			if tc.expectedParams != nil {
+				for k, v := range tc.expectedParams {
+					if query.Get(k) != v {
+						t.Errorf("Expected param %s=%s, got %s", k, v, query.Get(k))
+					}
+				}
+			}
+
+			// Restore original issuerURL for next test
+			tOidc.issuerURL = originalIssuerURL
+		})
+	}
+}
+
+// TestBuildAuthURL_SpecificUserCase tests the buildAuthURL function with the specific user-reported scenario.
+func TestBuildAuthURL_SpecificUserCase(t *testing.T) {
+	ts := &TestSuite{t: t}
+	ts.Setup() // Basic setup for tOidc
+
+	// Configure the TraefikOidc instance for the specific scenario
+	tOidc := ts.tOidc
+	tOidc.scopes = []string{"email", "test3"} // This is what t.scopes should be after New()
+	tOidc.overrideScopes = true
+	tOidc.issuerURL = "https://generic-provider.com"    // Non-Google/Azure
+	tOidc.authURL = "https://generic-provider.com/auth" // Dummy auth URL
+	tOidc.clientID = "test-client-id"
+
+	// Expected scope string in the URL
+	expectedScopeString := "email test3"
+
+	// Call buildAuthURL
+	authURLString := tOidc.buildAuthURL("http://localhost/callback", "test-state", "test-nonce", "")
+
+	// Parse the resulting URL
+	parsedAuthURL, err := url.Parse(authURLString)
+	if err != nil {
+		t.Fatalf("Failed to parse generated auth URL %q: %v", authURLString, err)
+	}
+
+	// Get the 'scope' query parameter
+	actualScopeString := parsedAuthURL.Query().Get("scope")
+
+	// Assert that the scope string is as expected
+	if actualScopeString != expectedScopeString {
+		t.Errorf("Expected scope parameter to be %q, but got %q. Full URL: %s",
+			expectedScopeString, actualScopeString, authURLString)
+	}
+
+	// Additionally, ensure 'offline_access' was not added
+	if strings.Contains(actualScopeString, "offline_access") {
+		t.Errorf("Scope parameter %q should not contain 'offline_access' when overrideScopes is true and it's not in tOidc.scopes", actualScopeString)
 	}
 }

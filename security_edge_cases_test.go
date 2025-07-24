@@ -389,8 +389,8 @@ func TestMissingClaims(t *testing.T) {
 	// Test cases for missing claims
 	testCases := []struct {
 		name          string
-		omittedClaims []string
 		expectedError string
+		omittedClaims []string
 	}{
 		{
 			name:          "Missing Issuer",
@@ -479,8 +479,8 @@ func TestSessionFixationAttack(t *testing.T) {
 	// Set up the attacker's session with malicious data
 	attackerSession.SetAuthenticated(true)
 	attackerSession.SetEmail("attacker@evil.com")
-	attackerSession.SetIDToken("fake-id-token")
-	attackerSession.SetAccessToken("fake-access-token")
+	attackerSession.SetIDToken(ValidIDToken)
+	attackerSession.SetAccessToken(ValidAccessToken)
 
 	// Save the session to get cookies
 	if err := attackerSession.Save(req, resp); err != nil {
@@ -510,6 +510,31 @@ func TestSessionFixationAttack(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
+	// Create keys for JWT verification
+	rsaPrivateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+	rsaPublicKey := &rsaPrivateKey.PublicKey
+
+	// Create JWK
+	jwk := JWK{
+		Kty: "RSA",
+		Kid: "test-key-id",
+		Alg: "RS256",
+		N:   base64.RawURLEncoding.EncodeToString(rsaPublicKey.N.Bytes()),
+		E:   base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}), // 65537 in bytes
+	}
+	jwks := &JWKSet{
+		Keys: []JWK{jwk},
+	}
+
+	// Create mock JWK cache
+	mockJWKCache := &MockJWKCache{
+		JWKS: jwks,
+		Err:  nil,
+	}
+
 	// Create the TraefikOidc middleware
 	tOidc := &TraefikOidc{
 		next:               nextHandler,
@@ -519,6 +544,8 @@ func TestSessionFixationAttack(t *testing.T) {
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
 		clientSecret:       "test-client-secret",
+		jwkCache:           mockJWKCache,
+		jwksURL:            "https://test-jwks-url.com",
 		tokenBlacklist:     NewCache(),
 		tokenCache:         NewTokenCache(),
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
@@ -528,7 +555,13 @@ func TestSessionFixationAttack(t *testing.T) {
 		httpClient:         &http.Client{},
 		initComplete:       make(chan struct{}),
 		sessionManager:     sm,
+		extractClaimsFunc:  extractClaims,
 	}
+
+	// Set up the token verifier and JWT verifier
+	tOidc.jwtVerifier = tOidc
+	tOidc.tokenVerifier = tOidc
+
 	close(tOidc.initComplete)
 
 	// Now create a victim's request with the attacker's cookies

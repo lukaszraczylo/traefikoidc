@@ -23,42 +23,40 @@ type lruEntry struct {
 // Cache provides a thread-safe in-memory caching mechanism with expiration support.
 // It implements an LRU (Least Recently Used) eviction policy using a doubly-linked list for efficiency.
 type Cache struct {
-	// items stores the cached data with string keys.
-	items map[string]CacheItem
-
-	// order maintains the usage order; most recently used items are at the back.
-	order *list.List
-
-	// elems maps keys to their corresponding list elements for O(1) access.
-	elems map[string]*list.Element
-
-	// mutex protects concurrent access to the cache.
-	mutex sync.RWMutex
-
-	// maxSize is the maximum number of items allowed in the cache.
-	maxSize int
-	// autoCleanupInterval defines how often Cleanup is called automatically.
+	items               map[string]CacheItem
+	order               *list.List
+	elems               map[string]*list.Element
+	cleanupTask         *BackgroundTask
+	logger              *Logger
+	maxSize             int
 	autoCleanupInterval time.Duration
-	// stopCleanup channel to terminate the auto cleanup goroutine.
-	stopCleanup chan struct{}
+	mutex               sync.RWMutex
 }
 
 // DefaultMaxSize is the default maximum number of items in the cache.
 const DefaultMaxSize = 500
 
 // NewCache creates a new empty cache instance with default settings.
-// It initializes the internal maps and list, sets the default maximum size,
-// and starts the automatic cleanup goroutine.
+// It initializes the internal maps and list and sets the default maximum size.
 func NewCache() *Cache {
+	return NewCacheWithLogger(nil)
+}
+
+// NewCacheWithLogger creates a new cache with a specified logger
+func NewCacheWithLogger(logger *Logger) *Cache {
+	if logger == nil {
+		logger = newNoOpLogger()
+	}
+
 	c := &Cache{
 		items:               make(map[string]CacheItem, DefaultMaxSize),
 		order:               list.New(),
 		elems:               make(map[string]*list.Element, DefaultMaxSize),
 		maxSize:             DefaultMaxSize,
 		autoCleanupInterval: 5 * time.Minute,
-		stopCleanup:         make(chan struct{}),
+		logger:              logger,
 	}
-	go c.startAutoCleanup()
+	c.startAutoCleanup()
 	return c
 }
 
@@ -214,15 +212,18 @@ func (c *Cache) removeItem(key string) {
 	}
 }
 
-// startAutoCleanup starts the background goroutine that automatically calls the Cleanup method
+// startAutoCleanup starts the background task that automatically calls the Cleanup method
 // at the interval specified by c.autoCleanupInterval.
-// It uses the autoCleanupRoutine helper function.
 func (c *Cache) startAutoCleanup() {
-	autoCleanupRoutine(c.autoCleanupInterval, c.stopCleanup, c.Cleanup)
+	c.cleanupTask = NewBackgroundTask("cache-cleanup", c.autoCleanupInterval, c.Cleanup, c.logger)
+	c.cleanupTask.Start()
 }
 
-// Close stops the automatic cleanup goroutine associated with this cache instance.
+// Close stops the automatic cleanup task associated with this cache instance.
 // It should be called when the cache is no longer needed to prevent resource leaks.
 func (c *Cache) Close() {
-	close(c.stopCleanup)
+	if c.cleanupTask != nil {
+		c.cleanupTask.Stop()
+		c.cleanupTask = nil
+	}
 }

@@ -1,6 +1,7 @@
 package traefikoidc
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
@@ -16,37 +17,104 @@ import (
 )
 
 var (
-	replayCacheMu sync.Mutex
-	replayCache   *Cache // Replace unbounded map with bounded Cache
+	replayCacheMu   sync.RWMutex // Use RWMutex for better read performance
+	replayCache     *Cache       // Replace unbounded map with bounded Cache
+	replayCacheOnce sync.Once
 )
 
-// initReplayCache initializes the global replay cache with size limit
+// initReplayCache initializes the global replay cache for JWT ID tracking.
+// It uses sync.Once to ensure thread-safe single initialization.
+// The cache is bounded to 10,000 entries to prevent unbounded memory growth.
 func initReplayCache() {
-	if replayCache == nil {
+	replayCacheOnce.Do(func() {
 		replayCache = NewCache()
-		replayCache.SetMaxSize(10000) // Set size limit to 10,000 entries
+		replayCache.SetMaxSize(10000)
+	})
+}
+
+// cleanupReplayCache gracefully shuts down the replay cache.
+// It acquires a write lock, closes the cache, and sets it to nil
+// to ensure proper cleanup during shutdown.
+func cleanupReplayCache() {
+	replayCacheMu.Lock()
+	defer replayCacheMu.Unlock()
+
+	if replayCache != nil {
+		replayCache.Close()
+		replayCache = nil
 	}
 }
 
-// STABILITY FIX: Standardize clock skew tolerance usage
-// ClockSkewToleranceFuture defines the tolerance for future-based claims like 'exp'.
-// Allows for more leniency with expiration checks.
+// getReplayCacheStats returns current statistics about the replay cache.
+// Due to sync.Pool limitations, it returns 0 for current size and the
+// configured maximum size of 10,000.
+//
+// Returns:
+//   - size: Current number of entries (always 0 due to implementation).
+//   - maxSize: Maximum allowed entries (10,000).
+func getReplayCacheStats() (size int, maxSize int) {
+	replayCacheMu.RLock()
+	defer replayCacheMu.RUnlock()
+
+	if replayCache == nil {
+		return 0, 0
+	}
+
+	return 0, 10000
+}
+
+// startReplayCacheCleanup initiates a background goroutine that periodically
+// cleans up expired entries from the replay cache. It runs every 5 minutes
+// and logs cache statistics if a logger is provided.
+//
+// Parameters:
+//   - ctx: Context for cancellation.
+//   - logger: Logger for debug output (can be nil).
+func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				size, maxSize := getReplayCacheStats()
+				if logger != nil {
+					logger.Debugf("Replay cache stats: size=%d, maxSize=%d", size, maxSize)
+				}
+
+				replayCacheMu.RLock()
+				if replayCache != nil {
+					replayCache.Cleanup()
+				}
+				replayCacheMu.RUnlock()
+
+			case <-ctx.Done():
+				cleanupReplayCache()
+				if logger != nil {
+					logger.Debug("Replay cache cleanup goroutine stopped due to context cancellation")
+				}
+				return
+			}
+		}
+	}()
+}
+
 var ClockSkewToleranceFuture = 2 * time.Minute
 
-// ClockSkewTolerancePast defines the tolerance for past-based claims like 'iat' and 'nbf'.
-// A smaller tolerance is typically used here to prevent accepting tokens issued too far in the future.
 var ClockSkewTolerancePast = 10 * time.Second
 
-// ClockSkewTolerance is deprecated - use ClockSkewToleranceFuture or ClockSkewTolerancePast
-// STABILITY FIX: Remove inconsistent usage
 var ClockSkewTolerance = ClockSkewToleranceFuture
 
 // JWT represents a JSON Web Token as defined in RFC 7519.
+// JWT represents a parsed JSON Web Token with its three components.
+// It provides structured access to the header, claims, and signature
+// for validation and processing within the OIDC middleware.
 type JWT struct {
 	Header    map[string]interface{}
 	Claims    map[string]interface{}
-	Signature []byte
 	Token     string
+	Signature []byte
 }
 
 // parseJWT decodes a raw JWT string into its constituent parts: header, claims, and signature.
@@ -67,44 +135,75 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
+	// Use memory pool for efficient buffer management
+	pools := GetGlobalMemoryPools()
+	jwtBuf := pools.GetJWTParsingBuffer()
+	defer pools.PutJWTParsingBuffer(jwtBuf)
+
 	jwt := &JWT{
 		Token: tokenString,
 	}
 
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	// Decode header using pooled buffer
+	headerLen := base64.RawURLEncoding.DecodedLen(len(parts[0]))
+	if headerLen > cap(jwtBuf.HeaderBuf) {
+		jwtBuf.HeaderBuf = make([]byte, headerLen)
+	} else {
+		jwtBuf.HeaderBuf = jwtBuf.HeaderBuf[:headerLen]
+	}
+
+	n, err := base64.RawURLEncoding.Decode(jwtBuf.HeaderBuf, []byte(parts[0]))
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode header: %v", err)
 	}
-	// STABILITY FIX: Add comprehensive JSON error handling with panic protection
+	headerBytes := jwtBuf.HeaderBuf[:n]
+
 	if err := json.Unmarshal(headerBytes, &jwt.Header); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal header: %v", err)
 	}
 
-	// Validate header structure
 	if jwt.Header == nil {
 		return nil, fmt.Errorf("invalid JWT format: header is nil after unmarshaling")
 	}
 
-	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	// Decode claims using pooled buffer
+	claimsLen := base64.RawURLEncoding.DecodedLen(len(parts[1]))
+	if claimsLen > cap(jwtBuf.PayloadBuf) {
+		jwtBuf.PayloadBuf = make([]byte, claimsLen)
+	} else {
+		jwtBuf.PayloadBuf = jwtBuf.PayloadBuf[:claimsLen]
+	}
+
+	n, err = base64.RawURLEncoding.Decode(jwtBuf.PayloadBuf, []byte(parts[1]))
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode claims: %v", err)
 	}
+	claimsBytes := jwtBuf.PayloadBuf[:n]
 
-	// STABILITY FIX: Add comprehensive JSON error handling with panic protection
 	if err := json.Unmarshal(claimsBytes, &jwt.Claims); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal claims: %v", err)
 	}
 
-	// Validate claims structure
 	if jwt.Claims == nil {
 		return nil, fmt.Errorf("invalid JWT format: claims is nil after unmarshaling")
 	}
 
-	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	// Decode signature using pooled buffer
+	sigLen := base64.RawURLEncoding.DecodedLen(len(parts[2]))
+	if sigLen > cap(jwtBuf.SignatureBuf) {
+		jwtBuf.SignatureBuf = make([]byte, sigLen)
+	} else {
+		jwtBuf.SignatureBuf = jwtBuf.SignatureBuf[:sigLen]
+	}
+
+	n, err = base64.RawURLEncoding.Decode(jwtBuf.SignatureBuf, []byte(parts[2]))
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode signature: %v", err)
 	}
-	jwt.Signature = signatureBytes
+
+	// Copy signature to JWT struct (create new slice to avoid pool retention)
+	jwt.Signature = make([]byte, n)
+	copy(jwt.Signature, jwtBuf.SignatureBuf[:n])
 
 	return jwt, nil
 }
@@ -183,31 +282,23 @@ func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error 
 		}
 	}
 
-	// Implement replay protection by checking the jti (JWT ID)
-	// Skip replay check if explicitly requested (for revalidation scenarios)
 	shouldSkipReplay := len(skipReplayCheck) > 0 && skipReplayCheck[0]
 
 	if jti, ok := claims["jti"].(string); ok && !shouldSkipReplay {
-		// Skip replay detection for tokens that are being verified from the cache
 		if j.Token == "" {
-			// This is a parsed JWT without the original token string,
-			// which means it's likely from a cached token verification
 			return nil
 		}
 
-		// SECURITY FIX: Use bounded Cache with thread-safe operations
-		replayCacheMu.Lock()
-		defer replayCacheMu.Unlock()
-
-		// Initialize cache if not already done
 		initReplayCache()
 
-		// SECURITY FIX: Check for replay attack using Cache API
-		if _, exists := replayCache.Get(jti); exists {
-			return fmt.Errorf("token replay detected")
+		replayCacheMu.RLock()
+		_, exists := replayCache.Get(jti)
+		replayCacheMu.RUnlock()
+
+		if exists {
+			return fmt.Errorf("token replay detected (jti: %s)", jti)
 		}
 
-		// Calculate expiration time
 		expFloat, ok := claims["exp"].(float64)
 		var expTime time.Time
 		if ok {
@@ -216,10 +307,13 @@ func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error 
 			expTime = time.Now().Add(10 * time.Minute)
 		}
 
-		// SECURITY FIX: Add to replay cache with expiration using Cache API
 		duration := time.Until(expTime)
 		if duration > 0 {
-			replayCache.Set(jti, true, duration)
+			replayCacheMu.Lock()
+			if replayCache != nil {
+				replayCache.Set(jti, true, duration)
+			}
+			replayCacheMu.Unlock()
 		}
 	}
 
@@ -293,17 +387,15 @@ func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 //   - An error describing the failure (e.g., "token has expired", "token used before issued").
 func verifyTimeConstraint(unixTime float64, claimName string, future bool) error {
 	claimTime := time.Unix(int64(unixTime), 0)
-	now := time.Now() // Use current time without truncation
+	now := time.Now()
 
 	var err error
-	if future { // 'exp' check
-		// Token is expired if Now is after (ClaimTime + FutureTolerance)
+	if future {
 		allowedExpiry := claimTime.Add(ClockSkewToleranceFuture)
 		if now.After(allowedExpiry) {
 			err = fmt.Errorf("token has expired (exp: %v, now: %v, allowed_until: %v)", claimTime.UTC(), now.UTC(), allowedExpiry.UTC())
 		}
-	} else { // 'iat' or 'nbf' check
-		// Token is invalid if Now is before (ClaimTime - PastTolerance)
+	} else {
 		allowedStart := claimTime.Add(-ClockSkewTolerancePast)
 		if now.Before(allowedStart) {
 			reason := "not yet valid"

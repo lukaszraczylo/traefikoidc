@@ -7,6 +7,19 @@ import (
 	"testing"
 )
 
+// Helper function to compare string slices
+func equalSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, v := range a {
+		if v != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestCreateConfig(t *testing.T) {
 	t.Run("Default Values", func(t *testing.T) {
 		config := CreateConfig()
@@ -36,29 +49,13 @@ func TestCreateConfig(t *testing.T) {
 		if !config.ForceHTTPS {
 			t.Error("Expected ForceHTTPS to be true by default")
 		}
+
+		// Check OverrideScopes default
+		if config.OverrideScopes {
+			t.Error("Expected OverrideScopes to be false by default")
+		}
 	})
 
-	t.Run("Custom Values Preserved", func(t *testing.T) {
-		config := CreateConfig()
-		config.Scopes = []string{"custom_scope"}
-		config.LogLevel = "debug"
-		config.RateLimit = 50
-		config.ForceHTTPS = false
-
-		// Verify custom values are not overwritten
-		if len(config.Scopes) != 1 || config.Scopes[0] != "custom_scope" {
-			t.Error("Custom scopes were overwritten")
-		}
-		if config.LogLevel != "debug" {
-			t.Error("Custom log level was overwritten")
-		}
-		if config.RateLimit != 50 {
-			t.Error("Custom rate limit was overwritten")
-		}
-		if config.ForceHTTPS {
-			t.Error("Custom ForceHTTPS value was overwritten")
-		}
-	})
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -241,10 +238,10 @@ func TestLogger(t *testing.T) {
 	var debugBuf, infoBuf, errorBuf bytes.Buffer
 
 	tests := []struct {
-		name      string
-		logLevel  string
 		testFunc  func(*Logger)
 		checkFunc func(t *testing.T, debugOut, infoOut, errorOut string)
+		name      string
+		logLevel  string
 	}{
 		{
 			name:     "Debug Level",
@@ -392,9 +389,9 @@ func TestHandleError(t *testing.T) {
 
 // Test helper types
 type testResponseRecorder struct {
-	statusCode int
-	body       string
 	headers    map[string][]string
+	body       string
+	statusCode int
 }
 
 func (r *testResponseRecorder) Header() http.Header {

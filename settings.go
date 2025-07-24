@@ -26,96 +26,28 @@ type TemplatedHeader struct {
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
 type Config struct {
-	// ProviderURL is the base URL of the OIDC provider (required)
-	// Example: https://accounts.google.com
-	ProviderURL string `json:"providerURL"`
-
-	// RevocationURL is the endpoint for revoking tokens (optional)
-	// If not provided, it will be discovered from provider metadata
-	RevocationURL string `json:"revocationURL"`
-
-	// EnablePKCE enables Proof Key for Code Exchange (PKCE) for the authorization code flow (optional)
-	// This enhances security but might not be supported by all OIDC providers
-	// Default: false
-	EnablePKCE bool `json:"enablePKCE"`
-
-	// CallbackURL is the path where the OIDC provider will redirect after authentication (required)
-	// Example: /oauth2/callback
-	CallbackURL string `json:"callbackURL"`
-
-	// LogoutURL is the path for handling logout requests (optional)
-	// If not provided, it will be set to CallbackURL + "/logout"
-	LogoutURL string `json:"logoutURL"`
-
-	// ClientID is the OAuth 2.0 client identifier (required)
-	ClientID string `json:"clientID"`
-
-	// ClientSecret is the OAuth 2.0 client secret (required)
-	ClientSecret string `json:"clientSecret"`
-
-	// Scopes defines the OAuth 2.0 scopes to request (optional)
-	// Defaults to ["openid", "profile", "email"] if not provided
-	Scopes []string `json:"scopes"`
-
-	// LogLevel sets the logging verbosity (optional)
-	// Valid values: "debug", "info", "error"
-	// Default: "info"
-	LogLevel string `json:"logLevel"`
-
-	// SessionEncryptionKey is used to encrypt session data (required)
-	// Must be a secure random string
-	SessionEncryptionKey string `json:"sessionEncryptionKey"`
-
-	// ForceHTTPS forces the use of HTTPS for all URLs (optional)
-	// Default: false
-	ForceHTTPS bool `json:"forceHTTPS"`
-
-	// RateLimit sets the maximum number of requests per second (optional)
-	// Default: 100
-	RateLimit int `json:"rateLimit"`
-
-	// ExcludedURLs lists paths that bypass authentication (optional)
-	// Example: ["/health", "/metrics"]
-	ExcludedURLs []string `json:"excludedURLs"`
-
-	// AllowedUserDomains restricts access to specific email domains (optional)
-	// Example: ["company.com", "subsidiary.com"]
-	AllowedUserDomains []string `json:"allowedUserDomains"`
-
-	// AllowedUsers restricts access to specific email addresses (optional)
-	// Example: ["user1@example.com", "user2@example.com"]
-	AllowedUsers []string `json:"allowedUsers"`
-
-	// AllowedRolesAndGroups restricts access to users with specific roles or groups (optional)
-	// Example: ["admin", "developer"]
-	AllowedRolesAndGroups []string `json:"allowedRolesAndGroups"`
-
-	// OIDCEndSessionURL is the provider's end session endpoint (optional)
-	// If not provided, it will be discovered from provider metadata
-	OIDCEndSessionURL string `json:"oidcEndSessionURL"`
-
-	// PostLogoutRedirectURI is the URL to redirect to after logout (optional)
-	// Default: "/"
-	PostLogoutRedirectURI string `json:"postLogoutRedirectURI"`
-
-	// HTTPClient allows customizing the HTTP client used for OIDC operations (optional)
-	HTTPClient *http.Client
-
-	// RefreshGracePeriodSeconds defines how many seconds before a token expires
-	// the plugin should attempt to refresh it proactively (optional)
-	// Default: 60
-	RefreshGracePeriodSeconds int `json:"refreshGracePeriodSeconds"`
-	// Headers defines custom HTTP headers to set with templated values (optional)
-	// Values can reference tokens and claims using Go templates with the following variables:
-	// - {{.AccessToken}} - The access token (ID token)
-	// - {{.IdToken}} - Same as AccessToken (for consistency)
-	// - {{.RefreshToken}} - The refresh token
-	// - {{.Claims.email}} - Access token claims (use proper case for claim names)
-	// Examples:
-	//
-	//	[{Name: "X-Forwarded-Email", Value: "{{.Claims.email}}"}]
-	//	[{Name: "Authorization", Value: "Bearer {{.AccessToken}}"}]
-	Headers []TemplatedHeader `json:"headers"`
+	HTTPClient                *http.Client
+	ProviderURL               string            `json:"providerURL"`
+	RevocationURL             string            `json:"revocationURL"`
+	CallbackURL               string            `json:"callbackURL"`
+	LogoutURL                 string            `json:"logoutURL"`
+	ClientID                  string            `json:"clientID"`
+	ClientSecret              string            `json:"clientSecret"`
+	PostLogoutRedirectURI     string            `json:"postLogoutRedirectURI"`
+	LogLevel                  string            `json:"logLevel"`
+	SessionEncryptionKey      string            `json:"sessionEncryptionKey"`
+	OIDCEndSessionURL         string            `json:"oidcEndSessionURL"`
+	AllowedRolesAndGroups     []string          `json:"allowedRolesAndGroups"`
+	ExcludedURLs              []string          `json:"excludedURLs"`
+	AllowedUserDomains        []string          `json:"allowedUserDomains"`
+	AllowedUsers              []string          `json:"allowedUsers"`
+	Scopes                    []string          `json:"scopes"`
+	Headers                   []TemplatedHeader `json:"headers"`
+	RateLimit                 int               `json:"rateLimit"`
+	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
+	ForceHTTPS                bool              `json:"forceHTTPS"`
+	EnablePKCE                bool              `json:"enablePKCE"`
+	OverrideScopes            bool              `json:"overrideScopes"`
 }
 
 const (
@@ -156,6 +88,7 @@ func CreateConfig() *Config {
 		RateLimit:                 DefaultRateLimit,
 		ForceHTTPS:                true,  // Secure by default
 		EnablePKCE:                false, // PKCE is opt-in
+		OverrideScopes:            false, // Default to appending scopes, not overriding
 		RefreshGracePeriodSeconds: 60,    // Default grace period of 60 seconds
 	}
 
@@ -248,7 +181,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("refreshGracePeriodSeconds cannot be negative")
 	}
 
-	// SECURITY FIX: Validate headers configuration with enhanced template security
+	// Validate headers configuration for template security
 	for _, header := range c.Headers {
 		if header.Name == "" {
 			return fmt.Errorf("header name cannot be empty")
@@ -274,7 +207,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("header template '%s' appears to use lowercase 'refreshToken' - use '{{.RefreshToken...' instead (case sensitive)", header.Value)
 		}
 
-		// SECURITY FIX: Implement template sandboxing and validation
+		// Validate template syntax and security
 		if err := validateTemplateSecure(header.Value); err != nil {
 			return fmt.Errorf("header template '%s' failed security validation: %w", header.Value, err)
 		}
@@ -283,9 +216,9 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// SECURITY FIX: validateTemplateSecure implements template sandboxing and validation
+// validateTemplateSecure validates template expressions for security vulnerabilities
 func validateTemplateSecure(templateStr string) error {
-	// SECURITY FIX: Restrict dangerous template functions and patterns
+	// Check for dangerous template functions and patterns
 	dangerousPatterns := []string{
 		"{{call",     // Function calls
 		"{{range",    // Range over arbitrary data
@@ -323,7 +256,7 @@ func validateTemplateSecure(templateStr string) error {
 		}
 	}
 
-	// SECURITY FIX: Whitelist allowed template variables and functions
+	// Validate template variables against whitelist
 	allowedPatterns := []string{
 		"{{.AccessToken}}",
 		"{{.IdToken}}",
@@ -344,7 +277,7 @@ func validateTemplateSecure(templateStr string) error {
 		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, or Claims.*")
 	}
 
-	// SECURITY FIX: Validate Claims access patterns
+	// Validate claims access patterns
 	if strings.Contains(templateStr, "{{.Claims.") {
 		// Simple validation - ensure claims access is to known safe fields
 		safeClaimsFields := map[string]bool{
@@ -381,7 +314,7 @@ func validateTemplateSecure(templateStr string) error {
 				return fmt.Errorf("access to Claims.%s is not allowed for security reasons", fieldName)
 			}
 
-			// Fix the search for next occurrence
+			// Search for next occurrence
 			nextStart := strings.Index(templateStr[start+end+2:], "{{.Claims.")
 			if nextStart != -1 {
 				start = start + end + 2 + nextStart
@@ -391,7 +324,7 @@ func validateTemplateSecure(templateStr string) error {
 		}
 	}
 
-	// SECURITY FIX: Prevent code injection through template syntax
+	// Prevent code injection through template syntax
 	if strings.Contains(templateStr, "{{") && strings.Contains(templateStr, "}}") {
 		// Count opening and closing braces
 		openCount := strings.Count(templateStr, "{{")
@@ -485,7 +418,7 @@ func (l *Logger) Info(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
-// Debug logs a message at the DEBUG level using Printf style formatting.
+// Debug logs a message at the DEBUG level.
 // Output is directed to stdout only if the configured log level is "debug".
 //
 // Parameters:
@@ -516,7 +449,7 @@ func (l *Logger) Infof(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
-// Debugf logs a message at the DEBUG level using Printf style formatting.
+// Debugf logs a formatted message at the DEBUG level.
 // Equivalent to calling l.Debug(format, args...).
 // Output is directed to stdout only if the configured log level is "debug".
 //
@@ -536,6 +469,17 @@ func (l *Logger) Debugf(format string, args ...interface{}) {
 //   - args: The arguments for the format string.
 func (l *Logger) Errorf(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
+}
+
+// newNoOpLogger creates a silent logger that doesn't output anything.
+// This is useful for internal components that need a logger instance
+// but should not produce any output by default.
+func newNoOpLogger() *Logger {
+	return &Logger{
+		logError: log.New(io.Discard, "", 0),
+		logInfo:  log.New(io.Discard, "", 0),
+		logDebug: log.New(io.Discard, "", 0),
+	}
 }
 
 // handleError logs an error message using the provided logger and sends an HTTP error

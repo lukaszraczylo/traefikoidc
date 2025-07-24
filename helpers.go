@@ -72,20 +72,11 @@ func deriveCodeChallenge(codeVerifier string) string {
 // It contains the various tokens and metadata returned after successful
 // code exchange or token refresh operations.
 type TokenResponse struct {
-	// IDToken is the OIDC ID token containing user claims
-	IDToken string `json:"id_token"`
-
-	// AccessToken is the OAuth 2.0 access token for API access
-	AccessToken string `json:"access_token"`
-
-	// RefreshToken is the OAuth 2.0 refresh token for obtaining new tokens
+	IDToken      string `json:"id_token"`
+	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
-
-	// ExpiresIn is the lifetime in seconds of the access token
-	ExpiresIn int `json:"expires_in"`
-
-	// TokenType is the type of token, typically "Bearer"
-	TokenType string `json:"token_type"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
 }
 
 // exchangeTokens performs the OAuth 2.0 token exchange with the OIDC provider's token endpoint.
@@ -123,17 +114,13 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 		data.Set("refresh_token", codeOrToken)
 	}
 
-	// Use the reusable token HTTP client, fallback to creating one if not initialized
 	client := t.tokenHTTPClient
 	if client == nil {
-		// Fallback for tests or incomplete initialization - create a temporary client
-		// with the same behavior as the original implementation
 		jar, _ := cookiejar.New(nil)
 		client = &http.Client{
 			Transport: t.httpClient.Transport,
 			Timeout:   t.httpClient.Timeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				// Always follow redirects for OIDC endpoints
 				if len(via) >= 50 {
 					return fmt.Errorf("stopped after 50 redirects")
 				}
@@ -222,16 +209,25 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 // TokenCache provides a caching mechanism for validated tokens.
 // It stores token claims to avoid repeated validation of the
 // same token, improving performance for frequently used tokens.
+// TokenCache provides a specialized cache for validated JWT tokens.
+// It wraps the generic Cache with token-specific prefixing to avoid
+// key collisions and provides a clean interface for token caching operations.
 type TokenCache struct {
-	// cache is the underlying cache implementation
 	cache *Cache
 }
 
+const (
+	defaultTokenCacheMaxSize         = 1000
+	defaultTokenCacheCleanupInterval = 2 * time.Minute
+)
+
 // NewTokenCache creates and initializes a new TokenCache.
-// It internally creates a new generic Cache instance for storage.
 func NewTokenCache() *TokenCache {
+	cache := NewCache()
+	cache.SetMaxSize(defaultTokenCacheMaxSize)
+
 	return &TokenCache{
-		cache: NewCache(),
+		cache: cache,
 	}
 }
 
@@ -303,7 +299,6 @@ func (tc *TokenCache) Close() {
 func (t *TraefikOidc) exchangeCodeForToken(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 	ctx := context.Background()
 
-	// Only include code verifier if PKCE is enabled
 	effectiveCodeVerifier := ""
 	if t.enablePKCE && codeVerifier != "" {
 		effectiveCodeVerifier = codeVerifier
@@ -352,7 +347,7 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	accessToken := session.GetAccessToken()
+	idToken := session.GetIDToken()
 
 	if err := session.Clear(req, rw); err != nil {
 		t.logger.Errorf("Error clearing session: %v", err)
@@ -371,8 +366,8 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		postLogoutRedirectURI = fmt.Sprintf("%s%s", baseURL, postLogoutRedirectURI)
 	}
 
-	if t.endSessionURL != "" && accessToken != "" {
-		logoutURL, err := BuildLogoutURL(t.endSessionURL, accessToken, postLogoutRedirectURI)
+	if t.endSessionURL != "" && idToken != "" {
+		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, postLogoutRedirectURI)
 		if err != nil {
 			t.logger.Errorf("Failed to build logout URL: %v", err)
 			http.Error(rw, "Logout error", http.StatusInternalServerError)
@@ -411,4 +406,21 @@ func BuildLogoutURL(endSessionURL, idToken, postLogoutRedirectURI string) (strin
 	u.RawQuery = q.Encode()
 
 	return u.String(), nil
+}
+
+// deduplicateScopes removes duplicate strings from a slice while preserving order.
+// The first occurrence of each scope is kept.
+func deduplicateScopes(scopes []string) []string {
+	if len(scopes) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{})
+	result := []string{}
+	for _, scope := range scopes {
+		if _, ok := seen[scope]; !ok {
+			seen[scope] = struct{}{}
+			result = append(result, scope)
+		}
+	}
+	return result
 }

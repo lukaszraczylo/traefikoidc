@@ -19,12 +19,12 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
-		name               string
-		headers            []TemplatedHeader
 		sessionSetup       func(*SessionData)
 		claims             map[string]interface{}
 		expectedHeaders    map[string]string
 		interceptedHeaders map[string]string
+		name               string
+		headers            []TemplatedHeader
 	}{
 		{
 			name: "Basic Email Header",
@@ -70,7 +70,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 		{
 			name: "ID Token Header",
 			headers: []TemplatedHeader{
-				{Name: "X-ID-Token", Value: "{{.IdToken}}"},
+				{Name: "X-ID-Token", Value: "{{.IDToken}}"},
 			},
 			expectedHeaders: map[string]string{
 				// We'll update this dynamically after generating the token
@@ -81,7 +81,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 			name: "Both Token Types",
 			headers: []TemplatedHeader{
 				{Name: "X-Access-Token", Value: "{{.AccessToken}}"},
-				{Name: "X-ID-Token", Value: "{{.IdToken}}"},
+				{Name: "X-ID-Token", Value: "{{.IDToken}}"},
 			},
 			expectedHeaders: map[string]string{
 				// We'll update these dynamically after generating the tokens
@@ -389,6 +389,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 						// The current test expects the literal string "<no value>".
 						// Let's assume for now that if it's missing, it's an error unless specifically handled.
 						// The test as written expects "<no value>" to be present.
+						t.Logf("Header %s not set, but expected '<no value>' for missing claim", name)
 					}
 					t.Errorf("Expected header %s was not set", name)
 
@@ -426,9 +427,9 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 	ts.Setup()
 
 	tests := []struct {
+		claims             map[string]interface{}
 		name               string
 		headers            []TemplatedHeader
-		claims             map[string]interface{}
 		shouldExecuteCheck bool
 	}{
 		{
@@ -577,6 +578,7 @@ func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 func createLargeTemplate(size int) string {
 	template := "{{with .Claims}}"
 	for i := 0; i < size; i++ {
+
 		if i > 0 {
 			template += ","
 		}
@@ -590,6 +592,7 @@ func createLargeTemplate(size int) string {
 func createLargeClaims(size int) map[string]interface{} {
 	claims := make(map[string]interface{})
 	for i := 0; i < size; i++ {
+		claims["email"] = "largeclaimsuser@example.com" // Add email claim
 		key := "field" + string(rune('a'+i%26)) + string(rune('0'+i%10))
 		claims[key] = "value" + string(rune('a'+i%26)) + string(rune('0'+i%10))
 	}
