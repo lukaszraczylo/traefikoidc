@@ -1377,7 +1377,18 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 
 	csrfToken := session.GetCSRF()
 	if csrfToken == "" {
-		t.logger.Error("CSRF token missing in session during callback")
+		// Enhanced logging for debugging
+		t.logger.Errorf("CSRF token missing in session during callback. Authenticated: %v, Request URL: %s",
+			session.GetAuthenticated(), req.URL.String())
+
+		// Check if this might be a cookie issue
+		cookie, err := req.Cookie("_oidc_raczylo_m")
+		if err != nil {
+			t.logger.Errorf("Main session cookie not found in request: %v", err)
+		} else {
+			t.logger.Errorf("Main session cookie exists but CSRF token is empty. Cookie value length: %d", len(cookie.Value))
+		}
+
 		t.sendErrorResponse(rw, req, "CSRF token missing in session", http.StatusBadRequest)
 		return
 	}
@@ -1616,9 +1627,17 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		t.logger.Debugf("PKCE enabled, generated code challenge")
 	}
 
-	if err := session.Clear(req, rw); err != nil {
-		t.logger.Errorf("Error clearing session before initiating authentication: %v", err)
-	}
+	// CRITICAL FIX: Don't clear the entire session which can cause cookie issues
+	// Instead, selectively clear only authentication-related values while preserving session continuity
+	session.SetAuthenticated(false)
+	session.SetEmail("")
+	session.SetAccessToken("")
+	session.SetRefreshToken("")
+	session.SetIDToken("")
+	// Clear OIDC flow values from previous attempts
+	session.SetNonce("")
+	session.SetCodeVerifier("")
+	// Keep the session ID intact to maintain cookie continuity
 
 	// Set new session values
 	session.SetCSRF(csrfToken)
@@ -1630,12 +1649,20 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	session.SetIncomingPath(req.URL.RequestURI())
 	t.logger.Debugf("Storing incoming path: %s", req.URL.RequestURI())
 
+	// CRITICAL FIX: Ensure session is saved with proper cookie headers before redirect
+	// Mark session as dirty to force save even if the session manager doesn't detect changes
+	session.MarkDirty()
+
 	// Save the session (to store CSRF, Nonce, etc.)
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("Failed to save session before redirecting to provider: %v", err)
 		http.Error(rw, "Failed to save session", http.StatusInternalServerError)
 		return
 	}
+
+	// Add debug logging to verify session was saved
+	t.logger.Debugf("Session saved before redirect. CSRF: %s, Nonce: %s",
+		csrfToken, nonce)
 
 	// Build and redirect to authentication URL
 	authURL := t.buildAuthURL(redirectURL, csrfToken, nonce, codeChallenge)
