@@ -16,22 +16,32 @@ import (
 	"time"
 )
 
+// JWK represents a JSON Web Key as defined in RFC 7517.
+// It contains the cryptographic key parameters used for verifying
+// JWT signatures. Supports both RSA and ECDSA key types.
 type JWK struct {
-	Kty string `json:"kty"`
-	Kid string `json:"kid"`
-	Use string `json:"use"`
-	N   string `json:"n"`
-	E   string `json:"e"`
-	Alg string `json:"alg"`
-	Crv string `json:"crv"`
-	X   string `json:"x"`
-	Y   string `json:"y"`
+	Kty string `json:"kty"` // Key type (RSA, EC)
+	Kid string `json:"kid"` // Key ID
+	Use string `json:"use"` // Key use (sig, enc)
+	N   string `json:"n"`   // RSA modulus
+	E   string `json:"e"`   // RSA public exponent
+	Alg string `json:"alg"` // Algorithm
+	Crv string `json:"crv"` // ECDSA curve
+	X   string `json:"x"`   // ECDSA x coordinate
+	Y   string `json:"y"`   // ECDSA y coordinate
 }
 
+// JWKSet represents a set of JSON Web Keys as returned by
+// an OIDC provider's JWKS endpoint. It contains multiple keys
+// to support key rotation.
 type JWKSet struct {
 	Keys []JWK `json:"keys"`
 }
 
+// JWKCache provides thread-safe caching of JSON Web Key Sets.
+// It fetches JWKS from OIDC providers and caches them to reduce
+// network requests. The cache supports expiration and automatic
+// refresh when keys expire.
 type JWKCache struct {
 	expiresAt     time.Time
 	jwks          *JWKSet
@@ -41,6 +51,9 @@ type JWKCache struct {
 	mutex         sync.RWMutex
 }
 
+// JWKCacheInterface defines the contract for JWK cache implementations.
+// It provides methods for retrieving JWKS, performing cleanup, and
+// graceful shutdown.
 type JWKCacheInterface interface {
 	GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error)
 	Cleanup()
@@ -130,6 +143,9 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 
 // Cleanup removes the cached JWKS if it has expired.
 // This is intended to be called periodically to ensure stale JWKS data is cleared.
+// Cleanup removes expired entries from the cache.
+// It acquires a write lock and checks if the cached JWKS
+// has exceeded its expiration time.
 func (c *JWKCache) Cleanup() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -142,7 +158,7 @@ func (c *JWKCache) Cleanup() {
 
 // Close shuts down the cache's auto-cleanup routine.
 func (c *JWKCache) Close() {
-	// Close shuts down the internal cache's auto-cleanup routine, if the cache exists.
+	// Delegate to internal cache's Close method
 	if c.internalCache != nil {
 		c.internalCache.Close()
 	}

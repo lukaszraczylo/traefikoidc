@@ -6,10 +6,12 @@ import (
 )
 
 // MaxKeyLength defines the maximum allowed length for cache keys
+// to prevent memory exhaustion from excessively long keys.
 const MaxKeyLength = 256
 
-// OptimizedCacheEntry represents a single cache entry with embedded LRU linked list
-// This eliminates the need for separate data structures and reduces memory overhead by ~66%
+// OptimizedCacheEntry represents a single cache entry with embedded LRU linked list pointers.
+// This design eliminates the need for separate data structures (list.List and map[string]*list.Element)
+// and reduces memory overhead by approximately 66% compared to traditional implementations.
 type OptimizedCacheEntry struct {
 	Value     interface{}
 	ExpiresAt time.Time
@@ -19,8 +21,10 @@ type OptimizedCacheEntry struct {
 	prev, next *OptimizedCacheEntry
 }
 
-// OptimizedCache provides a memory-efficient thread-safe cache with LRU eviction
-// Uses only a single map with embedded doubly-linked list to reduce memory overhead
+// OptimizedCache provides a memory-efficient, thread-safe cache with LRU eviction policy.
+// It uses a single map with entries containing embedded doubly-linked list pointers,
+// eliminating the memory overhead of maintaining separate data structures.
+// The cache supports both item count and memory size limits.
 type OptimizedCache struct {
 	items               map[string]*OptimizedCacheEntry
 	head, tail          *OptimizedCacheEntry // LRU sentinel nodes
@@ -33,12 +37,21 @@ type OptimizedCache struct {
 	mutex               sync.RWMutex
 }
 
-// NewOptimizedCache creates a new memory-efficient cache with default settings
+// NewOptimizedCache creates a new memory-efficient cache with default settings.
+// It uses the default maximum size and no memory limit.
 func NewOptimizedCache() *OptimizedCache {
 	return NewOptimizedCacheWithConfig(DefaultMaxSize, 0, nil)
 }
 
-// NewOptimizedCacheWithConfig creates a cache with specified configuration
+// NewOptimizedCacheWithConfig creates a cache with specified configuration.
+//
+// Parameters:
+//   - maxSize: Maximum number of items in the cache.
+//   - maxMemoryMB: Maximum memory usage in megabytes (0 for default 64MB).
+//   - logger: Logger instance for debug output (nil for no-op logger).
+//
+// Returns:
+//   - A new OptimizedCache instance.
 func NewOptimizedCacheWithConfig(maxSize int, maxMemoryMB int, logger *Logger) *OptimizedCache {
 	if logger == nil {
 		logger = newNoOpLogger()
@@ -69,7 +82,14 @@ func NewOptimizedCacheWithConfig(maxSize int, maxMemoryMB int, logger *Logger) *
 	return c
 }
 
-// Set adds or updates an item in the cache with memory and key validation
+// Set adds or updates an item in the cache with the specified expiration.
+// It validates key length and enforces both item count and memory limits.
+// When limits are exceeded, the least recently used items are evicted.
+//
+// Parameters:
+//   - key: The cache key (must be <= MaxKeyLength).
+//   - value: The value to cache.
+//   - expiration: Time until the item expires.
 func (c *OptimizedCache) Set(key string, value interface{}, expiration time.Duration) {
 	// Validate key length to prevent memory bloat
 	if len(key) > MaxKeyLength {

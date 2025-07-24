@@ -7,6 +7,9 @@ import (
 )
 
 // MemoryPoolManager manages various memory pools for high-frequency allocations
+// to reduce garbage collection pressure and improve performance. It provides
+// thread-safe object pools for compression buffers, JWT parsing, HTTP responses,
+// and string building operations.
 type MemoryPoolManager struct {
 	compressionBufferPool *sync.Pool
 	jwtParsingPool        *sync.Pool
@@ -14,14 +17,18 @@ type MemoryPoolManager struct {
 	stringBuilderPool     *sync.Pool
 }
 
-// JWTParsingBuffer contains reusable buffers for JWT parsing operations
+// JWTParsingBuffer contains reusable byte buffers for JWT parsing operations.
+// By reusing these buffers, we avoid frequent allocations during token validation,
+// which can significantly improve performance under high load.
 type JWTParsingBuffer struct {
 	HeaderBuf    []byte
 	PayloadBuf   []byte
 	SignatureBuf []byte
 }
 
-// NewMemoryPoolManager creates and initializes all memory pools
+// NewMemoryPoolManager creates and initializes all memory pools with appropriate
+// default sizes based on typical usage patterns. The pools are configured to
+// balance memory usage with performance benefits.
 func NewMemoryPoolManager() *MemoryPoolManager {
 	return &MemoryPoolManager{
 		// Pool for compression/decompression buffers (4KB default)
@@ -61,12 +68,15 @@ func NewMemoryPoolManager() *MemoryPoolManager {
 	}
 }
 
-// GetCompressionBuffer retrieves a buffer from the compression pool
+// GetCompressionBuffer retrieves a reusable buffer from the compression pool.
+// The buffer should be returned to the pool using PutCompressionBuffer when done.
 func (m *MemoryPoolManager) GetCompressionBuffer() *bytes.Buffer {
 	return m.compressionBufferPool.Get().(*bytes.Buffer)
 }
 
-// PutCompressionBuffer returns a buffer to the compression pool
+// PutCompressionBuffer returns a buffer to the compression pool for reuse.
+// Buffers larger than 16KB are not pooled to prevent excessive memory retention.
+// The buffer is reset before being returned to the pool.
 func (m *MemoryPoolManager) PutCompressionBuffer(buf *bytes.Buffer) {
 	if buf == nil {
 		return

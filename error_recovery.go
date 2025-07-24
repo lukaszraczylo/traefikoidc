@@ -11,7 +11,9 @@ import (
 	"time"
 )
 
-// ErrorRecoveryMechanism defines the common interface for all error recovery mechanisms
+// ErrorRecoveryMechanism defines the common interface for all error recovery strategies
+// including circuit breakers, retry logic, and rate limiters. Implementations provide
+// resilience patterns to handle transient failures and protect downstream services.
 type ErrorRecoveryMechanism interface {
 	// ExecuteWithContext executes a function with error recovery
 	ExecuteWithContext(ctx context.Context, fn func() error) error
@@ -23,7 +25,9 @@ type ErrorRecoveryMechanism interface {
 	IsAvailable() bool
 }
 
-// BaseRecoveryMechanism provides common functionality for error recovery mechanisms
+// BaseRecoveryMechanism provides common functionality shared by all error recovery
+// implementations. It tracks metrics, manages state, and provides base logging
+// capabilities for derived recovery mechanisms.
 type BaseRecoveryMechanism struct {
 	startTime       time.Time
 	lastFailureTime time.Time
@@ -36,7 +40,14 @@ type BaseRecoveryMechanism struct {
 	mutex           sync.RWMutex
 }
 
-// NewBaseRecoveryMechanism creates a new base recovery mechanism
+// NewBaseRecoveryMechanism creates a new base recovery mechanism with the specified name.
+//
+// Parameters:
+//   - name: Identifier for the recovery mechanism.
+//   - logger: Logger instance for recording events.
+//
+// Returns:
+//   - A configured BaseRecoveryMechanism instance.
 func NewBaseRecoveryMechanism(name string, logger *Logger) *BaseRecoveryMechanism {
 	if logger == nil {
 		logger = newNoOpLogger()
@@ -49,12 +60,14 @@ func NewBaseRecoveryMechanism(name string, logger *Logger) *BaseRecoveryMechanis
 	}
 }
 
-// RecordRequest records a request to the error recovery mechanism
+// RecordRequest increments the total request counter.
+// This method is thread-safe using atomic operations.
 func (b *BaseRecoveryMechanism) RecordRequest() {
 	atomic.AddInt64(&b.totalRequests, 1)
 }
 
-// RecordSuccess records a successful operation
+// RecordSuccess records a successful operation by incrementing the success counter
+// and updating the last success timestamp. This method is thread-safe.
 func (b *BaseRecoveryMechanism) RecordSuccess() {
 	atomic.AddInt64(&b.totalSuccesses, 1)
 
@@ -63,7 +76,8 @@ func (b *BaseRecoveryMechanism) RecordSuccess() {
 	b.lastSuccessTime = time.Now()
 }
 
-// RecordFailure records a failed operation
+// RecordFailure records a failed operation by incrementing the failure counter
+// and updating the last failure timestamp. This method is thread-safe.
 func (b *BaseRecoveryMechanism) RecordFailure() {
 	atomic.AddInt64(&b.totalFailures, 1)
 
@@ -72,7 +86,8 @@ func (b *BaseRecoveryMechanism) RecordFailure() {
 	b.lastFailureTime = time.Now()
 }
 
-// GetBaseMetrics returns base metrics common to all recovery mechanisms
+// GetBaseMetrics returns metrics common to all recovery mechanisms including
+// request counts, success/failure rates, and timing information.
 func (b *BaseRecoveryMechanism) GetBaseMetrics() map[string]interface{} {
 	b.mutex.RLock()
 	defer b.mutex.RUnlock()

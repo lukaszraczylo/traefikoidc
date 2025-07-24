@@ -181,7 +181,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("refreshGracePeriodSeconds cannot be negative")
 	}
 
-	// SECURITY FIX: Validate headers configuration with enhanced template security
+	// Validate headers configuration for template security
 	for _, header := range c.Headers {
 		if header.Name == "" {
 			return fmt.Errorf("header name cannot be empty")
@@ -207,7 +207,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("header template '%s' appears to use lowercase 'refreshToken' - use '{{.RefreshToken...' instead (case sensitive)", header.Value)
 		}
 
-		// SECURITY FIX: Implement template sandboxing and validation
+		// Validate template syntax and security
 		if err := validateTemplateSecure(header.Value); err != nil {
 			return fmt.Errorf("header template '%s' failed security validation: %w", header.Value, err)
 		}
@@ -216,9 +216,9 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// SECURITY FIX: validateTemplateSecure implements template sandboxing and validation
+// validateTemplateSecure validates template expressions for security vulnerabilities
 func validateTemplateSecure(templateStr string) error {
-	// SECURITY FIX: Restrict dangerous template functions and patterns
+	// Check for dangerous template functions and patterns
 	dangerousPatterns := []string{
 		"{{call",     // Function calls
 		"{{range",    // Range over arbitrary data
@@ -256,7 +256,7 @@ func validateTemplateSecure(templateStr string) error {
 		}
 	}
 
-	// SECURITY FIX: Whitelist allowed template variables and functions
+	// Validate template variables against whitelist
 	allowedPatterns := []string{
 		"{{.AccessToken}}",
 		"{{.IdToken}}",
@@ -277,7 +277,7 @@ func validateTemplateSecure(templateStr string) error {
 		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, or Claims.*")
 	}
 
-	// SECURITY FIX: Validate Claims access patterns
+	// Validate claims access patterns
 	if strings.Contains(templateStr, "{{.Claims.") {
 		// Simple validation - ensure claims access is to known safe fields
 		safeClaimsFields := map[string]bool{
@@ -314,7 +314,7 @@ func validateTemplateSecure(templateStr string) error {
 				return fmt.Errorf("access to Claims.%s is not allowed for security reasons", fieldName)
 			}
 
-			// Fix the search for next occurrence
+			// Search for next occurrence
 			nextStart := strings.Index(templateStr[start+end+2:], "{{.Claims.")
 			if nextStart != -1 {
 				start = start + end + 2 + nextStart
@@ -324,7 +324,7 @@ func validateTemplateSecure(templateStr string) error {
 		}
 	}
 
-	// SECURITY FIX: Prevent code injection through template syntax
+	// Prevent code injection through template syntax
 	if strings.Contains(templateStr, "{{") && strings.Contains(templateStr, "}}") {
 		// Count opening and closing braces
 		openCount := strings.Count(templateStr, "{{")
@@ -418,7 +418,7 @@ func (l *Logger) Info(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
-// Debug logs a message at the DEBUG level using Printf style formatting.
+// Debug logs a message at the DEBUG level.
 // Output is directed to stdout only if the configured log level is "debug".
 //
 // Parameters:
@@ -449,7 +449,7 @@ func (l *Logger) Infof(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
-// Debugf logs a message at the DEBUG level using Printf style formatting.
+// Debugf logs a formatted message at the DEBUG level.
 // Equivalent to calling l.Debug(format, args...).
 // Output is directed to stdout only if the configured log level is "debug".
 //

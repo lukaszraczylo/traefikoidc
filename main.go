@@ -36,30 +36,30 @@ func createDefaultHTTPClient() *http.Client {
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			dialer := &net.Dialer{
-				Timeout:   10 * time.Second, // OPTIMIZED: Further reduced for faster failures
-				KeepAlive: 30 * time.Second, // OPTIMIZED: Increased for better connection reuse
+				Timeout:   10 * time.Second, // Connection timeout for faster failure detection
+				KeepAlive: 30 * time.Second, // Keep-alive interval for connection reuse
 			}
 			return dialer.DialContext(ctx, network, addr)
 		},
 		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   3 * time.Second,  // OPTIMIZED: Reduced for faster TLS negotiation
-		ExpectContinueTimeout: 1 * time.Second,  // OPTIMIZED: Enable for better upload performance
-		MaxIdleConns:          20,               // OPTIMIZED: Reduced to limit memory usage
-		MaxIdleConnsPerHost:   5,                // OPTIMIZED: Reduced per-host connections
-		IdleConnTimeout:       60 * time.Second, // OPTIMIZED: Increased for better reuse
+		TLSHandshakeTimeout:   3 * time.Second,  // TLS handshake timeout
+		ExpectContinueTimeout: 1 * time.Second,  // Timeout for 100-continue responses
+		MaxIdleConns:          20,               // Maximum idle connections across all hosts
+		MaxIdleConnsPerHost:   5,                // Maximum idle connections per host
+		IdleConnTimeout:       60 * time.Second, // Maximum idle time before connection close
 		DisableKeepAlives:     false,            // Enable connection reuse
-		MaxConnsPerHost:       20,               // OPTIMIZED: Reduced to limit memory usage
-		ResponseHeaderTimeout: 5 * time.Second,  // OPTIMIZED: Added response header timeout
+		MaxConnsPerHost:       20,               // Maximum connections per host
+		ResponseHeaderTimeout: 5 * time.Second,  // Timeout for reading response headers
 		DisableCompression:    false,            // Enable compression for bandwidth efficiency
-		WriteBufferSize:       4096,             // OPTIMIZED: Set optimal buffer size
-		ReadBufferSize:        4096,             // OPTIMIZED: Set optimal buffer size
+		WriteBufferSize:       4096,             // Write buffer size for connections
+		ReadBufferSize:        4096,             // Read buffer size for connections
 	}
 
 	return &http.Client{
-		Timeout:   time.Second * 10, // OPTIMIZED: Reduced timeout for faster failures
+		Timeout:   time.Second * 10, // HTTP client timeout
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// OPTIMIZED: Reduced redirect limit to prevent abuse
+			// Limit redirects to prevent redirect loops
 			if len(via) >= 10 {
 				return fmt.Errorf("stopped after 10 redirects")
 			}
@@ -107,6 +107,10 @@ var (
 )
 
 // CacheManager provides shared cache instances across middleware instances
+// CacheManager is a centralized manager for all caching operations in the OIDC middleware.
+// It provides thread-safe access to various cache types including token blacklist,
+// token cache, metadata cache, and JWK cache. This singleton instance ensures
+// efficient memory usage and consistent cache behavior across the application.
 type CacheManager struct {
 	tokenBlacklist *Cache
 	tokenCache     *TokenCache
@@ -115,7 +119,10 @@ type CacheManager struct {
 	mu             sync.RWMutex
 }
 
-// GetGlobalCacheManager returns the singleton cache manager instance
+// GetGlobalCacheManager returns the singleton cache manager instance.
+// It initializes all cache types on first call with appropriate default settings.
+// This ensures thread-safe initialization and consistent cache behavior across
+// the entire application lifecycle.
 func GetGlobalCacheManager() *CacheManager {
 	cacheManagerOnce.Do(func() {
 		globalCacheManager = &CacheManager{
@@ -132,35 +139,45 @@ func GetGlobalCacheManager() *CacheManager {
 	return globalCacheManager
 }
 
-// GetSharedTokenBlacklist returns the shared token blacklist cache
+// GetSharedTokenBlacklist returns the shared token blacklist cache.
+// The blacklist is used to track revoked tokens and prevent their reuse.
+// Access is protected by read lock to ensure thread safety.
 func (cm *CacheManager) GetSharedTokenBlacklist() *Cache {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	return cm.tokenBlacklist
 }
 
-// GetSharedTokenCache returns the shared token cache
+// GetSharedTokenCache returns the shared token cache.
+// This cache stores validated tokens to reduce repeated validation overhead.
+// Access is protected by read lock to ensure thread safety.
 func (cm *CacheManager) GetSharedTokenCache() *TokenCache {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	return cm.tokenCache
 }
 
-// GetSharedMetadataCache returns the shared metadata cache
+// GetSharedMetadataCache returns the shared metadata cache.
+// This cache stores OIDC provider metadata to avoid repeated discovery requests.
+// Access is protected by read lock to ensure thread safety.
 func (cm *CacheManager) GetSharedMetadataCache() *MetadataCache {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	return cm.metadataCache
 }
 
-// GetSharedJWKCache returns the shared JWK cache
+// GetSharedJWKCache returns the shared JWK cache.
+// This cache stores JSON Web Keys used for token signature verification.
+// Access is protected by read lock to ensure thread safety.
 func (cm *CacheManager) GetSharedJWKCache() JWKCacheInterface {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	return cm.jwkCache
 }
 
-// Close properly closes all shared caches
+// Close gracefully shuts down all managed caches.
+// It ensures proper cleanup of resources and prevents memory leaks.
+// This method should be called when the middleware is shutting down.
 func (cm *CacheManager) Close() error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -181,24 +198,32 @@ func (cm *CacheManager) Close() error {
 	return nil
 }
 
-// TokenVerifier interface for token verification
+// TokenVerifier defines the contract for token verification implementations.
+// Implementations should validate token format, signature, and claims.
 type TokenVerifier interface {
 	VerifyToken(token string) error
 }
 
-// JWTVerifier interface for JWT verification
+// JWTVerifier defines the contract for JWT signature and claims verification.
+// Implementations should validate JWT structure, signature using JWKs, and standard claims.
 type JWTVerifier interface {
 	VerifyJWTSignatureAndClaims(jwt *JWT, token string) error
 }
 
-// TokenExchanger defines methods for OIDC token operations
+// TokenExchanger defines the contract for OIDC token exchange operations.
+// It handles authorization code exchange, token refresh, and token revocation
+// according to the OAuth 2.0 and OpenID Connect specifications.
 type TokenExchanger interface {
 	ExchangeCodeForToken(ctx context.Context, grantType string, codeOrToken string, redirectURL string, codeVerifier string) (*TokenResponse, error)
 	GetNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error)
 	RevokeTokenWithProvider(token, tokenType string) error
 }
 
-// TraefikOidc is the main struct for the OIDC middleware
+// TraefikOidc is the main OIDC authentication middleware for Traefik.
+// It implements OpenID Connect authentication flow with support for multiple providers,
+// session management, token caching, and various security features including PKCE,
+// token refresh, and blacklisting. The middleware integrates seamlessly with Traefik's
+// plugin system and provides flexible configuration options.
 type TraefikOidc struct {
 	jwkCache                   JWKCacheInterface
 	jwtVerifier                JWTVerifier
@@ -249,7 +274,10 @@ type TraefikOidc struct {
 	suppressDiagnosticLogs     bool
 }
 
-// ProviderMetadata holds OIDC provider metadata
+// ProviderMetadata represents the OpenID Connect provider's discovery metadata.
+// It contains essential endpoints needed for the OIDC authentication flow including
+// authorization, token exchange, JWK retrieval, and session management endpoints.
+// This data is typically retrieved from the provider's .well-known/openid-configuration endpoint.
 type ProviderMetadata struct {
 	Issuer        string `json:"issuer"`
 	AuthURL       string `json:"authorization_endpoint"`
@@ -314,9 +342,17 @@ var defaultExcludedURLs = map[string]struct{}{
 // Parameters:
 //   - token: The raw ID token string to verify.
 //
+// VerifyToken validates a JWT token through multiple security checks.
+// It performs blacklist verification, JWT parsing, signature validation,
+// and claims verification. Results are cached to improve performance.
+//
+// Parameters:
+//   - token: The JWT token string to verify.
+//
 // Returns:
-//   - nil if the token is valid according to all checks.
-//   - An error describing the reason for validation failure (e.g., rate limit, blacklisted, parsing error, signature error, claim error).
+//   - nil if the token passes all validation checks.
+//   - An error describing the validation failure (rate limit exceeded,
+//     blacklisted token, invalid format, signature failure, or claims error).
 func (t *TraefikOidc) VerifyToken(token string) error {
 	if token == "" {
 		return fmt.Errorf("invalid JWT format: token is empty")
@@ -353,8 +389,6 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		}
 	}
 
-	// Removed verbose diagnostic logging on every token verification
-
 	if jti, ok := parsedJWT.Claims["jti"].(string); ok && jti != "" {
 		if !strings.HasPrefix(token, "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0") {
 			if blacklisted, exists := t.tokenBlacklist.Get(jti); exists && blacklisted != nil {
@@ -363,7 +397,7 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		}
 	}
 
-	// Check cache for efficiency AFTER blacklist checks
+	// Check cache for previously validated tokens to improve performance
 	if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
 		// Token found in cache, skip signature verification
 		return nil
@@ -941,10 +975,21 @@ func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetad
 	return &metadata, nil
 }
 
-// ServeHTTP is the main entry point for incoming requests to the middleware.
-// It orchestrates the OIDC authentication flow.
+// ServeHTTP implements the http.Handler interface and serves as the main entry point
+// for all incoming requests to the middleware. It orchestrates the complete OIDC
+// authentication flow including initialization checks, session management,
+// token validation, authentication redirects, and callback handling.
+//
+// The method handles:
+//   - Provider initialization verification
+//   - Excluded URL bypass
+//   - Session retrieval and validation
+//   - OAuth callback processing
+//   - Token refresh when needed
+//   - Authentication state management
+//   - Header injection for authenticated requests
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	// --- Initialization Check ---
+	// Wait for provider metadata initialization to complete
 	select {
 	case <-t.initComplete:
 		if t.issuerURL == "" { // Check if initialization actually succeeded
@@ -962,7 +1007,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// --- Excluded Paths & SSE Check ---
+	// Check if request should bypass authentication
 	if t.determineExcludedURL(req.URL.Path) {
 		t.logger.Debugf("Request path %s excluded by configuration, bypassing OIDC", req.URL.Path)
 		t.next.ServeHTTP(rw, req)
@@ -975,7 +1020,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// --- Session Retrieval ---
+	// Retrieve or create session for request
 	session, err := t.sessionManager.GetSession(req)
 	if err != nil {
 		// Log the specific session error
@@ -1377,7 +1422,6 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 
 	csrfToken := session.GetCSRF()
 	if csrfToken == "" {
-		// Enhanced logging for debugging
 		t.logger.Errorf("CSRF token missing in session during callback. Authenticated: %v, Request URL: %s",
 			session.GetAuthenticated(), req.URL.String())
 
@@ -1668,7 +1712,7 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	authURL := t.buildAuthURL(redirectURL, csrfToken, nonce, codeChallenge)
 	t.logger.Debugf("Redirecting user to OIDC provider: %s", authURL)
 
-	// ENHANCED: Record authorization request metrics
+	// Record metrics for authorization requests
 	http.Redirect(rw, req, authURL, http.StatusFound)
 }
 
@@ -1919,8 +1963,11 @@ func (t *TraefikOidc) validateHost(host string) error {
 	return nil
 }
 
-// startTokenCleanup starts background goroutines for periodically cleaning up
-// the token cache, token blacklist cache, and JWK cache.
+// startTokenCleanup initiates a background goroutine that performs periodic
+// cleanup of expired entries in the token cache, blacklist cache, and JWK cache.
+// The cleanup runs every minute and continues until the middleware shuts down.
+// The goroutine is tracked by the WaitGroup for graceful shutdown and includes
+// panic recovery to ensure stability.
 func (t *TraefikOidc) startTokenCleanup() {
 	ticker := time.NewTicker(1 * time.Minute) // Run cleanup every minute
 	t.goroutineWG.Add(1)                      // Track this goroutine
@@ -1929,7 +1976,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 			t.goroutineWG.Done() // Signal completion when goroutine exits
 			ticker.Stop()        // Ensure ticker is always stopped
 
-			// ENHANCED: Recover from panics and log them
+			// CRITICAL: Recover from panics to prevent middleware crashes
 			if r := recover(); r != nil {
 				t.logger.Errorf("Token cleanup goroutine panic recovered: %v", r)
 			}
@@ -1953,13 +2000,12 @@ func (t *TraefikOidc) startTokenCleanup() {
 					// Based on New(), t.jwkCache = &JWKCache{}, which has a Cleanup method.
 					t.jwkCache.Cleanup()
 				}
-				// ENHANCED: Comprehensive session management with health monitoring
+				// Perform comprehensive session cleanup and health monitoring
 				if t.sessionManager != nil {
 					t.sessionManager.PeriodicChunkCleanup()
 
 					// Periodic session health monitoring
 					t.logger.Debug("Running session health monitoring")
-					// Note: Session health monitoring is performed on individual sessions
 					// during GetSession() and Save() operations to avoid overhead here
 				}
 
@@ -1979,16 +2025,15 @@ func (t *TraefikOidc) startTokenCleanup() {
 // It removes the token from the validation cache (tokenCache) and adds the raw
 // token string to the blacklist cache (tokenBlacklist) with a default expiration (24h).
 // This prevents the token from being validated successfully even if it hasn't expired yet.
-// Note: This does *not* revoke the token with the OIDC provider.
+// This method only performs local revocation and does not contact the OIDC provider.
 //
 // Parameters:
 //   - token: The raw token string to revoke locally.
 func (t *TraefikOidc) RevokeToken(token string) {
-	// SECURITY FIX: Ensure proper cache invalidation when tokens are blacklisted
-	// Remove from cache
+	// Remove token from validation cache to ensure immediate invalidation
 	t.tokenCache.Delete(token)
 
-	// SECURITY FIX: Also extract and blacklist JTI if present
+	// Extract and blacklist JTI to prevent token replay attacks
 	if jwt, err := parseJWT(token); err == nil {
 		if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" {
 			// Add JTI to blacklist as well
@@ -2378,7 +2423,7 @@ func buildFullURL(scheme, host, path string) string {
 // This allows the TraefikOidc struct to act as its own default TokenExchanger, while
 // still allowing mocking for tests.
 func (t *TraefikOidc) ExchangeCodeForToken(ctx context.Context, grantType string, codeOrToken string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
-	// Note: The original exchangeTokens helper is defined in helpers.go and is already a method on *TraefikOidc
+	// Delegate to the exchangeTokens helper method defined in helpers.go
 	return t.exchangeTokens(ctx, grantType, codeOrToken, redirectURL, codeVerifier)
 }
 
@@ -2387,7 +2432,7 @@ func (t *TraefikOidc) ExchangeCodeForToken(ctx context.Context, grantType string
 // This allows the TraefikOidc struct to act as its own default TokenExchanger, while
 // still allowing mocking for tests.
 func (t *TraefikOidc) GetNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error) {
-	// Note: The original getNewTokenWithRefreshToken helper is defined in helpers.go and is already a method on *TraefikOidc
+	// Delegate to the getNewTokenWithRefreshToken helper method defined in helpers.go
 	return t.getNewTokenWithRefreshToken(refreshToken)
 }
 
@@ -2455,20 +2500,37 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 	_, _ = rw.Write([]byte(htmlBody)) // Ignore write error as header is already sent
 }
 
-// isGoogleProvider checks if the current OIDC provider is Google
+// isGoogleProvider determines if the configured OIDC provider is Google.
+// It checks if the issuer URL contains Google-specific domains.
+//
+// Returns:
+//   - true if the provider is Google, false otherwise.
 func (t *TraefikOidc) isGoogleProvider() bool {
 	return strings.Contains(t.issuerURL, "google") || strings.Contains(t.issuerURL, "accounts.google.com")
 }
 
-// isAzureProvider checks if the current OIDC provider is Azure AD
+// isAzureProvider determines if the configured OIDC provider is Azure AD.
+// It checks if the issuer URL contains Microsoft/Azure-specific domains.
+//
+// Returns:
+//   - true if the provider is Azure AD, false otherwise.
 func (t *TraefikOidc) isAzureProvider() bool {
 	return strings.Contains(t.issuerURL, "login.microsoftonline.com") ||
 		strings.Contains(t.issuerURL, "sts.windows.net") ||
 		strings.Contains(t.issuerURL, "login.windows.net")
 }
 
-// validateAzureTokens handles Azure AD-specific token validation logic
-// Azure AD tokens may have different characteristics, so we validate access token first
+// validateAzureTokens performs Azure AD-specific token validation.
+// Azure AD may return both access tokens and ID tokens with different characteristics.
+// This method prioritizes access token validation but falls back to ID token if needed.
+//
+// Parameters:
+//   - session: The session containing the tokens to validate.
+//
+// Returns:
+//   - authenticated: Whether the user has valid tokens.
+//   - needsRefresh: Whether tokens need refreshing.
+//   - expired: Whether tokens have expired and cannot be refreshed.
 func (t *TraefikOidc) validateAzureTokens(session *SessionData) (bool, bool, bool) {
 	if !session.GetAuthenticated() {
 		t.logger.Debug("Azure user is not authenticated according to session flag")
@@ -2662,7 +2724,13 @@ func (t *TraefikOidc) validateTokenExpiry(session *SessionData, token string) (b
 	return true, false, false // Authenticated, no refresh needed, not expired
 }
 
-// Close stops all background goroutines and closes resources with proper timeout.
+// Close gracefully shuts down the middleware, stopping all background goroutines
+// and releasing resources. It uses a WaitGroup to ensure all goroutines complete
+// within a 10-second timeout. The method is idempotent through sync.Once.
+//
+// Returns:
+//   - nil on successful shutdown.
+//   - An error if shutdown times out or resource cleanup fails.
 func (t *TraefikOidc) Close() error {
 	var closeErr error
 	t.shutdownOnce.Do(func() {

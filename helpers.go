@@ -209,6 +209,9 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 // TokenCache provides a caching mechanism for validated tokens.
 // It stores token claims to avoid repeated validation of the
 // same token, improving performance for frequently used tokens.
+// TokenCache provides a specialized cache for validated JWT tokens.
+// It wraps the generic Cache with token-specific prefixing to avoid
+// key collisions and provides a clean interface for token caching operations.
 type TokenCache struct {
 	cache *Cache
 }

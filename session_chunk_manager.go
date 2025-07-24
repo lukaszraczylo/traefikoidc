@@ -11,7 +11,9 @@ import (
 	"github.com/gorilla/sessions"
 )
 
-// TokenConfig holds validation rules for different token types
+// TokenConfig defines validation rules and constraints for different token types.
+// It specifies size limits, chunking parameters, and format requirements to ensure
+// tokens can be safely stored in browser cookies while maintaining security.
 type TokenConfig struct {
 	Type              string
 	MinLength         int
@@ -55,19 +57,31 @@ var (
 	}
 )
 
-// TokenRetrievalResult encapsulates the result of token retrieval
+// TokenRetrievalResult encapsulates the result of a token retrieval operation.
+// It contains either a successfully retrieved token or an error describing
+// what went wrong during retrieval.
 type TokenRetrievalResult struct {
 	Token string
 	Error error
 }
 
-// ChunkManager handles token chunking operations
+// ChunkManager provides thread-safe operations for splitting large tokens
+// into smaller chunks that fit within browser cookie size limits. It handles
+// the chunking and reassembly of tokens transparently, ensuring data integrity
+// throughout the process.
 type ChunkManager struct {
 	logger *Logger
 	mutex  *sync.RWMutex
 }
 
-// NewChunkManager creates a new ChunkManager instance
+// NewChunkManager creates a new ChunkManager instance with the specified logger.
+// If no logger is provided, a no-op logger is used to prevent nil pointer errors.
+//
+// Parameters:
+//   - logger: The logger instance for recording chunk operations.
+//
+// Returns:
+//   - A new ChunkManager instance ready for use.
 func NewChunkManager(logger *Logger) *ChunkManager {
 	if logger == nil {
 		logger = newNoOpLogger()
@@ -80,6 +94,18 @@ func NewChunkManager(logger *Logger) *ChunkManager {
 }
 
 // GetToken retrieves and validates a token from either single storage or chunks
+// GetToken retrieves and validates a token, handling both single-cookie
+// and chunked storage scenarios. It performs decompression if needed and
+// validates the token according to the provided configuration.
+//
+// Parameters:
+//   - singleToken: The token string if stored in a single cookie.
+//   - compressed: Whether the token is compressed.
+//   - chunks: Map of session chunks if token is split across cookies.
+//   - config: Token validation configuration.
+//
+// Returns:
+//   - TokenRetrievalResult containing the token or an error.
 func (cm *ChunkManager) GetToken(
 	singleToken string,
 	compressed bool,
@@ -102,7 +128,17 @@ func (cm *ChunkManager) GetToken(
 	return cm.processChunkedToken(chunks, config)
 }
 
-// processSingleToken handles tokens stored in a single cookie
+// processSingleToken processes tokens stored in a single cookie.
+// It handles decompression if needed and performs comprehensive validation
+// including corruption detection, format validation, and size checks.
+//
+// Parameters:
+//   - token: The token string from the cookie.
+//   - compressed: Whether the token needs decompression.
+//   - config: Token validation configuration.
+//
+// Returns:
+//   - TokenRetrievalResult containing the processed token or an error.
 func (cm *ChunkManager) processSingleToken(token string, compressed bool, config TokenConfig) TokenRetrievalResult {
 	// Detect corruption markers
 	if isCorruptionMarker(token) {
@@ -130,19 +166,28 @@ func (cm *ChunkManager) processSingleToken(token string, compressed bool, config
 	return cm.validateToken(finalToken, config)
 }
 
-// validateToken performs comprehensive token validation
+// validateToken performs comprehensive validation on a token.
+// It checks size limits, chunking efficiency, content validity,
+// expiration, freshness, and format requirements based on the token configuration.
+//
+// Parameters:
+//   - token: The token string to validate.
+//   - config: Token validation configuration.
+//
+// Returns:
+//   - TokenRetrievalResult with the validated token or validation error.
 func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRetrievalResult {
-	// Enhanced size validation
+	// Validate token size against configured limits
 	if sizeErr := cm.validateTokenSize(token, config); sizeErr != nil {
 		return TokenRetrievalResult{Token: "", Error: sizeErr}
 	}
 
-	// Chunking efficiency validation (for pre-storage analysis)
+	// Check if token would chunk efficiently
 	if chunkErr := cm.validateChunkingEfficiency(token, config); chunkErr != nil {
 		return TokenRetrievalResult{Token: "", Error: chunkErr}
 	}
 
-	// Comprehensive content validation
+	// Validate token content and structure
 	if contentErr := cm.validateTokenContent(token, config); contentErr != nil {
 		return TokenRetrievalResult{Token: "", Error: contentErr}
 	}
@@ -157,7 +202,7 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 		return TokenRetrievalResult{Token: "", Error: freshnessErr}
 	}
 
-	// Enhanced JWT format validation
+	// Validate JWT format if required
 	if config.RequireJWTFormat && !config.AllowOpaqueTokens {
 		if validationErr := cm.validateJWTFormat(token, config.Type); validationErr != nil {
 			return TokenRetrievalResult{Token: "", Error: validationErr}
@@ -182,7 +227,7 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 
 // processChunkedToken handles tokens stored across multiple chunks
 func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, config TokenConfig) TokenRetrievalResult {
-	// Enhanced chunk count validation using config limits
+	// Validate chunk count against configured maximum
 	if len(chunks) > config.MaxChunks {
 		err := fmt.Errorf("too many %s token chunks (%d, max: %d)", config.Type, len(chunks), config.MaxChunks)
 		cm.logger.Info("Token chunk count exceeded for %s: %d chunks", config.Type, len(chunks))
@@ -222,7 +267,7 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
-		// Enhanced chunk size validation using config limits
+		// Validate individual chunk sizes
 		if len(chunk) > config.MaxChunkSize {
 			err := fmt.Errorf("%s token chunk %d exceeds size limit (%d bytes, max: %d)",
 				config.Type, i, len(chunk), config.MaxChunkSize)

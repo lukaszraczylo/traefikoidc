@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// SecurityEventType represents different types of security events
+// SecurityEventType represents different categories of security events
+// that can occur during OIDC authentication and authorization flows.
 type SecurityEventType string
 
 const (
@@ -23,7 +24,8 @@ const (
 	SuspiciousActivity SecurityEventType = "suspicious_activity"
 )
 
-// DefaultSeverity returns the default severity level for a security event type
+// DefaultSeverity returns the default severity level for a security event type.
+// Severity levels are: low, medium, high.
 func (t SecurityEventType) DefaultSeverity() string {
 	switch t {
 	case AuthFailure:
@@ -39,7 +41,9 @@ func (t SecurityEventType) DefaultSeverity() string {
 	}
 }
 
-// IPFailureType returns the IP failure tracking type for a security event type
+// IPFailureType returns the appropriate IP failure tracking category
+// for a given security event type. This is used to categorize failures
+// by IP address for rate limiting and blocking decisions.
 func (t SecurityEventType) IPFailureType() string {
 	switch t {
 	case AuthFailure:
@@ -53,7 +57,9 @@ func (t SecurityEventType) IPFailureType() string {
 	}
 }
 
-// SecurityEvent represents a security-related event that should be logged and monitored
+// SecurityEvent represents a security-related event that should be logged and monitored.
+// It captures comprehensive context about the event including timestamp, client information,
+// request details, and custom event-specific data.
 type SecurityEvent struct {
 	Timestamp   time.Time              `json:"timestamp"`
 	Details     map[string]interface{} `json:"details,omitempty"`
@@ -65,7 +71,9 @@ type SecurityEvent struct {
 	Message     string                 `json:"message"`
 }
 
-// SecurityMonitor tracks security events and suspicious activity patterns
+// SecurityMonitor provides centralized security event tracking and analysis.
+// It monitors authentication failures, detects suspicious patterns, enforces
+// rate limits, and can trigger custom security event handlers.
 type SecurityMonitor struct {
 	ipFailures      map[string]*IPFailureTracker
 	patternDetector *SuspiciousPatternDetector
@@ -75,7 +83,9 @@ type SecurityMonitor struct {
 	ipMutex         sync.RWMutex
 }
 
-// IPFailureTracker tracks failures for a specific IP address
+// IPFailureTracker maintains failure statistics for a specific IP address.
+// It tracks different types of failures, timestamps, and counts to support
+// rate limiting and IP blocking decisions.
 type IPFailureTracker struct {
 	LastFailure  time.Time
 	FirstFailure time.Time

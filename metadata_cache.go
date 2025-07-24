@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// MetadataCache provides thread-safe caching for OIDC provider metadata.
+// It stores provider discovery information (endpoints, issuer, etc.) to reduce
+// network requests to the provider's .well-known/openid-configuration endpoint.
+// The cache includes automatic expiration and periodic cleanup.
 type MetadataCache struct {
 	expiresAt           time.Time
 	metadata            *ProviderMetadata
@@ -50,8 +54,7 @@ func (c *MetadataCache) Cleanup() {
 }
 
 // isCacheValid checks if the cached metadata is present and has not expired.
-// Note: This function assumes the read lock is held or it's called from a context
-// where the lock is already held (like within GetMetadata after locking).
+// This method assumes the caller holds the appropriate lock.
 func (c *MetadataCache) isCacheValid() bool {
 	return c.metadata != nil && time.Now().Before(c.expiresAt)
 }

@@ -22,6 +22,9 @@ var (
 	replayCacheOnce sync.Once
 )
 
+// initReplayCache initializes the global replay cache for JWT ID tracking.
+// It uses sync.Once to ensure thread-safe single initialization.
+// The cache is bounded to 10,000 entries to prevent unbounded memory growth.
 func initReplayCache() {
 	replayCacheOnce.Do(func() {
 		replayCache = NewCache()
@@ -29,6 +32,9 @@ func initReplayCache() {
 	})
 }
 
+// cleanupReplayCache gracefully shuts down the replay cache.
+// It acquires a write lock, closes the cache, and sets it to nil
+// to ensure proper cleanup during shutdown.
 func cleanupReplayCache() {
 	replayCacheMu.Lock()
 	defer replayCacheMu.Unlock()
@@ -39,6 +45,13 @@ func cleanupReplayCache() {
 	}
 }
 
+// getReplayCacheStats returns current statistics about the replay cache.
+// Due to sync.Pool limitations, it returns 0 for current size and the
+// configured maximum size of 10,000.
+//
+// Returns:
+//   - size: Current number of entries (always 0 due to implementation).
+//   - maxSize: Maximum allowed entries (10,000).
 func getReplayCacheStats() (size int, maxSize int) {
 	replayCacheMu.RLock()
 	defer replayCacheMu.RUnlock()
@@ -50,6 +63,13 @@ func getReplayCacheStats() (size int, maxSize int) {
 	return 0, 10000
 }
 
+// startReplayCacheCleanup initiates a background goroutine that periodically
+// cleans up expired entries from the replay cache. It runs every 5 minutes
+// and logs cache statistics if a logger is provided.
+//
+// Parameters:
+//   - ctx: Context for cancellation.
+//   - logger: Logger for debug output (can be nil).
 func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
@@ -87,6 +107,9 @@ var ClockSkewTolerancePast = 10 * time.Second
 var ClockSkewTolerance = ClockSkewToleranceFuture
 
 // JWT represents a JSON Web Token as defined in RFC 7519.
+// JWT represents a parsed JSON Web Token with its three components.
+// It provides structured access to the header, claims, and signature
+// for validation and processing within the OIDC middleware.
 type JWT struct {
 	Header    map[string]interface{}
 	Claims    map[string]interface{}
@@ -112,7 +135,7 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
-	// ENHANCED: Use memory pool for JWT parsing buffers
+	// Use memory pool for efficient buffer management
 	pools := GetGlobalMemoryPools()
 	jwtBuf := pools.GetJWTParsingBuffer()
 	defer pools.PutJWTParsingBuffer(jwtBuf)

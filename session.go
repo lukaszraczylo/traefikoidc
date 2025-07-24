@@ -43,7 +43,6 @@ func generateSecureRandomString(length int) (string, error) {
 
 // Cookie names and configuration constants used for session management
 const (
-	// Using fixed prefixes for consistent cookie naming across restarts
 	mainCookieName     = "_oidc_raczylo_m"
 	accessTokenCookie  = "_oidc_raczylo_a"
 	refreshTokenCookie = "_oidc_raczylo_r"
@@ -67,8 +66,8 @@ const (
 	minEncryptionKeyLength = 32
 )
 
-// compressToken compresses the input string using gzip and then encodes the result using standard base64 encoding.
-// Enhanced compression with robust integrity verification and JWT format validation.
+// compressToken compresses JWT tokens using gzip and encodes the result with base64.
+// It validates JWT format before compression and includes size limits for safety.
 //
 // Parameters:
 //   - token: The string to compress.
@@ -80,8 +79,7 @@ func compressToken(token string) string {
 		return token
 	}
 
-	// FIXED: For test compatibility, invalid tokens should be returned unchanged
-	// Only compress valid JWTs (exactly 2 dots)
+	// Only compress valid JWT tokens (must have exactly 2 dots)
 	dotCount := strings.Count(token, ".")
 	if dotCount != 2 {
 		return token
@@ -92,7 +90,7 @@ func compressToken(token string) string {
 		return token
 	}
 
-	// ENHANCED: Use memory pool for compression buffer
+	// Use memory pool for efficient buffer management
 	pools := GetGlobalMemoryPools()
 	b := pools.GetCompressionBuffer()
 	defer pools.PutCompressionBuffer(b)
@@ -177,7 +175,7 @@ func decompressTokenInternal(compressed string) string {
 		return compressed
 	}
 
-	// ENHANCED: Use memory pool for decompression buffer
+	// Use memory pool for efficient buffer management
 	pools := GetGlobalMemoryPools()
 	readerBuf := pools.GetHTTPResponseBuffer()
 	defer pools.PutHTTPResponseBuffer(readerBuf)
@@ -235,6 +233,11 @@ func decompressTokenInternal(compressed string) string {
 // SessionManager handles the management of multiple session cookies for OIDC authentication.
 // It provides functionality for storing and retrieving authentication state, tokens,
 // and other session-related data across multiple cookies.
+// SessionManager manages OIDC session data for the middleware.
+// It handles session creation, retrieval, and storage using encrypted cookies.
+// Large tokens are automatically chunked across multiple cookies to handle
+// browser size limitations. The manager uses a sync.Pool for efficient
+// session object reuse and supports both HTTP and HTTPS schemes.
 type SessionManager struct {
 	sessionPool  sync.Pool
 	store        sessions.Store
@@ -281,6 +284,10 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 	return sm, nil
 }
 
+// PeriodicChunkCleanup performs periodic maintenance on session chunks.
+// It identifies and removes orphaned chunks that are no longer associated
+// with active sessions. This method should be called periodically to
+// prevent cookie accumulation in client browsers.
 func (sm *SessionManager) PeriodicChunkCleanup() {
 	sm.logger.Debug("Starting comprehensive session cleanup cycle")
 
@@ -322,6 +329,17 @@ func (sm *SessionManager) PeriodicChunkCleanup() {
 //
 // Returns:
 //   - error: nil if session is healthy, otherwise an error describing the issue
+//
+// ValidateSessionHealth performs comprehensive health checks on a session.
+// It validates authentication state, token formats, and checks for signs
+// of session tampering or corruption.
+//
+// Parameters:
+//   - sessionData: The session to validate.
+//
+// Returns:
+//   - nil if the session is healthy.
+//   - An error describing any validation failures.
 func (sm *SessionManager) ValidateSessionHealth(sessionData *SessionData) error {
 	if sessionData == nil {
 		return fmt.Errorf("session data is nil")
@@ -366,7 +384,16 @@ func (sm *SessionManager) ValidateSessionHealth(sessionData *SessionData) error 
 	return nil
 }
 
-// validateTokenFormat performs basic format validation on tokens
+// validateTokenFormat performs basic structural validation on tokens.
+// It checks for proper JWT format and validates against maximum size limits.
+//
+// Parameters:
+//   - token: The token string to validate.
+//   - tokenType: The type of token (for error messages).
+//
+// Returns:
+//   - nil if the token format is valid.
+//   - An error if the token has invalid structure or exceeds size limits.
 func (sm *SessionManager) validateTokenFormat(token, tokenType string) error {
 	if token == "" {
 		return nil // Empty tokens are allowed
@@ -436,7 +463,7 @@ func (sm *SessionManager) GetSessionMetrics() map[string]interface{} {
 		metrics["has_encryption"] = false
 	}
 
-	// Note: We can't easily get pool stats from sync.Pool as it doesn't expose them
+	// sync.Pool doesn't expose internal statistics
 	metrics["pool_implementation"] = "sync.Pool"
 
 	return metrics
@@ -456,7 +483,7 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 		options = &sessions.Options{}
 	}
 
-	// Enhanced security based on request analysis
+	// Apply security settings based on request context
 	if r != nil {
 		// Check for suspicious request patterns
 		userAgent := r.Header.Get("User-Agent")
@@ -467,7 +494,7 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 			options.MaxAge = int((absoluteSessionTimeout / 2).Seconds())
 		}
 
-		// Enhanced security for production environments
+		// Apply stricter security settings for production
 		if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sm.forceHTTPS {
 			options.Secure = true
 			// Enable strict same-site policy for secure connections
@@ -825,7 +852,7 @@ func (sd *SessionData) clearAllSessionData(r *http.Request, expire bool) {
 // Returns:
 //   - An error if saving the expired sessions fails (only if w is not nil).
 //
-// Note: This method will always return the SessionData object to the pool, even if an error occurs.
+// This method ensures the SessionData object is always returned to the pool.
 func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	// Use defer to guarantee session is returned to pool regardless of any errors or panics
 	defer func() {
@@ -1125,7 +1152,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 	// Compress token with validation
 	compressed := compressToken(token)
 
-	// FIXED: Size validation after compression
+	// Validate size after compression
 	if len(compressed) > 100*1024 { // 100KB limit for final token (post-compression)
 		sd.manager.logger.Info("Access token too large after compression (%d bytes) - storing uncompressed", len(compressed))
 		return

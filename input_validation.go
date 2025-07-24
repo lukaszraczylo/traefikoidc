@@ -10,6 +10,9 @@ import (
 )
 
 // InputValidator provides comprehensive input validation and sanitization
+// to protect against common security vulnerabilities including SQL injection,
+// XSS, path traversal, and other injection attacks. It validates and sanitizes
+// various input types used in OIDC authentication flows.
 type InputValidator struct {
 	usernameRegex         *regexp.Regexp
 	tokenRegex            *regexp.Regexp
@@ -27,7 +30,9 @@ type InputValidator struct {
 	maxHeaderLength       int
 }
 
-// ValidationResult represents the result of input validation
+// ValidationResult encapsulates the outcome of input validation.
+// It includes the sanitized value, detected security risks, validation
+// errors and warnings, and an overall validity status.
 type ValidationResult struct {
 	SanitizedValue string   `json:"sanitized_value,omitempty"`
 	SecurityRisk   string   `json:"security_risk,omitempty"`
@@ -36,7 +41,9 @@ type ValidationResult struct {
 	IsValid        bool     `json:"is_valid"`
 }
 
-// InputValidationConfig holds configuration for input validation
+// InputValidationConfig defines the configuration parameters for input validation.
+// It specifies maximum lengths for various input types and controls whether
+// strict validation mode is enabled.
 type InputValidationConfig struct {
 	MaxTokenLength    int  `json:"max_token_length"`
 	MaxURLLength      int  `json:"max_url_length"`
@@ -47,7 +54,9 @@ type InputValidationConfig struct {
 	StrictMode        bool `json:"strict_mode"`
 }
 
-// DefaultInputValidationConfig returns default validation configuration
+// DefaultInputValidationConfig returns a secure default configuration
+// for input validation with reasonable limits based on industry standards
+// and security best practices.
 func DefaultInputValidationConfig() InputValidationConfig {
 	return InputValidationConfig{
 		MaxTokenLength:    50000, // 50KB for tokens
@@ -60,7 +69,16 @@ func DefaultInputValidationConfig() InputValidationConfig {
 	}
 }
 
-// NewInputValidator creates a new input validator with the given configuration
+// NewInputValidator creates a new input validator with the specified configuration.
+// It compiles all necessary regex patterns and initializes security pattern lists.
+//
+// Parameters:
+//   - config: Validation configuration with size limits and mode settings.
+//   - logger: Logger instance for recording validation events.
+//
+// Returns:
+//   - A configured InputValidator instance.
+//   - An error if regex compilation fails.
 func NewInputValidator(config InputValidationConfig, logger *Logger) (*InputValidator, error) {
 	// Compile regex patterns
 	emailRegex, err := regexp.Compile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)

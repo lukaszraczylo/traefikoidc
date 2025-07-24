@@ -2,7 +2,9 @@ package traefikoidc
 
 import "time"
 
-// BackgroundTask represents a recurring task that runs in the background
+// BackgroundTask represents a managed recurring task that runs in the background.
+// It provides a clean interface for starting and stopping periodic operations
+// with proper lifecycle management and logging.
 type BackgroundTask struct {
 	stopChan chan struct{}
 	taskFunc func()
@@ -11,7 +13,16 @@ type BackgroundTask struct {
 	interval time.Duration
 }
 
-// NewBackgroundTask creates a new background task
+// NewBackgroundTask creates a new background task with the specified parameters.
+//
+// Parameters:
+//   - name: Identifier for the task (used in logging).
+//   - interval: Duration between task executions.
+//   - taskFunc: The function to execute periodically.
+//   - logger: Logger instance for task lifecycle events.
+//
+// Returns:
+//   - A configured BackgroundTask ready to be started.
 func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), logger *Logger) *BackgroundTask {
 	return &BackgroundTask{
 		name:     name,
@@ -22,17 +33,21 @@ func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), log
 	}
 }
 
-// Start begins the background task execution
+// Start begins the background task execution in a separate goroutine.
+// The task runs immediately upon start and then at the specified interval.
 func (bt *BackgroundTask) Start() {
 	go bt.run()
 }
 
-// Stop terminates the background task
+// Stop gracefully terminates the background task by closing the stop channel.
+// This method is safe to call multiple times.
 func (bt *BackgroundTask) Stop() {
 	close(bt.stopChan)
 }
 
-// run is the main execution loop for the background task
+// run is the main execution loop for the background task.
+// It executes the task function immediately and then at regular intervals
+// until the stop signal is received.
 func (bt *BackgroundTask) run() {
 	ticker := time.NewTicker(bt.interval)
 	defer ticker.Stop()
