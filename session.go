@@ -497,13 +497,14 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 		// Apply stricter security settings for production
 		if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sm.forceHTTPS {
 			options.Secure = true
-			// Enable strict same-site policy for secure connections
-			options.SameSite = http.SameSiteStrictMode
+			// IMPORTANT: Keep SameSite as Lax for OAuth flows to work
+			// Strict mode would block cookies from OAuth provider callbacks
+			// Only use Strict for AJAX requests which don't involve redirects
 		}
 
 		// Additional security headers analysis
 		if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
-			// AJAX requests get stricter same-site policy
+			// AJAX requests get stricter same-site policy since they don't involve OAuth redirects
 			options.SameSite = http.SameSiteStrictMode
 		}
 	}
@@ -513,13 +514,24 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 
 	// Set secure Domain attribute for production
 	if options.Domain == "" && r != nil {
-		// Extract domain from Host header for proper cookie scoping
+		// In reverse proxy setups, use the original host if available
+		// This ensures cookies work correctly with the public domain
 		host := r.Host
+
+		// Check for X-Forwarded-Host which indicates reverse proxy
+		if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+			// Use the forwarded host for cookie domain
+			host = forwardedHost
+		}
+
 		if host != "" && !strings.Contains(host, "localhost") && !strings.Contains(host, "127.0.0.1") {
 			// Only set domain for non-local development
 			if colonIndex := strings.Index(host, ":"); colonIndex != -1 {
 				host = host[:colonIndex] // Remove port
 			}
+			// For cookie domain, we might want to use the base domain
+			// to allow cookies to work across subdomains
+			// But for now, use the exact host for security
 			options.Domain = host
 		}
 	}
@@ -719,10 +731,14 @@ func (sd *SessionData) MarkDirty() {
 // Returns:
 //   - An error if saving any of the session components fails.
 func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
-	isSecure := strings.HasPrefix(r.URL.Scheme, "https") || sd.manager.forceHTTPS
+	// Properly detect HTTPS in reverse proxy environments
+	isSecure := r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sd.manager.forceHTTPS
 
-	// Set options for all sessions.
+	// Get base options and enhance with security settings
 	options := sd.manager.getSessionOptions(isSecure)
+	options = sd.manager.EnhanceSessionSecurity(options, r)
+
+	// Apply enhanced options to all sessions
 	sd.mainSession.Options = options
 	sd.accessSession.Options = options
 	sd.refreshSession.Options = options
