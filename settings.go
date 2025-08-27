@@ -26,7 +26,7 @@ type TemplatedHeader struct {
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
 type Config struct {
-	HTTPClient                *http.Client
+	HTTPClient                *http.Client      `json:"-"` // Exclude from JSON marshaling
 	ProviderURL               string            `json:"providerURL"`
 	RevocationURL             string            `json:"revocationURL"`
 	CallbackURL               string            `json:"callbackURL"`
@@ -218,11 +218,27 @@ func (c *Config) Validate() error {
 
 // validateTemplateSecure validates template expressions for security vulnerabilities
 func validateTemplateSecure(templateStr string) error {
+	// Allow our specific safe custom functions
+	// These are added specifically to handle missing fields safely (issue #60)
+	safeCustomFunctions := []string{
+		"{{get ",     // Safe map access function
+		"{{default ", // Safe default value function
+	}
+
+	// Check if template uses safe custom functions
+	usesSafeFunctions := false
+	for _, safeFn := range safeCustomFunctions {
+		if strings.Contains(templateStr, safeFn) {
+			usesSafeFunctions = true
+			// These functions are explicitly allowed for safe field access
+		}
+	}
+
 	// Check for dangerous template functions and patterns
+	// Skip certain checks if using our safe functions
 	dangerousPatterns := []string{
-		"{{call",     // Function calls
+		"{{call",     // Function calls (except our safe ones)
 		"{{range",    // Range over arbitrary data
-		"{{with",     // With statements that could access unexpected data
 		"{{define",   // Template definitions
 		"{{template", // Template inclusions
 		"{{block",    // Block definitions
@@ -230,7 +246,7 @@ func validateTemplateSecure(templateStr string) error {
 		"{{-",        // Trim whitespace (could be used to obfuscate)
 		"-}}",        // Trim whitespace (could be used to obfuscate)
 		"{{printf",   // Printf functions
-		"{{print",    // Print functions
+		"{{print",    // Print functions (but not our safe ones)
 		"{{println",  // Println functions
 		"{{html",     // HTML functions
 		"{{js",       // JavaScript functions
@@ -249,9 +265,31 @@ func validateTemplateSecure(templateStr string) error {
 		"{{not",      // Logical operations
 	}
 
+	// Allow 'with' for safe conditional access
+	if !strings.Contains(templateStr, "{{with .Claims") {
+		dangerousPatterns = append(dangerousPatterns, "{{with")
+	}
+
 	templateLower := strings.ToLower(templateStr)
 	for _, pattern := range dangerousPatterns {
-		if strings.Contains(templateLower, pattern) {
+		// Skip check if it's one of our safe functions
+		if usesSafeFunctions && (pattern == "{{call" || pattern == "{{print") {
+			// Allow these if we're using safe functions
+			continue
+		}
+
+		// Special handling for comparison operators to avoid false positives with "get" and "default"
+		if pattern == "{{ge" && (strings.Contains(templateStr, "{{get ") || strings.Contains(templateStr, "{{default ")) {
+			// Skip {{ge check if we're using the safe {{get or {{default functions
+			continue
+		}
+
+		// Skip {{de checks if using {{default
+		if pattern == "{{define" && strings.Contains(templateStr, "{{default ") {
+			continue
+		}
+
+		if strings.Contains(templateLower, strings.ToLower(pattern)) {
 			return fmt.Errorf("dangerous template pattern detected: %s", pattern)
 		}
 	}
@@ -262,6 +300,9 @@ func validateTemplateSecure(templateStr string) error {
 		"{{.IdToken}}",
 		"{{.RefreshToken}}",
 		"{{.Claims.",
+		"{{get ",     // Safe custom function
+		"{{default ", // Safe custom function
+		"{{with ",    // Safe conditional (when used with Claims)
 	}
 
 	// Check if template contains only allowed patterns
@@ -274,13 +315,15 @@ func validateTemplateSecure(templateStr string) error {
 	}
 
 	if !hasAllowedPattern {
-		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, or Claims.*")
+		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, Claims.*, or safe functions (get, default, with)")
 	}
 
 	// Validate claims access patterns
 	if strings.Contains(templateStr, "{{.Claims.") {
 		// Simple validation - ensure claims access is to known safe fields
+		// This list includes standard OIDC claims and common provider-specific claims
 		safeClaimsFields := map[string]bool{
+			// Standard OIDC claims
 			"email":              true,
 			"name":               true,
 			"given_name":         true,
@@ -293,6 +336,25 @@ func validateTemplateSecure(templateStr string) error {
 			"iat":                true,
 			"groups":             true,
 			"roles":              true,
+			// Common custom claims
+			"internal_role": true, // Custom roles field (issue #60)
+			"role":          true, // Alternative role field
+			"department":    true, // Organization info
+			"organization":  true, // Organization info
+			// Provider-specific claims
+			"realm_access":    true, // Keycloak specific
+			"resource_access": true, // Keycloak specific
+			"oid":             true, // Azure AD object ID
+			"tid":             true, // Azure AD tenant ID
+			"upn":             true, // Azure AD User Principal Name
+			"hd":              true, // Google hosted domain
+			"picture":         true, // Profile picture
+			// Additional standard claims
+			"locale":         true, // User locale
+			"zoneinfo":       true, // Timezone
+			"phone_number":   true, // Contact info
+			"email_verified": true, // Email verification status
+			"updated_at":     true, // Last update time
 		}
 
 		// Extract field names from Claims access

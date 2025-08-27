@@ -44,11 +44,11 @@ func createDefaultHTTPClient() *http.Client {
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   3 * time.Second,  // TLS handshake timeout
 		ExpectContinueTimeout: 1 * time.Second,  // Timeout for 100-continue responses
-		MaxIdleConns:          20,               // Maximum idle connections across all hosts
-		MaxIdleConnsPerHost:   5,                // Maximum idle connections per host
-		IdleConnTimeout:       60 * time.Second, // Maximum idle time before connection close
+		MaxIdleConns:          10,               // Reduced from 20 to prevent memory buildup
+		MaxIdleConnsPerHost:   2,                // Reduced from 5 to limit per-host connections
+		IdleConnTimeout:       30 * time.Second, // Reduced from 60 to close idle connections faster
 		DisableKeepAlives:     false,            // Enable connection reuse
-		MaxConnsPerHost:       20,               // Maximum connections per host
+		MaxConnsPerHost:       10,               // Reduced from 20 to limit concurrent connections
 		ResponseHeaderTimeout: 5 * time.Second,  // Timeout for reading response headers
 		DisableCompression:    false,            // Enable compression for bandwidth efficiency
 		WriteBufferSize:       4096,             // Write buffer size for connections
@@ -748,11 +748,33 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	t.startTokenCleanup()
 	t.tokenExchanger = t // Initialize the interface field to self
 
-	// Initialize and parse header templates
+	// Initialize and parse header templates with safe field access
 	t.headerTemplates = make(map[string]*template.Template)
+
+	// Create custom template functions for safe field access
+	funcMap := template.FuncMap{
+		// "default" returns a default value if the input is nil or empty
+		"default": func(defaultVal interface{}, val interface{}) interface{} {
+			if val == nil || val == "" {
+				return defaultVal
+			}
+			return val
+		},
+		// "get" safely gets a value from a map, returning empty string if not found
+		"get": func(m interface{}, key string) interface{} {
+			if mapVal, ok := m.(map[string]interface{}); ok {
+				if val, exists := mapVal[key]; exists {
+					return val
+				}
+			}
+			return ""
+		},
+	}
+
 	for _, header := range config.Headers {
-		// Use a default empty template to set a proper name for error reporting
-		tmpl := template.New(header.Name)
+		// Create template with custom functions and missingkey=zero option
+		// This prevents panics when accessing non-existent fields
+		tmpl := template.New(header.Name).Funcs(funcMap).Option("missingkey=zero")
 
 		// Parse the template with proper error handling
 		parsedTmpl, err := tmpl.Parse(header.Value)
@@ -838,16 +860,28 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 // Parameters:
 //   - providerURL: The base URL of bogged OIDC provider, used for subsequent refresh attempts.
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
-	ticker := time.NewTicker(1 * time.Hour)
-	t.goroutineWG.Add(1) // Track this goroutine
+	// Use longer interval to reduce memory pressure from refresh attempts
+	ticker := time.NewTicker(2 * time.Hour) // Increased from 1 hour
+	t.goroutineWG.Add(1)                    // Track this goroutine
 
 	go func() {
 		defer t.goroutineWG.Done() // Signal completion when goroutine exits
 		defer ticker.Stop()        // Ensure ticker is always stopped
 
+		consecutiveFailures := 0
 		for {
 			select {
 			case <-ticker.C:
+				// Skip refresh if we've had too many consecutive failures
+				if consecutiveFailures >= 3 {
+					t.logger.Debug("Skipping metadata refresh due to consecutive failures")
+					consecutiveFailures++ // Still increment to track skips
+					if consecutiveFailures > 10 {
+						consecutiveFailures = 3 // Reset to prevent overflow but keep skipping
+					}
+					continue
+				}
+
 				t.logger.Debug("Refreshing OIDC metadata")
 				var metadata *ProviderMetadata
 				var err error
@@ -858,14 +892,17 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 					metadata, err = t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
 				}
 				if err != nil {
-					t.logger.Errorf("Failed to refresh metadata: %v", err)
+					consecutiveFailures++
+					t.logger.Errorf("Failed to refresh metadata (attempt %d): %v", consecutiveFailures, err)
 					continue
 				}
 
 				if metadata != nil {
 					t.updateMetadataEndpoints(metadata)
 					t.logger.Debug("Successfully refreshed metadata")
+					consecutiveFailures = 0 // Reset on success
 				} else {
+					consecutiveFailures++
 					t.logger.Error("Received nil metadata during refresh")
 				}
 			case <-t.metadataRefreshStopChan:
@@ -896,11 +933,11 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 func discoverProviderMetadata(providerURL string, httpClient *http.Client, l *Logger) (*ProviderMetadata, error) {
 	wellKnownURL := strings.TrimSuffix(providerURL, "/") + "/.well-known/openid-configuration"
 
-	// Create retry executor with configuration optimized for test and production environments
+	// Create retry executor with reduced attempts to prevent memory buildup
 	retryConfig := RetryConfig{
-		MaxAttempts:   4,
+		MaxAttempts:   2, // Reduced from 4 to fail faster when provider is down
 		InitialDelay:  10 * time.Millisecond,
-		MaxDelay:      100 * time.Millisecond,
+		MaxDelay:      50 * time.Millisecond, // Reduced from 100ms
 		BackoffFactor: 2.0,
 		EnableJitter:  true,
 		RetryableErrors: []string{
@@ -958,12 +995,16 @@ func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetad
 
 	defer func() {
 		if resp != nil && resp.Body != nil {
+			// Drain the body before closing to ensure connection can be reused
+			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		// Limit body read to prevent memory issues with large error responses
+		limitReader := io.LimitReader(resp.Body, 1024*10) // 10KB limit
+		bodyBytes, _ := io.ReadAll(limitReader)
 		return nil, fmt.Errorf("failed to fetch provider metadata from %s: status code %d, body: %s", wellKnownURL, resp.StatusCode, string(bodyBytes))
 	}
 

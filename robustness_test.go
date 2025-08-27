@@ -327,12 +327,12 @@ func TestProviderFailureRecovery(t *testing.T) {
 	var requestCount int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count := atomic.AddInt64(&requestCount, 1)
-		if count <= 3 {
-			// Fail first 3 requests
+		if count <= 1 {
+			// Fail first request only (we now retry max 2 times)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		// Succeed after 3 failures
+		// Succeed on 2nd attempt
 		metadata := ProviderMetadata{
 			Issuer:        "https://test-issuer.com",
 			AuthURL:       "https://test-issuer.com/auth",
@@ -361,8 +361,8 @@ func TestProviderFailureRecovery(t *testing.T) {
 		t.Errorf("Expected metadata to be returned after recovery")
 	}
 
-	// Should have taken some time due to retries (at least the sum of delays: 10ms + 20ms + 40ms = 70ms)
-	expectedMinDuration := 70 * time.Millisecond
+	// Should have taken some time due to retries (with 2 max attempts: ~10ms delay)
+	expectedMinDuration := 10 * time.Millisecond
 	if duration < expectedMinDuration {
 		t.Errorf("Expected discovery to take at least %v due to retries, but took %v", expectedMinDuration, duration)
 	}

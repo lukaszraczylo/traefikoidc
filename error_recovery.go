@@ -174,9 +174,9 @@ type CircuitBreakerConfig struct {
 // DefaultCircuitBreakerConfig returns default circuit breaker configuration
 func DefaultCircuitBreakerConfig() CircuitBreakerConfig {
 	return CircuitBreakerConfig{
-		MaxFailures:  5,
-		Timeout:      30 * time.Second,
-		ResetTimeout: 10 * time.Second,
+		MaxFailures:  2,                // Reduced from 5 to open circuit faster
+		Timeout:      60 * time.Second, // Increased from 30s to reduce retry frequency
+		ResetTimeout: 30 * time.Second, // Increased from 10s to wait longer before retrying
 	}
 }
 
