@@ -43,7 +43,7 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 	}
 
 	// Create a session manager
-	sessionManager, _ := NewSessionManager("0123456789abcdef0123456789abcdef", true, mockLogger)
+	sessionManager, _ := NewSessionManager("0123456789abcdef0123456789abcdef", true, "", mockLogger)
 	tOidc.sessionManager = sessionManager
 
 	t.Run("Google provider detection adds required parameters", func(t *testing.T) {
@@ -367,7 +367,7 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 		}
 
 		// Create a session manager
-		sessionManager, _ := NewSessionManager("0123456789abcdef0123456789abcdef", true, mockLogger)
+		sessionManager, _ := NewSessionManager("0123456789abcdef0123456789abcdef", true, "", mockLogger)
 		googleTOidc.sessionManager = sessionManager
 
 		// Create a mock token verifier

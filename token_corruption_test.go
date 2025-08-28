@@ -17,7 +17,7 @@ import (
 // Token verified successfully multiple times, then fails with "signature verification failed"
 func TestTokenCorruptionScenario(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestCompressionIntegrityFailure(t *testing.T) {
 // TestChunkReassemblyEdgeCases tests edge cases in chunk reassembly that could cause corruption
 func TestChunkReassemblyEdgeCases(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestChunkReassemblyEdgeCases(t *testing.T) {
 // TestRaceConditionProtection tests that concurrent access doesn't cause corruption
 func TestRaceConditionProtection(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestMemoryExhaustionProtection(t *testing.T) {
 // TestBackwardCompatibility ensures that sessions created before the fixes still work
 func TestBackwardCompatibility(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}

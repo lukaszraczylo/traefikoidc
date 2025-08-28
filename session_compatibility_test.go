@@ -14,7 +14,7 @@ import (
 func TestSessionCompatibilityAfterChanges(t *testing.T) {
 	t.Run("Plain_HTTP_Without_Proxy_Headers", func(t *testing.T) {
 		// Test that plain HTTP requests without proxy headers still work
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "http://localhost:8080/test", nil)
@@ -67,7 +67,7 @@ func TestSessionCompatibilityAfterChanges(t *testing.T) {
 
 	t.Run("HTTPS_With_TLS_Field", func(t *testing.T) {
 		// Test direct HTTPS connection (not proxied)
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "https://example.com/test", nil)
@@ -101,7 +101,7 @@ func TestSessionCompatibilityAfterChanges(t *testing.T) {
 
 	t.Run("ForceHTTPS_Setting", func(t *testing.T) {
 		// Test forceHTTPS setting works regardless of request
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", true, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", true, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Plain HTTP request
@@ -132,7 +132,7 @@ func TestSessionCompatibilityAfterChanges(t *testing.T) {
 	})
 
 	t.Run("AJAX_Request_Gets_Strict_SameSite", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// AJAX request
@@ -165,7 +165,7 @@ func TestSessionCompatibilityAfterChanges(t *testing.T) {
 	})
 
 	t.Run("Missing_UserAgent_Gets_Reduced_Timeout", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Request without User-Agent (suspicious)

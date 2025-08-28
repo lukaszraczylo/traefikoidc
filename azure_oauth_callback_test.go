@@ -14,7 +14,7 @@ import (
 // during the callback from Azure AD
 func TestAzureOAuthCallbackScenario(t *testing.T) {
 	t.Run("Azure_OAuth_Complete_Flow", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Step 1: User visits https://app.example.com/protected
@@ -110,7 +110,7 @@ func TestAzureOAuthCallbackScenario(t *testing.T) {
 
 	t.Run("Cookie_Not_Sent_With_Wrong_Domain", func(t *testing.T) {
 		// This test verifies that cookies with wrong domain won't be sent
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Initial request sets cookie for app.example.com
@@ -148,7 +148,7 @@ func TestAzureOAuthCallbackScenario(t *testing.T) {
 		// This test demonstrates why we can't use SameSite=Strict for OAuth
 		// With Strict, cookies wouldn't be sent when redirecting from Azure to our app
 
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// If we had SameSite=Strict (which we don't anymore), the browser would:

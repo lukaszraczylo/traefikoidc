@@ -243,17 +243,20 @@ type SessionManager struct {
 	store        sessions.Store
 	logger       *Logger
 	forceHTTPS   bool
+	cookieDomain string
 	chunkManager *ChunkManager
+	cleanupDone  bool // Track if we've attempted cookie cleanup
 }
 
 // NewSessionManager creates a new session manager with the specified configuration.
 // Parameters:
 //   - encryptionKey: Key used to encrypt session data (must be at least 32 bytes)
 //   - forceHTTPS: When true, forces secure cookie attributes regardless of request scheme
+//   - cookieDomain: Explicit domain for cookies (e.g., ".example.com" for subdomain access)
 //   - logger: Logger instance for recording session-related events
 //
 // Returns an error if the encryption key does not meet minimum length requirements.
-func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*SessionManager, error) {
+func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, logger *Logger) (*SessionManager, error) {
 	// Validate encryption key length.
 	if len(encryptionKey) < minEncryptionKeyLength {
 		return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
@@ -262,6 +265,7 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, logger *Logger) (*
 	sm := &SessionManager{
 		store:        sessions.NewCookieStore([]byte(encryptionKey)),
 		forceHTTPS:   forceHTTPS,
+		cookieDomain: cookieDomain,
 		logger:       logger,
 		chunkManager: NewChunkManager(logger),
 	}
@@ -512,8 +516,13 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 	// Always enforce security best practices
 	options.HttpOnly = true
 
-	// Set secure Domain attribute for production
-	if options.Domain == "" && r != nil {
+	// Set cookie domain from configuration if specified
+	if sm.cookieDomain != "" {
+		// Use the explicitly configured domain
+		options.Domain = sm.cookieDomain
+		sm.logger.Debugf("Using configured cookie domain: %s", sm.cookieDomain)
+	} else if options.Domain == "" && r != nil {
+		// Fall back to auto-detection only if no domain is configured
 		// In reverse proxy setups, use the original host if available
 		// This ensures cookies work correctly with the public domain
 		host := r.Host
@@ -529,10 +538,10 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 			if colonIndex := strings.Index(host, ":"); colonIndex != -1 {
 				host = host[:colonIndex] // Remove port
 			}
-			// For cookie domain, we might want to use the base domain
-			// to allow cookies to work across subdomains
-			// But for now, use the exact host for security
+			// Use the exact host (without leading dot) for host-only cookies
+			// This prevents subdomain access but ensures consistency
 			options.Domain = host
+			sm.logger.Debugf("Auto-detected cookie domain: %s", host)
 		}
 	}
 
@@ -555,8 +564,99 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(absoluteSessionTimeout.Seconds()),
 		Path:     "/",
+		Domain:   sm.cookieDomain, // Use configured domain if set
 	}
 	return baseOptions
+}
+
+// CleanupOldCookies attempts to remove cookies with potentially mismatched domains.
+// Since browsers don't send domain info with cookies, this function tries to delete
+// cookies with various domain variations to ensure cleanup after configuration changes.
+func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Request) {
+	// Get all cookies from the request
+	cookies := r.Cookies()
+
+	// Get the current configured domain
+	currentDomain := sm.cookieDomain
+	host := r.Host
+	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+		host = forwardedHost
+	}
+	// Remove port if present
+	if colonIndex := strings.Index(host, ":"); colonIndex != -1 {
+		host = host[:colonIndex]
+	}
+
+	// Build list of domains to attempt deletion for
+	// This ensures we clean up cookies from various possible domains
+	var domainsToClean []string
+
+	// Add variations of the current host
+	if host != "" && !strings.Contains(host, "localhost") && !strings.Contains(host, "127.0.0.1") {
+		domainsToClean = append(domainsToClean,
+			host,     // exact host
+			"."+host, // with leading dot
+		)
+
+		// Add parent domain variations if host has subdomains
+		parts := strings.Split(host, ".")
+		if len(parts) > 2 {
+			// For "sub.example.com", also try "example.com" and ".example.com"
+			parentDomain := strings.Join(parts[len(parts)-2:], ".")
+			domainsToClean = append(domainsToClean,
+				parentDomain,
+				"."+parentDomain,
+			)
+		}
+	}
+
+	// Track which cookies we're processing
+	processedCookies := make(map[string]bool)
+
+	// Check each cookie
+	for _, cookie := range cookies {
+		// Only process our OIDC session cookies
+		if strings.HasPrefix(cookie.Name, mainCookieName) ||
+			strings.HasPrefix(cookie.Name, accessTokenCookie) ||
+			strings.HasPrefix(cookie.Name, refreshTokenCookie) ||
+			strings.HasPrefix(cookie.Name, "_oidc_raczylo_id") ||
+			strings.HasPrefix(cookie.Name, "access_token_chunk_") ||
+			strings.HasPrefix(cookie.Name, "refresh_token_chunk_") {
+
+			// Mark this cookie as seen
+			processedCookies[cookie.Name] = true
+
+			// If we have a configured domain and this is the first request after config change,
+			// attempt to delete the cookie with various domain variations to ensure cleanup
+			if currentDomain != "" && !sm.cleanupDone {
+				for _, domain := range domainsToClean {
+					// Skip the current configured domain
+					if domain == currentDomain || domain == "."+currentDomain || "."+domain == currentDomain {
+						continue
+					}
+
+					// Create a deletion cookie for this domain variation
+					deleteCookie := &http.Cookie{
+						Name:     cookie.Name,
+						Value:    "",
+						Path:     "/",
+						Domain:   domain,
+						MaxAge:   -1,
+						HttpOnly: true,
+						Secure:   r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sm.forceHTTPS,
+						SameSite: http.SameSiteLaxMode,
+					}
+					http.SetCookie(w, deleteCookie)
+					sm.logger.Debugf("Attempting to clean up cookie %s with domain %s", cookie.Name, domain)
+				}
+			}
+		}
+	}
+
+	// Mark cleanup as done for this session manager instance
+	if !sm.cleanupDone && len(processedCookies) > 0 {
+		sm.cleanupDone = true
+	}
 }
 
 // GetSession retrieves all session data for the current request.

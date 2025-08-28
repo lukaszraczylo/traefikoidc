@@ -197,7 +197,7 @@ func TestCacheMemoryExhaustion(t *testing.T) {
 // TestSessionConcurrencyProtection tests session safety under concurrent access
 func TestSessionConcurrencyProtection(t *testing.T) {
 	logger := NewLogger("debug")
-	sessionManager, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+	sessionManager, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}

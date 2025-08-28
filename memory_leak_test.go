@@ -72,7 +72,7 @@ func TestMemoryLeakFixes(t *testing.T) {
 
 	t.Run("Session pool returns properly", func(t *testing.T) {
 		logger := NewLogger("debug")
-		sm, err := NewSessionManager("test-encryption-key-that-is-long-enough-32bytes", false, logger)
+		sm, err := NewSessionManager("test-encryption-key-that-is-long-enough-32bytes", false, "", logger)
 		if err != nil {
 			t.Fatal(err)
 		}

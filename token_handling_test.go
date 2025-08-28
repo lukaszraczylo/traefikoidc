@@ -247,7 +247,7 @@ func TestSessionIDTokenAccessToken(t *testing.T) {
 	logger := NewLogger("debug")
 
 	// Create a session manager
-	sessionManager, err := NewSessionManager("test-session-encryption-key-at-least-32-bytes", false, logger)
+	sessionManager, err := NewSessionManager("test-session-encryption-key-at-least-32-bytes", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestSessionIDTokenAccessToken(t *testing.T) {
 // TestTokenCorruptionIntegrationFlows tests the complete token handling flow with corruption scenarios
 func TestTokenCorruptionIntegrationFlows(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestTokenCorruptionIntegrationFlows(t *testing.T) {
 // TestSessionPersistenceWithCorruption tests that session corruption is handled across requests
 func TestSessionPersistenceWithCorruption(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -506,7 +506,7 @@ func TestSessionPersistenceWithCorruption(t *testing.T) {
 // TestConcurrentTokenOperationsWithCorruption tests concurrent access with intentional corruption
 func TestConcurrentTokenOperationsWithCorruption(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -592,7 +592,7 @@ func TestConcurrentTokenOperationsWithCorruption(t *testing.T) {
 // TestTokenValidationEdgeCases tests edge cases in token validation
 func TestTokenValidationEdgeCases(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}

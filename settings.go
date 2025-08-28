@@ -43,6 +43,7 @@ type Config struct {
 	AllowedUsers              []string          `json:"allowedUsers"`
 	Scopes                    []string          `json:"scopes"`
 	Headers                   []TemplatedHeader `json:"headers"`
+	CookieDomain              string            `json:"cookieDomain"`
 	RateLimit                 int               `json:"rateLimit"`
 	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
 	ForceHTTPS                bool              `json:"forceHTTPS"`

@@ -756,7 +756,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		suppressDiagnosticLogs:  isTestMode(), // Suppress diagnostic logs during tests
 	}
 
-	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, t.logger)
+	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger)
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 	t.extractClaimsFunc = extractClaims
 	// t.exchangeCodeForTokenFunc = t.exchangeCodeForToken // Removed, using interface now
@@ -1086,6 +1086,10 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		t.next.ServeHTTP(rw, req)
 		return
 	}
+
+	// Clean up any old cookies with different domains before processing
+	// This prevents CSRF token mismatch errors when cookie domain configuration changes
+	t.sessionManager.CleanupOldCookies(rw, req)
 
 	// Retrieve or create session for request
 	session, err := t.sessionManager.GetSession(req)

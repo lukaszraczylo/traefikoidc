@@ -90,7 +90,7 @@ func (ts *TestSuite) Setup() {
 	}
 
 	logger := NewLogger("info")
-	ts.sessionManager, _ = NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+	ts.sessionManager, _ = NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 
 	// Common TraefikOidc instance
 	ts.tOidc = &TraefikOidc{
@@ -1173,7 +1173,7 @@ func TestHandleCallback(t *testing.T) {
 			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
 
 			logger := NewLogger("info")
-			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 
 			// Create a new instance for each test to avoid state carryover
 			instanceExtractClaimsFunc := tc.extractClaimsFunc
@@ -1561,7 +1561,7 @@ func TestHandleLogout(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := NewLogger("info")
-			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 			tOidc := &TraefikOidc{
 				revocationURL:  mockRevocationServer.URL,
 				endSessionURL:  tc.endSessionURL,
@@ -1863,7 +1863,7 @@ func TestHandleExpiredToken(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := NewLogger("info")
-			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 
 			tOidc := &TraefikOidc{
 				sessionManager: sessionManager,

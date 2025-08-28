@@ -77,6 +77,7 @@ testData:
   revocationURL: https://accounts.google.com/revoke # Endpoint for revoking tokens
   oidcEndSessionURL: https://accounts.google.com/logout # Provider's end session endpoint
   enablePKCE: false # Enables PKCE (Proof Key for Code Exchange) for additional security
+  cookieDomain: "" # Explicit domain for session cookies (e.g., ".example.com" for multi-subdomain setups)
 
 # --- Provider Specific Configuration Examples ---
 #
@@ -371,6 +372,31 @@ configuration:
       If enabled, the middleware will generate and use a code verifier/challenge pair during authentication.
 
       Default: false
+    required: false
+
+  cookieDomain:
+    type: string
+    description: |
+      Explicit domain for session cookies. This is important for multi-subdomain setups 
+      and reverse proxy deployments to ensure consistent cookie handling.
+      
+      When set, all session cookies will use this domain. When not set, the domain
+      is auto-detected from the request headers (X-Forwarded-Host or Host).
+      
+      Use a leading dot for subdomain-wide cookies (e.g., ".example.com" allows
+      cookies to be shared between app.example.com, api.example.com, etc.).
+      
+      Use a specific domain for host-only cookies (e.g., "app.example.com" restricts
+      cookies to that exact domain).
+      
+      This setting is crucial to prevent authentication issues like "CSRF token missing
+      in session" errors that can occur when cookies are created with inconsistent domains.
+      
+      Examples:
+      - ".example.com" - Allows all subdomains to share cookies
+      - "app.example.com" - Restricts cookies to this specific host
+      
+      Default: "" (auto-detected from request headers)
     required: false
 
   headers:

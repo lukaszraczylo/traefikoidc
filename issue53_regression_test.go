@@ -20,7 +20,7 @@ func TestIssue53Regression(t *testing.T) {
 		// 3. Session cookies must be properly configured for HTTPS
 		// 4. CSRF token must persist through the OAuth flow
 
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Step 1: Initial request to protected resource
@@ -108,7 +108,7 @@ func TestIssue53Regression(t *testing.T) {
 		// This test ensures that once the session is properly maintained,
 		// token signature verification works correctly for Azure tokens
 
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Create authenticated session with Azure tokens
@@ -154,7 +154,7 @@ func TestIssue53Regression(t *testing.T) {
 		// This test verifies the redirect loop prevention mechanism
 		// that was added to handle authentication failures gracefully
 
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "http://internal/protected", nil)
@@ -183,7 +183,7 @@ func TestIssue53Regression(t *testing.T) {
 // in different reverse proxy scenarios
 func TestReverseProxySameSiteHandling(t *testing.T) {
 	t.Run("SameSite_Lax_For_HTTPS_OAuth", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// HTTPS request via proxy
@@ -211,7 +211,7 @@ func TestReverseProxySameSiteHandling(t *testing.T) {
 	})
 
 	t.Run("SameSite_Lax_For_HTTP", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Plain HTTP request (no proxy headers)

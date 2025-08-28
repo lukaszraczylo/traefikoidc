@@ -12,7 +12,7 @@ import (
 // TestReverseProxyHTTPSDetection tests that HTTPS is properly detected in reverse proxy environments
 func TestReverseProxyHTTPSDetection(t *testing.T) {
 	t.Run("HTTPS_Detection_With_X_Forwarded_Proto", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Simulate request from reverse proxy (Traefik/nginx)
@@ -48,7 +48,7 @@ func TestReverseProxyHTTPSDetection(t *testing.T) {
 	})
 
 	t.Run("HTTPS_Detection_Without_Headers", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Request without reverse proxy headers (direct HTTP)
@@ -79,7 +79,7 @@ func TestReverseProxyHTTPSDetection(t *testing.T) {
 
 	t.Run("HTTPS_Detection_With_ForceHTTPS", func(t *testing.T) {
 		// Test with forceHTTPS enabled
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", true, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", true, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Even without headers, forceHTTPS should make cookies secure
@@ -110,7 +110,7 @@ func TestReverseProxyHTTPSDetection(t *testing.T) {
 // TestCSRFPersistenceInReverseProxy tests CSRF token persistence in reverse proxy setups
 func TestCSRFPersistenceInReverseProxy(t *testing.T) {
 	t.Run("CSRF_Persists_Through_OAuth_Flow_With_Proxy", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Step 1: Initial request to protected resource (HTTPS via proxy)
@@ -156,7 +156,7 @@ func TestCSRFPersistenceInReverseProxy(t *testing.T) {
 	})
 
 	t.Run("Session_Cookie_Domain_With_Proxy_Headers", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Test with X-Forwarded-Host header
@@ -196,7 +196,7 @@ func TestAzureOIDCWithReverseProxy(t *testing.T) {
 		// This test verifies Azure-specific provider detection and configuration
 		// without making actual network calls
 
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Step 1: Test session setup for Azure OAuth flow
@@ -254,7 +254,7 @@ func TestAzureOIDCWithReverseProxy(t *testing.T) {
 	})
 
 	t.Run("Mixed_HTTP_HTTPS_Requests", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Simulate a scenario where some requests come via HTTPS proxy and some don't
@@ -299,7 +299,7 @@ func TestAzureOIDCWithReverseProxy(t *testing.T) {
 // TestEnhanceSessionSecurity verifies the security enhancement function
 func TestEnhanceSessionSecurity(t *testing.T) {
 	t.Run("Security_Enhancement_For_AJAX_Requests", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// AJAX request via HTTPS proxy
@@ -327,7 +327,7 @@ func TestEnhanceSessionSecurity(t *testing.T) {
 	})
 
 	t.Run("Security_Enhancement_Missing_User_Agent", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
 		require.NoError(t, err)
 
 		// Request without User-Agent (potential bot/attack)

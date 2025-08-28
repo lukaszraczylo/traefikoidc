@@ -82,6 +82,7 @@ The middleware supports the following configuration options:
 | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
+| `cookieDomain` | Explicit domain for session cookies (important for multi-subdomain setups) | auto-detected | `.example.com`, `app.example.com` |
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 
 ## Scope Configuration
@@ -310,6 +311,30 @@ spec:
         - admin
         - developer
 ```
+
+### With Cookie Domain Configuration (Multi-Subdomain Setup)
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-multi-subdomain
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: 1234567890.apps.googleusercontent.com
+      clientSecret: your-client-secret
+      sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      cookieDomain: .example.com  # Allows cookies to be shared across all subdomains
+      scopes:
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
+```
+
+**Important**: The `cookieDomain` parameter is crucial when running behind a reverse proxy or when your application serves multiple subdomains. Without it, cookies may be created with inconsistent domains, leading to authentication issues like "CSRF token missing in session" errors.
 
 ### With Custom Logging and Rate Limiting
 

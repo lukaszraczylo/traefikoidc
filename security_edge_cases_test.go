@@ -461,7 +461,7 @@ func TestMissingClaims(t *testing.T) {
 // TestSessionFixationAttack tests the plugin's resistance to session fixation attacks
 func TestSessionFixationAttack(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+	sm, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -615,7 +615,7 @@ func TestSessionFixationAttack(t *testing.T) {
 // TestCSRFProtection tests CSRF protection in POST requests
 func TestCSRFProtection(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+	sm, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
