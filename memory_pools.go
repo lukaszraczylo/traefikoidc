@@ -217,6 +217,7 @@ func (p *TokenCompressionPool) PutStringBuilder(sb *strings.Builder) {
 // Global memory pool manager instance
 var globalMemoryPools *MemoryPoolManager
 var memoryPoolOnce sync.Once
+var memoryPoolMutex sync.RWMutex
 
 // GetGlobalMemoryPools returns the singleton memory pool manager
 func GetGlobalMemoryPools() *MemoryPoolManager {
@@ -224,4 +225,19 @@ func GetGlobalMemoryPools() *MemoryPoolManager {
 		globalMemoryPools = NewMemoryPoolManager()
 	})
 	return globalMemoryPools
+}
+
+// CleanupGlobalMemoryPools cleans up the global memory pool manager singleton.
+// This should be called during application shutdown to prevent memory leaks.
+// It's safe to call multiple times.
+func CleanupGlobalMemoryPools() {
+	memoryPoolMutex.Lock()
+	defer memoryPoolMutex.Unlock()
+
+	if globalMemoryPools != nil {
+		// Clear the pools to release any pooled objects
+		globalMemoryPools = nil
+		// Reset the once to allow re-initialization if needed
+		memoryPoolOnce = sync.Once{}
+	}
 }

@@ -42,6 +42,8 @@ func cleanupReplayCache() {
 	if replayCache != nil {
 		replayCache.Close()
 		replayCache = nil
+		// Reset the once to allow re-initialization
+		replayCacheOnce = sync.Once{}
 	}
 }
 

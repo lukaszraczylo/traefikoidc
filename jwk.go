@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"sync"
@@ -43,8 +44,6 @@ type JWKSet struct {
 // network requests. The cache supports expiration and automatic
 // refresh when keys expire.
 type JWKCache struct {
-	expiresAt     time.Time
-	jwks          *JWKSet
 	internalCache *Cache
 	CacheLifetime time.Duration
 	maxSize       int
@@ -88,30 +87,22 @@ func NewJWKCache() *JWKCache {
 }
 
 func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error) {
-	// First check if we already have cached JWKS for this URL
+	// Use only the internalCache for storage to avoid double storage
 	if c.internalCache != nil {
 		if cachedJwks, found := c.internalCache.Get(jwksURL); found {
 			return cachedJwks.(*JWKSet), nil
 		}
 	}
 
-	// STABILITY FIX: Fix race condition in double-checked locking
-	// First read check with read lock
-	c.mutex.RLock()
-	if c.jwks != nil && time.Now().Before(c.expiresAt) {
-		jwks := c.jwks // Copy reference while holding read lock
-		c.mutex.RUnlock()
-		return jwks, nil
-	}
-	c.mutex.RUnlock()
-
 	// Acquire write lock for potential update
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// Second check after acquiring write lock (double-checked locking)
-	if c.jwks != nil && time.Now().Before(c.expiresAt) {
-		return c.jwks, nil
+	// Double-check after acquiring write lock
+	if c.internalCache != nil {
+		if cachedJwks, found := c.internalCache.Get(jwksURL); found {
+			return cachedJwks.(*JWKSet), nil
+		}
 	}
 
 	// Fetch new JWKS
@@ -125,15 +116,12 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 		return nil, fmt.Errorf("JWKS response contains no keys")
 	}
 
-	// Update cache atomically
-	c.jwks = jwks
+	// Store in the internalCache only (avoid double storage)
 	lifetime := c.CacheLifetime
 	if lifetime == 0 {
 		lifetime = 1 * time.Hour
 	}
-	c.expiresAt = time.Now().Add(lifetime)
 
-	// Also store in the internalCache
 	if c.internalCache != nil {
 		c.internalCache.Set(jwksURL, jwks, lifetime)
 	}
@@ -144,15 +132,10 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 // Cleanup removes the cached JWKS if it has expired.
 // This is intended to be called periodically to ensure stale JWKS data is cleared.
 // Cleanup removes expired entries from the cache.
-// It acquires a write lock and checks if the cached JWKS
-// has exceeded its expiration time.
+// It delegates to the internal cache's cleanup method.
 func (c *JWKCache) Cleanup() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	now := time.Now()
-	if c.jwks != nil && now.After(c.expiresAt) {
-		c.jwks = nil
+	if c.internalCache != nil {
+		c.internalCache.Cleanup()
 	}
 }
 
@@ -194,7 +177,11 @@ func fetchJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*J
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Always drain the body before closing to ensure connection can be reused
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to fetch JWKS: unexpected status code %d", resp.StatusCode)

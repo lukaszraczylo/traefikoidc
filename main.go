@@ -104,6 +104,7 @@ const (
 var (
 	globalCacheManager *CacheManager
 	cacheManagerOnce   sync.Once
+	cacheManagerMutex  sync.RWMutex
 )
 
 // CacheManager provides shared cache instances across middleware instances
@@ -195,6 +196,23 @@ func (cm *CacheManager) Close() error {
 		cm.jwkCache.Close()
 	}
 
+	return nil
+}
+
+// CleanupGlobalCacheManager cleans up the global cache manager singleton.
+// This should be called during application shutdown to prevent memory leaks.
+// It's safe to call multiple times.
+func CleanupGlobalCacheManager() error {
+	cacheManagerMutex.Lock()
+	defer cacheManagerMutex.Unlock()
+
+	if globalCacheManager != nil {
+		err := globalCacheManager.Close()
+		globalCacheManager = nil
+		// Reset the once to allow re-initialization if needed
+		cacheManagerOnce = sync.Once{}
+		return err
+	}
 	return nil
 }
 
@@ -366,8 +384,10 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		return fmt.Errorf("token too short to be valid JWT")
 	}
 
-	if blacklisted, exists := t.tokenBlacklist.Get(token); exists && blacklisted != nil {
-		return fmt.Errorf("token is blacklisted (raw string) in cache")
+	if t.tokenBlacklist != nil {
+		if blacklisted, exists := t.tokenBlacklist.Get(token); exists && blacklisted != nil {
+			return fmt.Errorf("token is blacklisted (raw string) in cache")
+		}
 	}
 
 	// Parse JWT to extract JTI for blacklist checking before cache lookup
@@ -391,8 +411,10 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 
 	if jti, ok := parsedJWT.Claims["jti"].(string); ok && jti != "" {
 		if !strings.HasPrefix(token, "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0") {
-			if blacklisted, exists := t.tokenBlacklist.Get(jti); exists && blacklisted != nil {
-				return fmt.Errorf("token replay detected (jti: %s) in cache", jti)
+			if t.tokenBlacklist != nil {
+				if blacklisted, exists := t.tokenBlacklist.Get(jti); exists && blacklisted != nil {
+					return fmt.Errorf("token replay detected (jti: %s) in cache", jti)
+				}
 			}
 		}
 	}
@@ -445,8 +467,12 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		}
 
 		// Always blacklist the JTI in the tokenBlacklist for replay detection
-		t.tokenBlacklist.Set(jti, true, time.Until(expiry))
-		t.logger.Debugf("Added JTI %s to blacklist cache", jti)
+		if t.tokenBlacklist != nil {
+			t.tokenBlacklist.Set(jti, true, time.Until(expiry))
+			t.logger.Debugf("Added JTI %s to blacklist cache", jti)
+		} else {
+			t.logger.Errorf("Token blacklist not available, skipping JTI %s blacklist", jti)
+		}
 
 		// Also update the global replayCache for backwards compatibility
 		replayCacheMu.Lock()
@@ -1069,6 +1095,8 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		// Attempt to get a new session to store CSRF etc.
 		session, _ = t.sessionManager.GetSession(req) // Ignore error here, proceed with new session
 		if session != nil {
+			// Ensure session is returned to pool when done
+			defer session.returnToPoolSafely()
 			// Pass rw to ensure expiring cookies are sent if possible
 			if clearErr := session.Clear(req, rw); clearErr != nil {
 				t.logger.Errorf("Error clearing potentially corrupted session: %v", clearErr)
@@ -1085,6 +1113,9 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		return
 	}
+
+	// Ensure session is returned to pool when done
+	defer session.returnToPoolSafely()
 
 	// --- URL Handling (Callback, Logout) ---
 	scheme := t.determineScheme(req)
@@ -1439,6 +1470,8 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		http.Error(rw, "Session error during callback", http.StatusInternalServerError)
 		return
 	}
+	// Ensure session is returned to pool when done
+	defer session.returnToPoolSafely()
 
 	t.logger.Debugf("Handling callback, URL: %s", req.URL.String())
 
@@ -2079,16 +2112,20 @@ func (t *TraefikOidc) RevokeToken(token string) {
 		if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" {
 			// Add JTI to blacklist as well
 			expiry := time.Now().Add(24 * time.Hour)
-			t.tokenBlacklist.Set(jti, true, time.Until(expiry))
-			t.logger.Debugf("Locally revoked token JTI %s (added to blacklist)", jti)
+			if t.tokenBlacklist != nil {
+				t.tokenBlacklist.Set(jti, true, time.Until(expiry))
+				t.logger.Debugf("Locally revoked token JTI %s (added to blacklist)", jti)
+			}
 		}
 	}
 
 	// Add raw token to blacklist with default expiration
 	expiry := time.Now().Add(24 * time.Hour) // or other appropriate duration
 	// Use Set with a duration. Value 'true' is arbitrary, we only care about existence.
-	t.tokenBlacklist.Set(token, true, time.Until(expiry))
-	t.logger.Debugf("Locally revoked token (added to blacklist)")
+	if t.tokenBlacklist != nil {
+		t.tokenBlacklist.Set(token, true, time.Until(expiry))
+		t.logger.Debugf("Locally revoked token (added to blacklist)")
+	}
 }
 
 // RevokeTokenWithProvider attempts to revoke a token directly with the OIDC provider
@@ -2141,11 +2178,17 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	if err != nil {
 		return fmt.Errorf("failed to send token revocation request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Always drain the body before closing to ensure connection can be reused
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	// Check the response
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		// Limit body read to prevent memory issues
+		limitReader := io.LimitReader(resp.Body, 1024*10) // 10KB limit
+		body, _ := io.ReadAll(limitReader)
 		// Log the failure details
 		t.logger.Errorf("Token revocation failed with status %d: %s", resp.StatusCode, string(body))
 		return fmt.Errorf("token revocation failed with status %d", resp.StatusCode)

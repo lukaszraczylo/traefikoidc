@@ -140,10 +140,16 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange tokens: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Always drain the body before closing to ensure connection can be reused
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		// Limit body read to prevent memory issues
+		limitReader := io.LimitReader(resp.Body, 1024*10) // 10KB limit
+		bodyBytes, _ := io.ReadAll(limitReader)
 		return nil, fmt.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
