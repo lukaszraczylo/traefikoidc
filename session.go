@@ -245,7 +245,8 @@ type SessionManager struct {
 	forceHTTPS   bool
 	cookieDomain string
 	chunkManager *ChunkManager
-	cleanupDone  bool // Track if we've attempted cookie cleanup
+	cleanupMutex sync.RWMutex // Protects cleanup operations
+	cleanupDone  bool         // Track if we've attempted cookie cleanup
 }
 
 // NewSessionManager creates a new session manager with the specified configuration.
@@ -628,7 +629,11 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 
 			// If we have a configured domain and this is the first request after config change,
 			// attempt to delete the cookie with various domain variations to ensure cleanup
-			if currentDomain != "" && !sm.cleanupDone {
+			sm.cleanupMutex.RLock()
+			shouldCleanup := currentDomain != "" && !sm.cleanupDone
+			sm.cleanupMutex.RUnlock()
+
+			if shouldCleanup {
 				for _, domain := range domainsToClean {
 					// Skip the current configured domain
 					if domain == currentDomain || domain == "."+currentDomain || "."+domain == currentDomain {
@@ -655,7 +660,9 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 
 	// Mark cleanup as done for this session manager instance
 	if !sm.cleanupDone && len(processedCookies) > 0 {
+		sm.cleanupMutex.Lock()
 		sm.cleanupDone = true
+		sm.cleanupMutex.Unlock()
 	}
 }
 

@@ -64,15 +64,37 @@ func (r *ProviderRegistry) ClearCache() {
 // DetectProvider determines the most appropriate provider for a given issuer URL.
 // It iterates through the registered providers and returns the first one that matches.
 // Detection is based on URL patterns and other provider-specific criteria.
+// Uses double-checked locking pattern to avoid race conditions while caching results.
 func (r *ProviderRegistry) DetectProvider(issuerURL string) OIDCProvider {
+	// First check: read lock for cache lookup
 	r.mu.RLock()
-	defer r.mu.RUnlock()
+	if provider, found := r.cache[issuerURL]; found {
+		r.mu.RUnlock()
+		return provider
+	}
+	r.mu.RUnlock()
 
-	// Check cache first for performance
+	// Cache miss - acquire write lock for detection and caching
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Second check: another goroutine might have cached the result while we waited for write lock
 	if provider, found := r.cache[issuerURL]; found {
 		return provider
 	}
 
+	// Perform detection under write lock
+	detectedProvider := r.detectProviderUnsafe(issuerURL)
+
+	// Cache the result (even if nil to avoid repeated expensive operations)
+	r.cache[issuerURL] = detectedProvider
+
+	return detectedProvider
+}
+
+// detectProviderUnsafe performs the actual provider detection logic.
+// This method assumes the caller holds the appropriate lock and should not be called directly.
+func (r *ProviderRegistry) detectProviderUnsafe(issuerURL string) OIDCProvider {
 	// Normalize issuer URL for consistent matching
 	normalizedURL, err := url.Parse(issuerURL)
 	if err != nil {
@@ -86,12 +108,10 @@ func (r *ProviderRegistry) DetectProvider(issuerURL string) OIDCProvider {
 		switch p.GetType() {
 		case ProviderTypeGoogle:
 			if strings.Contains(host, "accounts.google.com") {
-				r.cache[issuerURL] = p
 				return p
 			}
 		case ProviderTypeAzure:
 			if strings.Contains(host, "login.microsoftonline.com") || strings.Contains(host, "sts.windows.net") {
-				r.cache[issuerURL] = p
 				return p
 			}
 		}
@@ -100,7 +120,6 @@ func (r *ProviderRegistry) DetectProvider(issuerURL string) OIDCProvider {
 	// Fallback to the generic provider if no specific provider is detected
 	for _, p := range r.providers {
 		if p.GetType() == ProviderTypeGeneric {
-			r.cache[issuerURL] = p
 			return p
 		}
 	}
