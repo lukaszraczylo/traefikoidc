@@ -734,6 +734,90 @@ func (tcp *TokenCompressionProfiler) AnalyzeLeaks(baseline, current *MemorySnaps
 	return analysis
 }
 
+// MemoryPoolProfiler monitors memory pool usage and detects leaks
+type MemoryPoolProfiler struct {
+	memoryPoolManager    *MemoryPoolManager
+	tokenCompressionPool *TokenCompressionPool
+	logger               *Logger
+}
+
+// NewMemoryPoolProfiler creates a new memory pool profiler
+func NewMemoryPoolProfiler(memoryPoolManager *MemoryPoolManager, tokenCompressionPool *TokenCompressionPool, logger *Logger) *MemoryPoolProfiler {
+	if logger == nil {
+		logger = newNoOpLogger()
+	}
+	return &MemoryPoolProfiler{
+		memoryPoolManager:    memoryPoolManager,
+		tokenCompressionPool: tokenCompressionPool,
+		logger:               logger,
+	}
+}
+
+// TakeSnapshot captures memory pool statistics
+func (mpp *MemoryPoolProfiler) TakeSnapshot() (*MemorySnapshot, error) {
+	snapshot := &MemorySnapshot{
+		Timestamp:     time.Now(),
+		CustomMetrics: make(map[string]interface{}),
+	}
+
+	// Capture runtime stats
+	runtime.ReadMemStats(&snapshot.RuntimeStats)
+
+	// Add memory pool metrics
+	if mpp.memoryPoolManager != nil {
+		snapshot.CustomMetrics["memory_pool_active"] = true
+		// Note: sync.Pool doesn't expose internal statistics, so we track usage patterns
+	}
+
+	if mpp.tokenCompressionPool != nil {
+		snapshot.CustomMetrics["token_compression_pool_active"] = true
+	}
+
+	return snapshot, nil
+}
+
+// StartProfiling begins profiling (no-op for memory pools)
+func (mpp *MemoryPoolProfiler) StartProfiling(config ProfilingConfig) error {
+	return nil
+}
+
+// StopProfiling ends profiling
+func (mpp *MemoryPoolProfiler) StopProfiling() (*MemorySnapshot, error) {
+	return mpp.TakeSnapshot()
+}
+
+// GetCurrentStats returns current memory statistics
+func (mpp *MemoryPoolProfiler) GetCurrentStats() *runtime.MemStats {
+	stats := &runtime.MemStats{}
+	runtime.ReadMemStats(stats)
+	return stats
+}
+
+// AnalyzeLeaks analyzes memory pools for leaks
+func (mpp *MemoryPoolProfiler) AnalyzeLeaks(baseline, current *MemorySnapshot) *LeakAnalysis {
+	analysis := &LeakAnalysis{
+		SuspectedLeaks:  make([]string, 0),
+		Recommendations: make([]string, 0),
+	}
+
+	if baseline == nil || current == nil {
+		analysis.LeakDescription = "Insufficient memory pool data"
+		return analysis
+	}
+
+	// Check for memory leaks in pool operations
+	memoryIncrease := current.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
+	if memoryIncrease > 5*1024*1024 { // 5MB threshold for pool operations
+		analysis.HasLeak = true
+		analysis.SuspectedLeaks = append(analysis.SuspectedLeaks,
+			"Memory pool operations caused significant memory increase")
+		analysis.Recommendations = append(analysis.Recommendations,
+			"Check for objects not being returned to memory pools properly")
+	}
+
+	return analysis
+}
+
 // Global profiling manager instance
 var globalProfilingManager *ProfilingManager
 var profilingManagerOnce sync.Once

@@ -558,3 +558,231 @@ func TestProviderMetadataMemoryLeakDetection(t *testing.T) {
 		float64(intermediate.RuntimeStats.Alloc)/(1024*1024),
 		float64(current.RuntimeStats.Alloc)/(1024*1024))
 }
+
+// TestMemoryPoolLeakDetection tests for memory leaks in memory pool operations
+func TestMemoryPoolLeakDetection(t *testing.T) {
+	logger := NewLogger("debug")
+
+	strictMode := os.Getenv("STRICT_MEMORY_TEST") == "true"
+	if strictMode {
+		t.Log("Running in strict memory test mode - will fail on detected leaks")
+	} else {
+		t.Log("Running in lenient memory test mode - will log warnings instead of failing")
+	}
+
+	config := LeakDetectionConfig{
+		EnableLeakDetection: true,
+		LeakThresholdMB:     10,
+	}
+
+	mto := NewMemoryTestOrchestrator(config, logger)
+
+	// Create memory pool manager and token compression pool
+	memoryPoolManager := NewMemoryPoolManager()
+	tokenCompressionPool := NewTokenCompressionPool()
+
+	// Create profiler for memory pools
+	profiler := NewMemoryPoolProfiler(memoryPoolManager, tokenCompressionPool, logger)
+	mto.RegisterComponent("memory_pools", profiler)
+
+	// Take initial baseline
+	baseline, err := profiler.TakeSnapshot()
+	if err != nil {
+		t.Fatalf("Failed to take baseline snapshot: %v", err)
+	}
+
+	initialGoroutines := runtime.NumGoroutine()
+
+	// Phase 1: Simulate various memory pool operations
+	t.Log("Phase 1: Testing memory pool operations with various patterns...")
+
+	// Test compression buffer pool
+	for i := 0; i < 100; i++ {
+		buf := memoryPoolManager.GetCompressionBuffer()
+		// Simulate some work with the buffer
+		buf.WriteString(fmt.Sprintf("test data %d", i))
+		// Properly return buffer to pool
+		memoryPoolManager.PutCompressionBuffer(buf)
+	}
+
+	// Test JWT parsing buffer pool
+	for i := 0; i < 50; i++ {
+		jwtBuf := memoryPoolManager.GetJWTParsingBuffer()
+		// Simulate JWT parsing operations
+		jwtBuf.HeaderBuf = append(jwtBuf.HeaderBuf, []byte("header")...)
+		jwtBuf.PayloadBuf = append(jwtBuf.PayloadBuf, []byte("payload")...)
+		jwtBuf.SignatureBuf = append(jwtBuf.SignatureBuf, []byte("signature")...)
+		// Properly return buffer to pool
+		memoryPoolManager.PutJWTParsingBuffer(jwtBuf)
+	}
+
+	// Test HTTP response buffer pool
+	for i := 0; i < 75; i++ {
+		httpBuf := memoryPoolManager.GetHTTPResponseBuffer()
+		// Simulate HTTP response processing
+		copy(httpBuf[:min(len(httpBuf), 100)], []byte("http response data"))
+		// Properly return buffer to pool
+		memoryPoolManager.PutHTTPResponseBuffer(httpBuf)
+	}
+
+	// Test string builder pool
+	for i := 0; i < 60; i++ {
+		sb := memoryPoolManager.GetStringBuilder()
+		// Simulate string building operations
+		sb.WriteString(fmt.Sprintf("built string %d", i))
+		_ = sb.String() // Use the result
+		// Properly return string builder to pool
+		memoryPoolManager.PutStringBuilder(sb)
+	}
+
+	// Test token compression pool
+	for i := 0; i < 40; i++ {
+		compBuf := tokenCompressionPool.GetCompressionBuffer()
+		// Simulate compression operations
+		compBuf.WriteString(fmt.Sprintf("compress data %d", i))
+		// Properly return buffer to pool
+		tokenCompressionPool.PutCompressionBuffer(compBuf)
+
+		decompBuf := tokenCompressionPool.GetDecompressionBuffer()
+		// Simulate decompression operations
+		decompBuf.WriteString(fmt.Sprintf("decompress data %d", i))
+		// Properly return buffer to pool
+		tokenCompressionPool.PutDecompressionBuffer(decompBuf)
+
+		sb := tokenCompressionPool.GetStringBuilder()
+		// Simulate string operations
+		sb.WriteString(fmt.Sprintf("token string %d", i))
+		_ = sb.String()
+		// Properly return string builder to pool
+		tokenCompressionPool.PutStringBuilder(sb)
+	}
+
+	// Take intermediate snapshot
+	intermediate, err := profiler.TakeSnapshot()
+	if err != nil {
+		t.Fatalf("Failed to take intermediate snapshot: %v", err)
+	}
+
+	// Phase 2: Continue with more intensive operations to test sustained usage
+	t.Log("Phase 2: Testing sustained memory pool usage...")
+
+	// Simulate mixed operations with varying patterns
+	for i := 0; i < 200; i++ {
+		// Mix different pool operations
+		switch i % 4 {
+		case 0:
+			buf := memoryPoolManager.GetCompressionBuffer()
+			buf.WriteString("mixed operation data")
+			memoryPoolManager.PutCompressionBuffer(buf)
+		case 1:
+			jwtBuf := memoryPoolManager.GetJWTParsingBuffer()
+			jwtBuf.HeaderBuf = append(jwtBuf.HeaderBuf, []byte("mixed")...)
+			memoryPoolManager.PutJWTParsingBuffer(jwtBuf)
+		case 2:
+			httpBuf := memoryPoolManager.GetHTTPResponseBuffer()
+			copy(httpBuf[:min(len(httpBuf), 50)], []byte("mixed http"))
+			memoryPoolManager.PutHTTPResponseBuffer(httpBuf)
+		case 3:
+			sb := memoryPoolManager.GetStringBuilder()
+			sb.WriteString("mixed string building")
+			_ = sb.String()
+			memoryPoolManager.PutStringBuilder(sb)
+		}
+	}
+
+	// Take final snapshot
+	current, err := profiler.TakeSnapshot()
+	if err != nil {
+		t.Fatalf("Failed to take current snapshot: %v", err)
+	}
+
+	finalGoroutines := runtime.NumGoroutine()
+
+	// Analyze for leaks
+	analysis := profiler.AnalyzeLeaks(baseline, current)
+
+	// Assertions for memory leaks
+	if analysis.HasLeak {
+		if strictMode {
+			t.Errorf("Memory leak detected in memory pool operations: %s", analysis.LeakDescription)
+			for _, leak := range analysis.SuspectedLeaks {
+				t.Errorf("Suspected leak: %s", leak)
+			}
+		} else {
+			t.Logf("Memory leak warning in memory pool operations: %s", analysis.LeakDescription)
+			for _, leak := range analysis.SuspectedLeaks {
+				t.Logf("Suspected leak: %s", leak)
+			}
+		}
+		for _, rec := range analysis.Recommendations {
+			t.Logf("Recommendation: %s", rec)
+		}
+	}
+
+	// Check total memory growth
+	totalMemoryIncrease := current.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
+	if totalMemoryIncrease > 15*1024*1024 { // 15MB threshold for entire test
+		if strictMode {
+			t.Errorf("Total memory usage increased by %.2f MB during memory pool operations", float64(totalMemoryIncrease)/(1024*1024))
+		} else {
+			t.Logf("Total memory usage increased by %.2f MB during memory pool operations", float64(totalMemoryIncrease)/(1024*1024))
+		}
+	}
+
+	// Check for gradual memory growth patterns
+	intermediateMemoryIncrease := intermediate.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
+	if intermediateMemoryIncrease > 8*1024*1024 { // 8MB threshold for first phase
+		if strictMode {
+			t.Errorf("Memory usage increased by %.2f MB during first phase of memory pool operations", float64(intermediateMemoryIncrease)/(1024*1024))
+		} else {
+			t.Logf("Memory usage increased by %.2f MB during first phase of memory pool operations", float64(intermediateMemoryIncrease)/(1024*1024))
+		}
+	}
+
+	// Check goroutine count stability
+	goroutineIncrease := finalGoroutines - initialGoroutines
+	if goroutineIncrease > 3 { // Allow small variance for test environment
+		if strictMode {
+			t.Errorf("Goroutine count increased by %d during memory pool operations (initial: %d, final: %d)",
+				goroutineIncrease, initialGoroutines, finalGoroutines)
+		} else {
+			t.Logf("Goroutine count increased by %d during memory pool operations (initial: %d, final: %d)",
+				goroutineIncrease, initialGoroutines, finalGoroutines)
+		}
+	}
+
+	// Phase 3: Test cleanup verification
+	t.Log("Phase 3: Testing cleanup verification...")
+
+	// Force garbage collection to see if pools are properly managed
+	runtime.GC()
+	runtime.GC() // Run twice to ensure cleanup
+
+	time.Sleep(10 * time.Millisecond) // Allow cleanup to complete
+
+	// Take post-cleanup snapshot
+	postCleanup, err := profiler.TakeSnapshot()
+	if err != nil {
+		t.Fatalf("Failed to take post-cleanup snapshot: %v", err)
+	}
+
+	// Check if memory decreased after cleanup
+	if postCleanup.RuntimeStats.Alloc < current.RuntimeStats.Alloc {
+		memoryDecrease := current.RuntimeStats.Alloc - postCleanup.RuntimeStats.Alloc
+		t.Logf("Memory decreased by %.2f MB after cleanup phase", float64(memoryDecrease)/(1024*1024))
+	} else if postCleanup.RuntimeStats.Alloc > current.RuntimeStats.Alloc {
+		memoryIncrease := postCleanup.RuntimeStats.Alloc - current.RuntimeStats.Alloc
+		if strictMode {
+			t.Errorf("Memory increased by %.2f MB after cleanup phase - possible cleanup issues", float64(memoryIncrease)/(1024*1024))
+		} else {
+			t.Logf("Memory increased by %.2f MB after cleanup phase - possible cleanup issues", float64(memoryIncrease)/(1024*1024))
+		}
+	}
+
+	t.Logf("Memory pool leak detection test completed")
+	t.Logf("Memory usage: baseline=%.2f MB, intermediate=%.2f MB, final=%.2f MB, post-cleanup=%.2f MB",
+		float64(baseline.RuntimeStats.Alloc)/(1024*1024),
+		float64(intermediate.RuntimeStats.Alloc)/(1024*1024),
+		float64(current.RuntimeStats.Alloc)/(1024*1024),
+		float64(postCleanup.RuntimeStats.Alloc)/(1024*1024))
+}

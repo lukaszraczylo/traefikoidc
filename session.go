@@ -678,6 +678,8 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	sessionData.dirty = false
 
 	var sessionReturned bool
+	// CRITICAL FIX: Defer logic to return session to pool only on panic, not on successful return
+	// This prevents memory leaks by ensuring sessions are only pooled when not in use by caller
 	defer func() {
 		if !sessionReturned && sessionData != nil {
 			if r := recover(); r != nil {
@@ -743,7 +745,9 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	sm.getTokenChunkSessions(r, refreshTokenCookie, sessionData.refreshTokenChunks)
 	sm.getTokenChunkSessions(r, idTokenCookie, sessionData.idTokenChunks)
 
-	sessionReturned = false
+	// CRITICAL FIX: Mark session as successfully returned to caller - prevents premature pool return
+	// This fixes memory leak where sessions were incorrectly returned to pool immediately after success
+	sessionReturned = true
 	return sessionData, nil
 }
 
