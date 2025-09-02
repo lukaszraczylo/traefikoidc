@@ -36,27 +36,27 @@ func createDefaultHTTPClient() *http.Client {
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			dialer := &net.Dialer{
-				Timeout:   10 * time.Second, // Connection timeout for faster failure detection
-				KeepAlive: 30 * time.Second, // Keep-alive interval for connection reuse
+				Timeout:   5 * time.Second,  // Reduced connection timeout for faster failure detection
+				KeepAlive: 15 * time.Second, // Reduced keep-alive interval for connection reuse
 			}
 			return dialer.DialContext(ctx, network, addr)
 		},
 		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   3 * time.Second,  // TLS handshake timeout
+		TLSHandshakeTimeout:   2 * time.Second,  // Reduced TLS handshake timeout
 		ExpectContinueTimeout: 1 * time.Second,  // Timeout for 100-continue responses
-		MaxIdleConns:          10,               // Reduced from 20 to prevent memory buildup
-		MaxIdleConnsPerHost:   2,                // Reduced from 5 to limit per-host connections
-		IdleConnTimeout:       30 * time.Second, // Reduced from 60 to close idle connections faster
+		MaxIdleConns:          5,                // Further reduced to prevent connection accumulation
+		MaxIdleConnsPerHost:   1,                // Further reduced to limit per-host connections
+		IdleConnTimeout:       15 * time.Second, // Further reduced to close idle connections faster
 		DisableKeepAlives:     false,            // Enable connection reuse
-		MaxConnsPerHost:       10,               // Reduced from 20 to limit concurrent connections
-		ResponseHeaderTimeout: 5 * time.Second,  // Timeout for reading response headers
+		MaxConnsPerHost:       5,                // Further reduced to limit concurrent connections
+		ResponseHeaderTimeout: 3 * time.Second,  // Reduced timeout for reading response headers
 		DisableCompression:    false,            // Enable compression for bandwidth efficiency
 		WriteBufferSize:       4096,             // Write buffer size for connections
 		ReadBufferSize:        4096,             // Read buffer size for connections
 	}
 
 	return &http.Client{
-		Timeout:   time.Second * 10, // HTTP client timeout
+		Timeout:   time.Second * 5, // Reduced HTTP client timeout to prevent hanging connections
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			// Limit redirects to prevent redirect loops
@@ -124,7 +124,7 @@ type CacheManager struct {
 // It initializes all cache types on first call with appropriate default settings.
 // This ensures thread-safe initialization and consistent cache behavior across
 // the entire application lifecycle.
-func GetGlobalCacheManager() *CacheManager {
+func GetGlobalCacheManager(wg *sync.WaitGroup) *CacheManager {
 	cacheManagerOnce.Do(func() {
 		globalCacheManager = &CacheManager{
 			tokenBlacklist: func() *Cache {
@@ -133,7 +133,7 @@ func GetGlobalCacheManager() *CacheManager {
 				return c
 			}(),
 			tokenCache:    NewTokenCache(),
-			metadataCache: NewMetadataCache(),
+			metadataCache: NewMetadataCache(wg),
 			jwkCache:      &JWKCache{},
 		}
 	})
@@ -283,7 +283,7 @@ type TraefikOidc struct {
 	issuerURL                  string
 	revocationURL              string
 	scopes                     []string
-	goroutineWG                sync.WaitGroup
+	goroutineWG                *sync.WaitGroup
 	refreshGracePeriod         time.Duration
 	shutdownOnce               sync.Once
 	forceHTTPS                 bool
@@ -690,13 +690,15 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	} else {
 		httpClient = createDefaultHTTPClient()
 	}
-	cacheManager := GetGlobalCacheManager()
+	goroutineWG := &sync.WaitGroup{}
+	cacheManager := GetGlobalCacheManager(goroutineWG)
 
 	pluginCtx, cancelFunc := context.WithCancel(context.Background())
 
 	t := &TraefikOidc{
 		next:         next,
 		name:         name,
+		goroutineWG:  goroutineWG,
 		redirURLPath: config.CallbackURL,
 		logoutURLPath: func() string {
 			if config.LogoutURL == "" {

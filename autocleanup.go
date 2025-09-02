@@ -1,6 +1,9 @@
 package traefikoidc
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // BackgroundTask represents a managed recurring task that runs in the background.
 // It provides a clean interface for starting and stopping periodic operations
@@ -11,6 +14,7 @@ type BackgroundTask struct {
 	logger   *Logger
 	name     string
 	interval time.Duration
+	wg       *sync.WaitGroup
 }
 
 // NewBackgroundTask creates a new background task with the specified parameters.
@@ -20,35 +24,53 @@ type BackgroundTask struct {
 //   - interval: Duration between task executions.
 //   - taskFunc: The function to execute periodically.
 //   - logger: Logger instance for task lifecycle events.
+//   - wg: Optional WaitGroup for synchronizing goroutine completion.
 //
 // Returns:
 //   - A configured BackgroundTask ready to be started.
-func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), logger *Logger) *BackgroundTask {
+func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), logger *Logger, wg ...*sync.WaitGroup) *BackgroundTask {
+	var waitGroup *sync.WaitGroup
+	if len(wg) > 0 {
+		waitGroup = wg[0]
+	}
 	return &BackgroundTask{
 		name:     name,
 		interval: interval,
 		stopChan: make(chan struct{}),
 		taskFunc: taskFunc,
 		logger:   logger,
+		wg:       waitGroup,
 	}
 }
 
 // Start begins the background task execution in a separate goroutine.
 // The task runs immediately upon start and then at the specified interval.
 func (bt *BackgroundTask) Start() {
+	if bt.wg != nil {
+		bt.wg.Add(1)
+	}
 	go bt.run()
 }
 
 // Stop gracefully terminates the background task by closing the stop channel.
+// If a WaitGroup was provided, it waits for the goroutine to complete.
 // This method is safe to call multiple times.
 func (bt *BackgroundTask) Stop() {
 	close(bt.stopChan)
+	if bt.wg != nil {
+		bt.wg.Wait()
+	}
 }
 
 // run is the main execution loop for the background task.
 // It executes the task function immediately and then at regular intervals
 // until the stop signal is received.
 func (bt *BackgroundTask) run() {
+	defer func() {
+		if bt.wg != nil {
+			bt.wg.Done()
+		}
+	}()
 	ticker := time.NewTicker(bt.interval)
 	defer ticker.Stop()
 

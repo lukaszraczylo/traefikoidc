@@ -48,7 +48,7 @@ func TestMemoryLeakFixes(t *testing.T) {
 
 	t.Run("Global cache manager cleanup", func(t *testing.T) {
 		// Get the global cache manager
-		cm := GetGlobalCacheManager()
+		cm := GetGlobalCacheManager(nil)
 		if cm == nil {
 			t.Fatal("Failed to get global cache manager")
 		}
@@ -64,7 +64,7 @@ func TestMemoryLeakFixes(t *testing.T) {
 		}
 
 		// Verify it can be re-initialized
-		cm2 := GetGlobalCacheManager()
+		cm2 := GetGlobalCacheManager(nil)
 		if cm2 == nil {
 			t.Fatal("Failed to re-initialize global cache manager")
 		}

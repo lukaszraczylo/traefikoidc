@@ -143,7 +143,7 @@ func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httpt
 		forceHTTPS:            config.ForceHTTPS,
 		allowedUserDomains:    make(map[string]struct{}),
 		jwkCache:              &JWKCache{},
-		metadataCache:         NewMetadataCache(),
+		metadataCache:         NewMetadataCache(nil),
 		ctx:                   context.Background(),
 	}
 

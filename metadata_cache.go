@@ -19,16 +19,18 @@ type MetadataCache struct {
 	logger              *Logger
 	autoCleanupInterval time.Duration
 	mutex               sync.RWMutex
+	wg                  *sync.WaitGroup
+	stopChan            chan struct{}
 }
 
 // NewMetadataCache creates a new MetadataCache instance.
 // It initializes the cache structure and starts the background cleanup task.
-func NewMetadataCache() *MetadataCache {
-	return NewMetadataCacheWithLogger(nil)
+func NewMetadataCache(wg *sync.WaitGroup) *MetadataCache {
+	return NewMetadataCacheWithLogger(wg, nil)
 }
 
 // NewMetadataCacheWithLogger creates a new MetadataCache with a specified logger.
-func NewMetadataCacheWithLogger(logger *Logger) *MetadataCache {
+func NewMetadataCacheWithLogger(wg *sync.WaitGroup, logger *Logger) *MetadataCache {
 	if logger == nil {
 		logger = newNoOpLogger()
 	}
@@ -36,6 +38,8 @@ func NewMetadataCacheWithLogger(logger *Logger) *MetadataCache {
 	c := &MetadataCache{
 		autoCleanupInterval: 5 * time.Minute,
 		logger:              logger,
+		wg:                  wg,
+		stopChan:            make(chan struct{}),
 	}
 	c.startAutoCleanup()
 	return c
@@ -200,7 +204,7 @@ func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client,
 // startAutoCleanup starts the background task that periodically calls Cleanup
 // to remove expired metadata from the cache.
 func (c *MetadataCache) startAutoCleanup() {
-	c.cleanupTask = NewBackgroundTask("metadata-cache-cleanup", c.autoCleanupInterval, c.Cleanup, c.logger)
+	c.cleanupTask = NewBackgroundTask("metadata-cache-cleanup", c.autoCleanupInterval, c.Cleanup, c.logger, c.wg)
 	c.cleanupTask.Start()
 }
 
