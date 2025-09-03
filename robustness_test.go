@@ -40,6 +40,7 @@ func TestConcurrentTokenVerification(t *testing.T) {
 	}
 
 	// Create a fresh instance for this test
+	var goroutineWG sync.WaitGroup
 	tOidc := &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
@@ -51,6 +52,7 @@ func TestConcurrentTokenVerification(t *testing.T) {
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
 		httpClient:         &http.Client{},
 		extractClaimsFunc:  extractClaims,
+		goroutineWG:        &goroutineWG,
 	}
 	tOidc.tokenVerifier = tOidc
 	tOidc.jwtVerifier = tOidc
@@ -497,6 +499,7 @@ func TestMaliciousInputValidation(t *testing.T) {
 	for _, test := range maliciousInputs {
 		t.Run(test.name, func(t *testing.T) {
 			// Create a fresh instance for each test to avoid rate limiting issues
+			var goroutineWG sync.WaitGroup
 			freshOidc := &TraefikOidc{
 				issuerURL:          "https://test-issuer.com",
 				clientID:           "test-client-id",
@@ -508,6 +511,7 @@ func TestMaliciousInputValidation(t *testing.T) {
 				allowedUserDomains: map[string]struct{}{"example.com": {}},
 				httpClient:         &http.Client{},
 				extractClaimsFunc:  extractClaims,
+				goroutineWG:        &goroutineWG,
 			}
 			freshOidc.tokenVerifier = freshOidc
 			freshOidc.jwtVerifier = freshOidc
@@ -731,6 +735,7 @@ func TestPerformanceUnderLoad(t *testing.T) {
 	}
 
 	// Create fresh instance with high rate limit
+	var goroutineWG sync.WaitGroup
 	tOidc := &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
@@ -742,6 +747,7 @@ func TestPerformanceUnderLoad(t *testing.T) {
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
 		httpClient:         &http.Client{},
 		extractClaimsFunc:  extractClaims,
+		goroutineWG:        &goroutineWG,
 	}
 	tOidc.tokenVerifier = tOidc
 	tOidc.jwtVerifier = tOidc

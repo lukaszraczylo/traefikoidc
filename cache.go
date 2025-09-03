@@ -53,7 +53,7 @@ func NewCacheWithLogger(logger *Logger) *Cache {
 		order:               list.New(),
 		elems:               make(map[string]*list.Element, DefaultMaxSize),
 		maxSize:             DefaultMaxSize,
-		autoCleanupInterval: 5 * time.Minute,
+		autoCleanupInterval: 15 * time.Minute, // Increased from 5 minutes to reduce overhead
 		logger:              logger,
 	}
 	c.startAutoCleanup()
@@ -155,16 +155,21 @@ func (c *Cache) Cleanup() {
 }
 
 // evictOldest removes the least recently used (oldest) item from the cache.
-// It first attempts to find and remove an expired item from the front of the LRU list.
-// If no expired items are found at the front, it removes the absolute oldest item (front of the list).
+// It first attempts to find and remove expired items, checking up to 5 items
+// from the front of the LRU list for efficiency. If no expired items are found,
+// it removes the absolute oldest item (front of the list).
 // This method is called internally by Set when the cache reaches its maximum size.
 // Note: This function assumes the write lock is already held.
 func (c *Cache) evictOldest() {
 	now := time.Now()
 	elem := c.order.Front()
 
-	// First try to find an expired item from the front
-	for elem != nil {
+	// Check up to 5 items from the front for expired entries
+	// This limits the search overhead while still finding expired items efficiently
+	const maxExpiredCheck = 5
+	checked := 0
+
+	for elem != nil && checked < maxExpiredCheck {
 		entry := elem.Value.(lruEntry)
 		if item, exists := c.items[entry.key]; exists {
 			if now.After(item.ExpiresAt) {
@@ -173,9 +178,10 @@ func (c *Cache) evictOldest() {
 			}
 		}
 		elem = elem.Next()
+		checked++
 	}
 
-	// If no expired items found, remove the oldest item
+	// If no expired items found in the first few entries, remove the oldest item
 	if elem = c.order.Front(); elem != nil {
 		entry := elem.Value.(lruEntry)
 		c.removeItem(entry.key)

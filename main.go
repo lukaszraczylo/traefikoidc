@@ -42,17 +42,17 @@ func createDefaultHTTPClient() *http.Client {
 			return dialer.DialContext(ctx, network, addr)
 		},
 		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   2 * time.Second,  // Reduced TLS handshake timeout
-		ExpectContinueTimeout: 1 * time.Second,  // Timeout for 100-continue responses
-		MaxIdleConns:          5,                // Further reduced to prevent connection accumulation
-		MaxIdleConnsPerHost:   1,                // Further reduced to limit per-host connections
-		IdleConnTimeout:       15 * time.Second, // Further reduced to close idle connections faster
-		DisableKeepAlives:     false,            // Enable connection reuse
-		MaxConnsPerHost:       5,                // Further reduced to limit concurrent connections
-		ResponseHeaderTimeout: 3 * time.Second,  // Reduced timeout for reading response headers
-		DisableCompression:    false,            // Enable compression for bandwidth efficiency
-		WriteBufferSize:       4096,             // Write buffer size for connections
-		ReadBufferSize:        4096,             // Read buffer size for connections
+		TLSHandshakeTimeout:   2 * time.Second, // Reduced TLS handshake timeout
+		ExpectContinueTimeout: 1 * time.Second, // Timeout for 100-continue responses
+		MaxIdleConns:          2,               // Reduced from 5 to minimize idle connections
+		MaxIdleConnsPerHost:   1,               // Keep minimal idle connections per host
+		IdleConnTimeout:       5 * time.Second, // Reduced from 15s to close idle connections faster
+		DisableKeepAlives:     false,           // Enable connection reuse
+		MaxConnsPerHost:       2,               // Reduced from 5 to limit concurrent connections
+		ResponseHeaderTimeout: 3 * time.Second, // Reduced timeout for reading response headers
+		DisableCompression:    false,           // Enable compression for bandwidth efficiency
+		WriteBufferSize:       4096,            // Write buffer size for connections
+		ReadBufferSize:        4096,            // Read buffer size for connections
 	}
 
 	return &http.Client{
@@ -290,6 +290,10 @@ type TraefikOidc struct {
 	enablePKCE                 bool
 	overrideScopes             bool
 	suppressDiagnosticLogs     bool
+	firstRequestReceived       bool
+	firstRequestMutex          sync.Mutex
+	metadataRefreshStarted     bool
+	providerURL                string
 }
 
 // ProviderMetadata represents the OpenID Connect provider's discovery metadata.
@@ -773,7 +777,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	t.tokenVerifier = t
 	t.jwtVerifier = t
-	t.startTokenCleanup()
+	// Delay startTokenCleanup() until first request
 	t.tokenExchanger = t // Initialize the interface field to self
 
 	// Initialize and parse header templates with safe field access
@@ -817,6 +821,9 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	startReplayCacheCleanup(pluginCtx, logger)
 	logger.Debugf("TraefikOidc.New: Final t.scopes initialized to: %v", t.scopes)
+
+	// Store provider URL for later use
+	t.providerURL = config.ProviderURL
 	go t.initializeMetadata(config.ProviderURL)
 
 	return t, nil
@@ -853,8 +860,8 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 		t.logger.Debug("Successfully initialized provider metadata")
 		t.updateMetadataEndpoints(metadata)
 
-		// Start metadata refresh goroutine
-		go t.startMetadataRefresh(providerURL)
+		// Delay metadata refresh goroutine until first request
+		// It will be started in ServeHTTP when needed
 
 		// Only close channel on success
 		close(t.initComplete)
@@ -890,11 +897,19 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	// Use longer interval to reduce memory pressure from refresh attempts
 	ticker := time.NewTicker(2 * time.Hour) // Increased from 1 hour
-	t.goroutineWG.Add(1)                    // Track this goroutine
+
+	// Check if WaitGroup is initialized (it might be nil in tests)
+	if t.goroutineWG != nil {
+		t.goroutineWG.Add(1) // Track this goroutine
+	}
 
 	go func() {
-		defer t.goroutineWG.Done() // Signal completion when goroutine exits
-		defer ticker.Stop()        // Ensure ticker is always stopped
+		defer func() {
+			if t.goroutineWG != nil {
+				t.goroutineWG.Done() // Signal completion when goroutine exits
+			}
+		}()
+		defer ticker.Stop() // Ensure ticker is always stopped
 
 		consecutiveFailures := 0
 		for {
@@ -1058,6 +1073,23 @@ func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetad
 //   - Authentication state management
 //   - Header injection for authenticated requests
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// Start background tasks on first request (except for health checks)
+	if !t.firstRequestReceived && !strings.HasPrefix(req.URL.Path, "/health") {
+		t.firstRequestMutex.Lock()
+		if !t.firstRequestReceived {
+			t.firstRequestReceived = true
+			t.logger.Debug("Starting background tasks on first request")
+			t.startTokenCleanup()
+
+			// Also start metadata refresh if not already started
+			if !t.metadataRefreshStarted && t.providerURL != "" {
+				t.metadataRefreshStarted = true
+				go t.startMetadataRefresh(t.providerURL)
+			}
+		}
+		t.firstRequestMutex.Unlock()
+	}
+
 	// Wait for provider metadata initialization to complete
 	select {
 	case <-t.initComplete:
@@ -2050,11 +2082,17 @@ func (t *TraefikOidc) validateHost(host string) error {
 // panic recovery to ensure stability.
 func (t *TraefikOidc) startTokenCleanup() {
 	ticker := time.NewTicker(1 * time.Minute) // Run cleanup every minute
-	t.goroutineWG.Add(1)                      // Track this goroutine
+
+	// Check if WaitGroup is initialized (it might be nil in tests)
+	if t.goroutineWG != nil {
+		t.goroutineWG.Add(1) // Track this goroutine
+	}
 	go func() {
 		defer func() {
-			t.goroutineWG.Done() // Signal completion when goroutine exits
-			ticker.Stop()        // Ensure ticker is always stopped
+			if t.goroutineWG != nil {
+				t.goroutineWG.Done() // Signal completion when goroutine exits
+			}
+			ticker.Stop() // Ensure ticker is always stopped
 
 			// CRITICAL: Recover from panics to prevent middleware crashes
 			if r := recover(); r != nil {
@@ -2840,17 +2878,22 @@ func (t *TraefikOidc) Close() error {
 			t.logger.Debug("metadataRefreshStopChan closed")
 		}
 
-		done := make(chan struct{})
-		go func() {
-			t.goroutineWG.Wait()
-			close(done)
-		}()
+		// Only wait for goroutines if WaitGroup is initialized
+		if t.goroutineWG != nil {
+			done := make(chan struct{})
+			go func() {
+				t.goroutineWG.Wait()
+				close(done)
+			}()
 
-		select {
-		case <-done:
-			t.logger.Debug("All background goroutines stopped gracefully")
-		case <-time.After(10 * time.Second):
-			t.logger.Errorf("Timeout waiting for background goroutines to stop")
+			select {
+			case <-done:
+				t.logger.Debug("All background goroutines stopped gracefully")
+			case <-time.After(10 * time.Second):
+				t.logger.Errorf("Timeout waiting for background goroutines to stop")
+			}
+		} else {
+			t.logger.Debug("No goroutineWG to wait for (likely in test)")
 		}
 
 		if t.httpClient != nil {

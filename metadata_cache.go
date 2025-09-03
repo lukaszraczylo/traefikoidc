@@ -36,7 +36,7 @@ func NewMetadataCacheWithLogger(wg *sync.WaitGroup, logger *Logger) *MetadataCac
 	}
 
 	c := &MetadataCache{
-		autoCleanupInterval: 5 * time.Minute,
+		autoCleanupInterval: 30 * time.Minute, // Increased from 5 minutes since metadata changes rarely
 		logger:              logger,
 		wg:                  wg,
 		stopChan:            make(chan struct{}),

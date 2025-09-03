@@ -74,6 +74,9 @@ func TestRefreshGracePeriodConfiguration(t *testing.T) {
 }
 
 func TestTokenRefreshWithinGracePeriod(t *testing.T) {
+	// Reset global state to prevent test interference
+	resetGlobalState()
+
 	refreshCount := int32(0)
 	tokenVersion := int32(1)
 
@@ -286,6 +289,9 @@ func TestGracePeriodWithProviderSpecificBehavior(t *testing.T) {
 }
 
 func TestRefreshGracePeriodConcurrency(t *testing.T) {
+	// Reset global state to prevent test interference
+	resetGlobalState()
+
 	var refreshMutex sync.Mutex
 	refreshCount := 0
 	blockedRequests := int32(0)

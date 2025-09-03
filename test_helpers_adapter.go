@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,33 @@ func (w *testWriter) Write(p []byte) (n int, err error) {
 
 // Test helper adapters for the new test files
 
+// resetGlobalState resets all global singletons to prevent test interference
+func resetGlobalState() {
+	// Reset global cache manager
+	cacheManagerMutex.Lock()
+	if globalCacheManager != nil {
+		globalCacheManager.Close()
+		globalCacheManager = nil
+	}
+	cacheManagerOnce = sync.Once{}
+	cacheManagerMutex.Unlock()
+
+	// Reset replay cache
+	replayCacheMu.Lock()
+	if replayCache != nil {
+		replayCache.Close()
+		replayCache = nil
+	}
+	replayCacheOnce = sync.Once{}
+	replayCacheMu.Unlock()
+
+	// Reset memory pools
+	memoryPoolMutex.Lock()
+	globalMemoryPools = nil
+	memoryPoolOnce = sync.Once{}
+	memoryPoolMutex.Unlock()
+}
+
 // createTestConfig creates a config with all required fields populated for testing
 func createTestConfig() *Config {
 	config := CreateConfig()
@@ -38,6 +66,9 @@ func createTestConfig() *Config {
 
 // setupTestOIDCMiddleware creates a test OIDC middleware instance with mock servers
 func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httptest.Server) {
+	// Reset global state to ensure test isolation
+	resetGlobalState()
+
 	// Create mock OIDC server
 	var serverURL string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +145,9 @@ func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httpt
 	testTokenURL := testIssuerURL + "/token"
 	testJWKSURL := testIssuerURL + "/keys"
 
+	// Create WaitGroup for background goroutines
+	var wg sync.WaitGroup
+
 	// Create TraefikOidc instance directly
 	oidc := &TraefikOidc{
 		next:                  nextHandler,
@@ -145,6 +179,8 @@ func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httpt
 		jwkCache:              &JWKCache{},
 		metadataCache:         NewMetadataCache(nil),
 		ctx:                   context.Background(),
+		goroutineWG:           &wg,
+		providerURL:           serverURL,
 	}
 
 	// Process excluded URLs
