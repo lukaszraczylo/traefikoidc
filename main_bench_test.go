@@ -10,7 +10,9 @@ import (
 func BenchmarkOIDCMiddleware(b *testing.B) {
 	// Setup test environment
 
-	ts := &TestSuite{}
+	// Create a testing.T wrapper for benchmarks
+	t := &testing.T{}
+	ts := NewTestSuite(t)
 	ts.Setup()
 	ts.token = "valid.jwt.token"
 

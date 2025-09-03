@@ -88,7 +88,7 @@ func TestTokenTypeDistinction(t *testing.T) {
 // TestTokenTypeIntegration tests the integration of ID and access tokens with the middleware
 func TestTokenTypeIntegration(t *testing.T) {
 	// Create a TestSuite to use its helper methods and fields
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create different tokens for ID and access tokens
@@ -157,8 +157,8 @@ func TestTokenTypeIntegration(t *testing.T) {
 		clientSecret:       "test-client-secret",
 		jwkCache:           ts.mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
-		tokenBlacklist:     NewCache(),
-		tokenCache:         NewTokenCache(),
+		tokenBlacklist:     ts.tOidc.tokenBlacklist,
+		tokenCache:         ts.tOidc.tokenCache,
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
 		logger:             NewLogger("debug"),
 		allowedUserDomains: map[string]struct{}{"example.com": {}},

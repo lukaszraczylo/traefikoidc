@@ -349,6 +349,9 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 			Err:  nil,
 		}
 
+		// Create test cleanup helper
+		tc := newTestCleanup(t)
+
 		// Create a complete test instance with all required fields
 		mockLogger := NewLogger("debug")
 		googleTOidc := &TraefikOidc{
@@ -358,8 +361,8 @@ func TestGoogleOIDCRefreshTokenHandling(t *testing.T) {
 			logger:             mockLogger,
 			scopes:             []string{"openid", "profile", "email"},
 			refreshGracePeriod: 60,
-			tokenCache:         NewTokenCache(), // Initialize tokenCache
-			tokenBlacklist:     NewCache(),      // Initialize tokenBlacklist
+			tokenCache:         tc.addTokenCache(NewTokenCache()), // Initialize tokenCache with cleanup
+			tokenBlacklist:     tc.addCache(NewCache()),           // Initialize tokenBlacklist with cleanup
 			enablePKCE:         false,
 			limiter:            rate.NewLimiter(rate.Inf, 0), // No rate limiting for tests
 			jwkCache:           mockJWKCache,

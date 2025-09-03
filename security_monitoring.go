@@ -81,6 +81,7 @@ type SecurityMonitor struct {
 	eventHandlers   []SecurityEventHandler
 	config          SecurityMonitorConfig
 	ipMutex         sync.RWMutex
+	cleanupTask     *BackgroundTask // Store cleanup task per instance
 }
 
 // IPFailureTracker maintains failure statistics for a specific IP address.
@@ -140,9 +141,6 @@ func DefaultSecurityMonitorConfig() SecurityMonitorConfig {
 		RetentionHours:         24,
 	}
 }
-
-// cleanupTask holds the BackgroundTask for security cleanup
-var cleanupTask *BackgroundTask
 
 // NewSecurityMonitor creates a new security monitor instance
 func NewSecurityMonitor(config SecurityMonitorConfig, logger *Logger) *SecurityMonitor {
@@ -489,19 +487,19 @@ func (spd *SuspiciousPatternDetector) DetectSuspiciousPatterns() []string {
 // startCleanupRoutine starts the background cleanup routine
 func (sm *SecurityMonitor) startCleanupRoutine() {
 	// Use BackgroundTask abstraction for consistent management
-	cleanupTask = NewBackgroundTask(
+	sm.cleanupTask = NewBackgroundTask(
 		"security-monitor-cleanup",
 		time.Duration(sm.config.CleanupIntervalMinutes)*time.Minute,
 		sm.cleanup,
 		sm.logger)
-	cleanupTask.Start()
+	sm.cleanupTask.Start()
 }
 
 // StopCleanupRoutine stops the background cleanup routine
 func (sm *SecurityMonitor) StopCleanupRoutine() {
-	if cleanupTask != nil {
-		cleanupTask.Stop()
-		cleanupTask = nil
+	if sm.cleanupTask != nil {
+		sm.cleanupTask.Stop()
+		sm.cleanupTask = nil
 	}
 }
 

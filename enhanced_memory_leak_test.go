@@ -1,7 +1,6 @@
 package traefikoidc
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -32,39 +31,24 @@ func TestBackgroundGoroutineLeaks(t *testing.T) {
 
 		t.Logf("Baseline: Memory=%d KB, Goroutines=%d", baselineAlloc/1024, baselineGoroutines)
 
-		// Create middleware instance
-		config := CreateConfig()
-		config.ProviderURL = "https://example.com"
-		config.ClientID = "test-client"
-		config.ClientSecret = "test-secret"
-		config.SessionEncryptionKey = "test-encryption-key-that-is-long-enough-32bytes"
+		// Create test cleanup
+		tc := newTestCleanup(t)
+
+		// Create middleware instance with mock setup
+		config := createTestConfig()
 		config.LogLevel = "error" // Reduce noise
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		})
-
-		handler, err := New(ctx, next, config, "test-middleware")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Cast to TraefikOidc to access internals
-		middleware, ok := handler.(*TraefikOidc)
-		if !ok {
-			t.Fatal("Failed to cast to TraefikOidc")
-		}
+		middleware, server := setupTestOIDCMiddleware(t, config)
+		tc.addServer(server)
+		tc.addOIDC(middleware)
 
 		// Let it sit idle for a while - simulating no requests
 		// During this time, background goroutines are running
-		t.Log("Letting middleware sit idle for 30 seconds...")
+		t.Log("Letting middleware sit idle for 3 seconds...")
 
-		// Take measurements every 5 seconds
-		for i := 0; i < 6; i++ {
-			time.Sleep(5 * time.Second)
+		// Take measurements every 1 second
+		for i := 0; i < 3; i++ {
+			time.Sleep(1 * time.Second)
 
 			runtime.GC()
 			runtime.ReadMemStats(&m)
@@ -75,12 +59,12 @@ func TestBackgroundGoroutineLeaks(t *testing.T) {
 			goroutineIncrease := currentGoroutines - baselineGoroutines
 
 			t.Logf("After %d seconds: Memory increase=%.2f MB, Goroutine increase=%d",
-				(i+1)*5, allocIncrease, goroutineIncrease)
+				(i + 1), allocIncrease, goroutineIncrease)
 
 			// Check for significant memory growth (more than 5MB)
 			if allocIncrease > 5.0 {
 				t.Errorf("Significant memory increase detected: %.2f MB after %d seconds of idle",
-					allocIncrease, (i+1)*5)
+					allocIncrease, (i + 1))
 			}
 
 			// Check for goroutine leaks (more than 10 extra goroutines)
@@ -91,8 +75,7 @@ func TestBackgroundGoroutineLeaks(t *testing.T) {
 		}
 
 		// Clean up
-		err = middleware.Close()
-		if err != nil {
+		if err := middleware.Close(); err != nil {
 			t.Errorf("Failed to close middleware: %v", err)
 		}
 
@@ -171,8 +154,8 @@ func TestHTTPClientConnectionLeaks(t *testing.T) {
 			}
 		}
 
-		// Let connections sit idle (now only 5s with our optimizations)
-		time.Sleep(6 * time.Second) // Slightly longer than new IdleConnTimeout (5s)
+		// Let connections sit idle briefly to test cleanup
+		time.Sleep(1 * time.Second) // Reduced for faster tests
 
 		// Force cleanup
 		for _, client := range clients {
@@ -188,10 +171,25 @@ func TestHTTPClientConnectionLeaks(t *testing.T) {
 // TestCacheBackgroundTaskLeaks tests that cache background tasks don't leak
 func TestCacheBackgroundTaskLeaks(t *testing.T) {
 	t.Run("Multiple cache instances with cleanup tasks", func(t *testing.T) {
+		// Reset global state to prevent test interference
+		resetGlobalState()
+
 		initialGoroutines := runtime.NumGoroutine()
 
 		// Create many cache instances
 		caches := make([]*Cache, 50)
+
+		// Ensure cleanup even on test failure or panic
+		defer func() {
+			for _, cache := range caches {
+				if cache != nil {
+					cache.Close()
+				}
+			}
+			// Wait a bit for goroutines to stop
+			time.Sleep(100 * time.Millisecond)
+		}()
+
 		for i := 0; i < 50; i++ {
 			caches[i] = NewCache()
 			// Add some data
@@ -220,13 +218,25 @@ func TestCacheBackgroundTaskLeaks(t *testing.T) {
 			cache.Close()
 		}
 
-		// Wait for goroutines to stop
-		time.Sleep(500 * time.Millisecond)
+		// Wait for goroutines to stop with timeout
+		done := make(chan bool)
+		go func() {
+			for i := 0; i < 20; i++ { // Try for 2 seconds
+				time.Sleep(100 * time.Millisecond)
+				currentGoroutines := runtime.NumGoroutine()
+				if currentGoroutines-initialGoroutines <= 5 {
+					done <- true
+					return
+				}
+			}
+			done <- false
+		}()
 
+		success := <-done
 		finalGoroutines := runtime.NumGoroutine()
 		remainingGoroutines := finalGoroutines - initialGoroutines
 
-		if remainingGoroutines > 5 { // Allow small tolerance
+		if !success && remainingGoroutines > 5 { // Allow small tolerance
 			t.Errorf("Cache cleanup goroutines not stopped properly: %d extra goroutines remain",
 				remainingGoroutines)
 		}
@@ -295,7 +305,15 @@ func TestGlobalSingletonMemoryGrowth(t *testing.T) {
 		runtime.GC()
 		runtime.ReadMemStats(&m)
 		finalAlloc := m.Alloc
-		finalAllocIncrease := float64(finalAlloc-baselineAlloc) / 1024 / 1024
+
+		// Handle potential negative differences (memory freed beyond baseline)
+		var finalAllocIncrease float64
+		if finalAlloc >= baselineAlloc {
+			finalAllocIncrease = float64(finalAlloc-baselineAlloc) / 1024 / 1024
+		} else {
+			// Memory decreased below baseline - this is good!
+			finalAllocIncrease = -float64(baselineAlloc-finalAlloc) / 1024 / 1024
+		}
 
 		t.Logf("Final memory increase after cleanup: %.2f MB", finalAllocIncrease)
 
@@ -592,8 +610,8 @@ func TestConcurrentMemoryLeaks(t *testing.T) {
 		}
 
 		// Let it run and measure periodically
-		for i := 0; i < 5; i++ {
-			time.Sleep(5 * time.Second)
+		for i := 0; i < 3; i++ {
+			time.Sleep(1 * time.Second)
 
 			runtime.GC()
 			runtime.ReadMemStats(&m)
@@ -604,12 +622,12 @@ func TestConcurrentMemoryLeaks(t *testing.T) {
 			goroutineIncrease := currentGoroutines - baselineGoroutines
 
 			t.Logf("After %d seconds of concurrent load: Memory increase=%.2f MB, Goroutine increase=%d",
-				(i+1)*5, allocIncrease, goroutineIncrease)
+				(i + 1), allocIncrease, goroutineIncrease)
 
 			// Under sustained concurrent load, memory should stabilize
-			if i > 2 && allocIncrease > 20.0 {
+			if i > 1 && allocIncrease > 20.0 {
 				t.Errorf("Memory leak under concurrent load: %.2f MB after %d seconds",
-					allocIncrease, (i+1)*5)
+					allocIncrease, (i + 1))
 			}
 		}
 

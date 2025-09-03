@@ -15,7 +15,7 @@ import (
 // in the actual middleware flow
 func TestTemplatedHeadersIntegration(t *testing.T) {
 	// Create a TestSuite to use its helper methods and fields
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -423,7 +423,7 @@ func TestTemplatedHeadersIntegration(t *testing.T) {
 // TestEdgeCaseTemplatedHeaders tests edge cases for templated headers
 func TestEdgeCaseTemplatedHeaders(t *testing.T) {
 	// Create a TestSuite to use its helper methods and fields
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {

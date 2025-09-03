@@ -41,8 +41,15 @@ func (m *mockTraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) er
 }
 
 func TestAzureOIDCRegression(t *testing.T) {
+	// Create test cleanup helper
+	tc := newTestCleanup(t)
+
 	// Create a mocked TraefikOidc instance configured for Azure AD
 	mockLogger := NewLogger("debug")
+
+	// Create caches with cleanup tracking
+	tokenCache := tc.addTokenCache(NewTokenCache())
+	tokenBlacklist := tc.addCache(NewCache())
 
 	// Configure for Azure AD provider
 	baseOidc := &TraefikOidc{
@@ -58,8 +65,8 @@ func TestAzureOIDCRegression(t *testing.T) {
 		logger:                mockLogger,
 		httpClient:            createDefaultHTTPClient(), // Add HTTP client
 		jwkCache:              &JWKCache{},               // Add JWK cache
-		tokenCache:            NewTokenCache(),
-		tokenBlacklist:        NewCache(),
+		tokenCache:            tokenCache,
+		tokenBlacklist:        tokenBlacklist,
 		allowedUserDomains:    make(map[string]struct{}),
 		allowedUsers:          make(map[string]struct{}),
 		allowedRolesAndGroups: make(map[string]struct{}),

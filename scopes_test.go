@@ -192,7 +192,7 @@ func TestScopesConfiguration(t *testing.T) {
 }
 
 func TestBuildAuthURLScopeHandling(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup() // Basic setup for TraefikOidc instance
 
 	// Default scopes expected if not overridden and no user scopes provided

@@ -252,6 +252,13 @@ func TestTemplateIntegrationWithPlugin(t *testing.T) {
 		traefikOidc, ok := handler.(*TraefikOidc)
 		require.True(t, ok)
 
+		// Clean up the middleware when test finishes
+		defer func() {
+			if err := traefikOidc.Close(); err != nil {
+				t.Errorf("Failed to close middleware: %v", err)
+			}
+		}()
+
 		// Create a mock session with claims
 		req := httptest.NewRequest("GET", "/protected", nil)
 

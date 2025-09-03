@@ -102,6 +102,13 @@ func TestTraefikConfigurationParsing(t *testing.T) {
 						t.Fatalf("Handler is not of type *TraefikOidc")
 					}
 
+					// Clean up the middleware when test finishes
+					defer func() {
+						if err := middleware.Close(); err != nil {
+							t.Errorf("Failed to close middleware: %v", err)
+						}
+					}()
+
 					// Check that templates were parsed correctly
 					if len(tc.config.Headers) > 0 {
 						if len(middleware.headerTemplates) != len(tc.config.Headers) {
@@ -231,6 +238,13 @@ func TestIssue55ReproductionAttempt(t *testing.T) {
 	if !ok {
 		t.Fatalf("Handler is not of type *TraefikOidc")
 	}
+
+	// Clean up the middleware when test finishes
+	defer func() {
+		if err := middleware.Close(); err != nil {
+			t.Errorf("Failed to close middleware: %v", err)
+		}
+	}()
 
 	// Check that the header template was parsed
 	if len(middleware.headerTemplates) != 1 {

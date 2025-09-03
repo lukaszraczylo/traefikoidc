@@ -659,9 +659,11 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Mark cleanup as done for this session manager instance
-	if !sm.cleanupDone && len(processedCookies) > 0 {
+	if len(processedCookies) > 0 {
 		sm.cleanupMutex.Lock()
-		sm.cleanupDone = true
+		if !sm.cleanupDone {
+			sm.cleanupDone = true
+		}
 		sm.cleanupMutex.Unlock()
 	}
 }

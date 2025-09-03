@@ -17,9 +17,13 @@ import (
 )
 
 var (
-	replayCacheMu   sync.RWMutex // Use RWMutex for better read performance
-	replayCache     *Cache       // Replace unbounded map with bounded Cache
-	replayCacheOnce sync.Once
+	replayCacheMu        sync.RWMutex // Use RWMutex for better read performance
+	replayCache          *Cache       // Replace unbounded map with bounded Cache
+	replayCacheOnce      sync.Once
+	replayCacheCleanupWG sync.WaitGroup
+	replayCacheCtx       context.Context
+	replayCacheCancel    context.CancelFunc
+	replayCacheCleanupMu sync.Mutex
 )
 
 // initReplayCache initializes the global replay cache for JWT ID tracking.
@@ -36,6 +40,18 @@ func initReplayCache() {
 // It acquires a write lock, closes the cache, and sets it to nil
 // to ensure proper cleanup during shutdown.
 func cleanupReplayCache() {
+	// Cancel cleanup goroutine first
+	replayCacheCleanupMu.Lock()
+	if replayCacheCancel != nil {
+		replayCacheCancel()
+		replayCacheCancel = nil
+		replayCacheCtx = nil
+	}
+	replayCacheCleanupMu.Unlock()
+
+	// Wait for cleanup goroutine to finish
+	replayCacheCleanupWG.Wait()
+
 	replayCacheMu.Lock()
 	defer replayCacheMu.Unlock()
 
@@ -73,7 +89,21 @@ func getReplayCacheStats() (size int, maxSize int) {
 //   - ctx: Context for cancellation.
 //   - logger: Logger for debug output (can be nil).
 func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
+	replayCacheCleanupMu.Lock()
+	defer replayCacheCleanupMu.Unlock()
+
+	// Cancel any existing cleanup goroutine
+	if replayCacheCancel != nil {
+		replayCacheCancel()
+		replayCacheCleanupWG.Wait()
+	}
+
+	// Create new context for this cleanup goroutine
+	replayCacheCtx, replayCacheCancel = context.WithCancel(ctx)
+
+	replayCacheCleanupWG.Add(1)
 	go func() {
+		defer replayCacheCleanupWG.Done()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 
@@ -91,8 +121,7 @@ func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
 				}
 				replayCacheMu.RUnlock()
 
-			case <-ctx.Done():
-				cleanupReplayCache()
+			case <-replayCacheCtx.Done():
 				if logger != nil {
 					logger.Debug("Replay cache cleanup goroutine stopped due to context cancellation")
 				}
@@ -286,19 +315,17 @@ func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error 
 
 	shouldSkipReplay := len(skipReplayCheck) > 0 && skipReplayCheck[0]
 
-	if jti, ok := claims["jti"].(string); ok && !shouldSkipReplay {
-		if j.Token == "" {
-			return nil
-		}
+	jtiValue, jtiOk := claims["jti"].(string)
 
+	if jtiOk && !shouldSkipReplay && jtiValue != "" {
 		initReplayCache()
 
 		replayCacheMu.RLock()
-		_, exists := replayCache.Get(jti)
+		_, exists := replayCache.Get(jtiValue)
 		replayCacheMu.RUnlock()
 
 		if exists {
-			return fmt.Errorf("token replay detected (jti: %s)", jti)
+			return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
 		}
 
 		expFloat, ok := claims["exp"].(float64)
@@ -313,7 +340,7 @@ func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error 
 		if duration > 0 {
 			replayCacheMu.Lock()
 			if replayCache != nil {
-				replayCache.Set(jti, true, duration)
+				replayCache.Set(jtiValue, true, duration)
 			}
 			replayCacheMu.Unlock()
 		}

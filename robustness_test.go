@@ -17,8 +17,11 @@ import (
 
 // TestConcurrentTokenVerification tests race conditions in token verification
 func TestConcurrentTokenVerification(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
+
+	// Create cleanup helper
+	tc := newTestCleanup(t)
 
 	// Create multiple valid tokens to avoid replay detection
 	tokens := make([]string, 10)
@@ -41,12 +44,14 @@ func TestConcurrentTokenVerification(t *testing.T) {
 
 	// Create a fresh instance for this test
 	var goroutineWG sync.WaitGroup
+	tokenBlacklist := tc.addCache(NewCache())
+	tokenCache := tc.addTokenCache(NewTokenCache())
 	tOidc := &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
 		jwkCache:           ts.mockJWKCache,
-		tokenBlacklist:     NewCache(),
-		tokenCache:         NewTokenCache(),
+		tokenBlacklist:     tokenBlacklist,
+		tokenCache:         tokenCache,
 		limiter:            rate.NewLimiter(rate.Every(time.Microsecond), 10000), // Very high rate limit
 		logger:             NewLogger("debug"),
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
@@ -56,13 +61,7 @@ func TestConcurrentTokenVerification(t *testing.T) {
 	}
 	tOidc.tokenVerifier = tOidc
 	tOidc.jwtVerifier = tOidc
-
-	// Ensure cleanup when test finishes
-	defer func() {
-		if err := tOidc.Close(); err != nil {
-			t.Logf("Error closing TraefikOidc instance: %v", err)
-		}
-	}()
+	tc.addOIDC(tOidc)
 
 	// Test concurrent verification
 	const numGoroutines = 50
@@ -132,7 +131,7 @@ func TestConcurrentTokenVerification(t *testing.T) {
 
 // TestCacheMemoryExhaustion tests cache behavior under memory pressure
 func TestCacheMemoryExhaustion(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a cache with limited size
@@ -374,7 +373,7 @@ func TestProviderFailureRecovery(t *testing.T) {
 
 // TestOversizedTokenHandling tests boundary value handling
 func TestOversizedTokenHandling(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create an oversized token with large claims
@@ -443,7 +442,7 @@ func TestOversizedTokenHandling(t *testing.T) {
 
 // TestMaliciousInputValidation tests security input validation
 func TestMaliciousInputValidation(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	maliciousInputs := []struct {
@@ -498,14 +497,19 @@ func TestMaliciousInputValidation(t *testing.T) {
 
 	for _, test := range maliciousInputs {
 		t.Run(test.name, func(t *testing.T) {
+			// Create cleanup helper for subtest
+			tc := newTestCleanup(t)
+
 			// Create a fresh instance for each test to avoid rate limiting issues
 			var goroutineWG sync.WaitGroup
+			tokenBlacklist := tc.addCache(NewCache())
+			tokenCache := tc.addTokenCache(NewTokenCache())
 			freshOidc := &TraefikOidc{
 				issuerURL:          "https://test-issuer.com",
 				clientID:           "test-client-id",
 				jwkCache:           ts.mockJWKCache,
-				tokenBlacklist:     NewCache(),
-				tokenCache:         NewTokenCache(),
+				tokenBlacklist:     tokenBlacklist,
+				tokenCache:         tokenCache,
 				limiter:            rate.NewLimiter(rate.Every(time.Microsecond), 10000), // Very high rate limit
 				logger:             NewLogger("debug"),
 				allowedUserDomains: map[string]struct{}{"example.com": {}},
@@ -515,13 +519,7 @@ func TestMaliciousInputValidation(t *testing.T) {
 			}
 			freshOidc.tokenVerifier = freshOidc
 			freshOidc.jwtVerifier = freshOidc
-
-			// Ensure cleanup when test finishes
-			defer func() {
-				if err := freshOidc.Close(); err != nil {
-					t.Logf("Error closing TraefikOidc instance: %v", err)
-				}
-			}()
+			tc.addOIDC(freshOidc)
 
 			// All malicious inputs should be safely rejected
 			err := freshOidc.VerifyToken(test.token)
@@ -650,7 +648,7 @@ func TestResourceLimits(t *testing.T) {
 
 // TestErrorRecoveryPatterns tests various error recovery scenarios
 func TestErrorRecoveryPatterns(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Test recovery from cache corruption
@@ -711,8 +709,11 @@ func TestPerformanceUnderLoad(t *testing.T) {
 		t.Skip("Skipping performance test in short mode")
 	}
 
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
+
+	// Create cleanup helper
+	tc := newTestCleanup(t)
 
 	// Create multiple valid tokens
 	const numTokens = 100
@@ -736,12 +737,14 @@ func TestPerformanceUnderLoad(t *testing.T) {
 
 	// Create fresh instance with high rate limit
 	var goroutineWG sync.WaitGroup
+	tokenBlacklist := tc.addCache(NewCache())
+	tokenCache := tc.addTokenCache(NewTokenCache())
 	tOidc := &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
 		jwkCache:           ts.mockJWKCache,
-		tokenBlacklist:     NewCache(),
-		tokenCache:         NewTokenCache(),
+		tokenBlacklist:     tokenBlacklist,
+		tokenCache:         tokenCache,
 		limiter:            rate.NewLimiter(rate.Every(time.Microsecond), 10000), // Very high limit
 		logger:             NewLogger("info"),                                    // Reduce logging for performance
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
@@ -751,13 +754,7 @@ func TestPerformanceUnderLoad(t *testing.T) {
 	}
 	tOidc.tokenVerifier = tOidc
 	tOidc.jwtVerifier = tOidc
-
-	// Ensure cleanup when test finishes
-	defer func() {
-		if err := tOidc.Close(); err != nil {
-			t.Logf("Error closing TraefikOidc instance: %v", err)
-		}
-	}()
+	tc.addOIDC(tOidc)
 
 	// Performance test
 	const iterations = 1000

@@ -37,20 +37,112 @@ func resetGlobalState() {
 	cacheManagerOnce = sync.Once{}
 	cacheManagerMutex.Unlock()
 
-	// Reset replay cache
-	replayCacheMu.Lock()
-	if replayCache != nil {
-		replayCache.Close()
-		replayCache = nil
-	}
-	replayCacheOnce = sync.Once{}
-	replayCacheMu.Unlock()
+	// Reset and cleanup replay cache
+	cleanupReplayCache()
 
 	// Reset memory pools
 	memoryPoolMutex.Lock()
 	globalMemoryPools = nil
 	memoryPoolOnce = sync.Once{}
 	memoryPoolMutex.Unlock()
+}
+
+// testCleanup provides comprehensive cleanup for tests to prevent goroutine leaks
+type testCleanup struct {
+	t       *testing.T
+	caches  []*Cache
+	servers []*httptest.Server
+	oidcs   []*TraefikOidc
+	mu      sync.Mutex
+}
+
+// newTestCleanup creates a new test cleanup helper that automatically registers cleanup
+func newTestCleanup(t *testing.T) *testCleanup {
+	tc := &testCleanup{
+		t:       t,
+		caches:  make([]*Cache, 0),
+		servers: make([]*httptest.Server, 0),
+		oidcs:   make([]*TraefikOidc, 0),
+	}
+	
+	// Register cleanup to run even if test panics
+	t.Cleanup(func() {
+		tc.cleanupAll()
+	})
+	
+	return tc
+}
+
+// addCache registers a cache for cleanup
+func (tc *testCleanup) addCache(c *Cache) *Cache {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.caches = append(tc.caches, c)
+	return c
+}
+
+// addTokenCache registers a token cache for cleanup  
+func (tc *testCleanup) addTokenCache(c *TokenCache) *TokenCache {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if c != nil && c.cache != nil {
+		tc.caches = append(tc.caches, c.cache)
+	}
+	return c
+}
+
+// addServer registers an httptest server for cleanup
+func (tc *testCleanup) addServer(s *httptest.Server) *httptest.Server {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.servers = append(tc.servers, s)
+	return s
+}
+
+// addOIDC registers a TraefikOidc instance for cleanup
+func (tc *testCleanup) addOIDC(o *TraefikOidc) *TraefikOidc {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.oidcs = append(tc.oidcs, o)
+	return o
+}
+
+// cleanupAll cleans up all registered resources
+func (tc *testCleanup) cleanupAll() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	
+	// Close all caches
+	for _, c := range tc.caches {
+		if c != nil {
+			c.Close()
+		}
+	}
+	
+	// Close all servers
+	for _, s := range tc.servers {
+		if s != nil {
+			s.Close()
+		}
+	}
+	
+	// Close all OIDC instances
+	for _, o := range tc.oidcs {
+		if o != nil {
+			// Close caches within the OIDC instance
+			if o.tokenCache != nil && o.tokenCache.cache != nil {
+				o.tokenCache.cache.Close()
+			}
+			if o.tokenBlacklist != nil {
+				o.tokenBlacklist.Close()
+			}
+			// Call Close if it exists
+			o.Close()
+		}
+	}
+	
+	// Reset global state
+	resetGlobalState()
 }
 
 // createTestConfig creates a config with all required fields populated for testing

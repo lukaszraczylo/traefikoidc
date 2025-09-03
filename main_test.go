@@ -32,10 +32,25 @@ type TestSuite struct {
 	mockJWKCache   *MockJWKCache
 	sessionManager *SessionManager
 	token          string
+	utf            *UnifiedTestFramework // Add unified test framework
+}
+
+// NewTestSuite creates a new test suite with automatic cleanup
+func NewTestSuite(t *testing.T) *TestSuite {
+	ts := &TestSuite{
+		t:   t,
+		utf: NewUnifiedTestFramework(t),
+	}
+	return ts
 }
 
 // Setup initializes the test suite
 func (ts *TestSuite) Setup() {
+	// Initialize unified test framework if not already done
+	if ts.utf == nil {
+		ts.utf = NewUnifiedTestFramework(ts.t)
+	}
+
 	var err error
 	ts.rsaPrivateKey, err = rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -92,6 +107,9 @@ func (ts *TestSuite) Setup() {
 	logger := NewLogger("info")
 	ts.sessionManager, _ = NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 
+	// Create WaitGroup for the OIDC instance
+	goroutineWG := ts.utf.NewWaitGroup()
+
 	// Common TraefikOidc instance
 	ts.tOidc = &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
@@ -101,19 +119,23 @@ func (ts *TestSuite) Setup() {
 		jwksURL:            "https://test-jwks-url.com",
 		revocationURL:      "https://revocation-endpoint.com",
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
-		tokenBlacklist:     NewCache(), // Use generic cache for blacklist
-		tokenCache:         NewTokenCache(),
+		tokenBlacklist:     ts.utf.NewCache(),      // Use framework's tracked cache
+		tokenCache:         ts.utf.NewTokenCache(), // Use framework's tracked token cache
 		logger:             logger,
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
 		excludedURLs:       map[string]struct{}{"/favicon": {}},
-		httpClient:         &http.Client{},
+		httpClient:         ts.utf.NewHTTPClient(), // Use framework's tracked HTTP client
 		// Explicitly set paths as New() is bypassed
-		redirURLPath:      "/callback",                     // Assume default callback path for tests
-		logoutURLPath:     "/callback/logout",              // Assume default logout path for tests
-		tokenURL:          "https://test-issuer.com/token", // Explicitly set for refresh tests
-		extractClaimsFunc: extractClaims,
-		initComplete:      make(chan struct{}),
-		sessionManager:    ts.sessionManager,
+		redirURLPath:            "/callback",                     // Assume default callback path for tests
+		logoutURLPath:           "/callback/logout",              // Assume default logout path for tests
+		tokenURL:                "https://test-issuer.com/token", // Explicitly set for refresh tests
+		extractClaimsFunc:       extractClaims,
+		initComplete:            make(chan struct{}),
+		sessionManager:          ts.sessionManager,
+		goroutineWG:             goroutineWG,
+		ctx:                     ts.utf.NewContext(), // Use framework's tracked context
+		tokenCleanupStopChan:    make(chan struct{}),
+		metadataRefreshStopChan: make(chan struct{}),
 	}
 	close(ts.tOidc.initComplete)
 	// ts.tOidc.exchangeCodeForTokenFunc = ts.exchangeCodeForTokenFunc // Removed
@@ -139,6 +161,9 @@ func (ts *TestSuite) Setup() {
 			return nil
 		},
 	}
+
+	// Track the OIDC instance for cleanup
+	ts.utf.AddOIDCInstance(ts.tOidc)
 }
 
 // Helper function exchangeCodeForTokenFunc removed as it's unused after refactoring to TokenExchanger interface.
@@ -272,7 +297,7 @@ func bigIntToBytes(i *big.Int) []byte {
 
 // TestVerifyToken tests the VerifyToken method
 func TestVerifyToken(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -361,7 +386,7 @@ func TestVerifyToken(t *testing.T) {
 
 // TestServeHTTP tests the ServeHTTP method
 func TestServeHTTP(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -739,10 +764,8 @@ func TestServeHTTP(t *testing.T) {
 			ts.tOidc.tokenCache = NewTokenCache()
 
 			// Reset the global replayCache to prevent "token replay detected" errors
-			replayCacheMu.Lock()
-			replayCache = NewCache()
-			replayCache.SetMaxSize(10000)
-			replayCacheMu.Unlock()
+			cleanupReplayCache()
+			initReplayCache()
 
 			// Store original tokenVerifier to restore later
 			origTokenVerifier := ts.tOidc.tokenVerifier
@@ -752,10 +775,8 @@ func TestServeHTTP(t *testing.T) {
 			mockTokenVerifier := &MockTokenVerifier{
 				VerifyFunc: func(token string) error {
 					// Clear replay cache before token verification
-					replayCacheMu.Lock()
-					replayCache = NewCache()
-					replayCache.SetMaxSize(10000)
-					replayCacheMu.Unlock()
+					cleanupReplayCache()
+					initReplayCache()
 
 					// Call the original verifier's VerifyToken method
 					// Ensure origTokenVerifier is not nil and is the correct type if necessary,
@@ -869,7 +890,7 @@ func TestServeHTTP(t *testing.T) {
 }
 
 func TestJWKToPEM(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -922,7 +943,7 @@ func TestJWKToPEM(t *testing.T) {
 }
 
 func TestParseJWT(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -963,7 +984,7 @@ func TestParseJWT(t *testing.T) {
 }
 
 func TestJWTVerify_MissingClaims(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	jwt := &JWT{
@@ -983,7 +1004,7 @@ func TestJWTVerify_MissingClaims(t *testing.T) {
 }
 
 func TestHandleCallback(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	redirectURL := "http://example.com/"
@@ -1162,10 +1183,8 @@ func TestHandleCallback(t *testing.T) {
 		// Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			// Clear the global replay cache before each test run
-			replayCacheMu.Lock()
-			replayCache = NewCache()
-			replayCache.SetMaxSize(10000)
-			replayCacheMu.Unlock()
+			cleanupReplayCache()
+			initReplayCache()
 
 			// Explicitly clear the shared blacklist at the start of each sub-test
 			// to ensure no state leaks, even though we expect the local one to be used.
@@ -1252,7 +1271,7 @@ func TestHandleCallback(t *testing.T) {
 }
 
 func TestIsAllowedDomain(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -1337,7 +1356,7 @@ func TestIsAllowedDomain(t *testing.T) {
 }
 
 func TestOIDCHandler(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	ts.token = "valid.jwt.token"
@@ -1481,7 +1500,7 @@ func TestOIDCHandler(t *testing.T) {
 
 // TestHandleLogout tests the logout functionality
 func TestHandleLogout(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create mock revocation endpoint server
@@ -1652,7 +1671,7 @@ func TestHandleLogout(t *testing.T) {
 
 // TestRevokeTokenWithProvider tests the token revocation with provider
 func TestRevokeTokenWithProvider(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -1728,7 +1747,7 @@ func TestRevokeTokenWithProvider(t *testing.T) {
 
 // TestRevokeToken tests the token revocation functionality
 func TestRevokeToken(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	token := "test.token.with.claims"
@@ -1820,7 +1839,7 @@ func TestBuildLogoutURL(t *testing.T) {
 
 // Add this new test function
 func TestHandleExpiredToken(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -1928,7 +1947,7 @@ func TestHandleExpiredToken(t *testing.T) {
 
 // Add this new test function
 func TestExtractGroupsAndRoles(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -2094,7 +2113,7 @@ func TestMultipleMiddlewareInstances(t *testing.T) {
 }
 
 func TestServeHTTPRolesAndGroups(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create consistent timestamps for all test cases
@@ -2309,7 +2328,7 @@ func stringSliceEqual(a, b []string) bool {
 
 // TestExchangeTokensWithRedirects tests the token exchange process with redirects
 func TestExchangeTokensWithRedirects(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -2414,7 +2433,7 @@ func TestExchangeTokensWithRedirects(t *testing.T) {
 
 // TestBuildAuthURL tests the buildAuthURL function with various URL scenarios
 func TestBuildAuthURL(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -2570,7 +2589,7 @@ func TestBuildAuthURL(t *testing.T) {
 
 // TestExchangeCodeForToken tests the exchangeCodeForToken function with PKCE support
 func TestExchangeCodeForToken(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -2688,7 +2707,7 @@ func TestExchangeCodeForToken(t *testing.T) {
 
 // TestDefaultInitiateAuthentication_PreservesQueryParameters tests that defaultInitiateAuthentication preserves query parameters in the incoming path.
 func TestDefaultInitiateAuthentication_PreservesQueryParameters(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a request with query parameters
@@ -2845,14 +2864,12 @@ func TestVerifyTimeConstraint(t *testing.T) {
 
 // TestJWTVerifyWithSkipReplayCheck tests the new skipReplayCheck parameter functionality
 func TestJWTVerifyWithSkipReplayCheck(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Clear the global replay cache before test
-	replayCacheMu.Lock()
-	replayCache = NewCache()
-	replayCache.SetMaxSize(10000)
-	replayCacheMu.Unlock()
+	cleanupReplayCache()
+	initReplayCache()
 
 	// Create a test JWT with unique JTI
 	jti := generateRandomString(16)
@@ -2913,10 +2930,8 @@ func TestJWTVerifyWithSkipReplayCheck(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.firstCall {
 				// Clear replay cache for first call tests
-				replayCacheMu.Lock()
-				replayCache = NewCache()
-				replayCache.SetMaxSize(10000)
-				replayCacheMu.Unlock()
+				cleanupReplayCache()
+				initReplayCache()
 			}
 
 			err := jwt.Verify("https://test-issuer.com", "test-client-id", tc.skipReplayCheck)
@@ -2938,14 +2953,12 @@ func TestJWTVerifyWithSkipReplayCheck(t *testing.T) {
 
 // TestJWTVerifyBackwardCompatibility tests that calls without the skipReplayCheck parameter default to replay checking
 func TestJWTVerifyBackwardCompatibility(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Clear the global replay cache
-	replayCacheMu.Lock()
-	replayCache = NewCache()
-	replayCache.SetMaxSize(10000)
-	replayCacheMu.Unlock()
+	cleanupReplayCache()
+	initReplayCache()
 
 	// Create a test JWT with unique JTI
 	jti := generateRandomString(16)
@@ -2991,14 +3004,12 @@ func TestJWTVerifyBackwardCompatibility(t *testing.T) {
 
 // TestTokenReplayDetectionFalsePositiveFix tests the specific scenario that was causing false positives
 func TestTokenReplayDetectionFalsePositiveFix(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Clear the global replay cache
-	replayCacheMu.Lock()
-	replayCache = NewCache()
-	replayCache.SetMaxSize(10000)
-	replayCacheMu.Unlock()
+	cleanupReplayCache()
+	initReplayCache()
 
 	// Create a test JWT with unique JTI
 	jti := generateRandomString(16)
@@ -3064,14 +3075,12 @@ func TestTokenReplayDetectionFalsePositiveFix(t *testing.T) {
 
 // TestAuthenticationFlowReplayDetection tests the complete authentication flow
 func TestAuthenticationFlowReplayDetection(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Clear the global replay cache
-	replayCacheMu.Lock()
-	replayCache = NewCache()
-	replayCache.SetMaxSize(10000)
-	replayCacheMu.Unlock()
+	cleanupReplayCache()
+	initReplayCache()
 
 	// Create a test JWT with unique JTI
 	jti := generateRandomString(16)
@@ -3139,14 +3148,12 @@ func TestAuthenticationFlowReplayDetection(t *testing.T) {
 
 // TestActualReplayAttackDetection ensures real replay attacks are still properly detected
 func TestActualReplayAttackDetection(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Clear the global replay cache
-	replayCacheMu.Lock()
-	replayCache = NewCache()
-	replayCache.SetMaxSize(10000)
-	replayCacheMu.Unlock()
+	cleanupReplayCache()
+	initReplayCache()
 
 	// Create a test JWT with unique JTI
 	jti := generateRandomString(16)
@@ -3217,17 +3224,15 @@ func TestActualReplayAttackDetection(t *testing.T) {
 
 // TestConcurrentTokenValidation tests thread safety of replay detection
 func TestConcurrentTokenValidation(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Configure rate limiter to allow more requests for concurrent testing
 	ts.tOidc.limiter = rate.NewLimiter(rate.Limit(1000), 1000) // Allow 1000 requests per second with burst of 1000
 
 	// Clear the global replay cache
-	replayCacheMu.Lock()
-	replayCache = NewCache()
-	replayCache.SetMaxSize(10000)
-	replayCacheMu.Unlock()
+	cleanupReplayCache()
+	initReplayCache()
 
 	// Create multiple tokens with unique JTIs
 	var tokens []string
@@ -3306,17 +3311,16 @@ func TestConcurrentTokenValidation(t *testing.T) {
 
 // TestJTIBlacklistBehavior tests the JTI blacklist cache management
 func TestJTIBlacklistBehavior(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
-	// Clear the global replay cache
-	replayCacheMu.Lock()
-	replayCache = NewCache()
-	replayCache.SetMaxSize(10000)
-	replayCacheMu.Unlock()
+	// Properly reinitialize the global replay cache
+	cleanupReplayCache() // Clean up any existing cache and reset sync.Once
+	initReplayCache()    // Initialize new cache through proper channel
 
 	// Create a test JWT with unique JTI
 	jti := generateRandomString(16)
+	t.Logf("TestJTIBlacklistBehavior - JTI: %s", jti)
 	now := time.Now()
 	exp := now.Add(1 * time.Hour).Unix()
 	iat := now.Unix()
@@ -3355,8 +3359,8 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 		{
 			name: "JTI exists in blacklist after verification",
 			action: func() error {
-				replayCacheMu.Lock()
-				defer replayCacheMu.Unlock()
+				replayCacheMu.RLock()
+				defer replayCacheMu.RUnlock()
 				if _, exists := replayCache.Get(jti); !exists {
 					return fmt.Errorf("JTI not found in blacklist cache")
 				}
@@ -3406,14 +3410,12 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 
 // TestSessionBasedTokenRevalidation tests token revalidation in session-based scenarios
 func TestSessionBasedTokenRevalidation(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Clear the global replay cache
-	replayCacheMu.Lock()
-	replayCache = NewCache()
-	replayCache.SetMaxSize(10000)
-	replayCacheMu.Unlock()
+	cleanupReplayCache()
+	initReplayCache()
 
 	// Create a test JWT with unique JTI
 	jti := generateRandomString(16)
@@ -3480,14 +3482,12 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 
 // TestEdgeCasesWithDifferentTokenTypes tests replay detection with different token types
 func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
-	// Clear the global replay cache
-	replayCacheMu.Lock()
-	replayCache = NewCache()
-	replayCache.SetMaxSize(10000)
-	replayCacheMu.Unlock()
+	// Properly reinitialize the global replay cache
+	cleanupReplayCache() // Clean up any existing cache and reset sync.Once
+	initReplayCache()    // Initialize new cache through proper channel
 
 	now := time.Now()
 	exp := now.Add(1 * time.Hour).Unix()
@@ -3969,7 +3969,7 @@ func TestNewWithScopeAppending(t *testing.T) {
 
 // TestBuildAuthURLWithMergedScopes tests that the auth URL includes the properly merged scopes
 func TestBuildAuthURLWithMergedScopes(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	tests := []struct {
@@ -4026,7 +4026,7 @@ func TestBuildAuthURLWithMergedScopes(t *testing.T) {
 // TestBuildAuthURL_OverrideScopes_And_OfflineAccess tests the offline_access logic in buildAuthURL
 // considering the overrideScopes flag.
 func TestBuildAuthURL_OverrideScopes_And_OfflineAccess(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup() // Sets up ts.tOidc
 
 	tests := []struct {
@@ -4164,7 +4164,7 @@ func TestBuildAuthURL_OverrideScopes_And_OfflineAccess(t *testing.T) {
 
 // TestBuildAuthURL_SpecificUserCase tests the buildAuthURL function with the specific user-reported scenario.
 func TestBuildAuthURL_SpecificUserCase(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup() // Basic setup for tOidc
 
 	// Configure the TraefikOidc instance for the specific scenario

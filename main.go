@@ -1074,7 +1074,7 @@ func fetchMetadata(wellKnownURL string, httpClient *http.Client) (*ProviderMetad
 //   - Header injection for authenticated requests
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// Start background tasks on first request (except for health checks)
-	if !t.firstRequestReceived && !strings.HasPrefix(req.URL.Path, "/health") {
+	if !strings.HasPrefix(req.URL.Path, "/health") {
 		t.firstRequestMutex.Lock()
 		if !t.firstRequestReceived {
 			t.firstRequestReceived = true

@@ -9,12 +9,16 @@ import (
 // It provides a clean interface for starting and stopping periodic operations
 // with proper lifecycle management and logging.
 type BackgroundTask struct {
-	stopChan chan struct{}
-	taskFunc func()
-	logger   *Logger
-	name     string
-	interval time.Duration
-	wg       *sync.WaitGroup
+	stopChan   chan struct{}
+	taskFunc   func()
+	logger     *Logger
+	name       string
+	interval   time.Duration
+	externalWG *sync.WaitGroup // External WaitGroup (optional, for tracking by parent)
+	internalWG sync.WaitGroup  // Internal WaitGroup for this task's goroutine
+	stopOnce   sync.Once       // Ensures Stop() can be called multiple times safely
+	stopped    bool            // Track if task has been stopped
+	mu         sync.Mutex      // Protects stopped flag
 }
 
 // NewBackgroundTask creates a new background task with the specified parameters.
@@ -29,37 +33,54 @@ type BackgroundTask struct {
 // Returns:
 //   - A configured BackgroundTask ready to be started.
 func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), logger *Logger, wg ...*sync.WaitGroup) *BackgroundTask {
-	var waitGroup *sync.WaitGroup
+	var externalWG *sync.WaitGroup
 	if len(wg) > 0 {
-		waitGroup = wg[0]
+		externalWG = wg[0]
 	}
 	return &BackgroundTask{
-		name:     name,
-		interval: interval,
-		stopChan: make(chan struct{}),
-		taskFunc: taskFunc,
-		logger:   logger,
-		wg:       waitGroup,
+		name:       name,
+		interval:   interval,
+		stopChan:   make(chan struct{}),
+		taskFunc:   taskFunc,
+		logger:     logger,
+		externalWG: externalWG,
 	}
 }
 
 // Start begins the background task execution in a separate goroutine.
 // The task runs immediately upon start and then at the specified interval.
 func (bt *BackgroundTask) Start() {
-	if bt.wg != nil {
-		bt.wg.Add(1)
+	bt.mu.Lock()
+	defer bt.mu.Unlock()
+
+	if bt.stopped {
+		if bt.logger != nil {
+			bt.logger.Infof("Attempted to start already stopped task: %s", bt.name)
+		}
+		return
+	}
+
+	// Add to both internal and external WaitGroups
+	bt.internalWG.Add(1)
+	if bt.externalWG != nil {
+		bt.externalWG.Add(1)
 	}
 	go bt.run()
 }
 
 // Stop gracefully terminates the background task by closing the stop channel.
-// If a WaitGroup was provided, it waits for the goroutine to complete.
+// It waits for the goroutine to complete using the internal WaitGroup.
 // This method is safe to call multiple times.
 func (bt *BackgroundTask) Stop() {
-	close(bt.stopChan)
-	if bt.wg != nil {
-		bt.wg.Wait()
-	}
+	bt.stopOnce.Do(func() {
+		bt.mu.Lock()
+		bt.stopped = true
+		bt.mu.Unlock()
+
+		close(bt.stopChan)
+		// Wait only on the internal WaitGroup
+		bt.internalWG.Wait()
+	})
 }
 
 // run is the main execution loop for the background task.
@@ -67,8 +88,11 @@ func (bt *BackgroundTask) Stop() {
 // until the stop signal is received.
 func (bt *BackgroundTask) run() {
 	defer func() {
-		if bt.wg != nil {
-			bt.wg.Done()
+		// Always decrement internal WaitGroup
+		bt.internalWG.Done()
+		// Decrement external WaitGroup if provided
+		if bt.externalWG != nil {
+			bt.externalWG.Done()
 		}
 	}()
 	ticker := time.NewTicker(bt.interval)
