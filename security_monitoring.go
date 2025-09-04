@@ -9,22 +9,23 @@ import (
 	"time"
 )
 
-// SecurityEventType represents different categories of security events
+// SecurityEventType categorizes different types of security events
 // that can occur during OIDC authentication and authorization flows.
 type SecurityEventType string
 
+// Security event types for monitoring and alerting
 const (
-	// AuthFailure represents an authentication failure event
+	// AuthFailure indicates a failed authentication attempt
 	AuthFailure SecurityEventType = "authentication_failure"
-	// TokenValidFailure represents a token validation failure event
+	// TokenValidFailure indicates JWT token validation failed
 	TokenValidFailure SecurityEventType = "token_validation_failure"
-	// RateLimitHit represents a rate limit hit event
+	// RateLimitHit indicates rate limiting was triggered
 	RateLimitHit SecurityEventType = "rate_limit_hit"
-	// SuspiciousActivity represents a suspicious activity event
+	// SuspiciousActivity indicates potentially malicious behavior
 	SuspiciousActivity SecurityEventType = "suspicious_activity"
 )
 
-// DefaultSeverity returns the default severity level for a security event type.
+// DefaultSeverity returns the default severity level for each security event type.
 // Severity levels are: low, medium, high.
 func (t SecurityEventType) DefaultSeverity() string {
 	switch t {
@@ -41,8 +42,7 @@ func (t SecurityEventType) DefaultSeverity() string {
 	}
 }
 
-// IPFailureType returns the appropriate IP failure tracking category
-// for a given security event type. This is used to categorize failures
+// IPFailureType returns a string identifier for categorizing failures
 // by IP address for rate limiting and blocking decisions.
 func (t SecurityEventType) IPFailureType() string {
 	switch t {
@@ -57,69 +57,104 @@ func (t SecurityEventType) IPFailureType() string {
 	}
 }
 
-// SecurityEvent represents a security-related event that should be logged and monitored.
-// It captures comprehensive context about the event including timestamp, client information,
-// request details, and custom event-specific data.
+// SecurityEvent represents a security-related event with comprehensive context.
+// Contains timing information, IP address, user agent, request details,
+// and custom event-specific data for security analysis and alerting.
 type SecurityEvent struct {
-	Timestamp   time.Time              `json:"timestamp"`
-	Details     map[string]interface{} `json:"details,omitempty"`
-	Type        string                 `json:"type"`
-	Severity    string                 `json:"severity"`
-	ClientIP    string                 `json:"client_ip"`
-	UserAgent   string                 `json:"user_agent"`
-	RequestPath string                 `json:"request_path"`
-	Message     string                 `json:"message"`
+	// Timestamp when the event occurred
+	Timestamp time.Time `json:"timestamp"`
+	// Details contains event-specific additional information
+	Details map[string]interface{} `json:"details,omitempty"`
+	// Type categorizes the event (auth_failure, token_failure, etc.)
+	Type string `json:"type"`
+	// Severity indicates event importance (low, medium, high)
+	Severity string `json:"severity"`
+	// ClientIP is the source IP address of the request
+	ClientIP string `json:"client_ip"`
+	// UserAgent is the User-Agent header from the request
+	UserAgent string `json:"user_agent"`
+	// RequestPath is the requested URL path
+	RequestPath string `json:"request_path"`
+	// Message provides human-readable description of the event
+	Message string `json:"message"`
 }
 
-// SecurityMonitor provides centralized security event tracking and analysis.
-// It monitors authentication failures, detects suspicious patterns, enforces
+// SecurityMonitor provides comprehensive security monitoring for the OIDC middleware.
+// It tracks failures by IP address, detects suspicious patterns, enforces
 // rate limits, and can trigger custom security event handlers.
 type SecurityMonitor struct {
 	ipFailures      map[string]*IPFailureTracker
 	patternDetector *SuspiciousPatternDetector
 	logger          *Logger
+	cleanupTask     *BackgroundTask
 	eventHandlers   []SecurityEventHandler
 	config          SecurityMonitorConfig
 	ipMutex         sync.RWMutex
-	cleanupTask     *BackgroundTask // Store cleanup task per instance
 }
 
-// IPFailureTracker maintains failure statistics for a specific IP address.
-// It tracks different types of failures, timestamps, and counts to support
+// IPFailureTracker maintains failure statistics and blocking state for an IP address.
+// Used for implementing progressive penalties and automatic IP blocking based on
+// failure patterns, with support for different failure types for
 // rate limiting and IP blocking decisions.
 type IPFailureTracker struct {
-	LastFailure  time.Time
+	// LastFailure timestamp of the most recent failure
+	LastFailure time.Time
+	// FirstFailure timestamp of the first failure in current window
 	FirstFailure time.Time
+	// BlockedUntil indicates when the IP block expires
 	BlockedUntil time.Time
+	// FailureTypes tracks counts by failure type
 	FailureTypes map[string]int64
+	// FailureCount total number of failures
 	FailureCount int64
-	mutex        sync.RWMutex
-	IsBlocked    bool
+	// mutex protects concurrent access to tracker data
+	mutex sync.RWMutex
+	// IsBlocked indicates if this IP is currently blocked
+	IsBlocked bool
 }
 
-// SuspiciousPatternDetector identifies patterns that may indicate attacks
+// SuspiciousPatternDetector identifies attack patterns that may indicate coordinated threats.
+// Analyzes events across multiple time windows to detect rapid failures, distributed attacks,
+// and persistent attack patterns that individual IP monitoring might miss.
 type SuspiciousPatternDetector struct {
-	recentEvents               []SecurityEvent
-	shortWindow                time.Duration
-	mediumWindow               time.Duration
-	longWindow                 time.Duration
-	rapidFailureThreshold      int
+	// recentEvents stores recent security events for analysis
+	recentEvents []SecurityEvent
+	// shortWindow defines time frame for rapid failure detection
+	shortWindow time.Duration
+	// mediumWindow defines time frame for distributed attack detection
+	mediumWindow time.Duration
+	// longWindow defines time frame for persistent attack detection
+	longWindow time.Duration
+	// rapidFailureThreshold triggers rapid failure alerts
+	rapidFailureThreshold int
+	// distributedAttackThreshold triggers distributed attack alerts
 	distributedAttackThreshold int
-	persistentAttackThreshold  int
-	eventsMutex                sync.RWMutex
+	// persistentAttackThreshold triggers persistent attack alerts
+	persistentAttackThreshold int
+	// eventsMutex protects concurrent access to events
+	eventsMutex sync.RWMutex
 }
 
-// SecurityEventHandler defines the interface for handling security events
+// SecurityEventHandler defines the interface for processing security events.
+// Implementations can log events, send alerts, update external systems,
+// or trigger automated response actions.
 type SecurityEventHandler interface {
+	// HandleSecurityEvent processes a security event
 	HandleSecurityEvent(event SecurityEvent)
 }
 
-// SecurityMonitorConfig contains configuration for the security monitor
+// SecurityMonitorConfig contains configuration parameters for the security monitor.
+// Controls thresholds, time windows, and behavior for security monitoring.
 type SecurityMonitorConfig struct {
-	MaxFailuresPerIP       int  `json:"max_failures_per_ip"`
-	FailureWindowMinutes   int  `json:"failure_window_minutes"`
-	BlockDurationMinutes   int  `json:"block_duration_minutes"`
-	RapidFailureThreshold  int  `json:"rapid_failure_threshold"`
+	// MaxFailuresPerIP sets the failure threshold before blocking
+	MaxFailuresPerIP int `json:"max_failures_per_ip"`
+	// FailureWindowMinutes defines the time window for counting failures
+	FailureWindowMinutes int `json:"failure_window_minutes"`
+	// BlockDurationMinutes sets how long to block an IP
+	BlockDurationMinutes int `json:"block_duration_minutes"`
+	// RapidFailureThreshold triggers rapid failure detection
+	RapidFailureThreshold int `json:"rapid_failure_threshold"`
+	// CleanupIntervalMinutes sets cleanup frequency for old data
 	CleanupIntervalMinutes int  `json:"cleanup_interval_minutes"`
 	RetentionHours         int  `json:"retention_hours"`
 	EnablePatternDetection bool `json:"enable_pattern_detection"`
@@ -152,7 +187,6 @@ func NewSecurityMonitor(config SecurityMonitorConfig, logger *Logger) *SecurityM
 		patternDetector: NewSuspiciousPatternDetector(),
 	}
 
-	// Start cleanup routine
 	sm.startCleanupRoutine()
 
 	return sm
@@ -179,7 +213,6 @@ func (sm *SecurityMonitor) RecordSecurityEvent(
 	details map[string]interface{},
 	trackIPFailure bool) {
 
-	// Create event with default values for the event type
 	event := SecurityEvent{
 		Type:        string(eventType),
 		Severity:    eventType.DefaultSeverity(),
@@ -191,12 +224,10 @@ func (sm *SecurityMonitor) RecordSecurityEvent(
 		Details:     details,
 	}
 
-	// Track IP failures if requested
 	if trackIPFailure {
 		sm.recordIPFailure(clientIP, eventType.IPFailureType())
 	}
 
-	// Process the event
 	sm.processSecurityEvent(event)
 }
 
@@ -251,7 +282,7 @@ func (sm *SecurityMonitor) RecordRateLimitHit(clientIP, userAgent, requestPath s
 		requestPath,
 		"Rate limit exceeded",
 		details,
-		true, // Track IP failure for rate limiting
+		true,
 	)
 }
 
@@ -294,7 +325,6 @@ func (sm *SecurityMonitor) recordIPFailure(clientIP, failureType string) {
 	tracker.LastFailure = time.Now()
 	tracker.FailureTypes[failureType]++
 
-	// Check if IP should be blocked
 	windowStart := time.Now().Add(-time.Duration(sm.config.FailureWindowMinutes) * time.Minute)
 	if tracker.FirstFailure.After(windowStart) && tracker.FailureCount >= int64(sm.config.MaxFailuresPerIP) {
 		if !tracker.IsBlocked {
@@ -303,7 +333,6 @@ func (sm *SecurityMonitor) recordIPFailure(clientIP, failureType string) {
 
 			sm.logger.Errorf("IP %s blocked due to %d failures (types: %v)", clientIP, tracker.FailureCount, tracker.FailureTypes)
 
-			// Record blocking event
 			blockEvent := SecurityEvent{
 				Type:      "ip_blocked",
 				Severity:  "high",
@@ -338,7 +367,6 @@ func (sm *SecurityMonitor) IsIPBlocked(clientIP string) bool {
 		return true
 	}
 
-	// Unblock if time has passed
 	if tracker.IsBlocked && time.Now().After(tracker.BlockedUntil) {
 		tracker.IsBlocked = false
 		sm.logger.Infof("IP %s automatically unblocked", clientIP)
@@ -349,13 +377,10 @@ func (sm *SecurityMonitor) IsIPBlocked(clientIP string) bool {
 
 // processSecurityEvent processes a security event through all handlers and pattern detection
 func (sm *SecurityMonitor) processSecurityEvent(event SecurityEvent) {
-	// Add to pattern detector
 	if sm.config.EnablePatternDetection {
 		sm.patternDetector.AddEvent(event)
 
-		// Check for suspicious patterns
 		if patterns := sm.patternDetector.DetectSuspiciousPatterns(); len(patterns) > 0 {
-			// Log once with all patterns instead of logging each pattern
 			if len(patterns) == 1 {
 				sm.logger.Errorf("Suspicious pattern detected: %s", patterns[0])
 			} else {
@@ -383,13 +408,11 @@ func (sm *SecurityMonitor) processSecurityEvent(event SecurityEvent) {
 
 // handleSecurityEvent sends the event to all registered handlers
 func (sm *SecurityMonitor) handleSecurityEvent(event SecurityEvent) {
-	// Log the event
 	if sm.config.EnableDetailedLogging && (!sm.config.LogSuspiciousOnly || event.Severity == "high") {
 		sm.logger.Infof("Security Event [%s/%s]: %s (IP: %s, Path: %s)",
 			event.Type, event.Severity, event.Message, event.ClientIP, event.RequestPath)
 	}
 
-	// Send to all handlers
 	for _, handler := range sm.eventHandlers {
 		go handler.HandleSecurityEvent(event)
 	}
@@ -400,7 +423,6 @@ func (sm *SecurityMonitor) AddEventHandler(handler SecurityEventHandler) {
 	sm.eventHandlers = append(sm.eventHandlers, handler)
 }
 
-// GetSecurityMetrics returns minimal security metrics
 // This is kept for API compatibility but doesn't collect actual metrics
 func (sm *SecurityMonitor) GetSecurityMetrics() map[string]interface{} {
 	return map[string]interface{}{
@@ -415,7 +437,6 @@ func (spd *SuspiciousPatternDetector) AddEvent(event SecurityEvent) {
 
 	spd.recentEvents = append(spd.recentEvents, event)
 
-	// Clean old events
 	cutoff := time.Now().Add(-spd.longWindow)
 	var filteredEvents []SecurityEvent
 	for _, e := range spd.recentEvents {
@@ -434,7 +455,6 @@ func (spd *SuspiciousPatternDetector) DetectSuspiciousPatterns() []string {
 	var patterns []string
 	now := time.Now()
 
-	// Check for rapid failures from single IP
 	ipCounts := make(map[string]int)
 	shortWindowStart := now.Add(-spd.shortWindow)
 
@@ -451,7 +471,6 @@ func (spd *SuspiciousPatternDetector) DetectSuspiciousPatterns() []string {
 		}
 	}
 
-	// Check for distributed attack (many IPs failing)
 	mediumWindowStart := now.Add(-spd.mediumWindow)
 	uniqueFailingIPs := make(map[string]bool)
 
@@ -466,7 +485,6 @@ func (spd *SuspiciousPatternDetector) DetectSuspiciousPatterns() []string {
 		patterns = append(patterns, "distributed_attack_pattern")
 	}
 
-	// Check for persistent attack
 	longWindowStart := now.Add(-spd.longWindow)
 	persistentFailures := 0
 
@@ -486,7 +504,6 @@ func (spd *SuspiciousPatternDetector) DetectSuspiciousPatterns() []string {
 
 // startCleanupRoutine starts the background cleanup routine
 func (sm *SecurityMonitor) startCleanupRoutine() {
-	// Use BackgroundTask abstraction for consistent management
 	sm.cleanupTask = NewBackgroundTask(
 		"security-monitor-cleanup",
 		time.Duration(sm.config.CleanupIntervalMinutes)*time.Minute,
@@ -525,16 +542,13 @@ func (sm *SecurityMonitor) cleanup() {
 
 // ExtractClientIP extracts the client IP from the request, considering proxy headers
 func ExtractClientIP(r *http.Request) string {
-	// Check X-Real-IP header first (highest priority)
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		if net.ParseIP(xri) != nil {
 			return xri
 		}
 	}
 
-	// Check X-Forwarded-For header second
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the chain
 		ips := strings.Split(xff, ",")
 		if len(ips) > 0 {
 			ip := strings.TrimSpace(ips[0])
@@ -544,7 +558,6 @@ func ExtractClientIP(r *http.Request) string {
 		}
 	}
 
-	// Fall back to RemoteAddr
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -575,5 +588,3 @@ func (h *LoggingSecurityEventHandler) HandleSecurityEvent(event SecurityEvent) {
 		h.logger.Debugf("SECURITY [%s]: %s (IP: %s)", event.Type, event.Message, event.ClientIP)
 	}
 }
-
-// Note: MetricsSecurityEventHandler has been removed as part of metrics cleanup

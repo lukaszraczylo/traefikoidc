@@ -12,10 +12,10 @@ import (
 // to the plugin, specifically focusing on the headers field
 func TestTraefikConfigurationParsing(t *testing.T) {
 	testCases := []struct {
-		name        string
 		config      *Config
-		expectError bool
+		name        string
 		description string
+		expectError bool
 	}{
 		{
 			name: "valid configuration with templated headers",

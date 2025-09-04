@@ -5,33 +5,33 @@ import (
 	"time"
 )
 
-// BackgroundTask represents a managed recurring task that runs in the background.
-// It provides a clean interface for starting and stopping periodic operations
-// with proper lifecycle management and logging.
+// BackgroundTask provides a robust framework for running periodic background tasks
+// with proper lifecycle management, graceful shutdown, and logging capabilities.
+// It supports both internal and external WaitGroup coordination for complex cleanup scenarios.
 type BackgroundTask struct {
 	stopChan   chan struct{}
 	taskFunc   func()
 	logger     *Logger
+	externalWG *sync.WaitGroup
 	name       string
+	internalWG sync.WaitGroup
 	interval   time.Duration
-	externalWG *sync.WaitGroup // External WaitGroup (optional, for tracking by parent)
-	internalWG sync.WaitGroup  // Internal WaitGroup for this task's goroutine
-	stopOnce   sync.Once       // Ensures Stop() can be called multiple times safely
-	stopped    bool            // Track if task has been stopped
-	mu         sync.Mutex      // Protects stopped flag
+	stopOnce   sync.Once
+	mu         sync.Mutex
+	stopped    bool
 }
 
-// NewBackgroundTask creates a new background task with the specified parameters.
-//
+// NewBackgroundTask creates a new background task with the specified configuration.
+// The task will execute taskFunc immediately when started, then at the specified interval.
 // Parameters:
-//   - name: Identifier for the task (used in logging).
-//   - interval: Duration between task executions.
-//   - taskFunc: The function to execute periodically.
-//   - logger: Logger instance for task lifecycle events.
-//   - wg: Optional WaitGroup for synchronizing goroutine completion.
+//   - name: Human-readable name for the task (used in logging)
+//   - interval: How often to execute the task function
+//   - taskFunc: The function to execute periodically
+//   - logger: Logger for task events (can be nil)
+//   - wg: Optional external WaitGroup for coordinated shutdown
 //
 // Returns:
-//   - A configured BackgroundTask ready to be started.
+//   - A configured BackgroundTask ready to be started
 func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), logger *Logger, wg ...*sync.WaitGroup) *BackgroundTask {
 	var externalWG *sync.WaitGroup
 	if len(wg) > 0 {
@@ -47,7 +47,8 @@ func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), log
 	}
 }
 
-// Start begins the background task execution in a separate goroutine.
+// Start begins executing the background task in a separate goroutine.
+// The task function is executed immediately, then at the configured interval.
 // The task runs immediately upon start and then at the specified interval.
 func (bt *BackgroundTask) Start() {
 	bt.mu.Lock()
@@ -60,7 +61,6 @@ func (bt *BackgroundTask) Start() {
 		return
 	}
 
-	// Add to both internal and external WaitGroups
 	bt.internalWG.Add(1)
 	if bt.externalWG != nil {
 		bt.externalWG.Add(1)
@@ -68,8 +68,8 @@ func (bt *BackgroundTask) Start() {
 	go bt.run()
 }
 
-// Stop gracefully terminates the background task by closing the stop channel.
-// It waits for the goroutine to complete using the internal WaitGroup.
+// Stop gracefully shuts down the background task and waits for completion.
+// It signals the task to stop and waits for the goroutine to finish.
 // This method is safe to call multiple times.
 func (bt *BackgroundTask) Stop() {
 	bt.stopOnce.Do(func() {
@@ -78,19 +78,16 @@ func (bt *BackgroundTask) Stop() {
 		bt.mu.Unlock()
 
 		close(bt.stopChan)
-		// Wait only on the internal WaitGroup
 		bt.internalWG.Wait()
 	})
 }
 
-// run is the main execution loop for the background task.
-// It executes the task function immediately and then at regular intervals
+// run is the main loop for the background task.
+// It executes the task function immediately, then periodically
 // until the stop signal is received.
 func (bt *BackgroundTask) run() {
 	defer func() {
-		// Always decrement internal WaitGroup
 		bt.internalWG.Done()
-		// Decrement external WaitGroup if provided
 		if bt.externalWG != nil {
 			bt.externalWG.Done()
 		}
@@ -98,12 +95,10 @@ func (bt *BackgroundTask) run() {
 	ticker := time.NewTicker(bt.interval)
 	defer ticker.Stop()
 
-	// Only log startup if debug level is enabled
 	if bt.logger != nil {
 		bt.logger.Info("Starting background task: %s", bt.name)
 	}
 
-	// Run task immediately on startup
 	bt.taskFunc()
 
 	for {
@@ -111,7 +106,6 @@ func (bt *BackgroundTask) run() {
 		case <-ticker.C:
 			bt.taskFunc()
 		case <-bt.stopChan:
-			// Only log shutdown
 			if bt.logger != nil {
 				bt.logger.Info("Stopping background task: %s", bt.name)
 			}
@@ -120,18 +114,8 @@ func (bt *BackgroundTask) run() {
 	}
 }
 
-// autoCleanupRoutine periodically calls the provided cleanup function.
-// It starts a ticker with the given interval and executes the cleanup function
-// on each tick. The routine stops gracefully when a signal is received on the
-// stop channel. This is typically used for background cleanup tasks like
-// expiring cache entries.
-//
-// Parameters:
-//   - interval: The time duration between cleanup calls.
-//   - stop: A channel used to signal the routine to stop. Receiving any value will terminate the loop.
-//   - cleanup: The function to call periodically for cleanup tasks.
-//
-// Deprecated: Use BackgroundTask instead.
+// autoCleanupRoutine is a legacy function for running periodic cleanup tasks.
+// Deprecated: Use BackgroundTask instead for better lifecycle management and logging.
 func autoCleanupRoutine(interval time.Duration, stop <-chan struct{}, cleanup func()) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

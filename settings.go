@@ -26,9 +26,9 @@ type TemplatedHeader struct {
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
 type Config struct {
-	HTTPClient                *http.Client      `json:"-"` // Exclude from JSON marshaling
-	ProviderURL               string            `json:"providerURL"`
-	RevocationURL             string            `json:"revocationURL"`
+	HTTPClient                *http.Client      `json:"-"`
+	OIDCEndSessionURL         string            `json:"oidcEndSessionURL"`
+	CookieDomain              string            `json:"cookieDomain"`
 	CallbackURL               string            `json:"callbackURL"`
 	LogoutURL                 string            `json:"logoutURL"`
 	ClientID                  string            `json:"clientID"`
@@ -36,14 +36,14 @@ type Config struct {
 	PostLogoutRedirectURI     string            `json:"postLogoutRedirectURI"`
 	LogLevel                  string            `json:"logLevel"`
 	SessionEncryptionKey      string            `json:"sessionEncryptionKey"`
-	OIDCEndSessionURL         string            `json:"oidcEndSessionURL"`
-	AllowedRolesAndGroups     []string          `json:"allowedRolesAndGroups"`
+	ProviderURL               string            `json:"providerURL"`
+	RevocationURL             string            `json:"revocationURL"`
 	ExcludedURLs              []string          `json:"excludedURLs"`
 	AllowedUserDomains        []string          `json:"allowedUserDomains"`
 	AllowedUsers              []string          `json:"allowedUsers"`
 	Scopes                    []string          `json:"scopes"`
 	Headers                   []TemplatedHeader `json:"headers"`
-	CookieDomain              string            `json:"cookieDomain"`
+	AllowedRolesAndGroups     []string          `json:"allowedRolesAndGroups"`
 	RateLimit                 int               `json:"rateLimit"`
 	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
 	ForceHTTPS                bool              `json:"forceHTTPS"`
@@ -217,7 +217,9 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// validateTemplateSecure validates template expressions for security vulnerabilities
+// validateTemplateSecure validates template expressions for security vulnerabilities.
+// It checks for dangerous template patterns that could lead to code execution or data leaks
+// while allowing safe custom functions for field access and default values.
 func validateTemplateSecure(templateStr string) error {
 	// Allow our specific safe custom functions
 	// These are added specifically to handle missing fields safely (issue #60)
@@ -408,6 +410,9 @@ func validateTemplateSecure(templateStr string) error {
 //
 // Returns:
 //   - true if the string is a valid HTTPS URL, false otherwise.
+//
+// isValidSecureURL validates that a URL string is well-formed and uses HTTPS.
+// Returns true if the URL is valid and secure (HTTPS), false otherwise.
 func isValidSecureURL(s string) bool {
 	u, err := url.Parse(s)
 	return err == nil && u.Scheme == "https" && u.Host != ""
@@ -420,6 +425,9 @@ func isValidSecureURL(s string) bool {
 //
 // Returns:
 //   - true if the log level is valid, false otherwise.
+//
+// isValidLogLevel checks if the provided log level is supported.
+// Valid log levels are: debug, info, error.
 func isValidLogLevel(level string) bool {
 	return level == "debug" || level == "info" || level == "error"
 }
@@ -450,6 +458,9 @@ type Logger struct {
 //
 // Returns:
 //   - A pointer to the configured Logger instance.
+//
+// NewLogger creates a new logger instance with the specified log level.
+// If logLevel is empty, defaults to "info". Invalid log levels default to "info".
 func NewLogger(logLevel string) *Logger {
 	logError := log.New(io.Discard, "ERROR: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
 	logInfo := log.New(io.Discard, "INFO: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
@@ -477,6 +488,8 @@ func NewLogger(logLevel string) *Logger {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Info logs an informational message if the logger's level allows it.
 func (l *Logger) Info(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
@@ -487,6 +500,8 @@ func (l *Logger) Info(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Debug logs a debug message if the logger's level allows it.
 func (l *Logger) Debug(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
@@ -497,6 +512,8 @@ func (l *Logger) Debug(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Error logs an error message. Errors are always logged regardless of level.
 func (l *Logger) Error(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
@@ -508,6 +525,8 @@ func (l *Logger) Error(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Infof logs a formatted informational message if the logger's level allows it.
 func (l *Logger) Infof(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
@@ -519,6 +538,8 @@ func (l *Logger) Infof(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Debugf logs a formatted debug message if the logger's level allows it.
 func (l *Logger) Debugf(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
@@ -530,19 +551,16 @@ func (l *Logger) Debugf(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Errorf logs a formatted error message. Errors are always logged regardless of level.
 func (l *Logger) Errorf(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
 
-// newNoOpLogger creates a silent logger that doesn't output anything.
-// This is useful for internal components that need a logger instance
-// but should not produce any output by default.
+// newNoOpLogger creates a logger that discards all output.
+// Deprecated: Use GetSingletonNoOpLogger() instead for better memory efficiency.
 func newNoOpLogger() *Logger {
-	return &Logger{
-		logError: log.New(io.Discard, "", 0),
-		logInfo:  log.New(io.Discard, "", 0),
-		logDebug: log.New(io.Discard, "", 0),
-	}
+	return GetSingletonNoOpLogger()
 }
 
 // handleError logs an error message using the provided logger and sends an HTTP error
@@ -553,6 +571,9 @@ func newNoOpLogger() *Logger {
 //   - message: The error message string.
 //   - code: The HTTP status code for the response.
 //   - logger: The Logger instance to use for logging the error.
+//
+// handleError writes an HTTP error response with the specified status code and message.
+// It logs the error and sets appropriate headers before writing the response.
 func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
 	logger.Error(message)
 	http.Error(w, message, code)

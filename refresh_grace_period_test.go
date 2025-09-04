@@ -398,10 +398,10 @@ func TestRefreshGracePeriodConcurrency(t *testing.T) {
 func TestRefreshGracePeriodEdgeCases(t *testing.T) {
 	tests := []struct {
 		name               string
+		description        string
 		gracePeriodSeconds int
 		tokenExpiryDelta   time.Duration
 		expectRefresh      bool
-		description        string
 	}{
 		{
 			name:               "token exactly at grace boundary",

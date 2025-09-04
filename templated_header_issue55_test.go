@@ -14,11 +14,11 @@ import (
 // from GitHub issue #55: "can't evaluate field AccessToken in type bool"
 func TestIssue55TemplateExecutionWithWrongTypes(t *testing.T) {
 	testCases := []struct {
+		templateData  interface{}
 		name          string
 		templateText  string
-		templateData  interface{}
-		expectError   bool
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name:         "correct map data",
@@ -225,12 +225,12 @@ func TestIssue55TemplateParsingValidation(t *testing.T) {
 func TestIssue55MiddlewareHeaderTemplating(t *testing.T) {
 	// Test cases that simulate real-world usage
 	testCases := []struct {
-		name           string
-		headers        []TemplatedHeader
-		accessToken    string
-		idToken        string
 		claims         map[string]interface{}
 		expectedValues map[string]string
+		name           string
+		accessToken    string
+		idToken        string
+		headers        []TemplatedHeader
 	}{
 		{
 			name: "authorization header with access token",
@@ -329,8 +329,8 @@ func TestIssue55JSONConfigParsing(t *testing.T) {
 	testCases := []struct {
 		name          string
 		jsonConfig    string
-		expectedError bool
 		description   string
+		expectedError bool
 	}{
 		{
 			name: "valid JSON configuration",

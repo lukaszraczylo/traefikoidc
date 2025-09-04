@@ -113,9 +113,9 @@ func TestScopesConfiguration(t *testing.T) {
 
 	testCases := []struct {
 		name           string
-		configScopes   []string // Scopes from Traefik config
-		overrideScopes bool
+		configScopes   []string
 		expectedResult []string
+		overrideScopes bool
 	}{
 		{
 			name:           "Default Append Behavior - No user scopes",
@@ -199,13 +199,13 @@ func TestBuildAuthURLScopeHandling(t *testing.T) {
 	defaultInitialScopes := []string{"openid", "profile", "email"}
 
 	testCases := []struct {
+		expectedParams      map[string]string
 		name                string
-		configScopes        []string // Scopes from Traefik config
+		expectedScopeString string
+		configScopes        []string
 		overrideScopes      bool
 		isGoogle            bool
 		isAzure             bool
-		expectedScopeString string // Expected final scope string in the auth URL
-		expectedParams      map[string]string
 	}{
 		{
 			name:                "Deduplication: Default append, duplicate in user scopes",

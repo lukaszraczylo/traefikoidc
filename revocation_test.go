@@ -19,8 +19,8 @@ func TestRevocationURLConfiguration(t *testing.T) {
 	tests := []struct {
 		name          string
 		revocationURL string
-		expectError   bool
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name:          "valid HTTPS revocation URL",
@@ -104,11 +104,11 @@ func TestRevocationURLAutoDiscovery(t *testing.T) {
 
 func TestRevokeTokenWithProviderFlow(t *testing.T) {
 	tests := []struct {
-		name            string
-		serverResponse  int
-		serverBody      string
-		expectError     bool
 		validateRequest func(t *testing.T, r *http.Request)
+		name            string
+		serverBody      string
+		serverResponse  int
+		expectError     bool
 	}{
 		{
 			name:           "successful revocation",
@@ -323,10 +323,10 @@ func TestRevocationWithCircuitBreaker(t *testing.T) {
 
 func TestRevocationErrorHandling(t *testing.T) {
 	tests := []struct {
-		name        string
 		setupServer func() *httptest.Server
-		expectError bool
+		name        string
 		errorType   string
+		expectError bool
 	}{
 		{
 			name: "network timeout",

@@ -6,19 +6,19 @@ import (
 	"time"
 )
 
-// BaseProvider provides a common foundation for OIDC provider implementations.
+// BaseProvider provides common functionality for all OIDC provider implementations.
+// It defines default behaviors that can be overridden by specific providers.
 // It can be embedded in specific provider structs to share common logic.
 type BaseProvider struct {
-	// Common configuration or dependencies can be added here.
 }
 
-// GetType returns the default provider type, which is Generic.
+// GetType returns the default provider type (generic).
 // This should be overridden by specific provider implementations.
 func (p *BaseProvider) GetType() ProviderType {
 	return ProviderTypeGeneric
 }
 
-// GetCapabilities returns a default set of capabilities for a generic OIDC provider.
+// GetCapabilities returns default provider capabilities.
 // This can be overridden by specific providers to declare their unique features.
 func (p *BaseProvider) GetCapabilities() ProviderCapabilities {
 	return ProviderCapabilities{
@@ -28,7 +28,8 @@ func (p *BaseProvider) GetCapabilities() ProviderCapabilities {
 	}
 }
 
-// ValidateTokens provides a default token validation implementation.
+// ValidateTokens performs basic token validation logic common to all providers.
+// It checks authentication state, token presence, and determines if refresh is needed.
 // This method can be extended or replaced by specific providers.
 func (p *BaseProvider) ValidateTokens(session Session, verifier TokenVerifier, tokenCache TokenCache, refreshGracePeriod time.Duration) (*ValidationResult, error) {
 	if !session.GetAuthenticated() {
@@ -70,7 +71,7 @@ func (p *BaseProvider) ValidateTokens(session Session, verifier TokenVerifier, t
 	return p.ValidateTokenExpiry(session, idToken, tokenCache, refreshGracePeriod)
 }
 
-// ValidateTokenExpiry provides common token expiry validation logic that can be used by all providers.
+// ValidateTokenExpiry checks if a token is expired or needs refresh based on cached claims.
 // This method is now exported so provider implementations can reuse this logic without duplication.
 func (p *BaseProvider) ValidateTokenExpiry(session Session, token string, tokenCache TokenCache, refreshGracePeriod time.Duration) (*ValidationResult, error) {
 	cachedClaims, found := tokenCache.Get(token)
@@ -100,10 +101,9 @@ func (p *BaseProvider) ValidateTokenExpiry(session Session, token string, tokenC
 	return &ValidationResult{Authenticated: true}, nil
 }
 
-// BuildAuthParams provides a default implementation for building authorization parameters.
-// It includes the "offline_access" scope by default.
+// BuildAuthParams constructs authorization parameters for the provider.
+// It includes the "offline_access" scope by default for refresh token support.
 func (p *BaseProvider) BuildAuthParams(baseParams url.Values, scopes []string) (*AuthParams, error) {
-	// Ensure offline_access is included if not already present
 	hasOfflineAccess := false
 	for _, scope := range scopes {
 		if scope == "offline_access" {
@@ -121,21 +121,20 @@ func (p *BaseProvider) BuildAuthParams(baseParams url.Values, scopes []string) (
 	}, nil
 }
 
-// HandleTokenRefresh provides a default implementation for token refresh handling.
+// HandleTokenRefresh processes provider-specific token refresh logic.
 // By default, it does nothing and assumes the standard token response is sufficient.
 func (p *BaseProvider) HandleTokenRefresh(tokenData *TokenResult) error {
-	// No provider-specific refresh handling by default.
 	return nil
 }
 
-// ValidateConfig provides a default implementation for configuration validation.
+// ValidateConfig checks provider-specific configuration requirements.
 // By default, it assumes the configuration is valid.
 func (p *BaseProvider) ValidateConfig() error {
-	// No provider-specific config validation by default.
 	return nil
 }
 
-// NewBaseProvider creates a new BaseProvider.
+// NewBaseProvider creates a new BaseProvider instance.
+// This can be used when a generic OIDC provider is sufficient.
 func NewBaseProvider() *BaseProvider {
 	return &BaseProvider{}
 }

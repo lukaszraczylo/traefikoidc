@@ -11,15 +11,15 @@ import (
 	"github.com/gorilla/sessions"
 )
 
-// TokenConfig defines validation rules and constraints for different token types.
-// It specifies size limits, chunking parameters, and format requirements to ensure
+// TokenConfig defines validation and storage parameters for different token types.
+// It specifies size limits, format requirements, and security constraints to ensure
 // tokens can be safely stored in browser cookies while maintaining security.
 type TokenConfig struct {
 	Type              string
 	MinLength         int
 	MaxLength         int
-	MaxChunks         int // Maximum number of chunks allowed
-	MaxChunkSize      int // Maximum size per chunk
+	MaxChunks         int
+	MaxChunkSize      int
 	AllowOpaqueTokens bool
 	RequireJWTFormat  bool
 }
@@ -29,9 +29,9 @@ var (
 	AccessTokenConfig = TokenConfig{
 		Type:              "access",
 		MinLength:         5,
-		MaxLength:         100 * 1024,    // 100KB total limit
-		MaxChunks:         25,            // Maximum 25 chunks
-		MaxChunkSize:      maxCookieSize, // Use global chunk size limit
+		MaxLength:         100 * 1024,
+		MaxChunks:         25,
+		MaxChunkSize:      maxCookieSize,
 		AllowOpaqueTokens: true,
 		RequireJWTFormat:  false,
 	}
@@ -39,8 +39,8 @@ var (
 	RefreshTokenConfig = TokenConfig{
 		Type:              "refresh",
 		MinLength:         5,
-		MaxLength:         50 * 1024, // 50KB total limit (refresh tokens are typically smaller)
-		MaxChunks:         15,        // Maximum 15 chunks
+		MaxLength:         50 * 1024,
+		MaxChunks:         15,
 		MaxChunkSize:      maxCookieSize,
 		AllowOpaqueTokens: true,
 		RequireJWTFormat:  false,
@@ -49,42 +49,41 @@ var (
 	IDTokenConfig = TokenConfig{
 		Type:              "id",
 		MinLength:         5,
-		MaxLength:         75 * 1024, // 75KB total limit
-		MaxChunks:         20,        // Maximum 20 chunks
+		MaxLength:         75 * 1024,
+		MaxChunks:         20,
 		MaxChunkSize:      maxCookieSize,
 		AllowOpaqueTokens: false,
 		RequireJWTFormat:  true,
 	}
 )
 
-// TokenRetrievalResult encapsulates the result of a token retrieval operation.
-// It contains either a successfully retrieved token or an error describing
+// TokenRetrievalResult represents the outcome of a token retrieval operation.
+// It contains either the successfully retrieved token or an error describing
 // what went wrong during retrieval.
 type TokenRetrievalResult struct {
-	Token string
 	Error error
+	Token string
 }
 
-// ChunkManager provides thread-safe operations for splitting large tokens
-// into smaller chunks that fit within browser cookie size limits. It handles
-// the chunking and reassembly of tokens transparently, ensuring data integrity
+// ChunkManager handles the complex logic of storing and retrieving large tokens
+// across multiple HTTP cookies. It provides comprehensive validation, security checks,
+// and error handling to ensure data integrity and prevent security vulnerabilities
 // throughout the process.
 type ChunkManager struct {
 	logger *Logger
 	mutex  *sync.RWMutex
 }
 
-// NewChunkManager creates a new ChunkManager instance with the specified logger.
-// If no logger is provided, a no-op logger is used to prevent nil pointer errors.
-//
+// NewChunkManager creates a new ChunkManager instance with proper initialization.
+// It sets up logging and synchronization primitives for safe concurrent access.
 // Parameters:
-//   - logger: The logger instance for recording chunk operations.
+//   - logger: Logger instance for debugging and error reporting (nil creates no-op logger).
 //
 // Returns:
 //   - A new ChunkManager instance ready for use.
 func NewChunkManager(logger *Logger) *ChunkManager {
 	if logger == nil {
-		logger = newNoOpLogger()
+		logger = GetSingletonNoOpLogger()
 	}
 
 	return &ChunkManager{
@@ -93,16 +92,14 @@ func NewChunkManager(logger *Logger) *ChunkManager {
 	}
 }
 
-// GetToken retrieves and validates a token from either single storage or chunks
-// GetToken retrieves and validates a token, handling both single-cookie
-// and chunked storage scenarios. It performs decompression if needed and
-// validates the token according to the provided configuration.
-//
+// GetToken retrieves and validates a token from either single-cookie or chunked storage.
+// It handles decompression, validates format and content, and performs comprehensive
+// security checks before returning the token.
 // Parameters:
-//   - singleToken: The token string if stored in a single cookie.
-//   - compressed: Whether the token is compressed.
-//   - chunks: Map of session chunks if token is split across cookies.
-//   - config: Token validation configuration.
+//   - singleToken: Token stored in a single cookie (empty if using chunks).
+//   - compressed: Whether the token data is gzip-compressed.
+//   - chunks: Map of chunk sessions for tokens split across multiple cookies.
+//   - config: Token configuration specifying validation rules and limits.
 //
 // Returns:
 //   - TokenRetrievalResult containing the token or an error.
@@ -115,12 +112,10 @@ func (cm *ChunkManager) GetToken(
 	cm.mutex.RLock()
 	defer cm.mutex.RUnlock()
 
-	// Handle single-token storage
 	if singleToken != "" {
 		return cm.processSingleToken(singleToken, compressed, config)
 	}
 
-	// Handle chunked storage
 	if len(chunks) == 0 {
 		return TokenRetrievalResult{Token: "", Error: nil}
 	}
@@ -128,22 +123,18 @@ func (cm *ChunkManager) GetToken(
 	return cm.processChunkedToken(chunks, config)
 }
 
-// processSingleToken processes tokens stored in a single cookie.
-// It handles decompression if needed and performs comprehensive validation
-// including corruption detection, format validation, and size checks.
-//
+// processSingleToken handles tokens stored in a single cookie.
+// It checks for corruption markers, decompresses if necessary, and validates the token.
 // Parameters:
-//   - token: The token string from the cookie.
-//   - compressed: Whether the token needs decompression.
-//   - config: Token validation configuration.
+//   - token: The token string from a single cookie.
+//   - compressed: Whether the token is compressed.
+//   - config: Token configuration for validation.
 //
 // Returns:
 //   - TokenRetrievalResult containing the processed token or an error.
 func (cm *ChunkManager) processSingleToken(token string, compressed bool, config TokenConfig) TokenRetrievalResult {
-	// Detect corruption markers
 	if isCorruptionMarker(token) {
 		err := fmt.Errorf("%s token contains corruption marker", config.Type)
-		// Only log if not a known test scenario
 		if !strings.Contains(token, "TEST_CORRUPTION") {
 			cm.logger.Debug("Token corruption detected for %s", config.Type)
 		}
@@ -166,56 +157,47 @@ func (cm *ChunkManager) processSingleToken(token string, compressed bool, config
 	return cm.validateToken(finalToken, config)
 }
 
-// validateToken performs comprehensive validation on a token.
-// It checks size limits, chunking efficiency, content validity,
-// expiration, freshness, and format requirements based on the token configuration.
-//
+// validateToken performs comprehensive validation of a retrieved token.
+// It checks size, format, content, expiration, and security requirements
+// based on the token configuration.
 // Parameters:
-//   - token: The token string to validate.
-//   - config: Token validation configuration.
+//   - token: The token to validate.
+//   - config: Token configuration specifying validation rules.
 //
 // Returns:
 //   - TokenRetrievalResult with the validated token or validation error.
 func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRetrievalResult {
-	// Validate token size against configured limits
 	if sizeErr := cm.validateTokenSize(token, config); sizeErr != nil {
 		return TokenRetrievalResult{Token: "", Error: sizeErr}
 	}
 
-	// Check if token would chunk efficiently
 	if chunkErr := cm.validateChunkingEfficiency(token, config); chunkErr != nil {
 		return TokenRetrievalResult{Token: "", Error: chunkErr}
 	}
 
-	// Validate token content and structure
 	if contentErr := cm.validateTokenContent(token, config); contentErr != nil {
 		return TokenRetrievalResult{Token: "", Error: contentErr}
 	}
 
-	// Token expiration validation
 	if expErr := cm.validateTokenExpiration(token, config); expErr != nil {
 		return TokenRetrievalResult{Token: "", Error: expErr}
 	}
 
-	// Token freshness validation
 	if freshnessErr := cm.validateTokenFreshness(token, config); freshnessErr != nil {
 		return TokenRetrievalResult{Token: "", Error: freshnessErr}
 	}
 
-	// Validate JWT format if required
 	if config.RequireJWTFormat && !config.AllowOpaqueTokens {
 		if validationErr := cm.validateJWTFormat(token, config.Type); validationErr != nil {
 			return TokenRetrievalResult{Token: "", Error: validationErr}
 		}
 	} else if config.RequireJWTFormat && config.AllowOpaqueTokens {
-		// For tokens that can be either JWT or opaque, validate JWT format only if it has dots
 		dotCount := strings.Count(token, ".")
 		if dotCount > 0 {
 			if validationErr := cm.validateJWTFormat(token, config.Type); validationErr != nil {
 				return TokenRetrievalResult{Token: "", Error: validationErr}
 			}
 		} else {
-			// Validate as opaque token
 			if validationErr := cm.validateOpaqueToken(token, config.Type); validationErr != nil {
 				return TokenRetrievalResult{Token: "", Error: validationErr}
 			}
@@ -225,16 +207,22 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 	return TokenRetrievalResult{Token: token, Error: nil}
 }
 
-// processChunkedToken handles tokens stored across multiple chunks
+// processChunkedToken handles tokens stored across multiple chunks.
+// It validates chunk count, assembles chunks in order, checks for corruption,
+// and reconstructs the original token with integrity verification.
+// Parameters:
+//   - chunks: Map of chunk sessions indexed by chunk number.
+//   - config: Token configuration for validation and limits.
+//
+// Returns:
+//   - TokenRetrievalResult with the reassembled token or error.
 func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, config TokenConfig) TokenRetrievalResult {
-	// Validate chunk count against configured maximum
 	if len(chunks) > config.MaxChunks {
 		err := fmt.Errorf("too many %s token chunks (%d, max: %d)", config.Type, len(chunks), config.MaxChunks)
 		cm.logger.Info("Token chunk count exceeded for %s: %d chunks", config.Type, len(chunks))
 		return TokenRetrievalResult{Token: "", Error: err}
 	}
 
-	// Additional safety check for extremely large chunk counts
 	if len(chunks) > 100 {
 		err := fmt.Errorf("excessive %s token chunks (%d), potential security issue", config.Type, len(chunks))
 		cm.logger.Error("Security: Excessive token chunks detected for %s: %d", config.Type, len(chunks))
@@ -249,7 +237,6 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 		session, ok := chunks[i]
 		if !ok {
 			err := fmt.Errorf("%s token chunk %d missing", config.Type, i)
-			// Only log once for missing chunks, not for each missing chunk
 			if i == 0 {
 				cm.logger.Debug("Token chunks missing for %s starting at index %d", config.Type, i)
 			}
@@ -267,14 +254,12 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
-		// Validate individual chunk sizes
 		if len(chunk) > config.MaxChunkSize {
 			err := fmt.Errorf("%s token chunk %d exceeds size limit (%d bytes, max: %d)",
 				config.Type, i, len(chunk), config.MaxChunkSize)
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
-		// Additional safety check for extremely large chunks
 		if len(chunk) > maxBrowserCookieSize {
 			err := fmt.Errorf("%s token chunk %d exceeds browser limit (%d bytes)",
 				config.Type, i, len(chunk))
@@ -290,10 +275,8 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 		tokenParts = append(tokenParts, chunk)
 	}
 
-	// Reassemble token
 	reassembledToken := strings.Join(tokenParts, "")
 
-	// Check compression flag from first chunk
 	compressed, _ := chunks[0].Values["compressed"].(bool)
 
 	if compressed {
@@ -308,31 +291,34 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 	return cm.validateToken(reassembledToken, config)
 }
 
-// validateJWTFormat performs enhanced JWT format validation
+// validateJWTFormat performs enhanced JWT format validation.
+// It checks the three-part structure, validates base64url encoding,
+// and ensures proper JWT format according to RFC 7519.
+// Parameters:
+//   - token: The JWT token to validate.
+//   - tokenType: The type of token for error messages.
+//
+// Returns:
+//   - An error if the JWT format is invalid, nil if valid.
 func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error {
-	// Check for exactly 2 dots
 	dotCount := strings.Count(token, ".")
 	if dotCount != 2 {
 		err := fmt.Errorf("%s token invalid JWT format (dots: %d)", tokenType, dotCount)
 		return err
 	}
 
-	// Split into parts
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		err := fmt.Errorf("%s token invalid JWT structure", tokenType)
 		return err
 	}
 
-	// Validate each part is non-empty and contains valid base64url characters
 	for i, part := range parts {
 		if part == "" {
 			err := fmt.Errorf("%s token has empty JWT part %d", tokenType, i)
 			return err
 		}
 
-		// Check for valid base64url characters only (RFC 4648)
-		// Valid characters: A-Z, a-z, 0-9, -, _, and = for padding
 		for _, char := range part {
 			if !((char >= 'A' && char <= 'Z') ||
 				(char >= 'a' && char <= 'z') ||
@@ -343,15 +329,12 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 			}
 		}
 
-		// Validate base64url padding rules
 		if strings.Contains(part, "=") {
-			// Padding can only be at the end
 			paddingIndex := strings.Index(part, "=")
 			if paddingIndex != len(part)-1 && paddingIndex != len(part)-2 {
 				err := fmt.Errorf("%s token has invalid base64url padding in part %d", tokenType, i)
 				return err
 			}
-			// Check that after padding, no other characters exist
 			for j := paddingIndex; j < len(part); j++ {
 				if part[j] != '=' {
 					err := fmt.Errorf("%s token has characters after padding in part %d", tokenType, i)
@@ -361,16 +344,15 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 		}
 	}
 
-	// Additional length checks for JWT parts
-	if len(parts[0]) < 10 { // Header too short
+	if len(parts[0]) < 10 {
 		err := fmt.Errorf("%s token header too short", tokenType)
 		return err
 	}
-	if len(parts[1]) < 10 { // Payload too short
+	if len(parts[1]) < 10 {
 		err := fmt.Errorf("%s token payload too short", tokenType)
 		return err
 	}
-	if len(parts[2]) < 10 { // Signature too short
+	if len(parts[2]) < 10 {
 		err := fmt.Errorf("%s token signature too short", tokenType)
 		return err
 	}
@@ -378,15 +360,21 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 	return nil
 }
 
-// validateOpaqueToken performs validation for opaque (non-JWT) tokens
+// validateOpaqueToken performs validation for opaque (non-JWT) tokens.
+// It checks for spaces, control characters, and entropy to ensure
+// the token appears to be a legitimate opaque token.
+// Parameters:
+//   - token: The opaque token to validate.
+//   - tokenType: The type of token for error messages.
+//
+// Returns:
+//   - An error if the opaque token format is invalid, nil if valid.
 func (cm *ChunkManager) validateOpaqueToken(token string, tokenType string) error {
-	// Check for obviously invalid characters for opaque tokens
 	if strings.Contains(token, " ") {
 		err := fmt.Errorf("%s opaque token contains spaces", tokenType)
 		return err
 	}
 
-	// Check for control characters
 	for _, char := range token {
 		if char < 32 || char == 127 {
 			err := fmt.Errorf("%s opaque token contains control characters", tokenType)
@@ -394,13 +382,11 @@ func (cm *ChunkManager) validateOpaqueToken(token string, tokenType string) erro
 		}
 	}
 
-	// Ensure minimum entropy for opaque tokens (basic check)
 	if len(token) >= 20 {
 		uniqueChars := make(map[rune]bool)
 		for _, char := range token {
 			uniqueChars[char] = true
 		}
-		// Require at least 8 unique characters for reasonable entropy
 		if len(uniqueChars) < 8 {
 			err := fmt.Errorf("%s opaque token has insufficient entropy", tokenType)
 			return err
@@ -410,11 +396,18 @@ func (cm *ChunkManager) validateOpaqueToken(token string, tokenType string) erro
 	return nil
 }
 
-// validateTokenSize performs comprehensive token size validation
+// validateTokenSize performs comprehensive token size validation.
+// It checks overall token size, individual JWT part sizes, and applies
+// different limits based on token type (JWT vs opaque).
+// Parameters:
+//   - token: The token to validate size constraints for.
+//   - config: Token configuration with size limits.
+//
+// Returns:
+//   - An error if size validation fails, nil if within limits.
 func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) error {
 	tokenLen := len(token)
 
-	// Basic length validation
 	if tokenLen < config.MinLength {
 		err := fmt.Errorf("%s token below minimum length (%d bytes, min: %d)",
 			config.Type, tokenLen, config.MinLength)
@@ -427,37 +420,32 @@ func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) erro
 		return err
 	}
 
-	// JWT-specific size validation
 	if config.RequireJWTFormat || (config.AllowOpaqueTokens && strings.Contains(token, ".")) {
 		parts := strings.Split(token, ".")
 		if len(parts) == 3 {
-			// Validate individual JWT part sizes
 			headerLen := len(parts[0])
 			payloadLen := len(parts[1])
 			signatureLen := len(parts[2])
 
-			// Check for unreasonably large JWT parts (potential security issue)
-			if headerLen > 5*1024 { // 5KB header limit
+			if headerLen > 5*1024 {
 				err := fmt.Errorf("%s token header too large (%d bytes)", config.Type, headerLen)
 				return err
 			}
 
-			if payloadLen > config.MaxLength-10*1024 { // Leave room for header and signature
+			if payloadLen > config.MaxLength-10*1024 {
 				err := fmt.Errorf("%s token payload too large (%d bytes)", config.Type, payloadLen)
 				return err
 			}
 
-			if signatureLen > 2*1024 { // 2KB signature limit
+			if signatureLen > 2*1024 {
 				err := fmt.Errorf("%s token signature too large (%d bytes)", config.Type, signatureLen)
 				return err
 			}
 		}
 	}
 
-	// Opaque token size validation
 	if config.AllowOpaqueTokens && !strings.Contains(token, ".") {
-		// For opaque tokens, check for reasonable size limits
-		if tokenLen > 8*1024 { // 8KB limit for opaque tokens
+		if tokenLen > 8*1024 {
 			err := fmt.Errorf("%s opaque token unusually large (%d bytes)", config.Type, tokenLen)
 			return err
 		}
@@ -466,17 +454,21 @@ func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) erro
 	return nil
 }
 
-// validateChunkingEfficiency ensures that chunking is used appropriately
+// validateChunkingEfficiency ensures that chunking is used appropriately.
+// It calculates expected chunk counts and warns about potential inefficiencies
+// in token storage strategies.
+// Parameters:
+//   - token: The token to analyze for chunking efficiency.
+//   - config: Token configuration with chunking limits.
+//
+// Returns:
+//   - An error if chunking requirements would be violated, nil if acceptable.
 func (cm *ChunkManager) validateChunkingEfficiency(token string, config TokenConfig) error {
 	tokenLen := len(token)
 
-	// If token is small enough to fit in a single chunk, warn about unnecessary chunking
 	if tokenLen <= config.MaxChunkSize && tokenLen <= maxCookieSize {
-		// This is just informational - not an error, but helps with monitoring
-		// Token could fit in single chunk - this is fine, just informational
 	}
 
-	// Calculate expected number of chunks
 	expectedChunks := (tokenLen + config.MaxChunkSize - 1) / config.MaxChunkSize
 	if expectedChunks > config.MaxChunks {
 		err := fmt.Errorf("%s token would require %d chunks (max: %d)",
@@ -484,7 +476,6 @@ func (cm *ChunkManager) validateChunkingEfficiency(token string, config TokenCon
 		return err
 	}
 
-	// Check for potential storage efficiency issues
 	if expectedChunks > 10 && tokenLen < 50*1024 {
 		cm.logger.Info("%s token requires many chunks (%d) for size (%d bytes) - consider token optimization",
 			config.Type, expectedChunks, tokenLen)
@@ -493,21 +484,26 @@ func (cm *ChunkManager) validateChunkingEfficiency(token string, config TokenCon
 	return nil
 }
 
-// validateTokenContent performs comprehensive token content validation
+// validateTokenContent performs comprehensive token content validation.
+// It sanitizes the token for security issues and applies format-specific
+// validation for JWT or opaque tokens.
+// Parameters:
+//   - token: The token to validate content for.
+//   - config: Token configuration specifying content requirements.
+//
+// Returns:
+//   - An error if content validation fails, nil if content is acceptable.
 func (cm *ChunkManager) validateTokenContent(token string, config TokenConfig) error {
-	// Basic content sanitization checks
 	if err := cm.validateTokenSanitization(token, config); err != nil {
 		return err
 	}
 
-	// JWT-specific content validation
 	if config.RequireJWTFormat || (config.AllowOpaqueTokens && strings.Contains(token, ".")) {
 		if err := cm.validateJWTContent(token, config); err != nil {
 			return err
 		}
 	}
 
-	// Opaque token content validation
 	if config.AllowOpaqueTokens && !strings.Contains(token, ".") {
 		if err := cm.validateOpaqueTokenContent(token, config); err != nil {
 			return err
@@ -517,21 +513,26 @@ func (cm *ChunkManager) validateTokenContent(token string, config TokenConfig) e
 	return nil
 }
 
-// validateTokenSanitization checks for basic security issues in token content
+// validateTokenSanitization checks for basic security issues in token content.
+// It detects null bytes, line breaks, suspicious patterns, and other indicators
+// of potential security threats or data corruption.
+// Parameters:
+//   - token: The token to sanitize and check.
+//   - config: Token configuration for context.
+//
+// Returns:
+//   - An error if security issues are detected, nil if token appears safe.
 func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConfig) error {
-	// Check for null bytes (potential injection attacks)
 	if strings.Contains(token, "\x00") {
 		err := fmt.Errorf("%s token contains null bytes", config.Type)
 		return err
 	}
 
-	// Check for line feed/carriage return (header injection attacks)
 	if strings.ContainsAny(token, "\r\n") {
 		err := fmt.Errorf("%s token contains line breaks", config.Type)
 		return err
 	}
 
-	// Check for suspicious escape sequences
 	suspiciousPatterns := []string{
 		"\\x", "\\u", "\\n", "\\r", "\\t", "\\0",
 		"<script", "</script", "javascript:", "data:",
@@ -546,7 +547,6 @@ func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConf
 		}
 	}
 
-	// Check for excessive repeated characters (potential buffer overflow attempts)
 	if err := cm.detectRepeatedCharacters(token, config); err != nil {
 		return err
 	}
@@ -554,7 +554,15 @@ func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConf
 	return nil
 }
 
-// validateJWTContent performs JWT-specific content validation
+// validateJWTContent performs JWT-specific content validation.
+// It validates the header, payload, and signature parts of a JWT
+// for proper encoding and structure.
+// Parameters:
+//   - token: The JWT token to validate.
+//   - config: Token configuration for validation context.
+//
+// Returns:
+//   - An error if JWT content validation fails, nil if valid.
 func (cm *ChunkManager) validateJWTContent(token string, config TokenConfig) error {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -562,17 +570,14 @@ func (cm *ChunkManager) validateJWTContent(token string, config TokenConfig) err
 		return err
 	}
 
-	// Validate header content
 	if err := cm.validateJWTHeader(parts[0], config); err != nil {
 		return err
 	}
 
-	// Validate payload content
 	if err := cm.validateJWTPayload(parts[1], config); err != nil {
 		return err
 	}
 
-	// Validate signature content
 	if err := cm.validateJWTSignature(parts[2], config); err != nil {
 		return err
 	}
@@ -580,15 +585,21 @@ func (cm *ChunkManager) validateJWTContent(token string, config TokenConfig) err
 	return nil
 }
 
-// validateJWTHeader validates JWT header content
+// validateJWTHeader validates JWT header content.
+// It checks that the header is properly base64url encoded
+// and not empty.
+// Parameters:
+//   - header: The JWT header part to validate.
+//   - config: Token configuration for error context.
+//
+// Returns:
+//   - An error if header validation fails, nil if valid.
 func (cm *ChunkManager) validateJWTHeader(header string, config TokenConfig) error {
-	// Basic header structure validation
 	if len(header) == 0 {
 		err := fmt.Errorf("%s JWT header is empty", config.Type)
 		return err
 	}
 
-	// Validate base64url encoding
 	if _, err := base64.RawURLEncoding.DecodeString(header); err != nil {
 		err := fmt.Errorf("%s JWT header not valid base64url", config.Type)
 		return err
@@ -597,15 +608,21 @@ func (cm *ChunkManager) validateJWTHeader(header string, config TokenConfig) err
 	return nil
 }
 
-// validateJWTPayload validates JWT payload content
+// validateJWTPayload validates JWT payload content.
+// It checks that the payload is properly base64url encoded
+// and contains data.
+// Parameters:
+//   - payload: The JWT payload part to validate.
+//   - config: Token configuration for error context.
+//
+// Returns:
+//   - An error if payload validation fails, nil if valid.
 func (cm *ChunkManager) validateJWTPayload(payload string, config TokenConfig) error {
-	// Basic payload structure validation
 	if len(payload) == 0 {
 		err := fmt.Errorf("%s JWT payload is empty", config.Type)
 		return err
 	}
 
-	// Payload should be decodable (basic structural check)
 	if _, err := base64.RawURLEncoding.DecodeString(payload); err != nil {
 		err := fmt.Errorf("%s JWT payload not valid base64url", config.Type)
 		return err
@@ -614,15 +631,21 @@ func (cm *ChunkManager) validateJWTPayload(payload string, config TokenConfig) e
 	return nil
 }
 
-// validateJWTSignature validates JWT signature content
+// validateJWTSignature validates JWT signature content.
+// It checks that the signature is properly base64url encoded
+// and present.
+// Parameters:
+//   - signature: The JWT signature part to validate.
+//   - config: Token configuration for error context.
+//
+// Returns:
+//   - An error if signature validation fails, nil if valid.
 func (cm *ChunkManager) validateJWTSignature(signature string, config TokenConfig) error {
-	// Basic signature structure validation
 	if len(signature) == 0 {
 		err := fmt.Errorf("%s JWT signature is empty", config.Type)
 		return err
 	}
 
-	// Validate base64url encoding
 	if _, err := base64.RawURLEncoding.DecodeString(signature); err != nil {
 		err := fmt.Errorf("%s JWT signature not valid base64url", config.Type)
 		return err
@@ -631,9 +654,16 @@ func (cm *ChunkManager) validateJWTSignature(signature string, config TokenConfi
 	return nil
 }
 
-// validateOpaqueTokenContent validates opaque token content
+// validateOpaqueTokenContent validates opaque token content.
+// It analyzes character distribution, checks for legitimate prefixes,
+// and ensures the token appears to be a proper opaque token.
+// Parameters:
+//   - token: The opaque token to validate.
+//   - config: Token configuration for validation context.
+//
+// Returns:
+//   - An error if opaque token content is invalid, nil if acceptable.
 func (cm *ChunkManager) validateOpaqueTokenContent(token string, config TokenConfig) error {
-	// Check for reasonable character distribution in opaque tokens
 	if len(token) >= 10 {
 		alphabetic := 0
 		numeric := 0
@@ -651,11 +681,9 @@ func (cm *ChunkManager) validateOpaqueTokenContent(token string, config TokenCon
 
 		total := alphabetic + numeric + special
 		if total > 0 {
-			// Require some distribution of character types for legitimate tokens
 			alphaRatio := float64(alphabetic) / float64(total)
 			numericRatio := float64(numeric) / float64(total)
 
-			// Opaque tokens should have reasonable character distribution
 			if alphaRatio < 0.1 && numericRatio < 0.1 {
 				err := fmt.Errorf("%s opaque token has suspicious character distribution", config.Type)
 				return err
@@ -663,9 +691,8 @@ func (cm *ChunkManager) validateOpaqueTokenContent(token string, config TokenCon
 		}
 	}
 
-	// Check for common token prefixes/suffixes that might indicate legitimate tokens
 	legitimatePrefixes := []string{
-		"Bearer ", "bearer ", "eyJ", // JWT prefix
+		"Bearer ", "bearer ", "eyJ",
 		"refresh_", "access_", "id_",
 		"token_", "oauth_", "oidc_",
 	}
@@ -678,21 +705,26 @@ func (cm *ChunkManager) validateOpaqueTokenContent(token string, config TokenCon
 		}
 	}
 
-	// For longer tokens without legitimate prefixes, be more suspicious
 	if len(token) > 50 && !hasLegitimatePrefix {
-		// Opaque token without common prefixes - this is fine
 	}
 
 	return nil
 }
 
-// detectRepeatedCharacters detects potential buffer overflow attempts
+// detectRepeatedCharacters detects potential buffer overflow attempts.
+// It analyzes character repetition patterns and frequency distribution
+// to identify suspicious tokens that might be crafted for attacks.
+// Parameters:
+//   - token: The token to analyze for repeated characters.
+//   - config: Token configuration for error context.
+//
+// Returns:
+//   - An error if suspicious repetition patterns are detected, nil if normal.
 func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfig) error {
 	if len(token) < 10 {
-		return nil // Too short to analyze meaningfully
+		return nil
 	}
 
-	// Count consecutive repeated characters
 	maxRepeated := 0
 	currentRepeated := 1
 	var lastChar rune
@@ -709,15 +741,13 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 		lastChar = char
 	}
 
-	// Flag tokens with excessive character repetition
-	threshold := 20 // Allow up to 20 consecutive identical characters
+	threshold := 20
 	if maxRepeated > threshold {
 		err := fmt.Errorf("%s token has excessive repeated characters (%d consecutive)",
 			config.Type, maxRepeated)
 		return err
 	}
 
-	// Check for overall character frequency (detect padding attacks)
 	charFreq := make(map[rune]int)
 	for _, char := range token {
 		charFreq[char]++
@@ -727,7 +757,6 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 	for char, count := range charFreq {
 		frequency := float64(count) / float64(tokenLen)
 
-		// Flag if any single character makes up more than 70% of the token
 		if frequency > 0.7 && tokenLen > 20 {
 			err := fmt.Errorf("%s token has suspicious character frequency (char '%c': %.1f%%)",
 				config.Type, char, frequency*100)
@@ -738,30 +767,33 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 	return nil
 }
 
-// validateTokenExpiration validates token expiration during storage/retrieval
+// validateTokenExpiration validates token expiration during storage/retrieval.
+// It extracts and checks JWT expiration claims to ensure tokens are not expired
+// and detects tokens with suspicious expiration times.
+// Parameters:
+//   - token: The token to check expiration for.
+//   - config: Token configuration for error context.
+//
+// Returns:
+//   - An error if the token is expired or has invalid expiration, nil if valid.
 func (cm *ChunkManager) validateTokenExpiration(token string, config TokenConfig) error {
-	// Only validate expiration for JWT tokens
 	if !strings.Contains(token, ".") {
-		return nil // Opaque tokens don't have embedded expiration
+		return nil
 	}
 
-	// Parse JWT expiration claim
 	expiration, err := cm.extractJWTExpiration(token)
 	if err != nil {
-		// If we can't parse expiration, log it but don't fail - the token might be valid but malformed
 		cm.logger.Debugf("Could not extract expiration from %s token: %v", config.Type, err)
 		return nil
 	}
 
-	// Check if token is expired
 	if expiration != nil && time.Now().After(*expiration) {
 		err := fmt.Errorf("%s token is expired (expired at: %v)", config.Type, expiration.Format(time.RFC3339))
 		return err
 	}
 
-	// Check if token expires too far in the future (potential security issue)
 	if expiration != nil {
-		maxFutureTime := time.Now().Add(10 * 365 * 24 * time.Hour) // 10 years
+		maxFutureTime := time.Now().Add(10 * 365 * 24 * time.Hour)
 		if expiration.After(maxFutureTime) {
 			cm.logger.Info("%s token expires very far in future (%v) - potential security issue",
 				config.Type, expiration.Format(time.RFC3339))
@@ -771,14 +803,20 @@ func (cm *ChunkManager) validateTokenExpiration(token string, config TokenConfig
 	return nil
 }
 
-// extractJWTExpiration extracts the expiration time from a JWT token
+// extractJWTExpiration extracts the expiration time from a JWT token.
+// It decodes the payload and parses the 'exp' claim according to JWT standards.
+// Parameters:
+//   - token: The JWT token to extract expiration from.
+//
+// Returns:
+//   - The expiration time if present, nil if no 'exp' claim.
+//   - An error if JWT parsing fails.
 func (cm *ChunkManager) extractJWTExpiration(token string) (*time.Time, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT format")
 	}
 
-	// Decode the payload (second part)
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
@@ -790,10 +828,9 @@ func (cm *ChunkManager) extractJWTExpiration(token string) (*time.Time, error) {
 		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 
-	// Extract expiration claim
 	exp, exists := claims["exp"]
 	if !exists {
-		return nil, nil // No expiration claim
+		return nil, nil
 	}
 
 	// Convert expiration to time.Time
@@ -812,14 +849,20 @@ func (cm *ChunkManager) extractJWTExpiration(token string) (*time.Time, error) {
 	return &expTime, nil
 }
 
-// validateTokenFreshness checks if token is fresh enough for storage
+// validateTokenFreshness checks if token is fresh enough for storage.
+// It examines the 'iat' (issued at) claim to detect tokens issued too far
+// in the future or suspiciously old tokens that might indicate replay attacks.
+// Parameters:
+//   - token: The token to check freshness for.
+//   - config: Token configuration for error context.
+//
+// Returns:
+//   - An error if the token freshness is suspicious, nil if acceptable.
 func (cm *ChunkManager) validateTokenFreshness(token string, config TokenConfig) error {
-	// Only validate freshness for JWT tokens
 	if !strings.Contains(token, ".") {
 		return nil
 	}
 
-	// Extract issued at time
 	issuedAt, err := cm.extractJWTIssuedAt(token)
 	if err != nil {
 		cm.logger.Debugf("Could not extract issued time from %s token: %v", config.Type, err)
@@ -829,15 +872,13 @@ func (cm *ChunkManager) validateTokenFreshness(token string, config TokenConfig)
 	if issuedAt != nil {
 		now := time.Now()
 
-		// Check if token was issued in the future (clock skew tolerance: 5 minutes)
 		if issuedAt.After(now.Add(5 * time.Minute)) {
 			err := fmt.Errorf("%s token issued in future (issued at: %v)",
 				config.Type, issuedAt.Format(time.RFC3339))
 			return err
 		}
 
-		// Check if token is too old (potential replay attack)
-		maxAge := 24 * time.Hour // Tokens older than 24 hours are suspicious
+		maxAge := 24 * time.Hour
 		if now.Sub(*issuedAt) > maxAge {
 			cm.logger.Info("%s token is quite old (issued: %v) - potential replay",
 				config.Type, issuedAt.Format(time.RFC3339))
@@ -847,14 +888,21 @@ func (cm *ChunkManager) validateTokenFreshness(token string, config TokenConfig)
 	return nil
 }
 
-// extractJWTIssuedAt extracts the issued at time from a JWT token
+// extractJWTIssuedAt extracts the issued at time from a JWT token.
+// It decodes the payload and parses the 'iat' claim to determine
+// when the token was originally issued.
+// Parameters:
+//   - token: The JWT token to extract issued time from.
+//
+// Returns:
+//   - The issued at time if present, nil if no 'iat' claim.
+//   - An error if JWT parsing fails.
 func (cm *ChunkManager) extractJWTIssuedAt(token string) (*time.Time, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT format")
 	}
 
-	// Decode the payload (second part)
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
@@ -866,10 +914,9 @@ func (cm *ChunkManager) extractJWTIssuedAt(token string) (*time.Time, error) {
 		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 
-	// Extract issued at claim
 	iat, exists := claims["iat"]
 	if !exists {
-		return nil, nil // No issued at claim
+		return nil, nil
 	}
 
 	// Convert issued at to time.Time

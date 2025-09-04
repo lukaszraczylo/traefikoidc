@@ -17,8 +17,8 @@ import (
 
 func TestPKCEGeneration(t *testing.T) {
 	tests := []struct {
-		name string
 		test func(t *testing.T)
+		name string
 	}{
 		{
 			name: "generateCodeVerifier creates valid verifier",
@@ -89,9 +89,9 @@ func TestPKCEGeneration(t *testing.T) {
 
 func TestPKCEAuthorizationFlow(t *testing.T) {
 	tests := []struct {
+		test       func(t *testing.T, authURL string)
 		name       string
 		enablePKCE bool
-		test       func(t *testing.T, authURL string)
 	}{
 		{
 			name:       "PKCE enabled adds code_challenge parameters",
@@ -159,8 +159,8 @@ func TestPKCEAuthorizationFlow(t *testing.T) {
 
 func TestPKCESessionManagement(t *testing.T) {
 	tests := []struct {
-		name string
 		test func(t *testing.T)
+		name string
 	}{
 		{
 			name: "stores and retrieves code verifier in session",
@@ -239,8 +239,8 @@ func TestPKCESessionManagement(t *testing.T) {
 func TestPKCETokenExchange(t *testing.T) {
 	tests := []struct {
 		name         string
-		enablePKCE   bool
 		codeVerifier string
+		enablePKCE   bool
 		expectParam  bool
 	}{
 		{
@@ -401,8 +401,8 @@ func TestPKCEEndToEndFlow(t *testing.T) {
 
 func TestPKCESecurityEdgeCases(t *testing.T) {
 	tests := []struct {
-		name string
 		test func(t *testing.T)
+		name string
 	}{
 		{
 			name: "rejects callback without matching state",

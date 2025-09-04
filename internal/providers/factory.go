@@ -15,7 +15,6 @@ type ProviderFactory struct {
 func NewProviderFactory() *ProviderFactory {
 	registry := NewProviderRegistry()
 
-	// Register all available providers
 	registry.RegisterProvider(NewGenericProvider())
 	registry.RegisterProvider(NewGoogleProvider())
 	registry.RegisterProvider(NewAzureProvider())
@@ -25,14 +24,13 @@ func NewProviderFactory() *ProviderFactory {
 	}
 }
 
-// CreateProvider creates and returns the appropriate provider for the given issuer URL.
+// CreateProvider creates an OIDC provider based on the issuer URL.
 // It automatically detects the provider type and returns a configured instance.
 func (f *ProviderFactory) CreateProvider(issuerURL string) (OIDCProvider, error) {
 	if issuerURL == "" {
 		return nil, fmt.Errorf("issuer URL cannot be empty")
 	}
 
-	// Validate URL format
 	if _, err := url.Parse(issuerURL); err != nil {
 		return nil, fmt.Errorf("invalid issuer URL format: %w", err)
 	}
@@ -42,7 +40,6 @@ func (f *ProviderFactory) CreateProvider(issuerURL string) (OIDCProvider, error)
 		return nil, fmt.Errorf("unable to detect provider for issuer URL: %s", issuerURL)
 	}
 
-	// Validate the provider configuration if it implements config validation
 	if err := provider.ValidateConfig(); err != nil {
 		return nil, fmt.Errorf("provider configuration validation failed: %w", err)
 	}
@@ -50,7 +47,7 @@ func (f *ProviderFactory) CreateProvider(issuerURL string) (OIDCProvider, error)
 	return provider, nil
 }
 
-// CreateProviderByType creates a provider instance for a specific provider type.
+// CreateProviderByType creates a provider instance of the specified type.
 // This is useful when you want to force a specific provider type regardless of URL.
 func (f *ProviderFactory) CreateProviderByType(providerType ProviderType) (OIDCProvider, error) {
 	var provider OIDCProvider
@@ -76,13 +73,13 @@ func (f *ProviderFactory) CreateProviderByType(providerType ProviderType) (OIDCP
 // GetSupportedProviders returns a list of all supported provider types and their detection patterns.
 func (f *ProviderFactory) GetSupportedProviders() map[ProviderType][]string {
 	return map[ProviderType][]string{
-		ProviderTypeGeneric: {"*"}, // Generic supports any issuer
+		ProviderTypeGeneric: {"*"},
 		ProviderTypeGoogle:  {"accounts.google.com"},
 		ProviderTypeAzure:   {"login.microsoftonline.com", "sts.windows.net"},
 	}
 }
 
-// DetectProviderType returns the provider type that would be used for a given issuer URL.
+// DetectProviderType determines the provider type for a given issuer URL.
 // This is useful for diagnostic purposes or UI display.
 func (f *ProviderFactory) DetectProviderType(issuerURL string) (ProviderType, error) {
 	provider, err := f.CreateProvider(issuerURL)

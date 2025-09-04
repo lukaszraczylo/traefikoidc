@@ -16,7 +16,14 @@ import (
 	"github.com/gorilla/sessions"
 )
 
-// min returns the minimum of two integers
+// min returns the minimum of two integers.
+// This is a utility function used throughout the session management code.
+// Parameters:
+//   - a: The first integer to compare.
+//   - b: The second integer to compare.
+//
+// Returns:
+//   - The smaller of the two integers.
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -24,14 +31,14 @@ func min(a, b int) int {
 	return b
 }
 
-// generateSecureRandomString creates a cryptographically secure, hex-encoded random string.
-// It reads the specified number of bytes from crypto/rand and encodes them as a hexadecimal string.
-//
+// generateSecureRandomString creates a cryptographically secure random string.
+// It generates random bytes using crypto/rand and encodes them as hexadecimal.
+// This is used for session IDs and other security-sensitive random values.
 // Parameters:
-//   - length: The number of random bytes to generate (the resulting hex string will be twice this length).
+//   - length: The number of random bytes to generate (output will be 2x this length in hex).
 //
 // Returns:
-//   - A hex-encoded random string.
+//   - The hex-encoded random string.
 //   - An error if reading random bytes fails.
 func generateSecureRandomString(length int) (string, error) {
 	bytes := make([]byte, length)
@@ -50,27 +57,20 @@ const (
 )
 
 const (
-	// maxBrowserCookieSize is the safe maximum size for cookies in browsers (4KB with margin)
 	maxBrowserCookieSize = 3500
 
-	// maxCookieSize is the maximum size for token chunks before encoding overhead
-	// This accounts for gob encoding, encryption, base64 encoding that happens during session save
-	// The encoding overhead can be 30-40%, so we use a conservative chunk size
 	maxCookieSize = 1200
 
-	// absoluteSessionTimeout defines the maximum lifetime of a session
-	// regardless of activity (24 hours)
 	absoluteSessionTimeout = 24 * time.Hour
 
-	// minEncryptionKeyLength defines the minimum length for the encryption key
 	minEncryptionKeyLength = 32
 )
 
-// compressToken compresses JWT tokens using gzip and encodes the result with base64.
-// It validates JWT format before compression and includes size limits for safety.
-//
+// compressToken compresses a JWT token using gzip compression if beneficial.
+// It validates the token format, attempts compression, and verifies the compressed
+// data can be decompressed correctly. Only compresses if it reduces size.
 // Parameters:
-//   - token: The string to compress.
+//   - token: The JWT token string to potentially compress.
 //
 // Returns:
 //   - The base64 encoded, gzipped string, or the original string if compression fails.
@@ -79,25 +79,21 @@ func compressToken(token string) string {
 		return token
 	}
 
-	// Only compress valid JWT tokens (must have exactly 2 dots)
 	dotCount := strings.Count(token, ".")
 	if dotCount != 2 {
 		return token
 	}
 
-	// Add size validation - tokens over 50KB are likely corrupted
 	if len(token) > 50*1024 {
 		return token
 	}
 
-	// Use memory pool for efficient buffer management
 	pools := GetGlobalMemoryPools()
 	b := pools.GetCompressionBuffer()
 	defer pools.PutCompressionBuffer(b)
 
 	gz := gzip.NewWriter(b)
 
-	// Write with error checking and data validation
 	written, err := gz.Write([]byte(token))
 	if err != nil || written != len(token) {
 		return token
@@ -107,7 +103,6 @@ func compressToken(token string) string {
 		return token
 	}
 
-	// Validate compressed data before base64 encoding
 	compressedBytes := b.Bytes()
 	if len(compressedBytes) == 0 {
 		return token
@@ -115,19 +110,15 @@ func compressToken(token string) string {
 
 	compressed := base64.StdEncoding.EncodeToString(compressedBytes)
 
-	// Don't compress if it doesn't save significant space
 	if len(compressed) >= len(token) {
 		return token
 	}
 
-	// Comprehensive integrity verification with rollback on failure
 	decompressed := decompressTokenInternal(compressed)
 	if decompressed != token {
-		// Compression/decompression integrity failure - return original
 		return token
 	}
 
-	// Final validation that decompressed token is still valid JWT
 	if strings.Count(decompressed, ".") != 2 {
 		return token
 	}
@@ -135,11 +126,11 @@ func compressToken(token string) string {
 	return compressed
 }
 
-// decompressToken decodes a standard base64 encoded string and then decompresses the result using gzip.
-// Enhanced decompression with strict error handling and validation.
-//
+// decompressToken decompresses a previously compressed token string.
+// It decodes the base64 data, validates gzip headers, and decompresses safely
+// with size limits to prevent compression bombs.
 // Parameters:
-//   - compressed: The base64 encoded, gzipped string.
+//   - compressed: The base64-encoded compressed token string.
 //
 // Returns:
 //   - The decompressed original string, or the input string if decompression fails.
@@ -147,21 +138,25 @@ func decompressToken(compressed string) string {
 	return decompressTokenInternal(compressed)
 }
 
-// decompressTokenInternal performs the actual decompression with enhanced error handling
-// Separated internal function for integrity verification during compression
+// decompressTokenInternal is the internal decompression function.
+// Separated internal function for integrity verification during compression.
+// It performs the actual decompression logic with proper resource management.
+// Parameters:
+//   - compressed: The compressed token string to decompress.
+//
+// Returns:
+//   - The decompressed token or the original string if decompression fails.
 func decompressTokenInternal(compressed string) string {
 	if compressed == "" {
 		return compressed
 	}
 
-	// Size validation to prevent excessive memory usage
-	if len(compressed) > 100*1024 { // 100KB limit for compressed data
+	if len(compressed) > 100*1024 {
 		return compressed
 	}
 
 	data, err := base64.StdEncoding.DecodeString(compressed)
 	if err != nil {
-		// Base64 decode failed - return original assuming it's uncompressed
 		return compressed
 	}
 
@@ -169,37 +164,29 @@ func decompressTokenInternal(compressed string) string {
 		return compressed
 	}
 
-	// Validate gzip magic number before attempting decompression
 	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
-		// Not gzip format - return original assuming it's uncompressed
 		return compressed
 	}
 
-	// Use memory pool for efficient buffer management
 	pools := GetGlobalMemoryPools()
 	readerBuf := pools.GetHTTPResponseBuffer()
 	defer pools.PutHTTPResponseBuffer(readerBuf)
 
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
-		// Gzip reader creation failed - return original
 		return compressed
 	}
 
-	// Ensure proper cleanup with error handling
 	defer func() {
 		if closeErr := gz.Close(); closeErr != nil {
-			// Log error but don't fail the operation
-			_ = closeErr // Explicitly ignore the error
+			_ = closeErr
 		}
 	}()
 
-	// Limit decompressed size to prevent memory exhaustion attacks
-	limitedReader := io.LimitReader(gz, 500*1024) // 500KB limit for decompressed data
+	limitedReader := io.LimitReader(gz, 500*1024)
 
-	// Use pooled buffer for reading if possible
 	if cap(readerBuf) >= 512*1024 {
-		readerBuf = readerBuf[:cap(readerBuf)] // Expand to full capacity
+		readerBuf = readerBuf[:cap(readerBuf)]
 		n, err := limitedReader.Read(readerBuf)
 		if err != nil && err != io.EOF {
 			return compressed
@@ -208,10 +195,8 @@ func decompressTokenInternal(compressed string) string {
 		return string(decompressed)
 	}
 
-	// Fallback to standard ReadAll for very large buffers
 	decompressed, err := io.ReadAll(limitedReader)
 	if err != nil {
-		// Gzip decompression failed - return original
 		return compressed
 	}
 
@@ -221,44 +206,41 @@ func decompressTokenInternal(compressed string) string {
 
 	decompressedStr := string(decompressed)
 
-	// Validate decompressed content looks like a JWT
 	if decompressedStr != "" && strings.Count(decompressedStr, ".") != 2 {
-		// Decompressed content doesn't look like valid JWT - return original
 		return compressed
 	}
 
 	return decompressedStr
 }
 
-// SessionManager handles the management of multiple session cookies for OIDC authentication.
-// It provides functionality for storing and retrieving authentication state, tokens,
-// and other session-related data across multiple cookies.
-// SessionManager manages OIDC session data for the middleware.
-// It handles session creation, retrieval, and storage using encrypted cookies.
-// Large tokens are automatically chunked across multiple cookies to handle
-// browser size limitations. The manager uses a sync.Pool for efficient
+// SessionManager manages OIDC session state and cookie-based storage.
+// It provides secure session management with support for token compression,
+// chunked storage for large tokens, session pooling for performance,
 // session object reuse and supports both HTTP and HTTPS schemes.
 type SessionManager struct {
 	sessionPool  sync.Pool
 	store        sessions.Store
 	logger       *Logger
-	forceHTTPS   bool
-	cookieDomain string
 	chunkManager *ChunkManager
-	cleanupMutex sync.RWMutex // Protects cleanup operations
-	cleanupDone  bool         // Track if we've attempted cookie cleanup
+	cookieDomain string
+	cleanupMutex sync.RWMutex
+	forceHTTPS   bool
+	cleanupDone  bool
 }
 
-// NewSessionManager creates a new session manager with the specified configuration.
+// NewSessionManager creates a new SessionManager instance with secure defaults.
+// It initializes the cookie store with encryption, sets up session pooling,
+// and configures chunk management for large tokens.
 // Parameters:
-//   - encryptionKey: Key used to encrypt session data (must be at least 32 bytes)
-//   - forceHTTPS: When true, forces secure cookie attributes regardless of request scheme
-//   - cookieDomain: Explicit domain for cookies (e.g., ".example.com" for subdomain access)
-//   - logger: Logger instance for recording session-related events
+//   - encryptionKey: The key for encrypting session cookies (minimum 32 bytes).
+//   - forceHTTPS: Whether to force HTTPS-only cookies regardless of request scheme.
+//   - cookieDomain: The domain for session cookies (empty for auto-detection).
+//   - logger: Logger instance for debug and error logging.
 //
-// Returns an error if the encryption key does not meet minimum length requirements.
+// Returns:
+//   - The configured SessionManager instance.
+//   - An error if the encryption key does not meet minimum length requirements.
 func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, logger *Logger) (*SessionManager, error) {
-	// Validate encryption key length.
 	if len(encryptionKey) < minEncryptionKeyLength {
 		return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
 	}
@@ -277,10 +259,10 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 			accessTokenChunks:  make(map[int]*sessions.Session),
 			refreshTokenChunks: make(map[int]*sessions.Session),
 			idTokenChunks:      make(map[int]*sessions.Session),
-			refreshMutex:       sync.Mutex{},   // Initialize the mutex
-			sessionMutex:       sync.RWMutex{}, // Initialize the session mutex
-			dirty:              false,          // Initialize dirty flag
-			inUse:              false,          // Initialize in-use flag
+			refreshMutex:       sync.Mutex{},
+			sessionMutex:       sync.RWMutex{},
+			dirty:              false,
+			inUse:              false,
 		}
 		sd.Reset()
 		return sd
@@ -289,31 +271,25 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 	return sm, nil
 }
 
-// PeriodicChunkCleanup performs periodic maintenance on session chunks.
-// It identifies and removes orphaned chunks that are no longer associated
-// with active sessions. This method should be called periodically to
-// prevent cookie accumulation in client browsers.
+// PeriodicChunkCleanup performs comprehensive session maintenance and cleanup.
+// It cleans up orphaned token chunks, expired sessions, and unused pool objects.
+// This helps maintain performance and prevent cookie accumulation in client browsers.
 func (sm *SessionManager) PeriodicChunkCleanup() {
 	sm.logger.Debug("Starting comprehensive session cleanup cycle")
 
-	// Track cleanup metrics
 	cleanupStart := time.Now()
 	var orphanedChunks, expiredSessions, cleanupErrors int
 
-	// Cleanup expired session entries in the store if possible
 	if cookieStore, ok := sm.store.(*sessions.CookieStore); ok {
 		sm.logger.Debug("Running session store cleanup")
-		// CookieStore doesn't maintain server-side state, so no cleanup needed
-		_ = cookieStore // Just to use the variable
+		_ = cookieStore
 	}
 
-	// Cleanup session pool - remove stale sessions
 	poolCleaned := 0
-	for i := 0; i < 10; i++ { // Sample a few sessions from pool
+	for i := 0; i < 10; i++ {
 		if poolSession := sm.sessionPool.Get(); poolSession != nil {
 			sessionData := poolSession.(*SessionData)
 			if sessionData != nil && !sessionData.inUse {
-				// Reset stale session data
 				sessionData.Reset()
 				poolCleaned++
 			}
@@ -326,62 +302,45 @@ func (sm *SessionManager) PeriodicChunkCleanup() {
 		cleanupDuration, poolCleaned, orphanedChunks, expiredSessions, cleanupErrors)
 }
 
-// ValidateSessionHealth performs comprehensive health checks on session data
-// to detect corruption, tampering, or inconsistencies that could indicate security issues.
-//
+// ValidateSessionHealth performs comprehensive validation of session integrity.
+// It checks authentication state, validates token formats, and detects
+// potential tampering or corruption in session data.
 // Parameters:
-//   - sessionData: The session data to validate
+//   - sessionData: The session data to validate.
 //
 // Returns:
-//   - error: nil if session is healthy, otherwise an error describing the issue
-//
-// ValidateSessionHealth performs comprehensive health checks on a session.
-// It validates authentication state, token formats, and checks for signs
-// of session tampering or corruption.
-//
-// Parameters:
-//   - sessionData: The session to validate.
-//
-// Returns:
-//   - nil if the session is healthy.
-//   - An error describing any validation failures.
+//   - An error describing any validation failures, nil if session is healthy.
 func (sm *SessionManager) ValidateSessionHealth(sessionData *SessionData) error {
 	if sessionData == nil {
 		return fmt.Errorf("session data is nil")
 	}
 
-	// Validate session isn't expired
 	if !sessionData.GetAuthenticated() {
 		return fmt.Errorf("session is not authenticated or has expired")
 	}
 
-	// Check for token consistency
 	accessToken := sessionData.GetAccessToken()
 	refreshToken := sessionData.GetRefreshToken()
 	idToken := sessionData.GetIDToken()
 
-	// Validate access token if present
 	if accessToken != "" {
 		if err := sm.validateTokenFormat(accessToken, "access_token"); err != nil {
 			return fmt.Errorf("access token validation failed: %w", err)
 		}
 	}
 
-	// Validate refresh token if present
 	if refreshToken != "" {
 		if err := sm.validateTokenFormat(refreshToken, "refresh_token"); err != nil {
 			return fmt.Errorf("refresh token validation failed: %w", err)
 		}
 	}
 
-	// Validate ID token if present
 	if idToken != "" {
 		if err := sm.validateTokenFormat(idToken, "id_token"); err != nil {
 			return fmt.Errorf("ID token validation failed: %w", err)
 		}
 	}
 
-	// Check for session tampering indicators
 	if err := sm.detectSessionTampering(sessionData); err != nil {
 		return fmt.Errorf("session tampering detected: %w", err)
 	}
@@ -389,34 +348,30 @@ func (sm *SessionManager) ValidateSessionHealth(sessionData *SessionData) error 
 	return nil
 }
 
-// validateTokenFormat performs basic structural validation on tokens.
-// It checks for proper JWT format and validates against maximum size limits.
-//
+// validateTokenFormat validates the structure and format of authentication tokens.
+// It checks for corruption markers, validates JWT structure if applicable,
+// and ensures tokens meet format requirements.
 // Parameters:
 //   - token: The token string to validate.
-//   - tokenType: The type of token (for error messages).
+//   - tokenType: The type of token being validated (for error messages).
 //
 // Returns:
-//   - nil if the token format is valid.
 //   - An error if the token has invalid structure or exceeds size limits.
 func (sm *SessionManager) validateTokenFormat(token, tokenType string) error {
 	if token == "" {
-		return nil // Empty tokens are allowed
+		return nil
 	}
 
-	// Check for corruption markers
 	if isCorruptionMarker(token) {
 		return fmt.Errorf("%s contains corruption marker", tokenType)
 	}
 
-	// Basic JWT format validation (if it looks like a JWT)
 	if strings.Count(token, ".") == 2 {
 		parts := strings.Split(token, ".")
 		for i, part := range parts {
 			if part == "" {
 				return fmt.Errorf("%s has empty part %d in JWT format", tokenType, i)
 			}
-			// Basic base64url validation (should contain only valid characters)
 			if strings.ContainsAny(part, "+/=") && !strings.ContainsAny(part, "-_") {
 				sm.logger.Debugf("Token %s part %d uses base64 instead of base64url encoding", tokenType, i)
 			}
@@ -426,23 +381,28 @@ func (sm *SessionManager) validateTokenFormat(token, tokenType string) error {
 	return nil
 }
 
-// detectSessionTampering checks for indicators of session tampering
+// detectSessionTampering checks for indicators of session tampering.
+// It examines session values for path traversal attempts, XSS payloads,
+// and suspicious data patterns that might indicate malicious modification.
+// Parameters:
+//   - sessionData: The session data to examine for tampering.
+//
+// Returns:
+//   - An error if tampering is detected, nil if session appears safe.
 func (sm *SessionManager) detectSessionTampering(sessionData *SessionData) error {
 	if sessionData.mainSession == nil {
 		return fmt.Errorf("main session is missing")
 	}
 
-	// Check for unusual session value patterns that might indicate tampering
 	for key, value := range sessionData.mainSession.Values {
 		if str, ok := value.(string); ok {
-			// Check for common tampering patterns
 			if strings.Contains(str, "../") || strings.Contains(str, "..\\") {
 				return fmt.Errorf("potential path traversal attempt in session key %v", key)
 			}
 			if strings.Contains(str, "<script") || strings.Contains(str, "javascript:") {
 				return fmt.Errorf("potential XSS attempt in session key %v", key)
 			}
-			if len(str) > 10000 { // Unusually long session values
+			if len(str) > 10000 {
 				return fmt.Errorf("suspiciously long session value for key %v (length: %d)", key, len(str))
 			}
 		}
@@ -451,7 +411,11 @@ func (sm *SessionManager) detectSessionTampering(sessionData *SessionData) error
 	return nil
 }
 
-// GetSessionMetrics returns metrics about session management for monitoring purposes
+// GetSessionMetrics returns metrics about session management for monitoring purposes.
+// It provides information about session configuration, security settings,
+// and internal state for debugging and monitoring.
+// Returns:
+//   - A map containing session metrics and configuration information.
 func (sm *SessionManager) GetSessionMetrics() map[string]interface{} {
 	metrics := make(map[string]interface{})
 	metrics["session_manager_type"] = "CookieStore"
@@ -460,7 +424,6 @@ func (sm *SessionManager) GetSessionMetrics() map[string]interface{} {
 	metrics["max_cookie_size"] = maxCookieSize
 	metrics["max_browser_cookie_size"] = maxBrowserCookieSize
 
-	// Safely attempt to get encryption key length
 	if cookieStore, ok := sm.store.(*sessions.CookieStore); ok && len(cookieStore.Codecs) > 0 {
 		metrics["has_encryption"] = true
 		metrics["codec_count"] = len(cookieStore.Codecs)
@@ -468,79 +431,57 @@ func (sm *SessionManager) GetSessionMetrics() map[string]interface{} {
 		metrics["has_encryption"] = false
 	}
 
-	// sync.Pool doesn't expose internal statistics
 	metrics["pool_implementation"] = "sync.Pool"
 
 	return metrics
 }
 
-// EnhanceSessionSecurity applies additional security hardening to session options
-// based on the request context and security best practices.
-//
+// EnhanceSessionSecurity applies additional security measures to session options.
+// It configures secure cookies, domain detection, SameSite policies, and
+// adapts security settings based on request context and client characteristics.
 // Parameters:
-//   - options: The base session options to enhance
-//   - r: The HTTP request for context analysis
+//   - options: The base session options to enhance (can be nil).
+//   - r: The HTTP request context for security decisions.
 //
 // Returns:
-//   - Enhanced sessions.Options with additional security measures
+//   - Enhanced sessions.Options with additional security measures.
 func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *http.Request) *sessions.Options {
 	if options == nil {
 		options = &sessions.Options{}
 	}
 
-	// Apply security settings based on request context
 	if r != nil {
-		// Check for suspicious request patterns
 		userAgent := r.Header.Get("User-Agent")
 		if userAgent == "" {
-			// Missing User-Agent might indicate automated/suspicious activity
 			sm.logger.Debugf("Request from %s missing User-Agent header", r.RemoteAddr)
-			// Reduce session timeout for suspicious requests
 			options.MaxAge = int((absoluteSessionTimeout / 2).Seconds())
 		}
 
-		// Apply stricter security settings for production
 		if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sm.forceHTTPS {
 			options.Secure = true
-			// IMPORTANT: Keep SameSite as Lax for OAuth flows to work
-			// Strict mode would block cookies from OAuth provider callbacks
-			// Only use Strict for AJAX requests which don't involve redirects
 		}
 
-		// Additional security headers analysis
 		if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
-			// AJAX requests get stricter same-site policy since they don't involve OAuth redirects
 			options.SameSite = http.SameSiteStrictMode
 		}
 	}
 
-	// Always enforce security best practices
 	options.HttpOnly = true
 
-	// Set cookie domain from configuration if specified
 	if sm.cookieDomain != "" {
-		// Use the explicitly configured domain
 		options.Domain = sm.cookieDomain
 		sm.logger.Debugf("Using configured cookie domain: %s", sm.cookieDomain)
 	} else if options.Domain == "" && r != nil {
-		// Fall back to auto-detection only if no domain is configured
-		// In reverse proxy setups, use the original host if available
-		// This ensures cookies work correctly with the public domain
 		host := r.Host
 
-		// Check for X-Forwarded-Host which indicates reverse proxy
 		if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
-			// Use the forwarded host for cookie domain
 			host = forwardedHost
 		}
 
 		if host != "" && !strings.Contains(host, "localhost") && !strings.Contains(host, "127.0.0.1") {
-			// Only set domain for non-local development
 			if colonIndex := strings.Index(host, ":"); colonIndex != -1 {
-				host = host[:colonIndex] // Remove port
+				host = host[:colonIndex]
 			}
-			// Use the exact host (without leading dot) for host-only cookies
-			// This prevents subdomain access but ensures consistency
 			options.Domain = host
 			sm.logger.Debugf("Auto-detected cookie domain: %s", host)
 		}
@@ -549,12 +490,11 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 	return options
 }
 
-// getSessionOptions returns a sessions.Options struct configured with security best practices.
-// It sets HttpOnly to true, Secure based on the request scheme or forceHTTPS setting,
-// SameSite to LaxMode, MaxAge to the absoluteSessionTimeout, and Path to "/".
-//
+// getSessionOptions creates base session options with security settings.
+// It configures cookie security, lifetime, path, and domain settings
+// based on the HTTPS status and manager configuration.
 // Parameters:
-//   - isSecure: A boolean indicating if the current request context is secure (HTTPS).
+//   - isSecure: Whether the request is over HTTPS or should be treated as secure.
 //
 // Returns:
 //   - A pointer to a configured sessions.Options struct.
@@ -565,44 +505,41 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(absoluteSessionTimeout.Seconds()),
 		Path:     "/",
-		Domain:   sm.cookieDomain, // Use configured domain if set
+		Domain:   sm.cookieDomain,
 	}
 	return baseOptions
 }
 
-// CleanupOldCookies attempts to remove cookies with potentially mismatched domains.
-// Since browsers don't send domain info with cookies, this function tries to delete
-// cookies with various domain variations to ensure cleanup after configuration changes.
+// CleanupOldCookies removes stale session cookies from the client browser.
+// This method handles cleanup of cookies that may exist with different domain
+// configurations, ensuring clean state when domain settings change.
+// It removes cookies with various domain variations to ensure cleanup after configuration changes.
+// Parameters:
+//   - w: The HTTP response writer for setting cookie deletion headers.
+//   - r: The HTTP request containing cookies to examine and clean up.
 func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Request) {
-	// Get all cookies from the request
 	cookies := r.Cookies()
 
-	// Get the current configured domain
 	currentDomain := sm.cookieDomain
 	host := r.Host
 	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
 		host = forwardedHost
 	}
-	// Remove port if present
 	if colonIndex := strings.Index(host, ":"); colonIndex != -1 {
 		host = host[:colonIndex]
 	}
 
-	// Build list of domains to attempt deletion for
 	// This ensures we clean up cookies from various possible domains
 	var domainsToClean []string
 
-	// Add variations of the current host
 	if host != "" && !strings.Contains(host, "localhost") && !strings.Contains(host, "127.0.0.1") {
 		domainsToClean = append(domainsToClean,
-			host,     // exact host
-			"."+host, // with leading dot
+			host,
+			"."+host,
 		)
 
-		// Add parent domain variations if host has subdomains
 		parts := strings.Split(host, ".")
 		if len(parts) > 2 {
-			// For "sub.example.com", also try "example.com" and ".example.com"
 			parentDomain := strings.Join(parts[len(parts)-2:], ".")
 			domainsToClean = append(domainsToClean,
 				parentDomain,
@@ -611,12 +548,9 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// Track which cookies we're processing
 	processedCookies := make(map[string]bool)
 
-	// Check each cookie
 	for _, cookie := range cookies {
-		// Only process our OIDC session cookies
 		if strings.HasPrefix(cookie.Name, mainCookieName) ||
 			strings.HasPrefix(cookie.Name, accessTokenCookie) ||
 			strings.HasPrefix(cookie.Name, refreshTokenCookie) ||
@@ -624,23 +558,18 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 			strings.HasPrefix(cookie.Name, "access_token_chunk_") ||
 			strings.HasPrefix(cookie.Name, "refresh_token_chunk_") {
 
-			// Mark this cookie as seen
 			processedCookies[cookie.Name] = true
 
-			// If we have a configured domain and this is the first request after config change,
-			// attempt to delete the cookie with various domain variations to ensure cleanup
 			sm.cleanupMutex.RLock()
 			shouldCleanup := currentDomain != "" && !sm.cleanupDone
 			sm.cleanupMutex.RUnlock()
 
 			if shouldCleanup {
 				for _, domain := range domainsToClean {
-					// Skip the current configured domain
 					if domain == currentDomain || domain == "."+currentDomain || "."+domain == currentDomain {
 						continue
 					}
 
-					// Create a deletion cookie for this domain variation
 					deleteCookie := &http.Cookie{
 						Name:     cookie.Name,
 						Value:    "",
@@ -658,7 +587,6 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// Mark cleanup as done for this session manager instance
 	if len(processedCookies) > 0 {
 		sm.cleanupMutex.Lock()
 		if !sm.cleanupDone {
@@ -668,10 +596,17 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// GetSession retrieves all session data for the current request.
-// It loads the main session and token sessions, including any chunked token data,
-// and combines them into a single SessionData structure for easy access.
-// Returns an error if any session component cannot be loaded.
+// GetSession retrieves or creates session data from the HTTP request.
+// It loads the main session and all token chunk sessions, performing validation
+// and timeout checks. The returned session must be explicitly returned to the pool
+// by calling returnToPoolSafely() to prevent memory leaks.
+// MEMORY LEAK FIX: Session is NOT returned to pool here - caller must call ReturnToPool() when done.
+// Parameters:
+//   - r: The HTTP request containing session cookies.
+//
+// Returns:
+//   - The loaded SessionData instance.
+//   - An error if session loading or validation fails.
 func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	sessionData := sm.sessionPool.Get().(*SessionData)
 
@@ -679,26 +614,11 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	sessionData.request = r
 	sessionData.dirty = false
 
-	var sessionReturned bool
-	// CRITICAL FIX: Defer logic to return session to pool only on panic, not on successful return
-	// This prevents memory leaks by ensuring sessions are only pooled when not in use by caller
-	defer func() {
-		if !sessionReturned && sessionData != nil {
-			if r := recover(); r != nil {
-				sessionData.inUse = false
-				sessionData.Reset()
-				sm.sessionPool.Put(sessionData)
-				panic(r)
-			}
-		}
-	}()
-
 	handleError := func(err error, message string) (*SessionData, error) {
-		if sessionData != nil && !sessionReturned {
+		if sessionData != nil {
 			sessionData.inUse = false
 			sessionData.Reset()
 			sm.sessionPool.Put(sessionData)
-			sessionReturned = true
 		}
 		return nil, fmt.Errorf("%s: %w", message, err)
 	}
@@ -731,7 +651,6 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 		return handleError(err, "failed to get ID token session")
 	}
 
-	// Clear and reuse chunk maps.
 	for k := range sessionData.accessTokenChunks {
 		delete(sessionData.accessTokenChunks, k)
 	}
@@ -742,25 +661,21 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 		delete(sessionData.idTokenChunks, k)
 	}
 
-	// Retrieve chunked token sessions.
 	sm.getTokenChunkSessions(r, accessTokenCookie, sessionData.accessTokenChunks)
 	sm.getTokenChunkSessions(r, refreshTokenCookie, sessionData.refreshTokenChunks)
 	sm.getTokenChunkSessions(r, idTokenCookie, sessionData.idTokenChunks)
 
-	// CRITICAL FIX: Mark session as successfully returned to caller - prevents premature pool return
-	// This fixes memory leak where sessions were incorrectly returned to pool immediately after success
-	sessionReturned = true
 	return sessionData, nil
 }
 
-// getTokenChunkSessions retrieves all cookie chunks associated with a large token (access or refresh).
-// It iteratively attempts to load cookies named "{baseName}_0", "{baseName}_1", etc., until
-// a cookie is not found or returns an error. The loaded sessions are stored in the provided chunks map.
-//
+// getTokenChunkSessions loads all available token chunk sessions for a given token type.
+// It iterates through numbered chunk sessions until no more are found,
+// populating the provided chunks map with the loaded sessions.
 // Parameters:
-//   - r: The incoming HTTP request containing the cookies.
-//   - baseName: The base name of the cookie (e.g., accessTokenCookie).
-//   - chunks: The map (typically SessionData.accessTokenChunks or SessionData.refreshTokenChunks) to populate with the found session chunks.
+//   - r: The HTTP request containing chunk cookies.
+//   - baseName: The base cookie name for the token type (e.g., "_oidc_raczylo_a").
+//   - chunks: The map (typically SessionData.accessTokenChunks or SessionData.refreshTokenChunks)
+//     to populate with the found session chunks.
 func (sm *SessionManager) getTokenChunkSessions(r *http.Request, baseName string, chunks map[int]*sessions.Session) {
 	for i := 0; ; i++ {
 		sessionName := fmt.Sprintf("%s_%d", baseName, i)
@@ -772,94 +687,74 @@ func (sm *SessionManager) getTokenChunkSessions(r *http.Request, baseName string
 	}
 }
 
-// SessionData holds all session information for an authenticated user.
-// It manages multiple session cookies to handle the main session state
-// and potentially large access and refresh tokens that may need to be
+// SessionData represents a user's authentication session with comprehensive token management.
+// It handles main session data and supports large tokens that need to be
 // split across multiple cookies due to browser size limitations.
 type SessionData struct {
-	// manager is the SessionManager that created this SessionData.
 	manager *SessionManager
 
-	// request is the current HTTP request associated with this session.
 	request *http.Request
 
-	// mainSession stores authentication state and basic user info.
 	mainSession *sessions.Session
 
-	// accessSession stores the primary access token cookie.
 	accessSession *sessions.Session
 
-	// refreshSession stores the primary refresh token cookie.
 	refreshSession *sessions.Session
 
-	// idTokenSession stores the primary ID token cookie.
 	idTokenSession *sessions.Session
 
-	// accessTokenChunks stores additional chunks of the access token
-	// when it exceeds the maximum cookie size.
 	accessTokenChunks map[int]*sessions.Session
 
-	// refreshTokenChunks stores additional chunks of the refresh token
-	// when it exceeds the maximum cookie size.
 	refreshTokenChunks map[int]*sessions.Session
 
-	// idTokenChunks stores additional chunks of the ID token
-	// when it exceeds the maximum cookie size.
 	idTokenChunks map[int]*sessions.Session
 
-	// refreshMutex protects refresh token operations within this session instance.
 	refreshMutex sync.Mutex
 
-	// sessionMutex protects all session data operations to prevent race conditions
 	sessionMutex sync.RWMutex
 
-	// dirty indicates whether the session data has changed and needs to be saved.
 	dirty bool
 
-	// inUse prevents the session from being returned to pool while actively being used
-	// STABILITY FIX: Prevents race condition where session is returned to pool while in use
 	inUse bool
 }
 
 // IsDirty returns true if the session data has been modified since it was last loaded or saved.
+// This is used to optimize session saves by only writing when necessary.
+// Returns:
+//   - true if the session has pending changes, false otherwise.
 func (sd *SessionData) IsDirty() bool {
 	return sd.dirty
 }
 
-// MarkDirty explicitly sets the dirty flag to true.
-// This can be used when an operation doesn't change session data
-// but should still trigger a session save (e.g., to ensure the cookie is re-issued).
+// MarkDirty marks the session as having pending changes that need to be saved.
+// This is used when session data hasn't changed in content but should still
+// trigger a session save (e.g., to ensure the cookie is re-issued).
 func (sd *SessionData) MarkDirty() {
 	sd.dirty = true
 }
 
-// Save persists all parts of the session (main, access token, refresh token, and any chunks)
-// back to the client as cookies in the HTTP response. It applies secure cookie options
-// obtained via getSessionOptions based on the request's security context.
-//
+// Save persists all session data including main session and token chunks.
+// It applies security options, saves all session components, and handles
+// errors gracefully by continuing to save other components even if one fails.
 // Parameters:
-//   - r: The original HTTP request (used to determine security context for cookie options).
-//   - w: The HTTP response writer to which the Set-Cookie headers will be added.
+//   - r: The HTTP request context for security option configuration.
+//   - w: The HTTP response writer for setting session cookies.
 //
 // Returns:
 //   - An error if saving any of the session components fails.
 func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
-	// Properly detect HTTPS in reverse proxy environments
 	isSecure := r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sd.manager.forceHTTPS
 
-	// Get base options and enhance with security settings
 	options := sd.manager.getSessionOptions(isSecure)
 	options = sd.manager.EnhanceSessionSecurity(options, r)
 
-	// Apply enhanced options to all sessions
 	sd.mainSession.Options = options
 	sd.accessSession.Options = options
 	sd.refreshSession.Options = options
 
 	var firstErr error
-	// Helper to record first error and log subsequent ones
 	saveOrLogError := func(s *sessions.Session, name string) {
-		if s == nil { // Should not happen if initialized correctly
+		if s == nil {
 			sd.manager.logger.Errorf("Attempted to save nil session: %s", name)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("attempted to save nil session: %s", name)
@@ -875,81 +770,70 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 		}
 	}
 
-	// Save main session.
 	saveOrLogError(sd.mainSession, "main")
 
-	// Save access token session.
 	saveOrLogError(sd.accessSession, "access token")
 
-	// Save refresh token session.
 	saveOrLogError(sd.refreshSession, "refresh token")
 
-	// Save ID token session.
 	saveOrLogError(sd.idTokenSession, "ID token")
 
-	// Save access token chunks.
 	for i, sessionChunk := range sd.accessTokenChunks {
 		sessionChunk.Options = options
 		saveOrLogError(sessionChunk, fmt.Sprintf("access token chunk %d", i))
 	}
 
-	// Save refresh token chunks.
 	for i, sessionChunk := range sd.refreshTokenChunks {
 		sessionChunk.Options = options
 		saveOrLogError(sessionChunk, fmt.Sprintf("refresh token chunk %d", i))
 	}
 
-	// Save ID token chunks.
 	for i, sessionChunk := range sd.idTokenChunks {
 		sessionChunk.Options = options
 		saveOrLogError(sessionChunk, fmt.Sprintf("ID token chunk %d", i))
 	}
 
 	if firstErr == nil {
-		sd.dirty = false // Reset dirty flag only if all saves were successful
+		sd.dirty = false
 	}
 	return firstErr
 }
 
-// clearSessionValues clears all values from a session and optionally sets MaxAge to -1 to expire the cookie
+// clearSessionValues removes all values from a session and optionally expires it.
+// This is used during session cleanup and logout operations.
 // Parameters:
-//   - session: The session to clear
-//   - expire: If true, sets MaxAge to -1 to expire the cookie
+//   - session: The session to clear values from.
+//   - expire: If true, sets MaxAge to -1 to expire the cookie.
 func clearSessionValues(session *sessions.Session, expire bool) {
 	if session == nil {
 		return
 	}
 
-	// Clear all values
 	for k := range session.Values {
 		delete(session.Values, k)
 	}
 
-	// If expiring, set MaxAge to -1
 	if expire {
 		session.Options.MaxAge = -1
 	}
 }
 
-// clearAllSessionData clears values from all session objects (main, token sessions, and chunks)
+// clearAllSessionData clears all session data including main session and token chunks.
+// It removes all session values and optionally expires all associated cookies.
 // Parameters:
-//   - sd: The SessionData instance containing all sessions
-//   - r: The HTTP request (needed for chunk clearing)
-//   - expire: Whether to expire the cookies (set MaxAge to -1)
+//   - r: The HTTP request context (used for chunk cleanup).
+//   - expire: Whether to expire the cookies (set MaxAge to -1).
 func (sd *SessionData) clearAllSessionData(r *http.Request, expire bool) {
-	// Clear main session and token sessions
 	clearSessionValues(sd.mainSession, expire)
 	clearSessionValues(sd.accessSession, expire)
 	clearSessionValues(sd.refreshSession, expire)
 	clearSessionValues(sd.idTokenSession, expire)
 
-	// If we need to expire cookies, clear token chunks
 	if expire && r != nil {
 		sd.clearTokenChunks(r, sd.accessTokenChunks)
 		sd.clearTokenChunks(r, sd.refreshTokenChunks)
 		sd.clearTokenChunks(r, sd.idTokenChunks)
 	} else {
-		// Just remove the chunks from memory without expiring cookies
 		for k := range sd.accessTokenChunks {
 			delete(sd.accessTokenChunks, k)
 		}
@@ -961,96 +845,78 @@ func (sd *SessionData) clearAllSessionData(r *http.Request, expire bool) {
 		}
 	}
 
-	// Mark session as dirty if we're changing state
 	if expire {
 		sd.dirty = true
 	}
 }
 
-// Clear removes all session data associated with this SessionData instance.
-// It clears the values map of the main, access, and refresh sessions, sets their MaxAge to -1
-// to expire the cookies immediately, and clears any associated token chunk cookies.
-// If a ResponseWriter is provided, it attempts to save the expired sessions to send the
-// expiring Set-Cookie headers. Finally, it clears internal fields and returns the SessionData
-// object to the pool.
-//
+// Clear completely clears all session data and safely returns the session to the pool.
+// It removes all authentication data, expires cookies, and handles panic recovery.
+// This method ensures the SessionData object is always returned to the pool.
 // Parameters:
-//   - r: The HTTP request (required by the underlying session store).
-//   - w: The HTTP response writer (optional). If provided, expiring Set-Cookie headers will be sent.
+//   - r: The HTTP request context.
+//   - w: The HTTP response writer for cookie expiration (can be nil).
 //
 // Returns:
-//   - An error if saving the expired sessions fails (only if w is not nil).
-//
-// This method ensures the SessionData object is always returned to the pool.
+//   - An error if session saving fails during cleanup.
 func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
-	// Use defer to guarantee session is returned to pool regardless of any errors or panics
 	defer func() {
 		if rec := recover(); rec != nil {
-			// Ensure session is returned to pool even on panic
 			sd.returnToPoolSafely()
-			panic(rec) // Re-panic after cleanup
+			panic(rec)
 		}
-		// Normal path - return to pool
 		sd.returnToPoolSafely()
 	}()
 
-	// Lock session mutex to prevent race conditions during Clear
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	// Clear all session data and expire cookies
 	sd.clearAllSessionData(r, true)
 
-	// Create a guaranteed error when the response writer is set
 	// This is primarily for testing - in production w will often be nil
 	var err error
 	if w != nil {
-		// Intentionally create a test error in session
 		if r != nil && r.Header.Get("X-Test-Error") == "true" {
-			sd.mainSession.Values["error_trigger"] = func() {} // Will cause marshaling to fail
+			sd.mainSession.Values["error_trigger"] = func() {}
 		}
 
-		// Try to save the expired sessions
 		err = sd.Save(r, w)
 	}
 
-	// Clear transient per-request fields.
 	sd.request = nil
 
-	// Return the error from Save, if any (defer will handle pool return)
 	return err
 }
 
-// Add thread-safe helper method to return session to pool
+// returnToPoolSafely safely returns the session to the object pool.
+// Add thread-safe helper method to return session to pool.
+// It ensures the session is marked as not in use and properly reset before pooling.
 func (sd *SessionData) returnToPoolSafely() {
 	if sd != nil && sd.manager != nil {
-		// Check if already returned to prevent double-return
 		if sd.inUse {
 			sd.inUse = false
-			// Reset the session data before returning to pool to prevent data leakage
 			sd.Reset()
 			sd.manager.sessionPool.Put(sd)
 		}
 	}
 }
 
-// clearTokenChunks iterates through a map of session chunks, clears their values,
-// and sets their MaxAge to -1 to expire them. This is used internally by Clear.
-//
+// clearTokenChunks clears and expires all token chunk sessions.
+// This is used during logout and session cleanup to ensure
+// all token data is properly removed from the client.
 // Parameters:
-//   - r: The HTTP request (required by the underlying session store, though not directly used here).
+//   - r: The HTTP request context.
 //   - chunks: The map of session chunks (e.g., sd.accessTokenChunks) to clear and expire.
 func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*sessions.Session) {
 	for _, session := range chunks {
-		clearSessionValues(session, true) // Clear and expire the chunks
+		clearSessionValues(session, true)
 	}
 }
 
-// GetAuthenticated checks if the session is marked as authenticated and has not exceeded
-// the absolute session timeout.
-//
+// GetAuthenticated returns whether the user is currently authenticated.
+// It checks both the authentication flag and session timeout.
 // Returns:
-//   - true if the "authenticated" flag is set to true and the session creation time is within the allowed timeout.
+//   - true if the user is authenticated and the session is not expired.
 //   - false otherwise.
 func (sd *SessionData) GetAuthenticated() bool {
 	sd.sessionMutex.RLock()
@@ -1059,15 +925,17 @@ func (sd *SessionData) GetAuthenticated() bool {
 	return sd.getAuthenticatedUnsafe()
 }
 
-// getAuthenticatedUnsafe is the internal implementation without mutex protection
-// Used when the mutex is already held
+// getAuthenticatedUnsafe checks authentication status without acquiring locks.
+// Used when the mutex is already held to avoid deadlocks.
+// It validates both the authentication flag and session creation time.
+// Returns:
+//   - true if authenticated and not expired, false otherwise.
 func (sd *SessionData) getAuthenticatedUnsafe() bool {
 	auth, _ := sd.mainSession.Values["authenticated"].(bool)
 	if !auth {
 		return false
 	}
 
-	// Check session expiration.
 	createdAt, ok := sd.mainSession.Values["created_at"].(int64)
 	if !ok {
 		return false
@@ -1075,12 +943,11 @@ func (sd *SessionData) getAuthenticatedUnsafe() bool {
 	return time.Since(time.Unix(createdAt, 0)) <= absoluteSessionTimeout
 }
 
-// SetAuthenticated sets the authentication status of the session.
-// If setting to true, it generates a new secure session ID for the main session
-// to prevent session fixation attacks and records the current time as the creation time.
-//
+// SetAuthenticated sets the authentication status and manages session security.
+// When setting to true, it generates a new secure session ID and updates timestamps.
+// This prevents session fixation attacks by regenerating the session identifier.
 // Parameters:
-//   - value: The boolean authentication status (true for authenticated, false otherwise).
+//   - value: The authentication status to set.
 //
 // Returns:
 //   - An error if generating a new session ID fails when setting value to true.
@@ -1088,7 +955,7 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	currentAuth := sd.getAuthenticatedUnsafe() // This checks flag and expiry
+	currentAuth := sd.getAuthenticatedUnsafe()
 	changed := false
 
 	if currentAuth != value {
@@ -1124,7 +991,7 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 		if oldAuth, ok := sd.mainSession.Values["authenticated"].(bool); !ok || oldAuth != value {
 			changed = true
 		}
-	} else { // value is false
+	} else {
 		if oldAuth, ok := sd.mainSession.Values["authenticated"].(bool); !ok || oldAuth != value {
 			changed = true
 		}
@@ -1137,61 +1004,56 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 	return nil
 }
 
-// resetSession resets a session by clearing its values and resetting its ID and IsNew flag
-// This is specifically for pool reuse preparation
+// resetSession prepares a session for reuse by clearing its state.
+// This is specifically for pool reuse preparation to ensure
+// no data leaks between different user sessions.
+// Parameters:
+//   - session: The session to reset for reuse.
 func resetSession(session *sessions.Session) {
 	if session == nil {
 		return
 	}
 
-	// Clear all values
 	clearSessionValues(session, false)
 
-	// Reset session ID and IsNew flag
 	session.ID = ""
 	session.IsNew = true
 }
 
-// Reset clears all session data and prepares the SessionData object for reuse.
-// This method is called when returning objects to the pool to prevent data leakage
+// Reset clears all session data and prepares the SessionData for reuse.
+// It ensures no authentication data persists when the object is reused
 // between different users/sessions.
 func (sd *SessionData) Reset() {
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	// Clear all session data (but don't expire cookies, as this is internal cleanup)
 	sd.clearAllSessionData(nil, false)
 
-	// Reset session state for pool reuse
 	resetSession(sd.mainSession)
 	resetSession(sd.accessSession)
 	resetSession(sd.refreshSession)
 	resetSession(sd.idTokenSession)
 
-	// Reset other state
 	sd.dirty = false
 	sd.inUse = false
 	sd.request = nil
 }
 
-// ReturnToPool explicitly returns this SessionData object to the pool.
-// This should be called when you're done with a SessionData in any error path
-// where Clear() is not called, to prevent memory leaks.
+// ReturnToPool manually returns the session to the object pool.
+// This is used in cleanup paths where Clear() is not called, to prevent memory leaks.
+// It only returns the session if it's not currently in use.
 func (sd *SessionData) ReturnToPool() {
 	if sd != nil && sd.manager != nil {
-		// STABILITY FIX: Only return to pool if not currently in use
 		if !sd.inUse {
-			// Reset the session data before returning to pool
 			sd.Reset()
 			sd.manager.sessionPool.Put(sd)
 		}
 	}
 }
 
-// GetAccessToken retrieves the access token stored in the session.
-// It handles reassembling the token from multiple cookie chunks if necessary
-// and decompresses it if it was stored compressed.
-//
+// GetAccessToken retrieves the user's access token from session storage.
+// It handles both single-cookie storage and chunked storage for large tokens,
+// with automatic decompression if the token was compressed.
 // Returns:
 //   - The complete, decompressed access token string, or an empty string if not found.
 func (sd *SessionData) GetAccessToken() string {
@@ -1201,8 +1063,11 @@ func (sd *SessionData) GetAccessToken() string {
 	return sd.getAccessTokenUnsafe()
 }
 
-// getAccessTokenUnsafe is the internal implementation without mutex protection
-// Enhanced token retrieval with comprehensive integrity checks and recovery mechanisms
+// getAccessTokenUnsafe retrieves the access token without acquiring locks.
+// Enhanced token retrieval with comprehensive integrity checks and recovery mechanisms.
+// Used when the session mutex is already held to prevent deadlocks.
+// Returns:
+//   - The complete access token string or empty string on error.
 func (sd *SessionData) getAccessTokenUnsafe() string {
 	token, _ := sd.accessSession.Values["token"].(string)
 	compressed, _ := sd.accessSession.Values["compressed"].(bool)
@@ -1215,35 +1080,27 @@ func (sd *SessionData) getAccessTokenUnsafe() string {
 	)
 
 	if result.Error != nil {
-		// Error already logged by ChunkManager
 		return ""
 	}
 
 	return result.Token
 }
 
-// SetAccessToken stores the provided access token in the session.
-// It first expires any existing access token chunk cookies.
-// It then compresses the token. If the compressed token fits within a single cookie (maxCookieSize),
-// it's stored directly in the primary access token session. Otherwise, the compressed token
-// is split into chunks, and each chunk is stored in a separate numbered cookie (_oidc_raczylo_a_0, _oidc_raczylo_a_1, etc.).
-// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned session chunks.
-//
+// SetAccessToken stores an access token with automatic compression and chunking.
+// It validates token format, compresses if beneficial, and splits into chunks
+// if the token exceeds cookie size limits. Includes integrity verification.
 // Parameters:
 //   - token: The access token string to store.
 func (sd *SessionData) SetAccessToken(token string) {
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	// Validate token format during storage
 	if token != "" {
 		dotCount := strings.Count(token, ".")
-		// Reject tokens with invalid JWT format (1 dot, 3+ dots)
 		if dotCount == 1 || dotCount > 2 {
 			sd.manager.logger.Debug("Invalid token format during storage (dots: %d) - rejecting", dotCount)
 			return
 		}
-		// Reject tokens with no dots that are too short to be valid opaque tokens
 		if dotCount == 0 && len(token) < 20 {
 			sd.manager.logger.Debug("Token too short for opaque token (length: %d) - rejecting", len(token))
 			return
@@ -1252,66 +1109,54 @@ func (sd *SessionData) SetAccessToken(token string) {
 
 	currentAccessToken := sd.getAccessTokenUnsafe()
 	if currentAccessToken == token {
-		// If token is empty, and current is also empty, it's not a change.
-		// This check handles both empty and non-empty identical cases.
 		return
 	}
 	sd.dirty = true
 
-	// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned chunks
 	if sd.request != nil {
-		sd.expireAccessTokenChunksEnhanced(nil) // Enhanced cleanup with orphan detection
+		sd.expireAccessTokenChunksEnhanced(nil)
 	}
 
-	// Clear and prepare chunks map for new token.
 	for k := range sd.accessTokenChunks {
 		delete(sd.accessTokenChunks, k)
 	}
 
-	if token == "" { // Clearing the token
-		// STABILITY FIX: Add nil checks before accessing session values
+	if token == "" {
 		if sd.accessSession != nil {
 			sd.accessSession.Values["token"] = ""
 			sd.accessSession.Values["compressed"] = false
 		}
-		// sd.accessTokenChunks is already cleared
 		return
 	}
 
-	// Compress token with validation
 	compressed := compressToken(token)
 
-	// Validate size after compression
-	if len(compressed) > 100*1024 { // 100KB limit for final token (post-compression)
+	if len(compressed) > 100*1024 {
 		sd.manager.logger.Info("Access token too large after compression (%d bytes) - storing uncompressed", len(compressed))
 		return
 	}
 
-	// Verify compression didn't corrupt the token
-	if compressed != token { // Was compressed
+	if compressed != token {
 		testDecompressed := decompressToken(compressed)
 		if testDecompressed != token {
 			sd.manager.logger.Debug("Access token compression verification failed - storing uncompressed")
-			compressed = token // Fall back to uncompressed
+			compressed = token
 		}
 	}
 
 	if len(compressed) <= maxCookieSize {
-		// STABILITY FIX: Add nil checks before accessing session values
 		if sd.accessSession != nil {
 			sd.accessSession.Values["token"] = compressed
 			sd.accessSession.Values["compressed"] = (compressed != token)
 		}
 	} else {
-		// Enhanced chunking with validation
 		if sd.accessSession != nil {
-			sd.accessSession.Values["token"] = ""                         // Main cookie won't hold the token directly
-			sd.accessSession.Values["compressed"] = (compressed != token) // Data in chunks is compressed
+			sd.accessSession.Values["token"] = ""
+			sd.accessSession.Values["compressed"] = (compressed != token)
 		}
 
 		chunks := splitIntoChunks(compressed, maxCookieSize)
 
-		// Validate chunk creation
 		if len(chunks) == 0 {
 			sd.manager.logger.Error("Failed to create chunks for access token")
 			return
@@ -1322,7 +1167,6 @@ func (sd *SessionData) SetAccessToken(token string) {
 			return
 		}
 
-		// Verify chunks can be reassembled correctly
 		testReassembled := strings.Join(chunks, "")
 		if testReassembled != compressed {
 			sd.manager.logger.Debug("Access token chunk reassembly test failed")
@@ -1332,13 +1176,11 @@ func (sd *SessionData) SetAccessToken(token string) {
 		for i, chunkData := range chunks {
 			sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
 
-			// Ensure sd.request is available
 			if sd.request == nil {
 				sd.manager.logger.Error("SetAccessToken: sd.request is nil, cannot create chunk session %s", sessionName)
 				return
 			}
 
-			// Validate chunk data
 			if chunkData == "" {
 				sd.manager.logger.Debug("Empty chunk data at index %d", i)
 				return
@@ -1349,7 +1191,6 @@ func (sd *SessionData) SetAccessToken(token string) {
 				return
 			}
 
-			// Validate that chunk won't exceed browser cookie limits after encoding
 			if !validateChunkSize(chunkData) {
 				sd.manager.logger.Errorf("CRITICAL: Chunk %d will exceed browser cookie limits after encoding (raw size: %d)", i, len(chunkData))
 				return
@@ -1362,8 +1203,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 			}
 
 			session.Values["token_chunk"] = chunkData
-			session.Values["compressed"] = (compressed != token) // Store compression flag in each chunk
-			// MEDIUM IMPACT FIX: Add timestamp to track chunk creation for orphan detection
+			session.Values["compressed"] = (compressed != token)
 			session.Values["chunk_created_at"] = time.Now().Unix()
 			sd.accessTokenChunks[i] = session
 		}
@@ -1372,9 +1212,9 @@ func (sd *SessionData) SetAccessToken(token string) {
 	}
 }
 
-// GetRefreshToken retrieves the refresh token stored in the session.
-// Enhanced refresh token retrieval with comprehensive integrity checks and recovery mechanisms
-//
+// GetRefreshToken retrieves the user's refresh token from session storage.
+// It handles both single-cookie storage and chunked storage for large tokens,
+// with automatic decompression if the token was compressed.
 // Returns:
 //   - The complete, decompressed refresh token string, or an empty string if not found.
 func (sd *SessionData) GetRefreshToken() string {
@@ -1392,28 +1232,21 @@ func (sd *SessionData) GetRefreshToken() string {
 	)
 
 	if result.Error != nil {
-		// Error already logged by ChunkManager
 		return ""
 	}
 
 	return result.Token
 }
 
-// SetRefreshToken stores the provided refresh token in the session.
-// It first expires any existing refresh token chunk cookies.
-// It then compresses the token. If the compressed token fits within a single cookie (maxCookieSize),
-// it's stored directly in the primary refresh token session. Otherwise, the compressed token
-// is split into chunks, and each chunk is stored in a separate numbered cookie (_oidc_raczylo_r_0, _oidc_raczylo_r_1, etc.).
-// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned session chunks.
-//
+// SetRefreshToken stores a refresh token with automatic compression and chunking.
+// It validates token size, compresses if beneficial, and splits into chunks
+// if needed. Includes comprehensive error checking and integrity verification.
 // Parameters:
 //   - token: The refresh token string to store.
 func (sd *SessionData) SetRefreshToken(token string) {
-	// Add mutex protection for refresh token storage
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	// Validate refresh token size to prevent storage corruption
 	if len(token) > 50*1024 {
 		sd.manager.logger.Errorf("CRITICAL: Refresh token too large (%d bytes) - possible corruption, rejecting", len(token))
 		return
@@ -1421,13 +1254,11 @@ func (sd *SessionData) SetRefreshToken(token string) {
 
 	// Get current refresh token without mutex to avoid deadlock since we already hold the lock
 	var currentRefreshToken string
-	// Inline the GetRefreshToken logic without mutex
 	sessionToken, _ := sd.refreshSession.Values["token"].(string)
 	if sessionToken != "" {
 		compressed, _ := sd.refreshSession.Values["compressed"].(bool)
 		if compressed {
 			decompressed := decompressToken(sessionToken)
-			// decompressToken handles backward compatibility by returning original token if decompression fails
 			currentRefreshToken = decompressed
 		} else {
 			currentRefreshToken = sessionToken
@@ -1457,32 +1288,27 @@ func (sd *SessionData) SetRefreshToken(token string) {
 	}
 	sd.dirty = true
 
-	// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned chunks
 	if sd.request != nil {
-		sd.expireRefreshTokenChunksEnhanced(nil) // Enhanced cleanup with orphan detection
+		sd.expireRefreshTokenChunksEnhanced(nil)
 	}
 
-	// Clear and prepare chunks map for new token.
 	for k := range sd.refreshTokenChunks {
 		delete(sd.refreshTokenChunks, k)
 	}
 
-	if token == "" { // Clearing the token
+	if token == "" {
 		sd.refreshSession.Values["token"] = ""
 		sd.refreshSession.Values["compressed"] = false
-		// sd.refreshTokenChunks is already cleared
 		return
 	}
 
-	// Compress token with validation
 	compressed := compressToken(token)
 
-	// Verify compression didn't corrupt the refresh token
-	if compressed != token { // Was compressed
+	if compressed != token {
 		testDecompressed := decompressToken(compressed)
 		if testDecompressed != token {
 			sd.manager.logger.Errorf("CRITICAL: Refresh token compression verification failed - storing uncompressed")
-			compressed = token // Fall back to uncompressed
+			compressed = token
 		}
 	}
 
@@ -1490,13 +1316,11 @@ func (sd *SessionData) SetRefreshToken(token string) {
 		sd.refreshSession.Values["token"] = compressed
 		sd.refreshSession.Values["compressed"] = (compressed != token)
 	} else {
-		// Enhanced chunking with validation for refresh token
-		sd.refreshSession.Values["token"] = ""                         // Main cookie won't hold the token directly
-		sd.refreshSession.Values["compressed"] = (compressed != token) // Data in chunks is compressed
+		sd.refreshSession.Values["token"] = ""
+		sd.refreshSession.Values["compressed"] = (compressed != token)
 
 		chunks := splitIntoChunks(compressed, maxCookieSize)
 
-		// Validate chunk creation
 		if len(chunks) == 0 {
 			sd.manager.logger.Errorf("CRITICAL: Failed to create chunks for refresh token")
 			return
@@ -1507,7 +1331,6 @@ func (sd *SessionData) SetRefreshToken(token string) {
 			return
 		}
 
-		// Verify chunks can be reassembled correctly
 		testReassembled := strings.Join(chunks, "")
 		if testReassembled != compressed {
 			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk reassembly test failed")
@@ -1517,13 +1340,11 @@ func (sd *SessionData) SetRefreshToken(token string) {
 		for i, chunkData := range chunks {
 			sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
 
-			// Ensure sd.request is available
 			if sd.request == nil {
 				sd.manager.logger.Errorf("CRITICAL: SetRefreshToken: sd.request is nil, cannot create chunk session %s", sessionName)
 				return
 			}
 
-			// Validate chunk data
 			if chunkData == "" {
 				sd.manager.logger.Errorf("CRITICAL: Empty refresh token chunk data at index %d", i)
 				return
@@ -1534,7 +1355,6 @@ func (sd *SessionData) SetRefreshToken(token string) {
 				return
 			}
 
-			// Validate that chunk won't exceed browser cookie limits after encoding
 			if !validateChunkSize(chunkData) {
 				sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d will exceed browser cookie limits after encoding (raw size: %d)", i, len(chunkData))
 				return
@@ -1547,8 +1367,7 @@ func (sd *SessionData) SetRefreshToken(token string) {
 			}
 
 			session.Values["token_chunk"] = chunkData
-			session.Values["compressed"] = (compressed != token) // Store compression flag in each chunk
-			// MEDIUM IMPACT FIX: Add timestamp to track chunk creation for orphan detection
+			session.Values["compressed"] = (compressed != token)
 			session.Values["chunk_created_at"] = time.Now().Unix()
 			sd.refreshTokenChunks[i] = session
 		}
@@ -1557,45 +1376,38 @@ func (sd *SessionData) SetRefreshToken(token string) {
 	}
 }
 
-// expireAccessTokenChunksEnhanced provides enhanced cleanup for access token chunks
-// with orphaned chunk detection and timeout-based cleanup mechanisms.
-// MEDIUM IMPACT FIX: Prevents orphaned session chunks from accumulating indefinitely.
-//
+// expireAccessTokenChunksEnhanced expires all access token chunks and detects orphaned chunks.
+// It searches for all existing chunks, identifies orphaned or expired chunks,
+// and properly expires them to prevent cookie accumulation.
 // Parameters:
 //   - w: The HTTP response writer (optional). If provided, expiring Set-Cookie headers will be sent.
 func (sd *SessionData) expireAccessTokenChunksEnhanced(w http.ResponseWriter) {
-	const maxChunkSearchLimit = 50 // Limit search to prevent infinite loops from corrupted state
+	const maxChunkSearchLimit = 50
 	orphanedChunks := 0
 
 	for i := 0; i < maxChunkSearchLimit; i++ {
 		sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
-			// Error getting session - likely doesn't exist, stop searching
 			break
 		}
 		if session.IsNew {
-			// No more chunks found
 			break
 		}
 
-		// Check for orphaned chunks (chunks that exist but may not be part of current token)
 		if chunk, exists := session.Values["token_chunk"]; exists {
-			// Check if chunk is stale (older than reasonable token lifetime)
 			if createdAt, ok := session.Values["chunk_created_at"].(int64); ok {
 				chunkAge := time.Since(time.Unix(createdAt, 0))
-				if chunkAge > 24*time.Hour { // Chunks older than 24 hours are considered orphaned
+				if chunkAge > 24*time.Hour {
 					orphanedChunks++
 					sd.manager.logger.Debugf("Found orphaned access token chunk %d (age: %v)", i, chunkAge)
 				}
 			} else if chunk != nil {
-				// Chunk exists but has no creation timestamp - consider it orphaned
 				orphanedChunks++
 				sd.manager.logger.Debugf("Found access token chunk %d without timestamp, treating as orphaned", i)
 			}
 		}
 
-		// Expire the chunk regardless of orphan status
 		session.Options.MaxAge = -1
 		session.Values = make(map[interface{}]interface{})
 		if w != nil {
@@ -1610,45 +1422,38 @@ func (sd *SessionData) expireAccessTokenChunksEnhanced(w http.ResponseWriter) {
 	}
 }
 
-// expireRefreshTokenChunksEnhanced provides enhanced cleanup for refresh token chunks
-// with orphaned chunk detection and timeout-based cleanup mechanisms.
-// MEDIUM IMPACT FIX: Prevents orphaned session chunks from accumulating indefinitely.
-//
+// expireRefreshTokenChunksEnhanced expires all refresh token chunks and detects orphaned chunks.
+// It searches for all existing chunks, identifies orphaned or expired chunks,
+// and properly expires them to prevent cookie accumulation.
 // Parameters:
 //   - w: The HTTP response writer (optional). If provided, expiring Set-Cookie headers will be sent.
 func (sd *SessionData) expireRefreshTokenChunksEnhanced(w http.ResponseWriter) {
-	const maxChunkSearchLimit = 50 // Limit search to prevent infinite loops from corrupted state
+	const maxChunkSearchLimit = 50
 	orphanedChunks := 0
 
 	for i := 0; i < maxChunkSearchLimit; i++ {
 		sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
-			// Error getting session - likely doesn't exist, stop searching
 			break
 		}
 		if session.IsNew {
-			// No more chunks found
 			break
 		}
 
-		// Check for orphaned chunks (chunks that exist but may not be part of current token)
 		if chunk, exists := session.Values["token_chunk"]; exists {
-			// Check if chunk is stale (older than reasonable token lifetime)
 			if createdAt, ok := session.Values["chunk_created_at"].(int64); ok {
 				chunkAge := time.Since(time.Unix(createdAt, 0))
-				if chunkAge > 24*time.Hour { // Chunks older than 24 hours are considered orphaned
+				if chunkAge > 24*time.Hour {
 					orphanedChunks++
 					sd.manager.logger.Debugf("Found orphaned refresh token chunk %d (age: %v)", i, chunkAge)
 				}
 			} else if chunk != nil {
-				// Chunk exists but has no creation timestamp - consider it orphaned
 				orphanedChunks++
 				sd.manager.logger.Debugf("Found refresh token chunk %d without timestamp, treating as orphaned", i)
 			}
 		}
 
-		// Expire the chunk regardless of orphan status
 		session.Options.MaxAge = -1
 		session.Values = make(map[interface{}]interface{})
 		if w != nil {
@@ -1663,45 +1468,38 @@ func (sd *SessionData) expireRefreshTokenChunksEnhanced(w http.ResponseWriter) {
 	}
 }
 
-// expireIDTokenChunksEnhanced provides enhanced cleanup for ID token chunks
-// with orphaned chunk detection and timeout-based cleanup mechanisms.
-// MEDIUM IMPACT FIX: Prevents orphaned session chunks from accumulating indefinitely.
-//
+// expireIDTokenChunksEnhanced expires all ID token chunks and detects orphaned chunks.
+// It searches for all existing chunks, identifies orphaned or expired chunks,
+// and properly expires them to prevent cookie accumulation.
 // Parameters:
 //   - w: The HTTP response writer (optional). If provided, expiring Set-Cookie headers will be sent.
 func (sd *SessionData) expireIDTokenChunksEnhanced(w http.ResponseWriter) {
-	const maxChunkSearchLimit = 50 // Limit search to prevent infinite loops from corrupted state
+	const maxChunkSearchLimit = 50
 	orphanedChunks := 0
 
 	for i := 0; i < maxChunkSearchLimit; i++ {
 		sessionName := fmt.Sprintf("%s_%d", idTokenCookie, i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
-			// Error getting session - likely doesn't exist, stop searching
 			break
 		}
 		if session.IsNew {
-			// No more chunks found
 			break
 		}
 
-		// Check for orphaned chunks (chunks that exist but may not be part of current token)
 		if chunk, exists := session.Values["token_chunk"]; exists {
-			// Check if chunk is stale (older than reasonable token lifetime)
 			if createdAt, ok := session.Values["chunk_created_at"].(int64); ok {
 				chunkAge := time.Since(time.Unix(createdAt, 0))
-				if chunkAge > 24*time.Hour { // Chunks older than 24 hours are considered orphaned
+				if chunkAge > 24*time.Hour {
 					orphanedChunks++
 					sd.manager.logger.Debugf("Found orphaned ID token chunk %d (age: %v)", i, chunkAge)
 				}
 			} else if chunk != nil {
-				// Chunk exists but has no creation timestamp - consider it orphaned
 				orphanedChunks++
 				sd.manager.logger.Debugf("Found ID token chunk %d without timestamp, treating as orphaned", i)
 			}
 		}
 
-		// Expire the chunk regardless of orphan status
 		session.Options.MaxAge = -1
 		session.Values = make(map[interface{}]interface{})
 		if w != nil {
@@ -1716,18 +1514,16 @@ func (sd *SessionData) expireIDTokenChunksEnhanced(w http.ResponseWriter) {
 	}
 }
 
-// splitIntoChunks divides a string `s` into a slice of strings, where each element
-// has a maximum length of `chunkSize`. This function accounts for encoding overhead
-// that occurs when sessions are saved to cookies.
-//
+// splitIntoChunks divides a string into chunks of specified maximum size.
+// It ensures chunks don't exceed browser cookie limits and handles
+// the string splitting logic for large token storage.
 // Parameters:
-//   - s: The string to split.
-//   - chunkSize: The maximum size of each chunk before encoding overhead.
+//   - s: The string to split into chunks.
+//   - chunkSize: The maximum size for each chunk.
 //
 // Returns:
 //   - A slice of strings representing the chunks.
 func splitIntoChunks(s string, chunkSize int) []string {
-	// Ensure chunk size accounts for encoding overhead and doesn't exceed browser limits
 	effectiveChunkSize := min(chunkSize, maxCookieSize)
 
 	var chunks []string
@@ -1743,27 +1539,24 @@ func splitIntoChunks(s string, chunkSize int) []string {
 	return chunks
 }
 
-// validateChunkSize validates that a chunk won't exceed browser cookie limits
-// after encoding. This is a conservative estimate based on typical encoding overhead.
-//
+// validateChunkSize checks if a chunk will fit within browser cookie limits.
+// It estimates the encoded size including cookie overhead and headers
+// to ensure the chunk won't exceed browser-imposed cookie size limits.
 // Parameters:
-//   - chunkData: The raw chunk data before encoding.
+//   - chunkData: The chunk data to validate.
 //
 // Returns:
 //   - true if the chunk is safe to store, false if it may exceed browser limits.
 func validateChunkSize(chunkData string) bool {
-	// Conservative estimate: encoding overhead can be 40-50%
-	// Raw chunk + overhead should not exceed maxBrowserCookieSize
 	estimatedEncodedSize := len(chunkData) + (len(chunkData) * 50 / 100)
 	return estimatedEncodedSize <= maxBrowserCookieSize
 }
 
-// isCorruptionMarker detects obvious corruption markers in token data.
-// These markers indicate that the token has been intentionally corrupted for testing
-// or has been damaged during transmission/storage.
-//
+// isCorruptionMarker detects if data contains known corruption indicators.
+// It checks for specific corruption markers and invalid characters
+// that indicate the data has been tampered with or corrupted.
 // Parameters:
-//   - data: The token data to check for corruption markers.
+//   - data: The data string to check for corruption markers.
 //
 // Returns:
 //   - true if the data contains corruption markers, false otherwise.
@@ -1772,25 +1565,21 @@ func isCorruptionMarker(data string) bool {
 		return false
 	}
 
-	// List of very specific corruption markers that are unlikely to appear in real data
 	corruptionMarkers := []string{
 		"__CORRUPTION_MARKER_TEST__",
 		"__INVALID_BASE64_DATA__",
 		"__CORRUPTED_CHUNK_DATA__",
-		"!@#$%^&*()",      // Invalid base64 characters
-		"<<<CORRUPTED>>>", // Very specific marker
+		"!@#$%^&*()",
+		"<<<CORRUPTED>>>",
 	}
 
-	// For exact matches (avoid false positives in compressed data)
 	for _, marker := range corruptionMarkers {
 		if data == marker {
 			return true
 		}
 	}
 
-	// Check for invalid base64 characters in what should be base64-encoded data
-	// Base64 should only contain A-Z, a-z, 0-9, +, /, and = (padding)
-	if len(data) > 10 { // Only check longer strings that might be base64
+	if len(data) > 10 {
 		invalidChars := "!@#$%^&*(){}[]|\\:;\"'<>?,`~"
 		for _, char := range invalidChars {
 			if strings.ContainsRune(data, char) {
@@ -1802,8 +1591,9 @@ func isCorruptionMarker(data string) bool {
 	return false
 }
 
-// GetCSRF retrieves the Cross-Site Request Forgery (CSRF) token stored in the main session.
-//
+// GetCSRF retrieves the CSRF token for state validation.
+// This token is used to prevent cross-site request forgery attacks
+// during the OIDC authentication flow.
 // Returns:
 //   - The CSRF token string, or an empty string if not set.
 func (sd *SessionData) GetCSRF() string {
@@ -1811,9 +1601,8 @@ func (sd *SessionData) GetCSRF() string {
 	return csrf
 }
 
-// SetCSRF stores the provided CSRF token string in the main session.
-// This token is typically generated at the start of the authentication flow.
-//
+// SetCSRF stores the CSRF token for state validation.
+// The token is used to validate the state parameter in OAuth callbacks.
 // Parameters:
 //   - token: The CSRF token to store.
 func (sd *SessionData) SetCSRF(token string) {
@@ -1824,9 +1613,9 @@ func (sd *SessionData) SetCSRF(token string) {
 	}
 }
 
-// GetNonce retrieves the OIDC nonce value stored in the main session.
-// The nonce is used to associate an ID token with the specific authentication request.
-//
+// GetNonce retrieves the nonce for ID token validation.
+// The nonce prevents replay attacks by ensuring ID tokens
+// were issued in response to the specific authentication request.
 // Returns:
 //   - The nonce string, or an empty string if not set.
 func (sd *SessionData) GetNonce() string {
@@ -1834,9 +1623,8 @@ func (sd *SessionData) GetNonce() string {
 	return nonce
 }
 
-// SetNonce stores the provided OIDC nonce string in the main session.
-// This nonce is typically generated at the start of the authentication flow.
-//
+// SetNonce stores the nonce for ID token validation.
+// The nonce will be validated against the nonce claim in received ID tokens.
 // Parameters:
 //   - nonce: The nonce string to store.
 func (sd *SessionData) SetNonce(nonce string) {
@@ -1847,9 +1635,9 @@ func (sd *SessionData) SetNonce(nonce string) {
 	}
 }
 
-// GetCodeVerifier retrieves the PKCE (Proof Key for Code Exchange) code verifier
-// stored in the main session. This is only relevant if PKCE is enabled.
-//
+// GetCodeVerifier retrieves the PKCE code verifier.
+// This is used in the PKCE (Proof Key for Code Exchange) flow
+// to enhance security for public clients.
 // Returns:
 //   - The code verifier string, or an empty string if not set or PKCE is disabled.
 func (sd *SessionData) GetCodeVerifier() string {
@@ -1857,9 +1645,9 @@ func (sd *SessionData) GetCodeVerifier() string {
 	return codeVerifier
 }
 
-// SetCodeVerifier stores the provided PKCE code verifier string in the main session.
-// This is typically called at the start of the authentication flow if PKCE is enabled.
-//
+// SetCodeVerifier stores the PKCE code verifier.
+// The code verifier is used to generate the code challenge sent to the
+// authorization server and validated during token exchange.
 // Parameters:
 //   - codeVerifier: The PKCE code verifier string to store.
 func (sd *SessionData) SetCodeVerifier(codeVerifier string) {
@@ -1870,9 +1658,9 @@ func (sd *SessionData) SetCodeVerifier(codeVerifier string) {
 	}
 }
 
-// GetEmail retrieves the authenticated user's email address stored in the main session.
-// This is typically extracted from the ID token claims after successful authentication.
-//
+// GetEmail retrieves the authenticated user's email address.
+// The email is extracted from ID token claims and used for
+// authorization decisions and header injection.
 // Returns:
 //   - The user's email address string, or an empty string if not set.
 func (sd *SessionData) GetEmail() string {
@@ -1883,9 +1671,8 @@ func (sd *SessionData) GetEmail() string {
 	return email
 }
 
-// SetEmail stores the provided user email address string in the main session.
-// This is typically called after successful authentication and claim extraction.
-//
+// SetEmail stores the authenticated user's email address.
+// The email is typically extracted from the 'email' claim in the ID token.
 // Parameters:
 //   - email: The user's email address to store.
 func (sd *SessionData) SetEmail(email string) {
@@ -1899,10 +1686,9 @@ func (sd *SessionData) SetEmail(email string) {
 	}
 }
 
-// GetIncomingPath retrieves the original request URI (including query parameters)
-// that the user was trying to access before being redirected for authentication.
-// This is stored in the main session to allow redirection back after successful login.
-//
+// GetIncomingPath retrieves the original request URI that triggered authentication.
+// This path is used to redirect the user back to their intended destination
+// after successful authentication.
 // Returns:
 //   - The original request URI string, or an empty string if not set.
 func (sd *SessionData) GetIncomingPath() string {
@@ -1910,9 +1696,9 @@ func (sd *SessionData) GetIncomingPath() string {
 	return path
 }
 
-// SetIncomingPath stores the original request URI (path and query parameters)
-// in the main session. This is typically called at the start of the authentication flow.
-//
+// SetIncomingPath stores the original request URI for post-authentication redirect.
+// This allows the user to be redirected to their originally requested resource
+// after completing the authentication flow.
 // Parameters:
 //   - path: The original request URI string (e.g., "/protected/resource?id=123").
 func (sd *SessionData) SetIncomingPath(path string) {
@@ -1923,22 +1709,23 @@ func (sd *SessionData) SetIncomingPath(path string) {
 	}
 }
 
-// GetIDToken retrieves the ID token stored in the session.
-// It handles reassembling the token from multiple cookie chunks if necessary
-// and decompresses it if it was stored compressed.
-//
+// GetIDToken retrieves the user's ID token from session storage.
+// The ID token contains user claims and is used for user identification
+// and authorization decisions. Handles compression and chunking automatically.
 // Returns:
 //   - The complete, decompressed ID token string, or an empty string if not found.
 func (sd *SessionData) GetIDToken() string {
-	// Add mutex protection for ID token access
 	sd.sessionMutex.RLock()
 	defer sd.sessionMutex.RUnlock()
 
 	return sd.getIDTokenUnsafe()
 }
 
-// getIDTokenUnsafe is the internal implementation without mutex protection
-// Enhanced ID token retrieval with comprehensive integrity checks and chunking support
+// getIDTokenUnsafe retrieves the ID token without acquiring locks.
+// Enhanced ID token retrieval with comprehensive integrity checks and chunking support.
+// Used when the session mutex is already held to prevent deadlocks.
+// Returns:
+//   - The complete ID token string or empty string on error.
 func (sd *SessionData) getIDTokenUnsafe() string {
 	token, _ := sd.idTokenSession.Values["token"].(string)
 	compressed, _ := sd.idTokenSession.Values["compressed"].(bool)
@@ -1951,28 +1738,21 @@ func (sd *SessionData) getIDTokenUnsafe() string {
 	)
 
 	if result.Error != nil {
-		// Error already logged by ChunkManager
 		return ""
 	}
 
 	return result.Token
 }
 
-// SetIDToken stores the provided ID token in the session.
-// It first expires any existing ID token chunk cookies.
-// It then compresses the token. If the compressed token fits within a single cookie (maxCookieSize),
-// it's stored directly in the main session. Otherwise, the compressed token
-// is split into chunks, and each chunk is stored in a separate numbered cookie (_oidc_raczylo_id_0, _oidc_raczylo_id_1, etc.).
-// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned session chunks.
-//
+// SetIDToken stores an ID token with automatic compression and chunking.
+// It validates the JWT format, compresses if beneficial, and splits into chunks
+// if the token exceeds cookie size limits. Includes comprehensive validation.
 // Parameters:
 //   - token: The ID token string to store.
 func (sd *SessionData) SetIDToken(token string) {
-	// Add mutex protection for ID token storage
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	// Validate JWT format for ID tokens
 	if token != "" {
 		dotCount := strings.Count(token, ".")
 		if dotCount != 2 {
@@ -1981,67 +1761,55 @@ func (sd *SessionData) SetIDToken(token string) {
 		}
 	}
 
-	// Validate token size to prevent storage corruption
 	if len(token) > 50*1024 {
 		sd.manager.logger.Errorf("CRITICAL: ID token too large (%d bytes) - possible corruption, rejecting", len(token))
 		return
 	}
 	currentIDToken := sd.getIDTokenUnsafe()
 	if currentIDToken == token {
-		// If token is empty, and current is also empty, it's not a change.
-		// This check handles both empty and non-empty identical cases.
 		return
 	}
 	sd.dirty = true
 
-	// MEDIUM IMPACT FIX: Enhanced chunk cleanup to prevent orphaned chunks
 	if sd.request != nil {
-		sd.expireIDTokenChunksEnhanced(nil) // Enhanced cleanup with orphan detection
+		sd.expireIDTokenChunksEnhanced(nil)
 	}
 
-	// Clear and prepare chunks map for new token.
 	for k := range sd.idTokenChunks {
 		delete(sd.idTokenChunks, k)
 	}
 
-	if token == "" { // Clearing the token
-		// STABILITY FIX: Add nil checks before accessing session values
+	if token == "" {
 		if sd.idTokenSession != nil {
 			sd.idTokenSession.Values["token"] = ""
 			sd.idTokenSession.Values["compressed"] = false
 		}
-		// sd.idTokenChunks is already cleared
 		return
 	}
 
-	// Compress token with validation
 	compressed := compressToken(token)
 
-	// Verify compression didn't corrupt the token
-	if compressed != token { // Was compressed
+	if compressed != token {
 		testDecompressed := decompressToken(compressed)
 		if testDecompressed != token {
 			sd.manager.logger.Errorf("CRITICAL: ID token compression verification failed - storing uncompressed")
-			compressed = token // Fall back to uncompressed
+			compressed = token
 		}
 	}
 
 	if len(compressed) <= maxCookieSize {
-		// STABILITY FIX: Add nil checks before accessing session values
 		if sd.idTokenSession != nil {
 			sd.idTokenSession.Values["token"] = compressed
 			sd.idTokenSession.Values["compressed"] = (compressed != token)
 		}
 	} else {
-		// Enhanced chunking with validation
 		if sd.idTokenSession != nil {
-			sd.idTokenSession.Values["token"] = ""                         // Main cookie won't hold the token directly
-			sd.idTokenSession.Values["compressed"] = (compressed != token) // Data in chunks is compressed
+			sd.idTokenSession.Values["token"] = ""
+			sd.idTokenSession.Values["compressed"] = (compressed != token)
 		}
 
 		chunks := splitIntoChunks(compressed, maxCookieSize)
 
-		// Validate chunk creation
 		if len(chunks) == 0 {
 			sd.manager.logger.Errorf("CRITICAL: Failed to create chunks for ID token")
 			return
@@ -2052,7 +1820,6 @@ func (sd *SessionData) SetIDToken(token string) {
 			return
 		}
 
-		// Verify chunks can be reassembled correctly
 		testReassembled := strings.Join(chunks, "")
 		if testReassembled != compressed {
 			sd.manager.logger.Errorf("CRITICAL: ID token chunk reassembly test failed")
@@ -2062,13 +1829,11 @@ func (sd *SessionData) SetIDToken(token string) {
 		for i, chunkData := range chunks {
 			sessionName := fmt.Sprintf("%s_%d", idTokenCookie, i)
 
-			// Ensure sd.request is available
 			if sd.request == nil {
 				sd.manager.logger.Errorf("CRITICAL: SetIDToken: sd.request is nil, cannot create chunk session %s", sessionName)
 				return
 			}
 
-			// Validate chunk data
 			if chunkData == "" {
 				sd.manager.logger.Debug("Empty chunk data at index %d", i)
 				return
@@ -2079,7 +1844,6 @@ func (sd *SessionData) SetIDToken(token string) {
 				return
 			}
 
-			// Validate that chunk won't exceed browser cookie limits after encoding
 			if !validateChunkSize(chunkData) {
 				sd.manager.logger.Errorf("CRITICAL: ID token chunk %d will exceed browser cookie limits after encoding (raw size: %d)", i, len(chunkData))
 				return
@@ -2092,8 +1856,7 @@ func (sd *SessionData) SetIDToken(token string) {
 			}
 
 			session.Values["token_chunk"] = chunkData
-			session.Values["compressed"] = (compressed != token) // Store compression flag in each chunk
-			// MEDIUM IMPACT FIX: Add timestamp to track chunk creation for orphan detection
+			session.Values["compressed"] = (compressed != token)
 			session.Values["chunk_created_at"] = time.Now().Unix()
 			sd.idTokenChunks[i] = session
 		}
@@ -2102,8 +1865,10 @@ func (sd *SessionData) SetIDToken(token string) {
 	}
 }
 
-// GetRedirectCount retrieves the current redirect count from the session.
-// STABILITY FIX: Prevents infinite redirect loops
+// GetRedirectCount returns the number of redirects in the current authentication flow.
+// STABILITY FIX: Prevents infinite redirect loops by tracking redirect attempts.
+// Returns:
+//   - The current redirect count, 0 if not set.
 func (sd *SessionData) GetRedirectCount() int {
 	if count, ok := sd.mainSession.Values["redirect_count"].(int); ok {
 		return count
@@ -2111,16 +1876,18 @@ func (sd *SessionData) GetRedirectCount() int {
 	return 0
 }
 
-// IncrementRedirectCount increments the redirect count in the session.
-// STABILITY FIX: Prevents infinite redirect loops
+// IncrementRedirectCount increases the redirect counter by one.
+// STABILITY FIX: Prevents infinite redirect loops by tracking successive redirects.
+// Used to detect potential redirect loops and abort authentication if too many occur.
 func (sd *SessionData) IncrementRedirectCount() {
 	currentCount := sd.GetRedirectCount()
 	sd.mainSession.Values["redirect_count"] = currentCount + 1
 	sd.dirty = true
 }
 
-// ResetRedirectCount resets the redirect count to zero.
-// STABILITY FIX: Prevents infinite redirect loops
+// ResetRedirectCount resets the redirect counter to zero.
+// STABILITY FIX: Prevents infinite redirect loops by clearing the counter
+// when authentication completes successfully or when starting a new flow.
 func (sd *SessionData) ResetRedirectCount() {
 	sd.mainSession.Values["redirect_count"] = 0
 	sd.dirty = true

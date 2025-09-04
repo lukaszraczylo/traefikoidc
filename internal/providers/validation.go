@@ -59,7 +59,6 @@ func (v *ConfigValidator) ValidateScopes(scopes []string) error {
 		return fmt.Errorf("at least one scope must be provided")
 	}
 
-	// Check for required OIDC scope
 	hasOpenIDScope := false
 	for _, scope := range scopes {
 		if strings.TrimSpace(scope) == "openid" {
@@ -109,7 +108,6 @@ func (v *ConfigValidator) ValidateProviderSpecificConfig(provider OIDCProvider, 
 
 // validateGoogleConfig validates Google-specific configuration.
 func (v *ConfigValidator) validateGoogleConfig(config map[string]interface{}) error {
-	// Google-specific validation logic
 	if issuerURL, ok := config["issuer_url"].(string); ok {
 		if !strings.Contains(issuerURL, "accounts.google.com") {
 			return fmt.Errorf("google provider requires issuer URL to contain accounts.google.com")
@@ -121,21 +119,18 @@ func (v *ConfigValidator) validateGoogleConfig(config map[string]interface{}) er
 
 // validateAzureConfig validates Azure-specific configuration.
 func (v *ConfigValidator) validateAzureConfig(config map[string]interface{}) error {
-	// Azure-specific validation logic
 	if issuerURL, ok := config["issuer_url"].(string); ok {
 		if !strings.Contains(issuerURL, "login.microsoftonline.com") && !strings.Contains(issuerURL, "sts.windows.net") {
 			return fmt.Errorf("azure provider requires issuer URL to contain login.microsoftonline.com or sts.windows.net")
 		}
 	}
 
-	// Check for tenant ID in the URL
 	if issuerURL, ok := config["issuer_url"].(string); ok {
 		parsedURL, err := url.Parse(issuerURL)
 		if err == nil {
 			pathParts := strings.Split(parsedURL.Path, "/")
 			hasTenantID := false
 			for _, part := range pathParts {
-				// Simple check for GUID-like structure (tenant ID)
 				if len(part) == 36 && strings.Count(part, "-") == 4 {
 					hasTenantID = true
 					break
@@ -152,6 +147,5 @@ func (v *ConfigValidator) validateAzureConfig(config map[string]interface{}) err
 
 // validateGenericConfig validates generic OIDC provider configuration.
 func (v *ConfigValidator) validateGenericConfig(config map[string]interface{}) error {
-	// Generic provider validation - basic checks only
 	return nil
 }

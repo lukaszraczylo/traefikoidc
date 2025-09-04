@@ -14,9 +14,9 @@ import (
 func TestExcludedURLsConfiguration(t *testing.T) {
 	tests := []struct {
 		name          string
+		errorContains string
 		excludedURLs  []string
 		expectError   bool
-		errorContains string
 	}{
 		{
 			name:         "valid excluded URLs",
@@ -72,8 +72,8 @@ func TestExcludedURLsConfiguration(t *testing.T) {
 func TestExcludedURLsMatching(t *testing.T) {
 	tests := []struct {
 		name         string
-		excludedURLs []string
 		requestPath  string
+		excludedURLs []string
 		shouldMatch  bool
 	}{
 		{
@@ -162,8 +162,8 @@ func TestExcludedURLsBypassesAuthentication(t *testing.T) {
 
 	tests := []struct {
 		name               string
-		excludedURLs       []string
 		requestPath        string
+		excludedURLs       []string
 		expectNextHandler  bool
 		expectAuthRedirect bool
 	}{
@@ -338,9 +338,9 @@ func TestExcludedURLsWithAuthentication(t *testing.T) {
 func TestExcludedURLsEdgeCases(t *testing.T) {
 	tests := []struct {
 		name         string
-		excludedURLs []string
 		requestPath  string
 		description  string
+		excludedURLs []string
 		shouldMatch  bool
 	}{
 		{
@@ -462,8 +462,8 @@ func TestExcludedURLsIntegration(t *testing.T) {
 	// Test various scenarios
 	scenarios := []struct {
 		path           string
-		expectStatus   int
 		expectContent  string
+		expectStatus   int
 		expectRedirect bool
 	}{
 		{

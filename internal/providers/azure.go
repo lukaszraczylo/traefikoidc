@@ -28,7 +28,7 @@ func (p *AzureProvider) GetCapabilities() ProviderCapabilities {
 	return ProviderCapabilities{
 		SupportsRefreshTokens:      true,
 		RequiresOfflineAccessScope: true,
-		PreferredTokenValidation:   "access", // Azure AD prefers access token validation
+		PreferredTokenValidation:   "access",
 	}
 }
 
@@ -36,7 +36,6 @@ func (p *AzureProvider) GetCapabilities() ProviderCapabilities {
 func (p *AzureProvider) BuildAuthParams(baseParams url.Values, scopes []string) (*AuthParams, error) {
 	baseParams.Set("response_mode", "query")
 
-	// Ensure "offline_access" scope is present for refresh tokens
 	hasOfflineAccess := false
 	for _, scope := range scopes {
 		if scope == "offline_access" {
@@ -54,7 +53,6 @@ func (p *AzureProvider) BuildAuthParams(baseParams url.Values, scopes []string) 
 	}, nil
 }
 
-// ValidateTokens overrides the default token validation to implement Azure-specific logic.
 // Azure may use access tokens for validation, and this method ensures that behavior is preserved.
 func (p *AzureProvider) ValidateTokens(session Session, verifier TokenVerifier, tokenCache TokenCache, refreshGracePeriod time.Duration) (*ValidationResult, error) {
 	if !session.GetAuthenticated() {
@@ -102,10 +100,7 @@ func (p *AzureProvider) ValidateTokens(session Session, verifier TokenVerifier, 
 	return &ValidationResult{IsExpired: true}, nil
 }
 
-// ValidateConfig validates Azure-specific configuration requirements.
 // Azure requires specific tenant configuration and scope handling.
 func (p *AzureProvider) ValidateConfig() error {
-	// Azure provider validation - ensure we have the necessary configuration
-	// In a real implementation, this might check for tenant ID, proper issuer URL format, etc.
 	return p.BaseProvider.ValidateConfig()
 }

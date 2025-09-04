@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,15 +32,15 @@ type TestSuite struct {
 	tOidc          *TraefikOidc
 	mockJWKCache   *MockJWKCache
 	sessionManager *SessionManager
-	token          string
-	utf            *UnifiedTestFramework // Add unified test framework
+	// utf            *UnifiedTestFramework // Removed - consolidated test framework
+	token string
 }
 
 // NewTestSuite creates a new test suite with automatic cleanup
 func NewTestSuite(t *testing.T) *TestSuite {
 	ts := &TestSuite{
-		t:   t,
-		utf: NewUnifiedTestFramework(t),
+		t: t,
+		// utf: NewUnifiedTestFramework(t), // Removed
 	}
 	return ts
 }
@@ -47,9 +48,7 @@ func NewTestSuite(t *testing.T) *TestSuite {
 // Setup initializes the test suite
 func (ts *TestSuite) Setup() {
 	// Initialize unified test framework if not already done
-	if ts.utf == nil {
-		ts.utf = NewUnifiedTestFramework(ts.t)
-	}
+	// Unified test framework removed - using direct cleanup
 
 	var err error
 	ts.rsaPrivateKey, err = rsa.GenerateKey(rand.Reader, 2048)
@@ -108,7 +107,7 @@ func (ts *TestSuite) Setup() {
 	ts.sessionManager, _ = NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 
 	// Create WaitGroup for the OIDC instance
-	goroutineWG := ts.utf.NewWaitGroup()
+	goroutineWG := &sync.WaitGroup{}
 
 	// Common TraefikOidc instance
 	ts.tOidc = &TraefikOidc{
@@ -119,12 +118,12 @@ func (ts *TestSuite) Setup() {
 		jwksURL:            "https://test-jwks-url.com",
 		revocationURL:      "https://revocation-endpoint.com",
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
-		tokenBlacklist:     ts.utf.NewCache(),      // Use framework's tracked cache
-		tokenCache:         ts.utf.NewTokenCache(), // Use framework's tracked token cache
+		tokenBlacklist:     NewCache(),
+		tokenCache:         &TokenCache{cache: NewCache()},
 		logger:             logger,
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
 		excludedURLs:       map[string]struct{}{"/favicon": {}},
-		httpClient:         ts.utf.NewHTTPClient(), // Use framework's tracked HTTP client
+		httpClient:         &http.Client{Timeout: 10 * time.Second},
 		// Explicitly set paths as New() is bypassed
 		redirURLPath:            "/callback",                     // Assume default callback path for tests
 		logoutURLPath:           "/callback/logout",              // Assume default logout path for tests
@@ -133,7 +132,7 @@ func (ts *TestSuite) Setup() {
 		initComplete:            make(chan struct{}),
 		sessionManager:          ts.sessionManager,
 		goroutineWG:             goroutineWG,
-		ctx:                     ts.utf.NewContext(), // Use framework's tracked context
+		ctx:                     context.Background(),
 		tokenCleanupStopChan:    make(chan struct{}),
 		metadataRefreshStopChan: make(chan struct{}),
 	}
@@ -162,8 +161,7 @@ func (ts *TestSuite) Setup() {
 		},
 	}
 
-	// Track the OIDC instance for cleanup
-	ts.utf.AddOIDCInstance(ts.tOidc)
+	// OIDC instance created
 }
 
 // Helper function exchangeCodeForTokenFunc removed as it's unused after refactoring to TokenExchanger interface.
@@ -4030,13 +4028,13 @@ func TestBuildAuthURL_OverrideScopes_And_OfflineAccess(t *testing.T) {
 	ts.Setup() // Sets up ts.tOidc
 
 	tests := []struct {
-		name           string
-		initialScopes  []string // Scopes as they would be in tOidc.scopes (after New processing)
-		overrideScopes bool
-		isGoogle       bool // To test Google-specific handling
-		isAzure        bool // To test Azure-specific handling
 		expectedParams map[string]string
-		expectedScope  string // The final scope string expected in the URL
+		name           string
+		expectedScope  string
+		initialScopes  []string
+		overrideScopes bool
+		isGoogle       bool
+		isAzure        bool
 	}{
 		{
 			name:           "Override false, no user scopes, non-Google/Azure",

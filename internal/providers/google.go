@@ -25,7 +25,7 @@ func (p *GoogleProvider) GetType() ProviderType {
 func (p *GoogleProvider) GetCapabilities() ProviderCapabilities {
 	return ProviderCapabilities{
 		SupportsRefreshTokens:      true,
-		RequiresOfflineAccessScope: false, // Google uses access_type=offline instead
+		RequiresOfflineAccessScope: false,
 		RequiresPromptConsent:      true,
 		PreferredTokenValidation:   "id",
 	}
@@ -50,10 +50,7 @@ func (p *GoogleProvider) BuildAuthParams(baseParams url.Values, scopes []string)
 	}, nil
 }
 
-// ValidateConfig validates Google-specific configuration requirements.
 // Google requires specific scopes and client configuration for proper operation.
 func (p *GoogleProvider) ValidateConfig() error {
-	// Google provider doesn't require additional validation beyond the base implementation
-	// All Google-specific requirements are handled in BuildAuthParams
 	return p.BaseProvider.ValidateConfig()
 }

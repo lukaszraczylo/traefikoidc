@@ -15,8 +15,8 @@ func TestPostLogoutRedirectURIConfiguration(t *testing.T) {
 	tests := []struct {
 		name                  string
 		postLogoutRedirectURI string
-		expectDefault         bool
 		expectedValue         string
+		expectDefault         bool
 	}{
 		{
 			name:                  "custom post logout redirect URI",
@@ -154,11 +154,11 @@ func TestLogoutWithPostLogoutRedirect(t *testing.T) {
 
 func TestBuildLogoutURLWithPostLogoutRedirect(t *testing.T) {
 	tests := []struct {
+		expectedParams        map[string]string
 		name                  string
 		oidcEndSessionURL     string
 		postLogoutRedirectURI string
 		idToken               string
-		expectedParams        map[string]string
 	}{
 		{
 			name:                  "includes all parameters",

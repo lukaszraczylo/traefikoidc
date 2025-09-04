@@ -51,46 +51,35 @@ func (a *Adapter) BuildAuthURL(redirectURL, state, nonce, codeChallenge string) 
 
 	scopes := a.legacySettings.GetScopes()
 
-	// When overrideScopes is true, use exactly the scopes provided without modification
 	if a.legacySettings.IsOverrideScopes() {
-		// Use scopes as-is, don't let provider add anything
 		finalParams := params
 		finalParams.Set("scope", strings.Join(scopes, " "))
 
-		// For provider-specific parameters, we still need to check the provider type
 		switch a.provider.GetType() {
 		case ProviderTypeGoogle:
-			// Google-specific parameters
 			finalParams.Set("access_type", "offline")
 			finalParams.Set("prompt", "consent")
 		case ProviderTypeAzure:
-			// Azure-specific parameters
 			finalParams.Set("response_mode", "query")
 		}
 
 		return a.buildURLWithParams(a.legacySettings.GetAuthURL(), finalParams)
 	}
 
-	// When overrideScopes is false, let the provider add necessary scopes
 	authParams, err := a.provider.BuildAuthParams(params, scopes)
 	if err != nil {
-		// Log the error appropriately
 		return ""
 	}
 
 	finalParams := authParams.URLValues
 	finalParams.Set("scope", strings.Join(authParams.Scopes, " "))
 
-	// Build the full URL with params
 	return a.buildURLWithParams(a.legacySettings.GetAuthURL(), finalParams)
 }
 
-// buildURLWithParams takes a base URL and query parameters and constructs a full URL string.
-// If the baseURL is relative (doesn't start with http/https), it prepends the scheme and host
 // from the configured issuerURL.
 func (a *Adapter) buildURLWithParams(baseURL string, params url.Values) string {
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-		// Relative URL - resolve against issuer URL
 		issuerURLParsed, err := url.Parse(a.legacySettings.GetIssuerURL())
 		if err != nil {
 			return ""
@@ -106,7 +95,6 @@ func (a *Adapter) buildURLWithParams(baseURL string, params url.Values) string {
 		return resolvedURL.String()
 	}
 
-	// Absolute URL
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return ""

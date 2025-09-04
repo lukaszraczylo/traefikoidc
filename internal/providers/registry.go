@@ -6,13 +6,13 @@ import (
 	"sync"
 )
 
-// ProviderRegistry holds and manages the available OIDC provider implementations.
+// ProviderRegistry manages a collection of OIDC provider implementations.
 // It provides thread-safe access to provider instances and caches detection results.
 type ProviderRegistry struct {
-	mu        sync.RWMutex
-	providers []OIDCProvider
 	cache     map[string]OIDCProvider
-	typeMap   map[ProviderType]OIDCProvider // Maps provider type to instance
+	typeMap   map[ProviderType]OIDCProvider
+	providers []OIDCProvider
+	mu        sync.RWMutex
 }
 
 // NewProviderRegistry creates and initializes a new ProviderRegistry.
@@ -33,7 +33,7 @@ func (r *ProviderRegistry) RegisterProvider(provider OIDCProvider) {
 	r.typeMap[provider.GetType()] = provider
 }
 
-// GetProviderByType returns a provider instance for the specified type.
+// GetProviderByType retrieves a provider instance by its type.
 // Returns nil if the provider type is not registered.
 func (r *ProviderRegistry) GetProviderByType(providerType ProviderType) OIDCProvider {
 	r.mu.RLock()
@@ -61,12 +61,9 @@ func (r *ProviderRegistry) ClearCache() {
 	r.cache = make(map[string]OIDCProvider)
 }
 
-// DetectProvider determines the most appropriate provider for a given issuer URL.
-// It iterates through the registered providers and returns the first one that matches.
-// Detection is based on URL patterns and other provider-specific criteria.
+// DetectProvider identifies the appropriate OIDC provider for an issuer URL.
 // Uses double-checked locking pattern to avoid race conditions while caching results.
 func (r *ProviderRegistry) DetectProvider(issuerURL string) OIDCProvider {
-	// First check: read lock for cache lookup
 	r.mu.RLock()
 	if provider, found := r.cache[issuerURL]; found {
 		r.mu.RUnlock()
@@ -74,19 +71,15 @@ func (r *ProviderRegistry) DetectProvider(issuerURL string) OIDCProvider {
 	}
 	r.mu.RUnlock()
 
-	// Cache miss - acquire write lock for detection and caching
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Second check: another goroutine might have cached the result while we waited for write lock
 	if provider, found := r.cache[issuerURL]; found {
 		return provider
 	}
 
-	// Perform detection under write lock
 	detectedProvider := r.detectProviderUnsafe(issuerURL)
 
-	// Cache the result (even if nil to avoid repeated expensive operations)
 	r.cache[issuerURL] = detectedProvider
 
 	return detectedProvider
@@ -95,15 +88,12 @@ func (r *ProviderRegistry) DetectProvider(issuerURL string) OIDCProvider {
 // detectProviderUnsafe performs the actual provider detection logic.
 // This method assumes the caller holds the appropriate lock and should not be called directly.
 func (r *ProviderRegistry) detectProviderUnsafe(issuerURL string) OIDCProvider {
-	// Normalize issuer URL for consistent matching
 	normalizedURL, err := url.Parse(issuerURL)
 	if err != nil {
-		// Log error or handle it appropriately
 		return nil
 	}
 	host := normalizedURL.Host
 
-	// Iterate through registered providers to find a match
 	for _, p := range r.providers {
 		switch p.GetType() {
 		case ProviderTypeGoogle:
@@ -117,7 +107,6 @@ func (r *ProviderRegistry) detectProviderUnsafe(issuerURL string) OIDCProvider {
 		}
 	}
 
-	// Fallback to the generic provider if no specific provider is detected
 	for _, p := range r.providers {
 		if p.GetType() == ProviderTypeGeneric {
 			return p

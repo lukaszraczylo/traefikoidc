@@ -10,80 +10,94 @@ import (
 	"time"
 )
 
-// MemoryProfiler defines the interface for memory profiling operations
+// MemoryProfiler defines the interface for memory profiling operations.
+// Implementations provide memory monitoring, leak detection, and performance analysis
+// capabilities for debugging and optimizing memory usage in production environments.
 type MemoryProfiler interface {
-	// TakeSnapshot captures current memory statistics
+	// TakeSnapshot captures current memory state for analysis
 	TakeSnapshot() (*MemorySnapshot, error)
-
-	// StartProfiling begins memory profiling with specified configuration
+	// StartProfiling begins continuous memory monitoring
 	StartProfiling(config ProfilingConfig) error
-
-	// StopProfiling ends memory profiling and returns final snapshot
+	// StopProfiling ends monitoring and returns final snapshot
 	StopProfiling() (*MemorySnapshot, error)
-
 	// GetCurrentStats returns current runtime memory statistics
 	GetCurrentStats() *runtime.MemStats
-
-	// AnalyzeLeaks performs leak detection analysis
+	// AnalyzeLeaks compares snapshots to detect memory leaks
 	AnalyzeLeaks(baseline, current *MemorySnapshot) *LeakAnalysis
 }
 
-// MemorySnapshot represents a point-in-time capture of memory statistics
+// MemorySnapshot represents a point-in-time capture of memory statistics.
+// It provides comprehensive memory profiling data including heap, goroutines,
+// and custom metrics for detailed memory usage analysis.
 type MemorySnapshot struct {
 	Timestamp        time.Time
-	RuntimeStats     runtime.MemStats
+	CustomMetrics    map[string]interface{}
 	HeapProfile      []byte
 	GoroutineProfile []byte
-	CustomMetrics    map[string]interface{}
+	RuntimeStats     runtime.MemStats
 }
 
-// LeakAnalysis contains the results of memory leak detection
+// LeakAnalysis contains the results of memory leak detection and analysis.
+// Provides actionable insights about potential memory leaks and recommendations
+// for addressing identified issues.
 type LeakAnalysis struct {
-	HasLeak           bool
 	LeakDescription   string
-	MemoryIncrease    uint64
-	GoroutineIncrease int
 	SuspectedLeaks    []string
 	Recommendations   []string
+	MemoryIncrease    uint64
+	GoroutineIncrease int
+	HasLeak           bool
 }
 
-// ProfilingManager coordinates memory profiling operations
+// ProfilingManager coordinates memory profiling operations across the application.
+// It manages multiple profiler instances, handles configuration, and provides
+// centralized access to memory monitoring and leak detection capabilities.
 type ProfilingManager struct {
-	mu               sync.RWMutex
-	isProfiling      bool
 	startTime        time.Time
 	baselineSnapshot *MemorySnapshot
-	config           ProfilingConfig
 	logger           *Logger
 	profilers        map[string]MemoryProfiler
+	config           ProfilingConfig
+	mu               sync.RWMutex
+	isProfiling      bool
 }
 
-// ProfilingConfig contains configuration for profiling operations
+// ProfilingConfig contains configuration parameters for profiling operations.
+// Controls what types of profiling are enabled and how frequently they run.
 type ProfilingConfig struct {
-	EnableHeapProfiling        bool
-	EnableGoroutineProfiling   bool
 	SnapshotInterval           time.Duration
 	LeakThresholdMB            uint64
 	MaxSnapshots               int
-	EnableContinuousMonitoring bool
 	MonitoringInterval         time.Duration
+	EnableHeapProfiling        bool
+	EnableGoroutineProfiling   bool
+	EnableContinuousMonitoring bool
 }
 
-// LeakDetectionConfig contains configuration for leak detection
+// LeakDetectionConfig contains configuration parameters for memory leak detection.
+// Defines thresholds and limits for various types of memory leak detection.
 type LeakDetectionConfig struct {
-	EnableLeakDetection       bool
-	LeakThresholdMB           uint64
-	GoroutineLeakThreshold    int
-	SessionPoolThreshold      int
-	CacheMemoryThreshold      uint64
-	HTTPClientThreshold       int
+	// EnableLeakDetection enables automatic leak detection
+	EnableLeakDetection bool
+	// LeakThresholdMB sets general memory leak threshold in megabytes
+	LeakThresholdMB uint64
+	// GoroutineLeakThreshold sets limit for goroutine count increases
+	GoroutineLeakThreshold int
+	// SessionPoolThreshold sets limit for session pool size
+	SessionPoolThreshold int
+	// CacheMemoryThreshold sets limit for cache memory usage
+	CacheMemoryThreshold uint64
+	// HTTPClientThreshold sets limit for HTTP client connections
+	HTTPClientThreshold int
+	// TokenCompressionThreshold sets limit for token compression memory
 	TokenCompressionThreshold uint64
 }
 
-// NewProfilingManager creates a new profiling manager instance
+// NewProfilingManager creates a new profiling manager with default configuration.
+// Initializes profiling with sensible defaults for production monitoring.
 func NewProfilingManager(logger *Logger) *ProfilingManager {
 	if logger == nil {
-		logger = newNoOpLogger()
+		logger = GetSingletonNoOpLogger()
 	}
 
 	return &ProfilingManager{
@@ -92,7 +106,7 @@ func NewProfilingManager(logger *Logger) *ProfilingManager {
 			EnableHeapProfiling:        true,
 			EnableGoroutineProfiling:   true,
 			SnapshotInterval:           30 * time.Second,
-			LeakThresholdMB:            50, // 50MB
+			LeakThresholdMB:            50,
 			MaxSnapshots:               100,
 			EnableContinuousMonitoring: true,
 			MonitoringInterval:         60 * time.Second,
@@ -101,7 +115,8 @@ func NewProfilingManager(logger *Logger) *ProfilingManager {
 	}
 }
 
-// TakeSnapshot captures current memory statistics
+// TakeSnapshot captures a comprehensive snapshot of current memory statistics.
+// Includes runtime stats, heap profile, goroutine profile, and custom metrics.
 func (pm *ProfilingManager) TakeSnapshot() (*MemorySnapshot, error) {
 	var buf bytes.Buffer
 	snapshot := &MemorySnapshot{
@@ -109,10 +124,8 @@ func (pm *ProfilingManager) TakeSnapshot() (*MemorySnapshot, error) {
 		CustomMetrics: make(map[string]interface{}),
 	}
 
-	// Capture runtime memory statistics
 	runtime.ReadMemStats(&snapshot.RuntimeStats)
 
-	// Capture heap profile if enabled
 	if pm.config.EnableHeapProfiling {
 		if err := pprof.WriteHeapProfile(&buf); err != nil {
 			pm.logger.Errorf("Failed to capture heap profile: %v", err)
@@ -123,7 +136,6 @@ func (pm *ProfilingManager) TakeSnapshot() (*MemorySnapshot, error) {
 		}
 	}
 
-	// Capture goroutine profile if enabled
 	if pm.config.EnableGoroutineProfiling {
 		if err := pprof.Lookup("goroutine").WriteTo(&buf, 0); err != nil {
 			pm.logger.Errorf("Failed to capture goroutine profile: %v", err)
@@ -134,7 +146,6 @@ func (pm *ProfilingManager) TakeSnapshot() (*MemorySnapshot, error) {
 		}
 	}
 
-	// Capture custom metrics from registered profilers
 	pm.mu.RLock()
 	for name, profiler := range pm.profilers {
 		if customStats := profiler.GetCurrentStats(); customStats != nil {
@@ -159,7 +170,6 @@ func (pm *ProfilingManager) StartProfiling(config ProfilingConfig) error {
 	pm.isProfiling = true
 	pm.startTime = time.Now()
 
-	// Take baseline snapshot
 	baseline, err := pm.TakeSnapshot()
 	if err != nil {
 		pm.isProfiling = false
@@ -180,7 +190,6 @@ func (pm *ProfilingManager) StopProfiling() (*MemorySnapshot, error) {
 		return nil, fmt.Errorf("profiling not in progress")
 	}
 
-	// Take final snapshot
 	finalSnapshot, err := pm.TakeSnapshot()
 	if err != nil {
 		pm.logger.Errorf("Failed to take final snapshot: %v", err)
@@ -213,18 +222,15 @@ func (pm *ProfilingManager) AnalyzeLeaks(baseline, current *MemorySnapshot) *Lea
 		return analysis
 	}
 
-	// Calculate memory increase
 	memoryIncrease := current.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
 	analysis.MemoryIncrease = memoryIncrease
 
-	// Calculate goroutine increase
 	currentGoroutines := runtime.NumGoroutine()
-	baselineGoroutines := runtime.NumGoroutine() // Note: This is not accurate for baseline, but we don't have historical data
+	baselineGoroutines := runtime.NumGoroutine()
 	goroutineIncrease := currentGoroutines - baselineGoroutines
 	analysis.GoroutineIncrease = goroutineIncrease
 
-	// Check for memory leaks
-	memoryThreshold := pm.config.LeakThresholdMB * 1024 * 1024 // Convert MB to bytes
+	memoryThreshold := pm.config.LeakThresholdMB * 1024 * 1024
 	if memoryIncrease > memoryThreshold {
 		analysis.HasLeak = true
 		analysis.SuspectedLeaks = append(analysis.SuspectedLeaks,
@@ -233,8 +239,7 @@ func (pm *ProfilingManager) AnalyzeLeaks(baseline, current *MemorySnapshot) *Lea
 			"Consider checking for unreleased memory pools or growing caches")
 	}
 
-	// Check for goroutine leaks
-	if goroutineIncrease > 10 { // Arbitrary threshold
+	if goroutineIncrease > 10 {
 		analysis.HasLeak = true
 		analysis.SuspectedLeaks = append(analysis.SuspectedLeaks,
 			fmt.Sprintf("Goroutine count increased by %d", goroutineIncrease))
@@ -282,19 +287,19 @@ func (pm *ProfilingManager) GetRegisteredProfilers() []string {
 
 // MemoryTestOrchestrator coordinates memory leak testing across components
 type MemoryTestOrchestrator struct {
-	mu          sync.RWMutex
 	profilers   map[string]MemoryProfiler
-	config      LeakDetectionConfig
 	logger      *Logger
-	isRunning   bool
 	stopChan    chan struct{}
 	testResults map[string]*LeakAnalysis
+	config      LeakDetectionConfig
+	mu          sync.RWMutex
+	isRunning   bool
 }
 
 // NewMemoryTestOrchestrator creates a new test orchestrator
 func NewMemoryTestOrchestrator(config LeakDetectionConfig, logger *Logger) *MemoryTestOrchestrator {
 	if logger == nil {
-		logger = newNoOpLogger()
+		logger = GetSingletonNoOpLogger()
 	}
 
 	return &MemoryTestOrchestrator{
@@ -354,7 +359,7 @@ func (mto *MemoryTestOrchestrator) StopLeakDetection() error {
 
 	mto.isRunning = false
 	close(mto.stopChan)
-	mto.stopChan = make(chan struct{}) // Reset for potential restart
+	mto.stopChan = make(chan struct{})
 
 	mto.logger.Infof("Memory leak detection stopped")
 	return nil
@@ -362,12 +367,11 @@ func (mto *MemoryTestOrchestrator) StopLeakDetection() error {
 
 // runLeakDetection performs continuous leak detection monitoring
 func (mto *MemoryTestOrchestrator) runLeakDetection() {
-	ticker := time.NewTicker(5 * time.Minute) // Check every 5 minutes
+	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
 	baselineSnapshots := make(map[string]*MemorySnapshot)
 
-	// Take initial baseline snapshots
 	mto.mu.RLock()
 	for name, profiler := range mto.profilers {
 		if snapshot, err := profiler.TakeSnapshot(); err == nil {
@@ -435,8 +439,6 @@ func (mto *MemoryTestOrchestrator) GetAllLeakAnalyses() map[string]*LeakAnalysis
 	return results
 }
 
-// Component-specific profiler implementations
-
 // SessionPoolProfiler monitors session pool memory usage
 type SessionPoolProfiler struct {
 	sessionManager *SessionManager
@@ -446,7 +448,7 @@ type SessionPoolProfiler struct {
 // NewSessionPoolProfiler creates a new session pool profiler
 func NewSessionPoolProfiler(sm *SessionManager, logger *Logger) *SessionPoolProfiler {
 	if logger == nil {
-		logger = newNoOpLogger()
+		logger = GetSingletonNoOpLogger()
 	}
 	return &SessionPoolProfiler{
 		sessionManager: sm,
@@ -461,10 +463,8 @@ func (spp *SessionPoolProfiler) TakeSnapshot() (*MemorySnapshot, error) {
 		CustomMetrics: make(map[string]interface{}),
 	}
 
-	// Capture runtime stats
 	runtime.ReadMemStats(&snapshot.RuntimeStats)
 
-	// Add session pool specific metrics
 	snapshot.CustomMetrics["session_pool_metrics"] = spp.sessionManager.GetSessionMetrics()
 
 	return snapshot, nil
@@ -499,9 +499,8 @@ func (spp *SessionPoolProfiler) AnalyzeLeaks(baseline, current *MemorySnapshot) 
 		return analysis
 	}
 
-	// Check for session pool specific leaks
 	memoryIncrease := current.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
-	if memoryIncrease > 10*1024*1024 { // 10MB threshold
+	if memoryIncrease > 10*1024*1024 {
 		analysis.HasLeak = true
 		analysis.SuspectedLeaks = append(analysis.SuspectedLeaks,
 			"Session pool memory usage increased significantly")
@@ -521,7 +520,7 @@ type CacheMemoryProfiler struct {
 // NewCacheMemoryProfiler creates a new cache memory profiler
 func NewCacheMemoryProfiler(cache *Cache, logger *Logger) *CacheMemoryProfiler {
 	if logger == nil {
-		logger = newNoOpLogger()
+		logger = GetSingletonNoOpLogger()
 	}
 	return &CacheMemoryProfiler{
 		cache:  cache,
@@ -538,8 +537,7 @@ func (cmp *CacheMemoryProfiler) TakeSnapshot() (*MemorySnapshot, error) {
 
 	runtime.ReadMemStats(&snapshot.RuntimeStats)
 
-	// Add cache-specific metrics (would need to be added to Cache struct)
-	snapshot.CustomMetrics["cache_size"] = "unknown" // Placeholder
+	snapshot.CustomMetrics["cache_size"] = "unknown"
 
 	return snapshot, nil
 }
@@ -574,7 +572,7 @@ func (cmp *CacheMemoryProfiler) AnalyzeLeaks(baseline, current *MemorySnapshot) 
 	}
 
 	memoryIncrease := current.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
-	if memoryIncrease > 20*1024*1024 { // 20MB threshold for cache
+	if memoryIncrease > 20*1024*1024 {
 		analysis.HasLeak = true
 		analysis.SuspectedLeaks = append(analysis.SuspectedLeaks,
 			"Cache memory usage increased significantly")
@@ -594,7 +592,7 @@ type HTTPClientProfiler struct {
 // NewHTTPClientProfiler creates a new HTTP client profiler
 func NewHTTPClientProfiler(client *http.Client, logger *Logger) *HTTPClientProfiler {
 	if logger == nil {
-		logger = newNoOpLogger()
+		logger = GetSingletonNoOpLogger()
 	}
 	return &HTTPClientProfiler{
 		httpClient: client,
@@ -611,7 +609,6 @@ func (hcp *HTTPClientProfiler) TakeSnapshot() (*MemorySnapshot, error) {
 
 	runtime.ReadMemStats(&snapshot.RuntimeStats)
 
-	// Add HTTP client specific metrics
 	if transport, ok := hcp.httpClient.Transport.(*http.Transport); ok {
 		snapshot.CustomMetrics["idle_connections"] = transport.IdleConnTimeout.String()
 		snapshot.CustomMetrics["max_idle_conns"] = transport.MaxIdleConns
@@ -650,7 +647,7 @@ func (hcp *HTTPClientProfiler) AnalyzeLeaks(baseline, current *MemorySnapshot) *
 	}
 
 	memoryIncrease := current.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
-	if memoryIncrease > 5*1024*1024 { // 5MB threshold for HTTP client
+	if memoryIncrease > 5*1024*1024 {
 		analysis.HasLeak = true
 		analysis.SuspectedLeaks = append(analysis.SuspectedLeaks,
 			"HTTP client memory usage increased significantly")
@@ -670,7 +667,7 @@ type TokenCompressionProfiler struct {
 // NewTokenCompressionProfiler creates a new token compression profiler
 func NewTokenCompressionProfiler(pool *TokenCompressionPool, logger *Logger) *TokenCompressionProfiler {
 	if logger == nil {
-		logger = newNoOpLogger()
+		logger = GetSingletonNoOpLogger()
 	}
 	return &TokenCompressionProfiler{
 		compressionPool: pool,
@@ -687,7 +684,6 @@ func (tcp *TokenCompressionProfiler) TakeSnapshot() (*MemorySnapshot, error) {
 
 	runtime.ReadMemStats(&snapshot.RuntimeStats)
 
-	// Add compression pool specific metrics
 	snapshot.CustomMetrics["compression_pool_active"] = true
 
 	return snapshot, nil
@@ -723,7 +719,7 @@ func (tcp *TokenCompressionProfiler) AnalyzeLeaks(baseline, current *MemorySnaps
 	}
 
 	memoryIncrease := current.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
-	if memoryIncrease > 2*1024*1024 { // 2MB threshold for compression
+	if memoryIncrease > 2*1024*1024 {
 		analysis.HasLeak = true
 		analysis.SuspectedLeaks = append(analysis.SuspectedLeaks,
 			"Token compression memory usage increased significantly")
@@ -744,7 +740,7 @@ type MemoryPoolProfiler struct {
 // NewMemoryPoolProfiler creates a new memory pool profiler
 func NewMemoryPoolProfiler(memoryPoolManager *MemoryPoolManager, tokenCompressionPool *TokenCompressionPool, logger *Logger) *MemoryPoolProfiler {
 	if logger == nil {
-		logger = newNoOpLogger()
+		logger = GetSingletonNoOpLogger()
 	}
 	return &MemoryPoolProfiler{
 		memoryPoolManager:    memoryPoolManager,
@@ -760,13 +756,10 @@ func (mpp *MemoryPoolProfiler) TakeSnapshot() (*MemorySnapshot, error) {
 		CustomMetrics: make(map[string]interface{}),
 	}
 
-	// Capture runtime stats
 	runtime.ReadMemStats(&snapshot.RuntimeStats)
 
-	// Add memory pool metrics
 	if mpp.memoryPoolManager != nil {
 		snapshot.CustomMetrics["memory_pool_active"] = true
-		// Note: sync.Pool doesn't expose internal statistics, so we track usage patterns
 	}
 
 	if mpp.tokenCompressionPool != nil {
@@ -805,9 +798,8 @@ func (mpp *MemoryPoolProfiler) AnalyzeLeaks(baseline, current *MemorySnapshot) *
 		return analysis
 	}
 
-	// Check for memory leaks in pool operations
 	memoryIncrease := current.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
-	if memoryIncrease > 5*1024*1024 { // 5MB threshold for pool operations
+	if memoryIncrease > 5*1024*1024 {
 		analysis.HasLeak = true
 		analysis.SuspectedLeaks = append(analysis.SuspectedLeaks,
 			"Memory pool operations caused significant memory increase")
@@ -842,9 +834,9 @@ func GetGlobalTestOrchestrator() *MemoryTestOrchestrator {
 			LeakThresholdMB:           50,
 			GoroutineLeakThreshold:    10,
 			SessionPoolThreshold:      100,
-			CacheMemoryThreshold:      20 * 1024 * 1024, // 20MB
+			CacheMemoryThreshold:      20 * 1024 * 1024,
 			HTTPClientThreshold:       50,
-			TokenCompressionThreshold: 2 * 1024 * 1024, // 2MB
+			TokenCompressionThreshold: 2 * 1024 * 1024,
 		}
 		globalTestOrchestrator = NewMemoryTestOrchestrator(config, nil)
 	})

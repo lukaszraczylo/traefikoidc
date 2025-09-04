@@ -7,45 +7,58 @@ import (
 )
 
 // CacheItem represents an item stored in the cache with its associated metadata.
+// It stores the cached value along with expiration time for automatic cleanup.
 type CacheItem struct {
-	// Value is the cached data of any type.
+	// Value is the cached data of any type
 	Value interface{}
-
-	// ExpiresAt is the timestamp when this item should be considered expired.
+	// ExpiresAt defines when this cache entry should be considered expired
 	ExpiresAt time.Time
 }
 
-// lruEntry represents an entry in the LRU list.
+// lruEntry represents an entry in the LRU (Least Recently Used) list.
+// It stores only the key to minimize memory usage in the LRU tracking structure.
 type lruEntry struct {
+	// key is the cache key associated with this LRU entry
 	key string
 }
 
-// Cache provides a thread-safe in-memory caching mechanism with expiration support.
+// Cache provides a thread-safe, TTL-aware cache with LRU eviction policy.
 // It implements an LRU (Least Recently Used) eviction policy using a doubly-linked list for efficiency.
+// Features automatic cleanup of expired entries and bounded memory usage.
 type Cache struct {
-	items               map[string]CacheItem
-	order               *list.List
-	elems               map[string]*list.Element
-	cleanupTask         *BackgroundTask
-	logger              *Logger
-	maxSize             int
+	// items stores the actual cache data indexed by key
+	items map[string]CacheItem
+	// order maintains the LRU ordering using a doubly-linked list
+	order *list.List
+	// elems provides O(1) access to list elements for LRU updates
+	elems map[string]*list.Element
+	// cleanupTask runs periodic cleanup of expired entries
+	cleanupTask *BackgroundTask
+	// logger for debugging and monitoring cache operations
+	logger *Logger
+	// maxSize limits the number of items to prevent unbounded growth
+	maxSize int
+	// autoCleanupInterval defines how often expired entries are cleaned
 	autoCleanupInterval time.Duration
-	mutex               sync.RWMutex
+	// mutex protects all cache operations for thread safety
+	mutex sync.RWMutex
 }
 
 // DefaultMaxSize is the default maximum number of items in the cache.
+// This value provides a reasonable balance between memory usage and performance.
 const DefaultMaxSize = 500
 
-// NewCache creates a new empty cache instance with default settings.
+// NewCache creates a new cache with default configuration and no logger.
 // It initializes the internal maps and list and sets the default maximum size.
 func NewCache() *Cache {
 	return NewCacheWithLogger(nil)
 }
 
-// NewCacheWithLogger creates a new cache with a specified logger
+// NewCacheWithLogger creates a new cache with the specified logger for debugging.
+// If logger is nil, a no-op logger is used. The cache starts with automatic cleanup enabled.
 func NewCacheWithLogger(logger *Logger) *Cache {
 	if logger == nil {
-		logger = newNoOpLogger()
+		logger = GetSingletonNoOpLogger()
 	}
 
 	c := &Cache{
@@ -53,18 +66,16 @@ func NewCacheWithLogger(logger *Logger) *Cache {
 		order:               list.New(),
 		elems:               make(map[string]*list.Element, DefaultMaxSize),
 		maxSize:             DefaultMaxSize,
-		autoCleanupInterval: 15 * time.Minute, // Increased from 5 minutes to reduce overhead
+		autoCleanupInterval: 2 * time.Minute,
 		logger:              logger,
 	}
 	c.startAutoCleanup()
 	return c
 }
 
-// Set adds or updates an item in the cache with the specified key, value, and expiration duration.
-// If the key already exists, its value and expiration time are updated, and it's moved
-// to the most recently used position in the LRU list.
-// If the key does not exist and the cache is full, the least recently used item is evicted
-// before adding the new item.
+// Set stores a value in the cache with the specified expiration duration.
+// If the key already exists, it updates the value and expiration time.
+// When the cache is full, the least recently used item is evicted.
 // The expiration duration is relative to the time Set is called.
 func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 	c.mutex.Lock()
@@ -73,7 +84,6 @@ func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 	now := time.Now()
 	expTime := now.Add(expiration)
 
-	// Update existing item.
 	if _, exists := c.items[key]; exists {
 		c.items[key] = CacheItem{
 			Value:     value,
@@ -85,12 +95,10 @@ func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 		return
 	}
 
-	// Evict oldest item if cache is full.
 	if len(c.items) >= c.maxSize {
 		c.evictOldest()
 	}
 
-	// Add new item.
 	c.items[key] = CacheItem{
 		Value:     value,
 		ExpiresAt: expTime,
@@ -99,11 +107,9 @@ func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
 	c.elems[key] = elem
 }
 
-// Get retrieves an item from the cache by its key.
-// If the item exists and has not expired, its value and true are returned.
-// Accessing an item moves it to the most recently used position in the LRU list.
-// If the item does not exist or has expired, nil and false are returned, and the
-// expired item is removed from the cache.
+// Get retrieves a value from the cache and updates its LRU position.
+// Returns the value and true if found and not expired, or nil and false otherwise.
+// If an item is found but expired, the expired item is removed from the cache.
 func (c *Cache) Get(key string) (interface{}, bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -113,13 +119,11 @@ func (c *Cache) Get(key string) (interface{}, bool) {
 		return nil, false
 	}
 
-	// Check for expiration.
 	if time.Now().After(item.ExpiresAt) {
 		c.removeItem(key)
 		return nil, false
 	}
 
-	// Move item to the back (most recently used).
 	if elem, ok := c.elems[key]; ok {
 		c.order.MoveToBack(elem)
 	}
@@ -127,9 +131,8 @@ func (c *Cache) Get(key string) (interface{}, bool) {
 	return item.Value, true
 }
 
-// Delete removes an item from the cache by its key.
-// If the key exists, the corresponding item is removed from the cache storage
-// and the LRU list.
+// Delete removes an item from the cache, cleaning up both the items map
+// and the LRU list. This is a manual removal that bypasses expiration checking.
 func (c *Cache) Delete(key string) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -137,34 +140,28 @@ func (c *Cache) Delete(key string) {
 	c.removeItem(key)
 }
 
-// Cleanup iterates through the cache and removes all items that have expired.
-// An item is considered expired if the current time is after its ExpiresAt timestamp.
-// This method is called automatically by the auto-cleanup goroutine, but can also
-// be called manually.
+// Cleanup removes all expired items from the cache.
+// This method is called automatically by the background cleanup task but can also
+// be called manually for immediate cleanup of expired entries.
 func (c *Cache) Cleanup() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
 	now := time.Now()
 	for key, item := range c.items {
-		// Remove items that are expired
 		if now.After(item.ExpiresAt) {
 			c.removeItem(key)
 		}
 	}
 }
 
-// evictOldest removes the least recently used (oldest) item from the cache.
-// It first attempts to find and remove expired items, checking up to 5 items
-// from the front of the LRU list for efficiency. If no expired items are found,
-// it removes the absolute oldest item (front of the list).
-// This method is called internally by Set when the cache reaches its maximum size.
+// evictOldest removes the least recently used item from the cache.
+// It first attempts to find expired items to evict before removing valid ones.
 // Note: This function assumes the write lock is already held.
 func (c *Cache) evictOldest() {
 	now := time.Now()
 	elem := c.order.Front()
 
-	// Check up to 5 items from the front for expired entries
 	// This limits the search overhead while still finding expired items efficiently
 	const maxExpiredCheck = 5
 	checked := 0
@@ -181,19 +178,18 @@ func (c *Cache) evictOldest() {
 		checked++
 	}
 
-	// If no expired items found in the first few entries, remove the oldest item
 	if elem = c.order.Front(); elem != nil {
 		entry := elem.Value.(lruEntry)
 		c.removeItem(entry.key)
 	}
 }
 
-// SetMaxSize changes the maximum number of items the cache can hold.
-// If the new size is smaller than the current number of items in the cache,
+// SetMaxSize updates the maximum number of items the cache can hold.
+// If the new size is smaller than the current cache size, the
 // oldest items will be evicted until the cache size is within the new limit.
 func (c *Cache) SetMaxSize(size int) {
 	if size <= 0 {
-		return // Invalid size, ignore
+		return
 	}
 
 	c.mutex.Lock()
@@ -201,14 +197,13 @@ func (c *Cache) SetMaxSize(size int) {
 
 	c.maxSize = size
 
-	// If cache exceeds the new max size, evict oldest items
 	for len(c.items) > c.maxSize {
 		c.evictOldest()
 	}
 }
 
-// removeItem removes an item specified by the key from the cache's internal storage (items map)
-// and its corresponding entry from the LRU list (order list and elems map).
+// removeItem removes an item from both the cache and LRU structures.
+// It handles cleanup of all associated data structures for the given key.
 // Note: This function assumes the write lock is already held.
 func (c *Cache) removeItem(key string) {
 	delete(c.items, key)
@@ -218,14 +213,15 @@ func (c *Cache) removeItem(key string) {
 	}
 }
 
-// startAutoCleanup starts the background task that automatically calls the Cleanup method
+// startAutoCleanup begins the background cleanup task that periodically
+// removes expired entries from the cache. The task runs continuously
 // at the interval specified by c.autoCleanupInterval.
 func (c *Cache) startAutoCleanup() {
 	c.cleanupTask = NewBackgroundTask("cache-cleanup", c.autoCleanupInterval, c.Cleanup, c.logger)
 	c.cleanupTask.Start()
 }
 
-// Close stops the automatic cleanup task associated with this cache instance.
+// Close stops the background cleanup task and releases associated resources.
 // It should be called when the cache is no longer needed to prevent resource leaks.
 func (c *Cache) Close() {
 	if c.cleanupTask != nil {
