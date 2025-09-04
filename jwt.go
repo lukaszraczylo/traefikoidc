@@ -78,7 +78,7 @@ func getReplayCacheStats() (size int, maxSize int) {
 	defer replayCacheMu.RUnlock()
 
 	if replayCache == nil {
-		return 0, 0
+		return 0, 10000
 	}
 
 	return 0, 10000

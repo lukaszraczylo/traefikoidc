@@ -589,6 +589,128 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Message)
 }
 
+// OIDCError represents OIDC-specific errors with context information.
+// It provides structured error reporting for authentication and authorization failures.
+type OIDCError struct {
+	// Code identifies the specific error type
+	Code string
+	// Message provides a human-readable description
+	Message string
+	// Context contains additional error context (e.g., provider, session details)
+	Context map[string]interface{}
+	// Cause is the underlying error that caused this error
+	Cause error
+}
+
+// Error returns the string representation of the OIDC error.
+// Implements the error interface.
+func (e *OIDCError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("OIDC error [%s]: %s - caused by: %v", e.Code, e.Message, e.Cause)
+	}
+	return fmt.Sprintf("OIDC error [%s]: %s", e.Code, e.Message)
+}
+
+// Unwrap returns the underlying error for error chain unwrapping.
+func (e *OIDCError) Unwrap() error {
+	return e.Cause
+}
+
+// SessionError represents session-related errors with context.
+// Used for session management, validation, and storage errors.
+type SessionError struct {
+	// Operation describes what session operation failed
+	Operation string
+	// Message provides a human-readable description
+	Message string
+	// SessionID identifies the session (if available)
+	SessionID string
+	// Cause is the underlying error that caused this error
+	Cause error
+}
+
+// Error returns the string representation of the session error.
+// Implements the error interface.
+func (e *SessionError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("Session error in %s: %s - caused by: %v", e.Operation, e.Message, e.Cause)
+	}
+	return fmt.Sprintf("Session error in %s: %s", e.Operation, e.Message)
+}
+
+// Unwrap returns the underlying error for error chain unwrapping.
+func (e *SessionError) Unwrap() error {
+	return e.Cause
+}
+
+// TokenError represents token-related errors with validation context.
+// Used for JWT validation, token refresh, and token format errors.
+type TokenError struct {
+	// TokenType identifies the type of token (id_token, access_token, refresh_token)
+	TokenType string
+	// Reason describes why the token is invalid
+	Reason string
+	// Message provides a human-readable description
+	Message string
+	// Cause is the underlying error that caused this error
+	Cause error
+}
+
+// Error returns the string representation of the token error.
+// Implements the error interface.
+func (e *TokenError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("Token error (%s) - %s: %s - caused by: %v", e.TokenType, e.Reason, e.Message, e.Cause)
+	}
+	return fmt.Sprintf("Token error (%s) - %s: %s", e.TokenType, e.Reason, e.Message)
+}
+
+// Unwrap returns the underlying error for error chain unwrapping.
+func (e *TokenError) Unwrap() error {
+	return e.Cause
+}
+
+// NewOIDCError creates a new OIDC error with context.
+func NewOIDCError(code, message string, cause error) *OIDCError {
+	return &OIDCError{
+		Code:    code,
+		Message: message,
+		Context: make(map[string]interface{}),
+		Cause:   cause,
+	}
+}
+
+// WithContext adds context information to the OIDC error.
+func (e *OIDCError) WithContext(key string, value interface{}) *OIDCError {
+	e.Context[key] = value
+	return e
+}
+
+// NewSessionError creates a new session error with operation context.
+func NewSessionError(operation, message string, cause error) *SessionError {
+	return &SessionError{
+		Operation: operation,
+		Message:   message,
+		Cause:     cause,
+	}
+}
+
+// WithSessionID adds session ID to the session error.
+func (e *SessionError) WithSessionID(sessionID string) *SessionError {
+	e.SessionID = sessionID
+	return e
+}
+
+// NewTokenError creates a new token error with type and reason.
+func NewTokenError(tokenType, reason, message string, cause error) *TokenError {
+	return &TokenError{
+		TokenType: tokenType,
+		Reason:    reason,
+		Message:   message,
+		Cause:     cause,
+	}
+}
+
 // GracefulDegradation implements graceful degradation patterns for service resilience.
 // It provides fallback mechanisms when primary services are unavailable and monitors
 // service health to automatically recover when services become available again.

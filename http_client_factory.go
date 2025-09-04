@@ -40,7 +40,7 @@ type HTTPClientConfig struct {
 // DefaultHTTPClientConfig returns the default configuration for general use
 func DefaultHTTPClientConfig() HTTPClientConfig {
 	return HTTPClientConfig{
-		Timeout:               5 * time.Second,
+		Timeout:               30 * time.Second,
 		MaxRedirects:          10,
 		UseCookieJar:          false,
 		DialTimeout:           5 * time.Second,
@@ -63,8 +63,9 @@ func DefaultHTTPClientConfig() HTTPClientConfig {
 // TokenHTTPClientConfig returns configuration optimized for token operations
 func TokenHTTPClientConfig() HTTPClientConfig {
 	config := DefaultHTTPClientConfig()
-	config.MaxRedirects = 50   // Token endpoints may redirect more
-	config.UseCookieJar = true // Enable cookie jar for token operations
+	config.Timeout = 10 * time.Second // Shorter timeout for token operations
+	config.MaxRedirects = 50          // Token endpoints may redirect more
+	config.UseCookieJar = true        // Enable cookie jar for token operations
 	return config
 }
 

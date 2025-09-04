@@ -133,7 +133,7 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 // Cleanup removes expired entries from the JWK cache to free memory.
 // It delegates to the internal cache's cleanup method.
 func (c *JWKCache) Cleanup() {
-	if c.internalCache != nil {
+	if c != nil && c.internalCache != nil {
 		c.internalCache.Cleanup()
 	}
 }

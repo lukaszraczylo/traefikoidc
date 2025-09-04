@@ -172,20 +172,30 @@ func (c *OptimizedCache) Delete(key string) {
 // It scans the LRU list for expired entries and enforces memory limits
 // by evicting least recently used items if necessary.
 func (c *OptimizedCache) Cleanup() {
+	if c == nil {
+		return
+	}
+
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	if c.items == nil || c.head == nil || c.tail == nil {
+		return
+	}
 
 	now := time.Now()
 	toRemove := make([]*OptimizedCacheEntry, 0, len(c.items)/10)
 
-	for entry := c.head.next; entry != c.tail; entry = entry.next {
-		if now.After(entry.ExpiresAt) {
+	for entry := c.head.next; entry != nil && entry != c.tail; entry = entry.next {
+		if entry != nil && now.After(entry.ExpiresAt) {
 			toRemove = append(toRemove, entry)
 		}
 	}
 
 	for _, entry := range toRemove {
-		c.removeEntry(entry)
+		if entry != nil {
+			c.removeEntry(entry)
+		}
 	}
 
 	for c.currentMemoryBytes > c.maxMemoryBytes && len(c.items) > 0 {

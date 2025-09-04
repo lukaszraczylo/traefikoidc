@@ -751,16 +751,7 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	ticker := time.NewTicker(2 * time.Hour)
 
-	if t.goroutineWG != nil {
-		t.goroutineWG.Add(1)
-	}
-
 	go func() {
-		defer func() {
-			if t.goroutineWG != nil {
-				t.goroutineWG.Done()
-			}
-		}()
 		defer ticker.Stop()
 
 		consecutiveFailures := 0
@@ -925,7 +916,17 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 			if !t.metadataRefreshStarted && t.providerURL != "" {
 				t.metadataRefreshStarted = true
-				go t.startMetadataRefresh(t.providerURL)
+				if t.goroutineWG != nil {
+					t.goroutineWG.Add(1)
+				}
+				go func() {
+					defer func() {
+						if t.goroutineWG != nil {
+							t.goroutineWG.Done()
+						}
+					}()
+					t.startMetadataRefresh(t.providerURL)
+				}()
 			}
 		}
 		t.firstRequestMutex.Unlock()
@@ -1801,44 +1802,80 @@ func (t *TraefikOidc) validateHost(host string) error {
 // It runs periodic cleanup of token cache, JWK cache, and session chunks.
 // Includes panic recovery to ensure stability.
 func (t *TraefikOidc) startTokenCleanup() {
+	if t == nil {
+		return
+	}
+
+	// Capture values to avoid race conditions
+	tokenCache := t.tokenCache
+	jwkCache := t.jwkCache
+	sessionManager := t.sessionManager
+	logger := t.logger
+	goroutineWG := t.goroutineWG
+	stopChan := t.tokenCleanupStopChan
+	ctx := t.ctx
+
 	ticker := time.NewTicker(1 * time.Minute)
 
-	if t.goroutineWG != nil {
-		t.goroutineWG.Add(1)
+	if goroutineWG != nil {
+		goroutineWG.Add(1)
 	}
 	go func() {
 		defer func() {
-			if t.goroutineWG != nil {
-				t.goroutineWG.Done()
+			if goroutineWG != nil {
+				goroutineWG.Done()
 			}
 			ticker.Stop()
 
 			if r := recover(); r != nil {
-				t.logger.Errorf("Token cleanup goroutine panic recovered: %v", r)
+				if logger != nil {
+					logger.Errorf("Token cleanup goroutine panic recovered: %v", r)
+				}
 			}
 		}()
 
 		for {
 			select {
 			case <-ticker.C:
-				t.logger.Debug("Starting token cleanup cycle")
-				if t.tokenCache != nil {
-					t.tokenCache.Cleanup()
+				if logger != nil {
+					logger.Debug("Starting token cleanup cycle")
 				}
-				if t.jwkCache != nil {
-					t.jwkCache.Cleanup()
+				if tokenCache != nil {
+					tokenCache.Cleanup()
 				}
-				if t.sessionManager != nil {
-					t.sessionManager.PeriodicChunkCleanup()
+				if jwkCache != nil {
+					jwkCache.Cleanup()
+				}
+				if sessionManager != nil {
+					sessionManager.PeriodicChunkCleanup()
+					if logger != nil {
+						logger.Debug("Running session health monitoring")
+					}
+				}
 
-					t.logger.Debug("Running session health monitoring")
+			case <-func() <-chan struct{} {
+				if stopChan != nil {
+					return stopChan
 				}
-
-			case <-t.tokenCleanupStopChan:
-				t.logger.Debug("Token cleanup goroutine stopped.")
+				// Return a channel that never receives anything
+				c := make(chan struct{})
+				return c
+			}():
+				if logger != nil {
+					logger.Debug("Token cleanup goroutine stopped.")
+				}
 				return
-			case <-t.ctx.Done():
-				t.logger.Debug("Token cleanup goroutine stopped due to context cancellation.")
+			case <-func() <-chan struct{} {
+				if ctx != nil {
+					return ctx.Done()
+				}
+				// Return a channel that never receives anything
+				c := make(chan struct{})
+				return c
+			}():
+				if logger != nil {
+					logger.Debug("Token cleanup goroutine stopped due to context cancellation.")
+				}
 				return
 			}
 		}

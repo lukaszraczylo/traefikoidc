@@ -144,8 +144,16 @@ func (c *Cache) Delete(key string) {
 // This method is called automatically by the background cleanup task but can also
 // be called manually for immediate cleanup of expired entries.
 func (c *Cache) Cleanup() {
+	if c == nil {
+		return
+	}
+
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	if c.items == nil {
+		return
+	}
 
 	now := time.Now()
 	for key, item := range c.items {

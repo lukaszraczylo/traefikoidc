@@ -38,7 +38,9 @@ func TestInputValidatorExtended(t *testing.T) {
 func TestSessionManagerCreation(t *testing.T) {
 	logger := NewLogger("debug")
 
-	sm, err := NewSessionManager("test-secret", false, "Lax", logger)
+	// Use a 32-byte encryption key as required
+	encryptionKey := "12345678901234567890123456789012"
+	sm, err := NewSessionManager(encryptionKey, false, "Lax", logger)
 	if err != nil {
 		t.Fatalf("NewSessionManager failed: %v", err)
 	}

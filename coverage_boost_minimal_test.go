@@ -364,33 +364,24 @@ func TestReplayCacheBasic(t *testing.T) {
 // Test audience verification
 func TestAudienceVerify(t *testing.T) {
 	// Exact match
-	claims1 := map[string]interface{}{
-		"aud": "my-client",
-	}
-	if err := verifyAudience(claims1, "my-client"); err != nil {
+	if err := verifyAudience("my-client", "my-client"); err != nil {
 		t.Errorf("Exact match should succeed: %v", err)
 	}
 
 	// Array contains
-	claims2 := map[string]interface{}{
-		"aud": []interface{}{"client1", "my-client", "client2"},
-	}
-	if err := verifyAudience(claims2, "my-client"); err != nil {
+	audArray := []interface{}{"client1", "my-client", "client2"}
+	if err := verifyAudience(audArray, "my-client"); err != nil {
 		t.Errorf("Array contains should succeed: %v", err)
 	}
 
 	// Mismatch
-	claims3 := map[string]interface{}{
-		"aud": "other-client",
-	}
-	if err := verifyAudience(claims3, "my-client"); err == nil {
+	if err := verifyAudience("other-client", "my-client"); err == nil {
 		t.Error("Mismatch should fail")
 	}
 
-	// Missing
-	claims4 := map[string]interface{}{}
-	if err := verifyAudience(claims4, "my-client"); err == nil {
-		t.Error("Missing aud should fail")
+	// Missing/nil audience
+	if err := verifyAudience(nil, "my-client"); err == nil {
+		t.Error("Nil aud should fail")
 	}
 }
 

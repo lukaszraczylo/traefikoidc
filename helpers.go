@@ -263,7 +263,9 @@ func (tc *TokenCache) Delete(token string) {
 // This is typically called automatically but can be invoked manually for
 // removing expired token entries.
 func (tc *TokenCache) Cleanup() {
-	tc.cache.Cleanup()
+	if tc != nil && tc.cache != nil {
+		tc.cache.Cleanup()
+	}
 }
 
 // Close stops the cleanup goroutine and releases resources.

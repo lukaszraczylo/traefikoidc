@@ -275,21 +275,27 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 // It cleans up orphaned token chunks, expired sessions, and unused pool objects.
 // This helps maintain performance and prevent cookie accumulation in client browsers.
 func (sm *SessionManager) PeriodicChunkCleanup() {
+	if sm == nil || sm.logger == nil {
+		return
+	}
+
 	sm.logger.Debug("Starting comprehensive session cleanup cycle")
 
 	cleanupStart := time.Now()
 	var orphanedChunks, expiredSessions, cleanupErrors int
 
-	if cookieStore, ok := sm.store.(*sessions.CookieStore); ok {
-		sm.logger.Debug("Running session store cleanup")
-		_ = cookieStore
+	if sm.store != nil {
+		if cookieStore, ok := sm.store.(*sessions.CookieStore); ok {
+			sm.logger.Debug("Running session store cleanup")
+			_ = cookieStore
+		}
 	}
 
 	poolCleaned := 0
 	for i := 0; i < 10; i++ {
 		if poolSession := sm.sessionPool.Get(); poolSession != nil {
-			sessionData := poolSession.(*SessionData)
-			if sessionData != nil && !sessionData.inUse {
+			sessionData, ok := poolSession.(*SessionData)
+			if ok && sessionData != nil && !sessionData.inUse {
 				sessionData.Reset()
 				poolCleaned++
 			}
@@ -861,10 +867,6 @@ func (sd *SessionData) clearAllSessionData(r *http.Request, expire bool) {
 //   - An error if session saving fails during cleanup.
 func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	defer func() {
-		if rec := recover(); rec != nil {
-			sd.returnToPoolSafely()
-			panic(rec)
-		}
 		sd.returnToPoolSafely()
 	}()
 
