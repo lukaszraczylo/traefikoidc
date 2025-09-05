@@ -86,6 +86,15 @@ func (e *errorRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 
 // TestMetadataCache_BasicOperations tests basic cache operations
 func TestMetadataCache_BasicOperations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping basic operations test in short mode")
+	}
+
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
+
 	suite := NewMetadataCacheTestSuite()
 
 	tests := []TableTestCase{
@@ -173,6 +182,15 @@ func TestMetadataCache_BasicOperations(t *testing.T) {
 
 // TestMetadataCache_CacheHitMiss tests cache hit and miss scenarios
 func TestMetadataCache_CacheHitMiss(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping cache hit/miss test in short mode")
+	}
+
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
+
 	suite := NewMetadataCacheTestSuite()
 	testMetadata := &ProviderMetadata{
 		Issuer:   "https://example.com",
@@ -266,6 +284,15 @@ func TestMetadataCache_CacheHitMiss(t *testing.T) {
 
 // TestMetadataCache_ErrorHandling tests error scenarios
 func TestMetadataCache_ErrorHandling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping error handling test in short mode")
+	}
+
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	suite := NewMetadataCacheTestSuite()
 
 	tests := []TableTestCase{
@@ -495,6 +522,15 @@ func TestMetadataCache_AutoCleanup(t *testing.T) {
 
 // TestMetadataCache_EdgeCases tests edge cases
 func TestMetadataCache_EdgeCases(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping edge cases test in short mode")
+	}
+
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	suite := NewMetadataCacheTestSuite()
 	edgeCaseURLs := []string{
 		"",                                 // Empty URL
@@ -714,6 +750,11 @@ func TestMetadataCache_ThreadSafety(t *testing.T) {
 
 // TestMetadataCache_TimeoutHandling tests various timeout scenarios
 func TestMetadataCache_TimeoutHandling(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	suite := NewMetadataCacheTestSuite()
 
 	tests := []struct {
@@ -776,6 +817,15 @@ func TestMetadataCache_TimeoutHandling(t *testing.T) {
 
 // TestMetadataCache_ErrorRecovery tests error recovery scenarios
 func TestMetadataCache_ErrorRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping error recovery test in short mode")
+	}
+
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	suite := NewMetadataCacheTestSuite()
 	suite.setup()
 	defer suite.cleanup()
@@ -803,6 +853,11 @@ func TestMetadataCache_ErrorRecovery(t *testing.T) {
 
 // TestMetadataCache_Close tests proper resource cleanup
 func TestMetadataCache_Close(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
+
 	suite := NewMetadataCacheTestSuite()
 
 	t.Run("Close_MultipleCallsSafe", func(t *testing.T) {
@@ -822,12 +877,22 @@ func TestMetadataCache_Close(t *testing.T) {
 	t.Run("Close_WithActiveOperations", func(t *testing.T) {
 		cache := NewMetadataCacheWithLogger(&sync.WaitGroup{}, suite.logger)
 		testMetadata := &ProviderMetadata{Issuer: "test"}
-		server := suite.createTestServer(testMetadata, http.StatusOK, 100*time.Millisecond)
+
+		// Reduce server delay for race testing
+		serverDelay := 100 * time.Millisecond
+		if testing.Short() {
+			serverDelay = 10 * time.Millisecond
+		}
+		server := suite.createTestServer(testMetadata, http.StatusOK, serverDelay)
 		defer server.Close()
 
-		// Start some operations
+		// Start some operations - reduced count for race testing
+		numOperations := 5
+		if testing.Short() {
+			numOperations = 2
+		}
 		var wg sync.WaitGroup
-		for i := 0; i < 5; i++ {
+		for i := 0; i < numOperations; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -835,16 +900,24 @@ func TestMetadataCache_Close(t *testing.T) {
 			}()
 		}
 
-		// Close while operations are running
+		// Close while operations are running - reduced delay for race testing
 		go func() {
-			time.Sleep(50 * time.Millisecond)
+			closeDelay := 50 * time.Millisecond
+			if testing.Short() {
+				closeDelay = 5 * time.Millisecond
+			}
+			time.Sleep(closeDelay)
 			cache.Close()
 		}()
 
 		wg.Wait()
 
-		// Wait a bit more to ensure Close() completes
-		time.Sleep(10 * time.Millisecond)
+		// Wait a bit more to ensure Close() completes - reduced for race testing
+		finalWait := 10 * time.Millisecond
+		if testing.Short() {
+			finalWait = 2 * time.Millisecond
+		}
+		time.Sleep(finalWait)
 
 		// Should not panic or cause issues - main test is that it doesn't deadlock
 		// Note: metadata might still be present if operations completed successfully before close

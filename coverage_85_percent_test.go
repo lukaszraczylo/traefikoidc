@@ -31,22 +31,22 @@ func TestValidateGoogleTokens(t *testing.T) {
 					"iss": "https://test-issuer.com",
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(1 * time.Hour).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				accessClaims := map[string]interface{}{
 					"iss": "https://test-issuer.com",
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(1 * time.Hour).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				idToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", idClaims)
 				accessToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", accessClaims)
 
 				// Pre-cache the token claims so validateTokenExpiry can find them
-				ts.tOidc.tokenCache.Set(idToken, idClaims, 0)
-				ts.tOidc.tokenCache.Set(accessToken, accessClaims, 0)
+				ts.tOidc.tokenCache.Set(idToken, idClaims, 1*time.Hour)
+				ts.tOidc.tokenCache.Set(accessToken, accessClaims, 1*time.Hour)
 
 				session.SetIDToken(idToken)
 				session.SetAccessToken(accessToken)
@@ -67,13 +67,13 @@ func TestValidateGoogleTokens(t *testing.T) {
 					"iss": "https://test-issuer.com",
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(30 * time.Second).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(30 * time.Second).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				idToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", claims)
 
 				// Pre-cache the token claims so validateTokenExpiry can find them
-				ts.tOidc.tokenCache.Set(idToken, claims, 0)
+				ts.tOidc.tokenCache.Set(idToken, claims, 30*time.Second)
 
 				session.SetIDToken(idToken)
 				session.SetAccessToken(idToken) // Same token for access
@@ -180,13 +180,13 @@ func TestIsUserAuthenticated(t *testing.T) {
 					"iss": "https://login.microsoftonline.com/common/v2.0",
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(1 * time.Hour).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				idToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", idClaims)
 
 				// Pre-cache the token claims for Azure validation
-				ts.tOidc.tokenCache.Set(idToken, idClaims, 0)
+				ts.tOidc.tokenCache.Set(idToken, idClaims, 1*time.Hour)
 
 				session.SetIDToken(idToken)
 				return session
@@ -207,22 +207,22 @@ func TestIsUserAuthenticated(t *testing.T) {
 					"iss": "https://accounts.google.com", // Use Google's issuer
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(1 * time.Hour).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				accessClaims := map[string]interface{}{
 					"iss": "https://accounts.google.com", // Use Google's issuer
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(1 * time.Hour).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				idToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", idClaims)
 				accessToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", accessClaims)
 
 				// Pre-cache the token claims
-				ts.tOidc.tokenCache.Set(idToken, idClaims, 0)
-				ts.tOidc.tokenCache.Set(accessToken, accessClaims, 0)
+				ts.tOidc.tokenCache.Set(idToken, idClaims, 1*time.Hour)
+				ts.tOidc.tokenCache.Set(accessToken, accessClaims, 1*time.Hour)
 
 				session.SetIDToken(idToken)
 				session.SetAccessToken(accessToken)
@@ -244,22 +244,22 @@ func TestIsUserAuthenticated(t *testing.T) {
 					"iss": "https://test-issuer.com",
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(1 * time.Hour).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				accessClaims := map[string]interface{}{
 					"iss": "https://test-issuer.com",
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(1 * time.Hour).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				idToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", idClaims)
 				accessToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", accessClaims)
 
 				// Pre-cache the token claims
-				ts.tOidc.tokenCache.Set(idToken, idClaims, 0)
-				ts.tOidc.tokenCache.Set(accessToken, accessClaims, 0)
+				ts.tOidc.tokenCache.Set(idToken, idClaims, 1*time.Hour)
+				ts.tOidc.tokenCache.Set(accessToken, accessClaims, 1*time.Hour)
 
 				session.SetIDToken(idToken)
 				session.SetAccessToken(accessToken)
@@ -281,22 +281,22 @@ func TestIsUserAuthenticated(t *testing.T) {
 					"iss": "https://test-issuer.com",
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(1 * time.Hour).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				accessClaims := map[string]interface{}{
 					"iss": "https://test-issuer.com",
 					"aud": "test-client-id",
 					"sub": "test-user",
-					"exp": time.Now().Add(1 * time.Hour).Unix(),
-					"iat": time.Now().Unix(),
+					"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+					"iat": float64(time.Now().Unix()),
 				}
 				idToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", idClaims)
 				accessToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", accessClaims)
 
 				// Pre-cache the token claims
-				ts.tOidc.tokenCache.Set(idToken, idClaims, 0)
-				ts.tOidc.tokenCache.Set(accessToken, accessClaims, 0)
+				ts.tOidc.tokenCache.Set(idToken, idClaims, 1*time.Hour)
+				ts.tOidc.tokenCache.Set(accessToken, accessClaims, 1*time.Hour)
 
 				session.SetIDToken(idToken)
 				session.SetAccessToken(accessToken)

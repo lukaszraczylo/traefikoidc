@@ -120,6 +120,10 @@ func TestCacheAdapterOperations(t *testing.T) {
 
 // Test BackgroundTask operations to increase coverage
 func TestBackgroundTaskCoverage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	logger := NewLogger("debug")
 	counter := 0
 

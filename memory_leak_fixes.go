@@ -1,7 +1,6 @@
 package traefikoidc
 
 import (
-	"container/list"
 	"net/http"
 	"sync"
 	"time"
@@ -58,16 +57,12 @@ func NewLazyCacheWithLogger(logger *Logger) *Cache {
 		logger = GetSingletonNoOpLogger()
 	}
 
-	c := &Cache{
-		items:               make(map[string]CacheItem, DefaultMaxSize),
-		order:               list.New(),
-		elems:               make(map[string]*list.Element, DefaultMaxSize),
-		maxSize:             DefaultMaxSize,
-		autoCleanupInterval: 10 * time.Minute,
-		logger:              logger,
-		stopChan:            make(chan struct{}),
-	}
-	return c
+	config := DefaultUnifiedCacheConfig()
+	config.Logger = logger
+	config.EnableAutoCleanup = false // Lazy initialization
+	config.CleanupInterval = 10 * time.Minute
+	unifiedCache := NewUnifiedCache(config)
+	return NewCacheAdapter(unifiedCache)
 }
 
 // NewLazyCache creates a cache with delayed cleanup initialization.

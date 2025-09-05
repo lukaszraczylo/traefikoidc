@@ -11,6 +11,10 @@ import (
 
 // Test SetMaxSize and SetMaxMemory on caches
 func TestCacheMemoryManagement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	// OptimizedCache memory management
 	cache := NewOptimizedCache()
 	cache.SetMaxSize(100)
@@ -35,6 +39,10 @@ func TestCacheMemoryManagement(t *testing.T) {
 
 // Test BackgroundTask functionality
 func TestBackgroundTaskOperations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	// BackgroundTask requires logger and WaitGroup
 	logger := NewLogger("debug")
 	counter := 0

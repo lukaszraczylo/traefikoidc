@@ -68,7 +68,12 @@ func TestOptimizedCacheExpiration(t *testing.T) {
 func TestOptimizedCacheLRUEviction(t *testing.T) {
 	// Create small cache to trigger eviction
 	logger := newNoOpLogger()
-	cache := NewOptimizedCacheWithConfig(3, 1, logger) // Max 3 items
+	config := OptimizedCacheConfig{
+		MaxSize:           3,
+		Logger:            logger,
+		EnableMemoryLimit: false, // Disable memory limit for LRU test
+	}
+	cache := NewOptimizedCacheWithConfig(config) // Max 3 items
 
 	// Fill cache to capacity
 	cache.Set("key1", "value1", 10*time.Minute)
@@ -107,7 +112,13 @@ func TestOptimizedCacheLRUEviction(t *testing.T) {
 // TestOptimizedCacheMemoryPressure tests memory-based eviction
 func TestOptimizedCacheMemoryPressure(t *testing.T) {
 	logger := newNoOpLogger()
-	cache := NewOptimizedCacheWithConfig(1000, 1, logger) // 1 MB memory limit
+	config := OptimizedCacheConfig{
+		MaxSize:           1000,
+		MaxMemoryBytes:    1,
+		Logger:            logger,
+		EnableMemoryLimit: true,
+	}
+	cache := NewOptimizedCacheWithConfig(config) // 1 MB memory limit
 
 	// Create large values to trigger memory pressure
 	largeValue := strings.Repeat("a", 256*1024) // 256KB each

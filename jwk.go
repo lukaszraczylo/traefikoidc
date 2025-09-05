@@ -52,7 +52,7 @@ type JWKSet struct {
 // refresh when keys expire.
 type JWKCache struct {
 	// internalCache stores the cached JWKS data
-	internalCache *Cache
+	internalCache CacheInterface
 	// CacheLifetime defines how long keys are cached before refresh
 	CacheLifetime time.Duration
 	// maxSize limits the number of cached JWKS entries
@@ -75,10 +75,13 @@ type JWKCacheInterface interface {
 // NewJWKCache creates a new JWK cache with default configuration.
 // It initializes a cache with a 1-hour lifetime and maximum size of 100 entries.
 func NewJWKCache() *JWKCache {
+	config := DefaultUnifiedCacheConfig()
+	config.MaxSize = 100
+	unifiedCache := NewUnifiedCache(config)
 	cache := &JWKCache{
 		CacheLifetime: 1 * time.Hour,
 		maxSize:       100,
-		internalCache: NewCache(),
+		internalCache: NewCacheAdapter(unifiedCache),
 	}
 	return cache
 }
@@ -151,7 +154,7 @@ func (c *JWKCache) Close() {
 func (c *JWKCache) SetMaxSize(size int) {
 	c.maxSize = size
 	if c.internalCache != nil {
-		c.internalCache.maxSize = size
+		c.internalCache.SetMaxSize(size)
 	}
 }
 

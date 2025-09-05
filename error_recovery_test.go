@@ -193,6 +193,10 @@ func TestRetryExecutor(t *testing.T) {
 }
 
 func TestGracefulDegradation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping graceful degradation test in short mode")
+	}
+
 	logger := NewLogger("debug")
 	config := DefaultGracefulDegradationConfig()
 	config.HealthCheckInterval = 50 * time.Millisecond
@@ -277,6 +281,10 @@ func TestGracefulDegradation(t *testing.T) {
 }
 
 func TestErrorRecoveryManager(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping error recovery manager test in short mode")
+	}
+
 	logger := NewLogger("debug")
 	erm := NewErrorRecoveryManager(logger)
 
@@ -798,6 +806,10 @@ func TestRetryExecutorBackoffAndJitter(t *testing.T) {
 
 // Test Graceful Degradation Concurrent Scenarios
 func TestGracefulDegradationConcurrent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping graceful degradation concurrent test in short mode")
+	}
+
 	logger := NewLogger("debug")
 
 	t.Run("Concurrent service registration and execution", func(t *testing.T) {

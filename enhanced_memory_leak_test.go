@@ -18,6 +18,9 @@ import (
 // TestBackgroundGoroutineLeaks tests that background goroutines don't leak memory
 // even when no requests are made to protected resources
 func TestBackgroundGoroutineLeaks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping long-running memory leak test in short mode")
+	}
 	t.Run("Idle middleware memory growth", func(t *testing.T) {
 		// Force GC to get clean baseline
 		runtime.GC()
@@ -48,7 +51,7 @@ func TestBackgroundGoroutineLeaks(t *testing.T) {
 
 		// Take measurements every 1 second
 		for i := 0; i < 3; i++ {
-			time.Sleep(1 * time.Second)
+			time.Sleep(GetTestDuration(1 * time.Second))
 
 			runtime.GC()
 			runtime.ReadMemStats(&m)
@@ -80,7 +83,7 @@ func TestBackgroundGoroutineLeaks(t *testing.T) {
 		}
 
 		// Wait for cleanup
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(GetTestDuration(500 * time.Millisecond))
 
 		// Final check
 		runtime.GC()
@@ -155,7 +158,7 @@ func TestHTTPClientConnectionLeaks(t *testing.T) {
 		}
 
 		// Let connections sit idle briefly to test cleanup
-		time.Sleep(1 * time.Second) // Reduced for faster tests
+		time.Sleep(GetTestDuration(1 * time.Second)) // Reduced for faster tests
 
 		// Force cleanup
 		for _, client := range clients {
@@ -187,7 +190,7 @@ func TestCacheBackgroundTaskLeaks(t *testing.T) {
 				}
 			}
 			// Wait a bit for goroutines to stop
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(GetTestDuration(100 * time.Millisecond))
 		}()
 
 		for i := 0; i < 50; i++ {
@@ -200,7 +203,7 @@ func TestCacheBackgroundTaskLeaks(t *testing.T) {
 		}
 
 		// Wait for all cleanup goroutines to start
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(GetTestDuration(200 * time.Millisecond))
 
 		afterCreateGoroutines := runtime.NumGoroutine()
 		goroutineIncrease := afterCreateGoroutines - initialGoroutines
@@ -222,7 +225,7 @@ func TestCacheBackgroundTaskLeaks(t *testing.T) {
 		done := make(chan bool)
 		go func() {
 			for i := 0; i < 20; i++ { // Try for 2 seconds
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
 				currentGoroutines := runtime.NumGoroutine()
 				if currentGoroutines-initialGoroutines <= 5 {
 					done <- true
@@ -468,6 +471,10 @@ func TestMemoryPoolLeak(t *testing.T) {
 
 // TestConcurrentMemoryLeaks tests for memory leaks under concurrent load
 func TestConcurrentMemoryLeaks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping concurrent memory leak test in short mode")
+	}
+
 	t.Run("Concurrent operations memory stability", func(t *testing.T) {
 		// Reset global state
 		resetGlobalState()
@@ -602,16 +609,26 @@ func TestConcurrentMemoryLeaks(t *testing.T) {
 			}
 		}
 
-		// Start workers
+		// Start workers - reduced for race testing
 		numWorkers := 20
+		if testing.Short() {
+			numWorkers = 2
+		}
 		wg.Add(numWorkers)
 		for i := 0; i < numWorkers; i++ {
 			go worker(i)
 		}
 
-		// Let it run and measure periodically
-		for i := 0; i < 3; i++ {
-			time.Sleep(1 * time.Second)
+		// Let it run and measure periodically - reduced timing for race testing
+		iterations := 3
+		sleepDuration := 1 * time.Second
+		if testing.Short() {
+			iterations = 1
+			sleepDuration = 100 * time.Millisecond
+		}
+
+		for i := 0; i < iterations; i++ {
+			time.Sleep(sleepDuration)
 
 			runtime.GC()
 			runtime.ReadMemStats(&m)
@@ -638,8 +655,12 @@ func TestConcurrentMemoryLeaks(t *testing.T) {
 		// Clean up
 		middleware.Close()
 
-		// Final measurements
-		time.Sleep(500 * time.Millisecond)
+		// Final measurements - reduced timing for race testing
+		cleanupDelay := 500 * time.Millisecond
+		if testing.Short() {
+			cleanupDelay = 50 * time.Millisecond
+		}
+		time.Sleep(cleanupDelay)
 		runtime.GC()
 		runtime.ReadMemStats(&m)
 		finalAlloc := m.Alloc

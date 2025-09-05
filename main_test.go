@@ -2021,8 +2021,16 @@ func TestExtractGroupsAndRoles(t *testing.T) {
 // TestMultipleMiddlewareInstances verifies that multiple middleware instances
 // can be created and initialized properly for different routes
 func TestMultipleMiddlewareInstances(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	// Create mock provider metadata server
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		metadata := ProviderMetadata{
 			Issuer:        "https://test-issuer.com",
 			AuthURL:       "https://test-issuer.com/auth",
@@ -2064,6 +2072,15 @@ func TestMultipleMiddlewareInstances(t *testing.T) {
 			t.Fatalf("Middleware is not of type *TraefikOidc")
 		}
 	}
+
+	// Clean up all middleware instances to prevent goroutine leaks
+	defer func() {
+		for i, m := range middlewares {
+			if err := m.Close(); err != nil {
+				t.Errorf("Failed to close middleware instance %d: %v", i, err)
+			}
+		}
+	}()
 
 	// Wait for all instances to initialize
 	for i, m := range middlewares {
@@ -3408,6 +3425,10 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 
 // TestSessionBasedTokenRevalidation tests token revalidation in session-based scenarios
 func TestSessionBasedTokenRevalidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping session-based token revalidation test in short mode")
+	}
+
 	ts := NewTestSuite(t)
 	ts.Setup()
 
@@ -3885,8 +3906,16 @@ func TestScopeMergingMemoryEfficiency(t *testing.T) {
 
 // TestNewWithScopeAppending tests that the New function properly merges scopes
 func TestNewWithScopeAppending(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	// Create mock provider metadata server
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		metadata := ProviderMetadata{
 			Issuer:        "https://test-issuer.com",
 			AuthURL:       "https://test-issuer.com/auth",
@@ -3948,6 +3977,13 @@ func TestNewWithScopeAppending(t *testing.T) {
 
 			// Wait for initialization
 			if m, ok := middleware.(*TraefikOidc); ok {
+				// Ensure middleware is properly closed to prevent goroutine leaks
+				defer func() {
+					if err := m.Close(); err != nil {
+						t.Errorf("Failed to close middleware: %v", err)
+					}
+				}()
+
 				select {
 				case <-m.initComplete:
 				case <-time.After(5 * time.Second):

@@ -17,8 +17,10 @@ type BackgroundTask struct {
 	internalWG sync.WaitGroup
 	interval   time.Duration
 	stopOnce   sync.Once
+	startOnce  sync.Once
 	mu         sync.Mutex
 	stopped    bool
+	started    bool
 }
 
 // NewBackgroundTask creates a new background task with the specified configuration.
@@ -50,22 +52,26 @@ func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), log
 // Start begins executing the background task in a separate goroutine.
 // The task function is executed immediately, then at the configured interval.
 // The task runs immediately upon start and then at the specified interval.
+// This method is safe to call multiple times - only the first call will start the task.
 func (bt *BackgroundTask) Start() {
-	bt.mu.Lock()
-	defer bt.mu.Unlock()
+	bt.startOnce.Do(func() {
+		bt.mu.Lock()
+		defer bt.mu.Unlock()
 
-	if bt.stopped {
-		if bt.logger != nil {
-			bt.logger.Infof("Attempted to start already stopped task: %s", bt.name)
+		if bt.stopped {
+			if bt.logger != nil {
+				bt.logger.Infof("Attempted to start already stopped task: %s", bt.name)
+			}
+			return
 		}
-		return
-	}
 
-	bt.internalWG.Add(1)
-	if bt.externalWG != nil {
-		bt.externalWG.Add(1)
-	}
-	go bt.run()
+		bt.started = true
+		bt.internalWG.Add(1)
+		if bt.externalWG != nil {
+			bt.externalWG.Add(1)
+		}
+		go bt.run()
+	})
 }
 
 // Stop gracefully shuts down the background task and waits for completion.

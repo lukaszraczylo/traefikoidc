@@ -203,7 +203,7 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 // key collisions and provides a clean interface for token caching operations.
 type TokenCache struct {
 	// cache is the underlying generic cache implementation
-	cache *Cache
+	cache CacheInterface
 }
 
 // Default configuration constants for the token cache.
@@ -215,11 +215,13 @@ const (
 // NewTokenCache creates and initializes a new TokenCache with default settings.
 // The cache is configured with a maximum size and automatic cleanup of expired entries.
 func NewTokenCache() *TokenCache {
-	cache := NewCache()
-	cache.SetMaxSize(defaultTokenCacheMaxSize)
+	config := DefaultUnifiedCacheConfig()
+	config.MaxSize = defaultTokenCacheMaxSize
+	unifiedCache := NewUnifiedCache(config)
+	cacheAdapter := NewCacheAdapter(unifiedCache)
 
 	return &TokenCache{
-		cache: cache,
+		cache: cacheAdapter,
 	}
 }
 

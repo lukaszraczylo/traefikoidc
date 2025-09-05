@@ -5,12 +5,157 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// GlobalTestCleanup tracks and cleans up test resources
+type GlobalTestCleanup struct {
+	mu      sync.Mutex
+	servers []*httptest.Server
+	tasks   []*BackgroundTask
+	caches  []interface{ Close() }
+}
+
+var globalCleanup = &GlobalTestCleanup{}
+
+// RegisterServer registers an HTTP test server for cleanup
+func (g *GlobalTestCleanup) RegisterServer(server *httptest.Server) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.servers = append(g.servers, server)
+}
+
+// RegisterTask registers a background task for cleanup
+func (g *GlobalTestCleanup) RegisterTask(task *BackgroundTask) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.tasks = append(g.tasks, task)
+}
+
+// RegisterCache registers a cache for cleanup
+func (g *GlobalTestCleanup) RegisterCache(cache interface{ Close() }) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.caches = append(g.caches, cache)
+}
+
+// CleanupAll cleans up all registered resources with timeout protection
+func (g *GlobalTestCleanup) CleanupAll() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	// Close servers first
+	for _, server := range g.servers {
+		if server != nil {
+			server.Close()
+		}
+	}
+	g.servers = nil
+
+	// Stop background tasks with timeout
+	var wg sync.WaitGroup
+	for _, task := range g.tasks {
+		if task != nil {
+			wg.Add(1)
+			// Stop each task in a goroutine with timeout to prevent deadlock
+			go func(t *BackgroundTask) {
+				defer wg.Done()
+				// Give each task up to 1 second to stop
+				done := make(chan struct{})
+				go func() {
+					t.Stop()
+					close(done)
+				}()
+
+				select {
+				case <-done:
+					// Task stopped successfully
+				case <-time.After(1 * time.Second):
+					// Task didn't stop in time - log warning but continue
+					runtime.GC() // Force GC to help clean up leaked resources
+				}
+			}(task)
+		}
+	}
+	// Wait for all task cleanup goroutines to complete
+	wg.Wait()
+	g.tasks = nil
+
+	// Close caches
+	for _, cache := range g.caches {
+		if cache != nil {
+			cache.Close()
+		}
+	}
+	g.caches = nil
+
+	// Clean up the global cache manager as part of the global cleanup
+	CleanupGlobalCacheManager()
+
+	// Give background tasks time to finish cleanup
+	time.Sleep(100 * time.Millisecond)
+	runtime.GC()
+	runtime.GC() // Double GC to ensure cleanup
+}
+
+// TestCleanupHelper provides automatic cleanup for tests with goroutine leak detection
+func TestCleanupHelper(t *testing.T) {
+	// Record initial goroutine count
+	initialGoroutines := runtime.NumGoroutine()
+
+	t.Cleanup(func() {
+		// Clean up all resources
+		globalCleanup.CleanupAll()
+
+		// Check for goroutine leaks after cleanup
+		CheckGoroutineLeaks(t, initialGoroutines)
+	})
+}
+
+// CheckGoroutineLeaks detects and reports goroutine leaks
+func CheckGoroutineLeaks(t *testing.T, initialCount int) {
+	// Give goroutines time to clean up
+	time.Sleep(50 * time.Millisecond)
+	runtime.GC()
+	runtime.GC()
+
+	finalCount := runtime.NumGoroutine()
+	growth := finalCount - initialCount
+
+	// Allow for small growth (up to 2 goroutines) as some tests may have legitimate background work
+	if growth > 2 {
+		t.Errorf("Potential goroutine leak detected: started with %d, ended with %d (growth: %d)",
+			initialCount, finalCount, growth)
+
+		// Print stack traces to help debug the leak
+		buf := make([]byte, 1<<16)
+		stackSize := runtime.Stack(buf, true)
+		t.Logf("Goroutine stack traces:\n%s", buf[:stackSize])
+	}
+}
+
+// ForceGoroutineCleanup aggressively tries to clean up leaked goroutines
+func ForceGoroutineCleanup() {
+	// Multiple GC passes to ensure cleanup
+	for i := 0; i < 3; i++ {
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// GetTestDuration returns an appropriate duration based on test mode
+func GetTestDuration(normal time.Duration) time.Duration {
+	if testing.Short() {
+		// In short mode, reduce all durations by 10x
+		return normal / 10
+	}
+	return normal
+}
 
 // UnifiedMockSession provides a comprehensive mock for the Session interface
 type UnifiedMockSession struct {

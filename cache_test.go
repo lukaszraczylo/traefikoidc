@@ -13,6 +13,11 @@ import (
 
 // TestCacheBasicOperations tests the fundamental cache operations using table-driven tests
 func TestCacheBasicOperations(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
+
 	runner := NewTestSuiteRunner()
 	runner.SetTimeout(10 * time.Second)
 
@@ -110,6 +115,10 @@ func TestCacheBasicOperations(t *testing.T) {
 
 // TestCacheExpiration tests TTL functionality with edge cases
 func TestCacheExpiration(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
 	edgeGen := NewEdgeCaseGenerator()
 	expirationTimes := []time.Duration{
 		10 * time.Millisecond,  // Very short but still measurable
@@ -181,6 +190,10 @@ func TestCacheExpiration(t *testing.T) {
 
 // TestCacheSize tests size management and eviction policies
 func TestCacheSize(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
 	t.Run("SetMaxSize Eviction", func(t *testing.T) {
 		cache := NewCache()
 		defer cache.Close()
@@ -258,6 +271,10 @@ func TestCacheSize(t *testing.T) {
 
 // TestCacheConcurrency tests concurrent operations and thread safety
 func TestCacheConcurrency(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeConcurrencyStress) {
+		return
+	}
 	t.Run("Concurrent Set and Get", func(t *testing.T) {
 		cache := NewCache()
 		defer cache.Close()
@@ -348,6 +365,10 @@ func TestCacheConcurrency(t *testing.T) {
 
 // TestCacheUnifiedMemoryLeaks tests for memory leaks using unified test infrastructure
 func TestCacheUnifiedMemoryLeaks(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
 	runner := NewTestSuiteRunner()
 
 	memoryLeakTests := []MemoryLeakTestCase{
@@ -428,6 +449,10 @@ func TestCacheUnifiedMemoryLeaks(t *testing.T) {
 
 // TestCachePerformance includes benchmarks and performance validation
 func TestCachePerformance(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
 	t.Run("Basic Operations Performance", func(t *testing.T) {
 		cache := NewCache()
 		defer cache.Close()
@@ -466,6 +491,10 @@ func TestCachePerformance(t *testing.T) {
 
 // TestCacheEdgeCases tests various edge cases and error conditions
 func TestCacheEdgeCases(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
 	edgeGen := NewEdgeCaseGenerator()
 
 	t.Run("Edge Case Keys and Values", func(t *testing.T) {
@@ -546,6 +575,10 @@ func TestCacheEdgeCases(t *testing.T) {
 
 // TestCacheLRUBehavior specifically tests the LRU (Least Recently Used) eviction policy
 func TestCacheLRUBehavior(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
 	t.Run("LRU Eviction Order", func(t *testing.T) {
 		cache := NewCache()
 		cache.SetMaxSize(3)
@@ -669,6 +702,10 @@ func BenchmarkCache(b *testing.B) {
 
 // TestCache_Cleanup tests the specific cleanup functionality (converted from original test)
 func TestCache_Cleanup(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
 	c := NewCache()
 	defer c.Close()
 
@@ -695,6 +732,10 @@ func TestCache_Cleanup(t *testing.T) {
 
 // TestCache_SetMaxSize tests the specific max size functionality (converted from original test)
 func TestCache_SetMaxSize(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
 	c := NewCache()
 	defer c.Close()
 

@@ -45,8 +45,18 @@ var (
 // It provides thread-safe access to token blacklist, token cache, metadata cache,
 // and JWK cache. This centralizes cache management to ensure efficient memory
 // usage and consistent cache behavior across the application.
+// CacheInterface defines the common cache operations
+type CacheInterface interface {
+	Set(key string, value interface{}, ttl time.Duration)
+	Get(key string) (interface{}, bool)
+	Delete(key string)
+	SetMaxSize(size int)
+	Cleanup()
+	Close()
+}
+
 type CacheManager struct {
-	tokenBlacklist *Cache
+	tokenBlacklist CacheInterface
 	tokenCache     *TokenCache
 	metadataCache  *MetadataCache
 	jwkCache       JWKCacheInterface
@@ -65,10 +75,11 @@ type CacheManager struct {
 func GetGlobalCacheManager(wg *sync.WaitGroup) *CacheManager {
 	cacheManagerOnce.Do(func() {
 		globalCacheManager = &CacheManager{
-			tokenBlacklist: func() *Cache {
-				c := NewCache()
-				c.SetMaxSize(defaultMaxBlacklistSize)
-				return c
+			tokenBlacklist: func() CacheInterface {
+				config := DefaultUnifiedCacheConfig()
+				config.MaxSize = defaultMaxBlacklistSize
+				c := NewUnifiedCache(config)
+				return NewCacheAdapter(c)
 			}(),
 			tokenCache:    NewTokenCache(),
 			metadataCache: NewMetadataCache(wg),
@@ -82,8 +93,8 @@ func GetGlobalCacheManager(wg *sync.WaitGroup) *CacheManager {
 // This cache stores revoked or expired tokens to prevent replay attacks.
 // Access is protected by read lock to ensure thread safety.
 // Returns:
-//   - The shared token blacklist Cache instance.
-func (cm *CacheManager) GetSharedTokenBlacklist() *Cache {
+//   - The shared token blacklist CacheInterface instance.
+func (cm *CacheManager) GetSharedTokenBlacklist() CacheInterface {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	return cm.tokenBlacklist
@@ -128,6 +139,7 @@ func (cm *CacheManager) GetSharedJWKCache() JWKCacheInterface {
 // Close gracefully shuts down all cache components and releases resources.
 // It closes all individual caches and cleans up their associated goroutines.
 // This method should be called when the middleware is shutting down.
+// Safe to call multiple times.
 // Returns:
 //   - An error if any cache fails to close properly, nil otherwise.
 func (cm *CacheManager) Close() error {
@@ -136,23 +148,27 @@ func (cm *CacheManager) Close() error {
 
 	if cm.tokenBlacklist != nil {
 		cm.tokenBlacklist.Close()
+		cm.tokenBlacklist = nil
 	}
 	if cm.tokenCache != nil {
 		cm.tokenCache.Close()
+		cm.tokenCache = nil
 	}
 	if cm.metadataCache != nil {
 		cm.metadataCache.Close()
+		cm.metadataCache = nil
 	}
 	if cm.jwkCache != nil {
 		cm.jwkCache.Close()
+		cm.jwkCache = nil
 	}
 
 	return nil
 }
 
 // CleanupGlobalCacheManager cleans up the global cache manager instance.
-// It closes all cache components and resets the singleton to allow
-// re-initialization if needed. It's safe to call multiple times.
+// It closes all cache components but does NOT reset the singleton for re-initialization
+// to avoid race conditions with sync.Once. It's safe to call multiple times.
 // Returns:
 //   - An error if cache cleanup fails, nil otherwise.
 func CleanupGlobalCacheManager() error {
@@ -161,8 +177,8 @@ func CleanupGlobalCacheManager() error {
 
 	if globalCacheManager != nil {
 		err := globalCacheManager.Close()
-		globalCacheManager = nil
-		cacheManagerOnce = sync.Once{}
+		// Don't reset globalCacheManager to nil or cacheManagerOnce to avoid race conditions
+		// The cache manager remains closed and the Close() method handles multiple calls
 		return err
 	}
 	return nil
@@ -202,7 +218,7 @@ type TraefikOidc struct {
 	tokenExchanger             TokenExchanger
 	initComplete               chan struct{}
 	limiter                    *rate.Limiter
-	tokenBlacklist             *Cache
+	tokenBlacklist             CacheInterface
 	headerTemplates            map[string]*template.Template
 	sessionManager             *SessionManager
 	tokenCleanupStopChan       chan struct{}

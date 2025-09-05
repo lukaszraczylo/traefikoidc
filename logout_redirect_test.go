@@ -62,6 +62,10 @@ func TestPostLogoutRedirectURIConfiguration(t *testing.T) {
 }
 
 func TestLogoutWithPostLogoutRedirect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	tests := []struct {
 		name                  string
 		postLogoutRedirectURI string
@@ -153,6 +157,10 @@ func TestLogoutWithPostLogoutRedirect(t *testing.T) {
 }
 
 func TestBuildLogoutURLWithPostLogoutRedirect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	tests := []struct {
 		expectedParams        map[string]string
 		name                  string
@@ -230,6 +238,10 @@ func TestBuildLogoutURLWithPostLogoutRedirect(t *testing.T) {
 }
 
 func TestLogoutFlowIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	// Mock provider's end session endpoint
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// This won't be called in a unit test, but we keep it for completeness
@@ -304,6 +316,10 @@ func TestLogoutWithoutSession(t *testing.T) {
 }
 
 func TestPostLogoutRedirectEdgeCases(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	tests := []struct {
 		name                  string
 		postLogoutRedirectURI string
@@ -376,6 +392,10 @@ func TestPostLogoutRedirectEdgeCases(t *testing.T) {
 }
 
 func TestLogoutURLConfiguration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	tests := []struct {
 		name              string
 		logoutURL         string

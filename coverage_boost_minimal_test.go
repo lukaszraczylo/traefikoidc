@@ -31,7 +31,13 @@ func TestOptimizedCacheBasic(t *testing.T) {
 
 	// Test with config
 	logger := NewLogger("debug")
-	cache2 := NewOptimizedCacheWithConfig(50, 10, logger)
+	config := OptimizedCacheConfig{
+		MaxSize:           50,
+		MaxMemoryBytes:    10,
+		Logger:            logger,
+		EnableMemoryLimit: true,
+	}
+	cache2 := NewOptimizedCacheWithConfig(config)
 	if cache2 == nil {
 		t.Fatal("NewOptimizedCacheWithConfig returned nil")
 	}

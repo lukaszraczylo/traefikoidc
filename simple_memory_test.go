@@ -208,6 +208,10 @@ func TestChunkManagerInitialization(t *testing.T) {
 
 // TestSimpleMemoryLeakDetection provides memory leak detection using the infrastructure
 func TestSimpleMemoryLeakDetection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping simple memory leak detection in short mode")
+	}
+
 	suite := NewSimpleMemoryTestSuite()
 
 	tests := []MemoryLeakTestCase{

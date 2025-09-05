@@ -332,7 +332,7 @@ func TestRevocationErrorHandling(t *testing.T) {
 			name: "network timeout",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					time.Sleep(5 * time.Second) // Cause timeout
+					time.Sleep(GetTestDuration(2 * time.Second)) // Cause timeout
 				}))
 			},
 			expectError: true,
@@ -376,7 +376,7 @@ func TestRevocationErrorHandling(t *testing.T) {
 
 			// Use shorter timeout for tests
 			originalClient := oidc.httpClient
-			oidc.httpClient = &http.Client{Timeout: 1 * time.Second}
+			oidc.httpClient = &http.Client{Timeout: GetTestDuration(1 * time.Second)}
 			defer func() { oidc.httpClient = originalClient }()
 
 			err := oidc.RevokeTokenWithProvider("test-token", "access_token")
@@ -400,7 +400,7 @@ func TestRevocationConcurrency(t *testing.T) {
 		revocationCount++
 		mu.Unlock()
 
-		time.Sleep(10 * time.Millisecond) // Simulate processing
+		time.Sleep(GetTestDuration(10 * time.Millisecond)) // Simulate processing
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()

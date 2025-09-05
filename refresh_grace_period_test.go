@@ -74,6 +74,10 @@ func TestRefreshGracePeriodConfiguration(t *testing.T) {
 }
 
 func TestTokenRefreshWithinGracePeriod(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	// Reset global state to prevent test interference
 	resetGlobalState()
 
@@ -180,6 +184,10 @@ func TestTokenRefreshWithinGracePeriod(t *testing.T) {
 }
 
 func TestTokenRefreshOutsideGracePeriod(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	refreshCalled := false
 
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -246,6 +254,10 @@ func TestTokenRefreshOutsideGracePeriod(t *testing.T) {
 }
 
 func TestGracePeriodWithProviderSpecificBehavior(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	providers := []struct {
 		name               string
 		providerType       string
@@ -289,6 +301,10 @@ func TestGracePeriodWithProviderSpecificBehavior(t *testing.T) {
 }
 
 func TestRefreshGracePeriodConcurrency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	// Reset global state to prevent test interference
 	resetGlobalState()
 
@@ -396,6 +412,10 @@ func TestRefreshGracePeriodConcurrency(t *testing.T) {
 }
 
 func TestRefreshGracePeriodEdgeCases(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	tests := []struct {
 		name               string
 		description        string

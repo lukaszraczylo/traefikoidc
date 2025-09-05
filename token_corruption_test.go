@@ -308,8 +308,15 @@ func TestRaceConditionProtection(t *testing.T) {
 	}
 	defer session.ReturnToPool()
 
-	const numGoroutines = 20
-	const numOperations = 50
+	// Reduce test load for short mode and race detection to prevent timeouts
+	numGoroutines := 20
+	numOperations := 50
+	if testing.Short() {
+		numGoroutines = 2
+		numOperations = 5
+		t.Logf("Running in short mode: reduced to %d goroutines × %d operations = %d total operations",
+			numGoroutines, numOperations, numGoroutines*numOperations)
+	}
 
 	// Create tokens of different sizes
 	testTokens := NewTestTokens()

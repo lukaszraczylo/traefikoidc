@@ -50,7 +50,7 @@ func resetGlobalState() {
 // testCleanup provides comprehensive cleanup for tests to prevent goroutine leaks
 type testCleanup struct {
 	t       *testing.T
-	caches  []*Cache
+	caches  []CacheInterface
 	servers []*httptest.Server
 	oidcs   []*TraefikOidc
 	mu      sync.Mutex
@@ -60,32 +60,33 @@ type testCleanup struct {
 func newTestCleanup(t *testing.T) *testCleanup {
 	tc := &testCleanup{
 		t:       t,
-		caches:  make([]*Cache, 0),
+		caches:  make([]CacheInterface, 0),
 		servers: make([]*httptest.Server, 0),
 		oidcs:   make([]*TraefikOidc, 0),
 	}
-	
+
 	// Register cleanup to run even if test panics
 	t.Cleanup(func() {
 		tc.cleanupAll()
 	})
-	
+
 	return tc
 }
 
 // addCache registers a cache for cleanup
-func (tc *testCleanup) addCache(c *Cache) *Cache {
+func (tc *testCleanup) addCache(c CacheInterface) CacheInterface {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	tc.caches = append(tc.caches, c)
 	return c
 }
 
-// addTokenCache registers a token cache for cleanup  
+// addTokenCache registers a token cache for cleanup
 func (tc *testCleanup) addTokenCache(c *TokenCache) *TokenCache {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	if c != nil && c.cache != nil {
+		// c.cache is now a CacheInterface which has Close() method
 		tc.caches = append(tc.caches, c.cache)
 	}
 	return c
@@ -111,21 +112,21 @@ func (tc *testCleanup) addOIDC(o *TraefikOidc) *TraefikOidc {
 func (tc *testCleanup) cleanupAll() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
-	
+
 	// Close all caches
 	for _, c := range tc.caches {
 		if c != nil {
 			c.Close()
 		}
 	}
-	
+
 	// Close all servers
 	for _, s := range tc.servers {
 		if s != nil {
 			s.Close()
 		}
 	}
-	
+
 	// Close all OIDC instances
 	for _, o := range tc.oidcs {
 		if o != nil {
@@ -140,7 +141,7 @@ func (tc *testCleanup) cleanupAll() {
 			o.Close()
 		}
 	}
-	
+
 	// Reset global state
 	resetGlobalState()
 }

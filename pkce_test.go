@@ -88,6 +88,10 @@ func TestPKCEGeneration(t *testing.T) {
 }
 
 func TestPKCEAuthorizationFlow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	tests := []struct {
 		test       func(t *testing.T, authURL string)
 		name       string
@@ -158,6 +162,10 @@ func TestPKCEAuthorizationFlow(t *testing.T) {
 }
 
 func TestPKCESessionManagement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	tests := []struct {
 		test func(t *testing.T)
 		name string
@@ -237,6 +245,10 @@ func TestPKCESessionManagement(t *testing.T) {
 }
 
 func TestPKCETokenExchange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	tests := []struct {
 		name         string
 		codeVerifier string
@@ -310,6 +322,10 @@ func TestPKCETokenExchange(t *testing.T) {
 }
 
 func TestPKCEEndToEndFlow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	// Setup test environment
 	config := createTestConfig()
 	config.EnablePKCE = true
@@ -400,6 +416,10 @@ func TestPKCEEndToEndFlow(t *testing.T) {
 }
 
 func TestPKCESecurityEdgeCases(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	tests := []struct {
 		test func(t *testing.T)
 		name string
@@ -479,6 +499,10 @@ func TestPKCESecurityEdgeCases(t *testing.T) {
 }
 
 func TestPKCECompatibilityWithProviders(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	providers := []struct {
 		name         string
 		providerType string

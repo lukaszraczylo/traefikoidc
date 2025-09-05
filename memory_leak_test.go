@@ -11,6 +11,10 @@ import (
 )
 
 func TestMemoryLeakFixes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping memory leak fixes test in short mode")
+	}
+
 	t.Run("Cache cleanup stops properly", func(t *testing.T) {
 		// Track goroutine count before starting
 		initialGoroutines := runtime.NumGoroutine()
@@ -189,6 +193,9 @@ func TestMemoryLeakFixes(t *testing.T) {
 }
 
 func TestJWKCacheNoDoubleStorage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping JWK cache double storage test in short mode")
+	}
 	cache := NewJWKCache()
 	defer cache.Close()
 
@@ -224,6 +231,9 @@ func TestJWKCacheNoDoubleStorage(t *testing.T) {
 }
 
 func TestGlobalSingletonCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping global singleton cleanup test in short mode")
+	}
 	// Test memory pool cleanup
 	pools := GetGlobalMemoryPools()
 	if pools == nil {

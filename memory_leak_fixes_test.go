@@ -110,7 +110,7 @@ func TestOptimizedCacheLifecycleManagement(t *testing.T) {
 				}
 
 				// Wait for expiration
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
 				// Trigger cleanup
 				for i := 0; i < 50; i++ {
@@ -133,6 +133,11 @@ func TestOptimizedCacheLifecycleManagement(t *testing.T) {
 
 // TestChunkManagerBoundedSessions verifies session limits using table-driven tests
 func TestChunkManagerBoundedSessions(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
+
 	suite := NewMemoryLeakFixesTestSuite()
 
 	tests := []TableTestCase{
@@ -222,6 +227,10 @@ func TestChunkManagerBoundedSessions(t *testing.T) {
 
 // TestProviderRegistryBoundedCache verifies provider registry bounds using edge cases
 func TestProviderRegistryBoundedCache(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
 	suite := NewMemoryLeakFixesTestSuite()
 
 	// Test conceptual patterns that would be used for provider registry
@@ -295,6 +304,10 @@ func TestProviderRegistryBoundedCache(t *testing.T) {
 
 // TestErrorRecoveryLifecycleManagement tests graceful degradation cleanup
 func TestErrorRecoveryLifecycleManagement(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
 	suite := NewMemoryLeakFixesTestSuite()
 
 	// Test various error recovery scenarios
@@ -319,13 +332,13 @@ func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 				task.Start()
 
 				// Let it run briefly
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
 				// Stop the task
 				task.Stop()
 
 				// Wait for cleanup
-				time.Sleep(200 * time.Millisecond)
+				time.Sleep(GetTestDuration(200 * time.Millisecond))
 
 				return nil
 			},
@@ -354,7 +367,7 @@ func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 				}
 
 				// Let them run
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
 				// Stop all tasks
 				for _, task := range tasks {
@@ -362,7 +375,7 @@ func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 				}
 
 				// Wait for cleanup
-				time.Sleep(200 * time.Millisecond)
+				time.Sleep(GetTestDuration(200 * time.Millisecond))
 
 				return nil
 			},
@@ -394,12 +407,12 @@ func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 					task.Start()
 
 					// Brief execution
-					time.Sleep(25 * time.Millisecond)
+					time.Sleep(GetTestDuration(25 * time.Millisecond))
 
 					task.Stop()
 
 					// Wait for cleanup
-					time.Sleep(50 * time.Millisecond)
+					time.Sleep(GetTestDuration(50 * time.Millisecond))
 				}
 
 				return nil
@@ -417,6 +430,10 @@ func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 
 // TestBackgroundTaskProperShutdown verifies BackgroundTask cleans up properly using table-driven tests
 func TestBackgroundTaskProperShutdown(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
 	suite := NewMemoryLeakFixesTestSuite()
 
 	tests := []MemoryLeakTestCase{
@@ -436,7 +453,7 @@ func TestBackgroundTaskProperShutdown(t *testing.T) {
 				task.Start()
 
 				// Let it run a few times
-				time.Sleep(150 * time.Millisecond)
+				time.Sleep(GetTestDuration(150 * time.Millisecond))
 				if callCount == 0 {
 					return fmt.Errorf("task should have executed at least once")
 				}
@@ -446,7 +463,7 @@ func TestBackgroundTaskProperShutdown(t *testing.T) {
 
 				// Wait for cleanup
 				wg.Wait()
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
 				return nil
 			},
@@ -472,14 +489,14 @@ func TestBackgroundTaskProperShutdown(t *testing.T) {
 				task.Start()
 
 				// Let it run many times
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
 				// Stop the task
 				task.Stop()
 
 				// Wait for cleanup
 				wg.Wait()
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
 				return nil
 			},
@@ -512,7 +529,7 @@ func TestBackgroundTaskProperShutdown(t *testing.T) {
 					task.Start()
 
 					// Brief execution
-					time.Sleep(20 * time.Millisecond)
+					time.Sleep(GetTestDuration(20 * time.Millisecond))
 
 					task.Stop()
 					wg.Wait()
@@ -533,6 +550,11 @@ func TestBackgroundTaskProperShutdown(t *testing.T) {
 
 // TestMetadataCacheResourceCleanup verifies metadata cache cleanup using enhanced testing
 func TestMetadataCacheResourceCleanup(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
+
 	suite := NewMemoryLeakFixesTestSuite()
 
 	tests := []MemoryLeakTestCase{
@@ -548,13 +570,13 @@ func TestMetadataCacheResourceCleanup(t *testing.T) {
 				}
 
 				// Let it run briefly
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
 				// Close the cache
 				cache.Close()
 
 				// Wait for cleanup
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
 				return nil
 			},
@@ -578,11 +600,11 @@ func TestMetadataCacheResourceCleanup(t *testing.T) {
 					key := fmt.Sprintf("metadata-key-%d", i)
 					// Mock metadata operations (would need actual implementation)
 					_ = key
-					time.Sleep(5 * time.Millisecond)
+					time.Sleep(GetTestDuration(5 * time.Millisecond))
 				}
 
 				// Additional runtime before cleanup
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
 				return nil
 			},
@@ -609,7 +631,7 @@ func TestMetadataCacheResourceCleanup(t *testing.T) {
 				}
 
 				// Let them run
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
 				// Close all caches
 				for _, cache := range caches {
@@ -617,7 +639,7 @@ func TestMetadataCacheResourceCleanup(t *testing.T) {
 				}
 
 				// Wait for cleanup
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
 				return nil
 			},
@@ -634,6 +656,10 @@ func TestMetadataCacheResourceCleanup(t *testing.T) {
 
 // TestSecureDataCleanup verifies sensitive data cleanup using comprehensive edge cases
 func TestSecureDataCleanup(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
 	suite := NewMemoryLeakFixesTestSuite()
 
 	// Test secure data cleanup with various data types and sizes
@@ -744,7 +770,12 @@ func TestSecureDataCleanup(t *testing.T) {
 // TestMemoryGrowthPrevention verifies systems don't grow unbounded using enhanced testing
 func TestMemoryGrowthPrevention(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping memory growth test in short mode")
+		t.Skip("Skipping memory growth prevention test in short mode")
+	}
+
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
 	}
 
 	suite := NewMemoryLeakFixesTestSuite()
@@ -771,7 +802,7 @@ func TestMemoryGrowthPrevention(t *testing.T) {
 
 				// Force GC
 				runtime.GC()
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
 				runtime.GC()
 
 				return nil
@@ -803,7 +834,7 @@ func TestMemoryGrowthPrevention(t *testing.T) {
 				}
 
 				// Wait for expiration
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
 				// Trigger cleanup by accessing cache
 				for i := 0; i < 100; i++ {
@@ -836,7 +867,7 @@ func TestMemoryGrowthPrevention(t *testing.T) {
 					}
 
 					// Wait for some to expire
-					time.Sleep(30 * time.Millisecond)
+					time.Sleep(GetTestDuration(30 * time.Millisecond))
 
 					// Access to trigger cleanup
 					for i := 0; i < 50; i++ {
@@ -861,7 +892,12 @@ func TestMemoryGrowthPrevention(t *testing.T) {
 // TestGoroutineLeakPrevention tests concurrent components for goroutine leaks
 func TestGoroutineLeakPrevention(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping goroutine leak test in short mode")
+		t.Skip("Skipping goroutine leak prevention test in short mode")
+	}
+
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
 	}
 
 	suite := NewMemoryLeakFixesTestSuite()
@@ -893,7 +929,7 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 				wg.Wait()
 
 				// Wait for cleanup
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(GetTestDuration(500 * time.Millisecond))
 				runtime.GC()
 
 				return nil
@@ -929,7 +965,7 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 				wg.Wait()
 
 				// Cleanup wait
-				time.Sleep(300 * time.Millisecond)
+				time.Sleep(GetTestDuration(300 * time.Millisecond))
 				runtime.GC()
 
 				return nil
@@ -965,7 +1001,7 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 						taskFunc := func() {}
 						task := NewBackgroundTask(fmt.Sprintf("mixed-task-%d", i), 50*time.Millisecond, taskFunc, logger)
 						task.Start()
-						time.Sleep(25 * time.Millisecond)
+						time.Sleep(GetTestDuration(25 * time.Millisecond))
 						task.Stop()
 					}(i)
 
@@ -975,7 +1011,7 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 						defer wg.Done()
 						var localWG sync.WaitGroup
 						cache := NewMetadataCache(&localWG)
-						time.Sleep(25 * time.Millisecond)
+						time.Sleep(GetTestDuration(25 * time.Millisecond))
 						cache.Close()
 					}(i)
 				}
@@ -983,7 +1019,7 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 				wg.Wait()
 
 				// Extended cleanup wait for mixed components
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(GetTestDuration(500 * time.Millisecond))
 				runtime.GC()
 
 				return nil

@@ -69,15 +69,19 @@ func TestAdditionalCacheOperations(t *testing.T) {
 // Test error handling paths
 func TestErrorHandlingPaths(t *testing.T) {
 	// Test with nil logger (should use singleton)
-	cache := NewOptimizedCacheWithConfig(50, 0, nil)
+	config := OptimizedCacheConfig{
+		MaxSize: 50,
+		Logger:  nil,
+	}
+	cache := NewOptimizedCacheWithConfig(config)
 	if cache == nil {
 		t.Fatal("Cache should handle nil logger")
 	}
 
 	// Test UnifiedCache with nil strategy
-	config := DefaultUnifiedCacheConfig()
-	config.Strategy = nil // Should use default
-	unifiedCache := NewUnifiedCache(config)
+	config2 := DefaultUnifiedCacheConfig()
+	config2.Strategy = nil // Should use default
+	unifiedCache := NewUnifiedCache(config2)
 	if unifiedCache == nil {
 		t.Fatal("UnifiedCache should handle nil strategy")
 	}

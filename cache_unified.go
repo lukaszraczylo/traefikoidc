@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// DefaultMaxSize is the default maximum number of items in cache
+const DefaultMaxSize = 500
+
 // CacheStrategy defines the caching strategy interface
 type CacheStrategy interface {
 	// Name returns the strategy name for debugging
@@ -13,8 +16,12 @@ type CacheStrategy interface {
 	ShouldEvict(item interface{}, now time.Time) bool
 	// OnAccess is called when an item is accessed
 	OnAccess(key string, item interface{})
+	// OnRemove is called when an item is removed
+	OnRemove(key string)
 	// EstimateSize estimates the memory size of an item
 	EstimateSize(item interface{}) int64
+	// GetEvictionCandidate returns the best candidate for eviction
+	GetEvictionCandidate() (key string, found bool)
 }
 
 // UnifiedCacheConfig provides configuration for the unified cache
@@ -76,15 +83,33 @@ func NewUnifiedCache(config UnifiedCacheConfig) *UnifiedCache {
 	return c
 }
 
+// NewUnifiedCacheSimple creates a unified cache with default configuration
+// This is a drop-in replacement for the old NewCache() function
+func NewUnifiedCacheSimple() *UnifiedCache {
+	config := DefaultUnifiedCacheConfig()
+	return NewUnifiedCache(config)
+}
+
 // Set stores a value in the cache
 func (c *UnifiedCache) Set(key string, value interface{}, ttl time.Duration) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
 	// Wrap the value with metadata
+	var expiresAt time.Time
+	if ttl > 0 {
+		expiresAt = time.Now().Add(ttl)
+	} else if ttl == 0 {
+		// Zero TTL means no expiration - set to far future
+		expiresAt = time.Now().Add(100 * 365 * 24 * time.Hour) // 100 years
+	} else {
+		// Negative TTL means already expired
+		expiresAt = time.Now().Add(ttl) // This will be in the past
+	}
+
 	item := &CacheEntry{
 		Value:     value,
-		ExpiresAt: time.Now().Add(ttl),
+		ExpiresAt: expiresAt,
 		Key:       key,
 	}
 
@@ -163,10 +188,27 @@ func (c *UnifiedCache) Cleanup() {
 
 // Close stops the cache and cleans up resources
 func (c *UnifiedCache) Close() {
-	if c.cleanupTask != nil {
-		c.cleanupTask.Stop()
-		c.cleanupTask = nil
+	// Stop the cleanup task first before acquiring the lock to avoid deadlock
+	var taskToStop *BackgroundTask
+	c.mutex.Lock()
+	taskToStop = c.cleanupTask
+	c.cleanupTask = nil
+	c.mutex.Unlock()
+
+	// Stop the task outside of the lock
+	if taskToStop != nil {
+		taskToStop.Stop()
 	}
+
+	// Now acquire the lock again to clear items
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	// Clear all items to help with garbage collection
+	for key := range c.items {
+		delete(c.items, key)
+	}
+	c.currentMemoryBytes = 0
 }
 
 // SetMaxSize updates the maximum cache size
@@ -182,6 +224,14 @@ func (c *UnifiedCache) SetMaxSize(size int) {
 			break
 		}
 	}
+}
+
+// SetMaxMemory updates the maximum memory limit
+func (c *UnifiedCache) SetMaxMemory(bytes int64) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.config.MaxMemoryBytes = bytes
+	c.config.EnableMemoryLimit = bytes > 0
 }
 
 // GetMetrics returns cache metrics
@@ -205,12 +255,23 @@ func (c *UnifiedCache) removeItem(key string) {
 			c.currentMemoryBytes -= c.strategy.EstimateSize(item)
 		}
 		delete(c.items, key)
+		if c.strategy != nil {
+			c.strategy.OnRemove(key)
+		}
 	}
 }
 
 // evictOne evicts one item based on strategy
 func (c *UnifiedCache) evictOne() bool {
-	// This is a simple implementation - strategies can override
+	// Try to use strategy's eviction candidate first
+	if c.strategy != nil {
+		if key, found := c.strategy.GetEvictionCandidate(); found {
+			c.removeItem(key)
+			return true
+		}
+	}
+
+	// Fallback: evict any item
 	for key := range c.items {
 		c.removeItem(key)
 		return true
@@ -279,6 +340,17 @@ func (s *LRUStrategy) OnAccess(key string, item interface{}) {
 	}
 }
 
+// OnRemove removes item from LRU tracking
+func (s *LRUStrategy) OnRemove(key string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if node, exists := s.elements[key]; exists {
+		s.order.Remove(node)
+		delete(s.elements, key)
+	}
+}
+
 // EstimateSize estimates memory size of an item
 func (s *LRUStrategy) EstimateSize(item interface{}) int64 {
 	// Basic size estimation
@@ -308,6 +380,18 @@ func (s *LRUStrategy) EstimateSize(item interface{}) int64 {
 	}
 
 	return size
+}
+
+// GetEvictionCandidate returns the least recently used item
+func (s *LRUStrategy) GetEvictionCandidate() (key string, found bool) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// The actual first element is head.next (head is a sentinel)
+	if s.order.head != nil && s.order.head.next != nil && s.order.head.next != s.order.tail {
+		return s.order.head.next.Key, true
+	}
+	return "", false
 }
 
 // DoublyLinkedList provides a simple doubly-linked list for LRU
@@ -376,6 +460,18 @@ func (l *DoublyLinkedList) PopFront() *ListNode {
 	return front
 }
 
+// Remove removes a node from the list
+func (l *DoublyLinkedList) Remove(node *ListNode) {
+	if node == nil || node.prev == nil || node.next == nil {
+		return
+	}
+	node.prev.next = node.next
+	node.next.prev = node.prev
+	node.prev = nil
+	node.next = nil
+	l.size--
+}
+
 // CacheAdapter provides backward compatibility with existing cache interfaces
 type CacheAdapter struct {
 	unified *UnifiedCache
@@ -414,4 +510,9 @@ func (a *CacheAdapter) Close() {
 // SetMaxSize adapts the SetMaxSize method
 func (a *CacheAdapter) SetMaxSize(size int) {
 	a.unified.SetMaxSize(size)
+}
+
+// SetMaxMemory adapts the SetMaxMemory method
+func (a *CacheAdapter) SetMaxMemory(bytes int64) {
+	a.unified.SetMaxMemory(bytes)
 }

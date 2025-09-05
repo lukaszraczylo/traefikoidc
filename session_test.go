@@ -16,6 +16,11 @@ import (
 
 // TestSessionPoolMemoryLeak tests that session objects are properly returned to the pool
 func TestSessionPoolMemoryLeak(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
+
 	testTokens := NewTestTokens()
 	edgeGen := NewEdgeCaseGenerator()
 	runner := NewTestSuiteRunner()
@@ -119,6 +124,11 @@ func TestSessionPoolMemoryLeak(t *testing.T) {
 
 // TestSessionErrorHandling tests comprehensive error scenarios using table-driven tests
 func TestSessionErrorHandling(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
+
 	edgeGen := NewEdgeCaseGenerator()
 	runner := NewTestSuiteRunner()
 
@@ -197,6 +207,11 @@ func TestSessionErrorHandling(t *testing.T) {
 
 // TestSessionClearAlwaysReturnsToPool tests that sessions are always returned to pool even on errors
 func TestSessionClearAlwaysReturnsToPool(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
+
 	runner := NewTestSuiteRunner()
 
 	memoryTests := []MemoryLeakTestCase{
@@ -259,6 +274,11 @@ func TestSessionClearAlwaysReturnsToPool(t *testing.T) {
 
 // TestSessionObjectTracking tests session object tracking and pool behavior
 func TestSessionObjectTracking(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeQuick) {
+		return
+	}
+
 	runner := NewTestSuiteRunner()
 
 	tests := []TableTestCase{
@@ -334,6 +354,11 @@ func TestSessionObjectTracking(t *testing.T) {
 
 // TestTokenCompressionIntegrity tests token compression using comprehensive test cases
 func TestTokenCompressionIntegrity(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	testTokens := NewTestTokens()
 	edgeGen := NewEdgeCaseGenerator()
 	runner := NewTestSuiteRunner()
@@ -429,6 +454,11 @@ func TestTokenCompressionIntegrity(t *testing.T) {
 
 // TestTokenCompressionCorruptionDetection tests corruption detection using table-driven approach
 func TestTokenCompressionCorruptionDetection(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	testTokens := NewTestTokens()
 	runner := NewTestSuiteRunner()
 
@@ -482,6 +512,11 @@ func TestTokenCompressionCorruptionDetection(t *testing.T) {
 
 // TestTokenChunkingIntegrity tests token chunking using comprehensive test patterns
 func TestTokenChunkingIntegrity(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	testTokens := NewTestTokens()
 	edgeGen := NewEdgeCaseGenerator()
 	runner := NewTestSuiteRunner()
@@ -576,6 +611,11 @@ func TestTokenChunkingIntegrity(t *testing.T) {
 
 // TestTokenChunkingCorruptionResistance tests chunking corruption resistance using table patterns
 func TestTokenChunkingCorruptionResistance(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	testTokens := NewTestTokens()
 	runner := NewTestSuiteRunner()
 
@@ -675,6 +715,11 @@ func TestTokenChunkingCorruptionResistance(t *testing.T) {
 
 // TestTokenSizeLimits tests token size limit enforcement using table-driven tests
 func TestTokenSizeLimits(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	testTokens := NewTestTokens()
 	edgeGen := NewEdgeCaseGenerator()
 	runner := NewTestSuiteRunner()
@@ -757,6 +802,11 @@ func TestTokenSizeLimits(t *testing.T) {
 
 // TestConcurrentTokenOperations tests thread safety using structured test patterns
 func TestConcurrentTokenOperations(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeConcurrencyStress) {
+		return
+	}
+
 	testTokens := NewTestTokens()
 	runner := NewTestSuiteRunner()
 
@@ -833,6 +883,11 @@ func TestConcurrentTokenOperations(t *testing.T) {
 
 // TestSessionValidationAndCleanup tests session validation using comprehensive patterns
 func TestSessionValidationAndCleanup(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	testTokens := NewTestTokens()
 	edgeGen := NewEdgeCaseGenerator()
 	runner := NewTestSuiteRunner()
@@ -915,6 +970,11 @@ func TestSessionValidationAndCleanup(t *testing.T) {
 
 // TestLargeIDTokenChunking tests ID token chunking using structured approach
 func TestLargeIDTokenChunking(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeExtended) {
+		return
+	}
+
 	runner := NewTestSuiteRunner()
 
 	tests := []TableTestCase{

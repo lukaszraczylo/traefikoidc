@@ -36,6 +36,10 @@ func TestProfilingManager(t *testing.T) {
 }
 
 func TestMemoryTestOrchestrator(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	logger := NewLogger("debug")
 	config := LeakDetectionConfig{
 		EnableLeakDetection: true,
@@ -84,6 +88,10 @@ func TestMemoryTestOrchestrator(t *testing.T) {
 }
 
 func TestComponentProfilers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	logger := NewLogger("debug")
 
 	// Test Session Pool Profiler
@@ -140,6 +148,10 @@ func TestComponentProfilers(t *testing.T) {
 }
 
 func TestLeakAnalysis(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	logger := NewLogger("debug")
 	pm := NewProfilingManager(logger)
 
@@ -170,6 +182,10 @@ func TestLeakAnalysis(t *testing.T) {
 }
 
 func TestGlobalInstances(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	// Test global profiling manager
 	gpm := GetGlobalProfilingManager()
 	if gpm == nil {
@@ -195,6 +211,10 @@ func TestGlobalInstances(t *testing.T) {
 }
 
 func TestProfilingConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	config := ProfilingConfig{
 		EnableHeapProfiling:        true,
 		EnableGoroutineProfiling:   true,
@@ -219,6 +239,10 @@ func TestProfilingConfig(t *testing.T) {
 }
 
 func TestLeakDetectionConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	config := LeakDetectionConfig{
 		EnableLeakDetection:       true,
 		LeakThresholdMB:           50,
@@ -335,6 +359,9 @@ func (pmp *ProviderMetadataProfiler) AnalyzeLeaks(baseline, current *MemorySnaps
 
 // TestProviderMetadataMemoryLeakDetection tests for memory leaks in provider metadata operations
 func TestProviderMetadataMemoryLeakDetection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping provider metadata memory leak detection test in short mode")
+	}
 	logger := NewLogger("debug")
 
 	strictMode := os.Getenv("STRICT_MEMORY_TEST") == "true"
@@ -533,7 +560,7 @@ func TestProviderMetadataMemoryLeakDetection(t *testing.T) {
 	t.Log("Phase 4: Testing background goroutine lifecycle...")
 
 	// Wait longer to allow background cleanup to run
-	time.Sleep(1 * time.Second)
+	time.Sleep(GetTestDuration(1 * time.Second))
 
 	// Take final snapshot after cleanup
 	finalAfterCleanup, err := profiler.TakeSnapshot()
@@ -561,6 +588,10 @@ func TestProviderMetadataMemoryLeakDetection(t *testing.T) {
 
 // TestMemoryPoolLeakDetection tests for memory leaks in memory pool operations
 func TestMemoryPoolLeakDetection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	logger := NewLogger("debug")
 
 	strictMode := os.Getenv("STRICT_MEMORY_TEST") == "true"
@@ -758,7 +789,7 @@ func TestMemoryPoolLeakDetection(t *testing.T) {
 	runtime.GC()
 	runtime.GC() // Run twice to ensure cleanup
 
-	time.Sleep(10 * time.Millisecond) // Allow cleanup to complete
+	time.Sleep(GetTestDuration(10 * time.Millisecond)) // Allow cleanup to complete
 
 	// Take post-cleanup snapshot
 	postCleanup, err := profiler.TakeSnapshot()
