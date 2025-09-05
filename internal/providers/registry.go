@@ -13,14 +13,19 @@ type ProviderRegistry struct {
 	typeMap   map[ProviderType]OIDCProvider
 	providers []OIDCProvider
 	mu        sync.RWMutex
+	// Bounded cache configuration to prevent memory leaks
+	maxCacheSize int
+	cacheCount   int
 }
 
 // NewProviderRegistry creates and initializes a new ProviderRegistry.
 func NewProviderRegistry() *ProviderRegistry {
 	return &ProviderRegistry{
-		providers: make([]OIDCProvider, 0),
-		cache:     make(map[string]OIDCProvider),
-		typeMap:   make(map[ProviderType]OIDCProvider),
+		providers:    make([]OIDCProvider, 0),
+		cache:        make(map[string]OIDCProvider),
+		typeMap:      make(map[ProviderType]OIDCProvider),
+		maxCacheSize: 1000, // Prevent unbounded cache growth
+		cacheCount:   0,
 	}
 }
 
@@ -59,6 +64,18 @@ func (r *ProviderRegistry) ClearCache() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cache = make(map[string]OIDCProvider)
+	r.cacheCount = 0
+}
+
+// evictOldestCacheEntry removes the first cache entry when cache is full
+// This is a simple eviction strategy - in production, LRU might be preferred
+func (r *ProviderRegistry) evictOldestCacheEntry() {
+	// Simple eviction: remove first entry found
+	for key := range r.cache {
+		delete(r.cache, key)
+		r.cacheCount--
+		break
+	}
 }
 
 // DetectProvider identifies the appropriate OIDC provider for an issuer URL.
@@ -80,7 +97,13 @@ func (r *ProviderRegistry) DetectProvider(issuerURL string) OIDCProvider {
 
 	detectedProvider := r.detectProviderUnsafe(issuerURL)
 
+	// Check if cache is full and evict if necessary
+	if r.cacheCount >= r.maxCacheSize {
+		r.evictOldestCacheEntry()
+	}
+
 	r.cache[issuerURL] = detectedProvider
+	r.cacheCount++
 
 	return detectedProvider
 }

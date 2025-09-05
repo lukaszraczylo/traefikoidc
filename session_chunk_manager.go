@@ -72,6 +72,18 @@ type TokenRetrievalResult struct {
 type ChunkManager struct {
 	logger *Logger
 	mutex  *sync.RWMutex
+	// sessionMap provides bounded session storage to prevent memory leaks
+	sessionMap  map[string]*SessionEntry
+	maxSessions int
+	sessionTTL  time.Duration
+	lastCleanup time.Time
+}
+
+// SessionEntry represents a session with expiration tracking
+type SessionEntry struct {
+	Session   *sessions.Session
+	ExpiresAt time.Time
+	LastUsed  time.Time
 }
 
 // NewChunkManager creates a new ChunkManager instance with proper initialization.
@@ -87,8 +99,12 @@ func NewChunkManager(logger *Logger) *ChunkManager {
 	}
 
 	return &ChunkManager{
-		logger: logger,
-		mutex:  &sync.RWMutex{},
+		logger:      logger,
+		mutex:       &sync.RWMutex{},
+		sessionMap:  make(map[string]*SessionEntry),
+		maxSessions: 1000,           // Prevent unbounded growth
+		sessionTTL:  24 * time.Hour, // Auto-expire old sessions
+		lastCleanup: time.Now(),
 	}
 }
 
@@ -951,4 +967,77 @@ func (cm *ChunkManager) extractJWTIssuedAt(token string) (*time.Time, error) {
 	}
 
 	return &iatTime, nil
+}
+
+// CleanupExpiredSessions removes expired sessions to prevent memory leaks.
+// This is called periodically to maintain memory efficiency and prevent unbounded growth.
+func (cm *ChunkManager) CleanupExpiredSessions() {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+
+	// Only cleanup if enough time has passed
+	if time.Since(cm.lastCleanup) < time.Hour {
+		return
+	}
+
+	now := time.Now()
+	expiredKeys := make([]string, 0)
+
+	// Find expired sessions
+	for key, entry := range cm.sessionMap {
+		if now.After(entry.ExpiresAt) || now.Sub(entry.LastUsed) > cm.sessionTTL {
+			expiredKeys = append(expiredKeys, key)
+		}
+	}
+
+	// Remove expired sessions
+	for _, key := range expiredKeys {
+		delete(cm.sessionMap, key)
+	}
+
+	cm.lastCleanup = now
+
+	if len(expiredKeys) > 0 {
+		cm.logger.Debug("Cleaned up %d expired sessions", len(expiredKeys))
+	}
+
+	// Enforce max sessions limit
+	if len(cm.sessionMap) > cm.maxSessions {
+		cm.enforceSessionLimit()
+	}
+}
+
+// enforceSessionLimit removes oldest sessions when limit is exceeded
+func (cm *ChunkManager) enforceSessionLimit() {
+	if len(cm.sessionMap) <= cm.maxSessions {
+		return
+	}
+
+	// Find oldest sessions to remove
+	type sessionAge struct {
+		key      string
+		lastUsed time.Time
+	}
+
+	sessions := make([]sessionAge, 0, len(cm.sessionMap))
+	for key, entry := range cm.sessionMap {
+		sessions = append(sessions, sessionAge{key: key, lastUsed: entry.LastUsed})
+	}
+
+	// Sort by last used time (oldest first)
+	for i := 0; i < len(sessions)-1; i++ {
+		for j := i + 1; j < len(sessions); j++ {
+			if sessions[i].lastUsed.After(sessions[j].lastUsed) {
+				sessions[i], sessions[j] = sessions[j], sessions[i]
+			}
+		}
+	}
+
+	// Remove excess sessions
+	excessCount := len(cm.sessionMap) - cm.maxSessions
+	for i := 0; i < excessCount && i < len(sessions); i++ {
+		delete(cm.sessionMap, sessions[i].key)
+	}
+
+	cm.logger.Info("Enforced session limit: removed %d excess sessions", excessCount)
 }

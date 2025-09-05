@@ -1,6 +1,7 @@
 package traefikoidc
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"sync"
@@ -44,6 +45,14 @@ type OptimizedCache struct {
 	autoCleanupInterval time.Duration
 	// mutex provides thread safety for all operations
 	mutex sync.RWMutex
+	// ctx provides context for background operations
+	ctx context.Context
+	// cancel cancels background operations
+	cancel context.CancelFunc
+	// wg tracks background goroutines
+	wg sync.WaitGroup
+	// closed indicates if cache has been closed
+	closed bool
 }
 
 // normalizeKey ensures keys are within reasonable limits by hashing long keys.
@@ -93,6 +102,8 @@ func NewOptimizedCacheWithConfig(maxSize int, maxMemoryMB int, logger *Logger) *
 		maxMemoryBytes = 64 * 1024 * 1024
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	c := &OptimizedCache{
 		items:               make(map[string]*OptimizedCacheEntry, maxSize),
 		head:                head,
@@ -101,6 +112,8 @@ func NewOptimizedCacheWithConfig(maxSize int, maxMemoryMB int, logger *Logger) *
 		maxMemoryBytes:      maxMemoryBytes,
 		autoCleanupInterval: 2 * time.Minute,
 		logger:              logger,
+		ctx:                 ctx,
+		cancel:              cancel,
 	}
 
 	c.startAutoCleanup()
@@ -115,6 +128,12 @@ func NewOptimizedCacheWithConfig(maxSize int, maxMemoryMB int, logger *Logger) *
 //   - value: The value to store
 //   - expiration: Time until the item expires
 func (c *OptimizedCache) Set(key string, value interface{}, expiration time.Duration) {
+	c.mutex.RLock()
+	if c.closed {
+		c.mutex.RUnlock()
+		return
+	}
+	c.mutex.RUnlock()
 	// Normalize the key to handle long keys
 	normalizedKey := c.normalizeKey(key)
 
@@ -164,6 +183,12 @@ func (c *OptimizedCache) Set(key string, value interface{}, expiration time.Dura
 // automatically removes expired items when encountered.
 // Returns the value and true if found and valid, or nil and false otherwise.
 func (c *OptimizedCache) Get(key string) (interface{}, bool) {
+	c.mutex.RLock()
+	if c.closed {
+		c.mutex.RUnlock()
+		return nil, false
+	}
+	c.mutex.RUnlock()
 	// Normalize the key to handle long keys
 	normalizedKey := c.normalizeKey(key)
 
@@ -209,7 +234,8 @@ func (c *OptimizedCache) Cleanup() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.items == nil || c.head == nil || c.tail == nil {
+	// Check if cache is closed - if so, exit early
+	if c.closed || c.items == nil || c.head == nil || c.tail == nil {
 		return
 	}
 
@@ -319,6 +345,44 @@ func (c *OptimizedCache) estimateEntrySize(entry *OptimizedCacheEntry) int64 {
 	return size
 }
 
+// securelyZeroEntry securely clears sensitive data from a cache entry
+func (c *OptimizedCache) securelyZeroEntry(entry *OptimizedCacheEntry) {
+	if entry == nil {
+		return
+	}
+
+	// Zero out the key - Cannot modify string directly, but we can ensure it's cleared by GC
+	_ = entry.Key
+
+	// Securely zero value if it contains sensitive data
+	switch v := entry.Value.(type) {
+	case []byte:
+		for i := range v {
+			v[i] = 0
+		}
+	case string:
+		// For string values that might contain tokens, we can't modify directly
+		// but we set to empty to help GC
+		entry.Value = ""
+	case map[string]interface{}:
+		for key, val := range v {
+			switch val := val.(type) {
+			case []byte:
+				for i := range val {
+					val[i] = 0
+				}
+			case string:
+				v[key] = ""
+			}
+		}
+	}
+
+	// Clear references to help GC
+	entry.Value = nil
+	entry.prev = nil
+	entry.next = nil
+}
+
 // SetMaxSize changes the maximum number of items the cache can hold.
 // If the new limit is smaller than current size, least recently used items are evicted.
 func (c *OptimizedCache) SetMaxSize(size int) {
@@ -360,15 +424,52 @@ func (c *OptimizedCache) SetMaxMemory(maxMemoryMB int) {
 // startAutoCleanup starts the background cleanup task for automatic maintenance.
 // The task runs periodically to remove expired entries and enforce memory limits.
 func (c *OptimizedCache) startAutoCleanup() {
-	c.cleanupTask = NewBackgroundTask("optimized-cache-cleanup", c.autoCleanupInterval, c.Cleanup, c.logger)
+	c.cleanupTask = NewBackgroundTask("optimized-cache-cleanup", c.autoCleanupInterval, c.Cleanup, c.logger, &c.wg)
 	c.cleanupTask.Start()
 }
 
 // Close stops the automatic cleanup task and releases resources.
 // Should be called when the cache is no longer needed to prevent resource leaks.
 func (c *OptimizedCache) Close() {
-	if c.cleanupTask != nil {
-		c.cleanupTask.Stop()
-		c.cleanupTask = nil
+	// First, mark as closed and cancel context without holding the lock
+	c.mutex.Lock()
+	if c.closed {
+		c.mutex.Unlock()
+		return
+	}
+	c.closed = true
+
+	// Cancel context to stop all background operations
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	// Get reference to cleanup task before unlocking
+	cleanupTask := c.cleanupTask
+	c.mutex.Unlock()
+
+	// Stop the cleanup task WITHOUT holding the lock to avoid deadlock
+	if cleanupTask != nil {
+		cleanupTask.Stop()
+	}
+
+	// Wait for all background operations to complete
+	c.wg.Wait()
+
+	// Now safely clear all cache entries with lock
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	// Clear the cleanup task reference
+	c.cleanupTask = nil
+
+	// Securely clear all cache entries containing sensitive data
+	for key, entry := range c.items {
+		c.securelyZeroEntry(entry)
+		delete(c.items, key)
+	}
+
+	if c.logger != nil {
+		c.logger.Debug("OptimizedCache closed and resources cleaned up")
 	}
 }

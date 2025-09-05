@@ -65,6 +65,7 @@ func NewLazyCacheWithLogger(logger *Logger) *Cache {
 		maxSize:             DefaultMaxSize,
 		autoCleanupInterval: 10 * time.Minute,
 		logger:              logger,
+		stopChan:            make(chan struct{}),
 	}
 	return c
 }

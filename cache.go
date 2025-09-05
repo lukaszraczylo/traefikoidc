@@ -42,6 +42,8 @@ type Cache struct {
 	autoCleanupInterval time.Duration
 	// mutex protects all cache operations for thread safety
 	mutex sync.RWMutex
+	// stopChan for controlled shutdown
+	stopChan chan struct{}
 }
 
 // DefaultMaxSize is the default maximum number of items in the cache.
@@ -68,6 +70,7 @@ func NewCacheWithLogger(logger *Logger) *Cache {
 		maxSize:             DefaultMaxSize,
 		autoCleanupInterval: 2 * time.Minute,
 		logger:              logger,
+		stopChan:            make(chan struct{}),
 	}
 	c.startAutoCleanup()
 	return c
@@ -232,8 +235,63 @@ func (c *Cache) startAutoCleanup() {
 // Close stops the background cleanup task and releases associated resources.
 // It should be called when the cache is no longer needed to prevent resource leaks.
 func (c *Cache) Close() {
-	if c.cleanupTask != nil {
-		c.cleanupTask.Stop()
-		c.cleanupTask = nil
+	// First, close the stop channel and get cleanup task reference without holding lock
+	c.mutex.Lock()
+
+	// Stop channel first
+	select {
+	case <-c.stopChan:
+		// Already closed
+		c.mutex.Unlock()
+		return
+	default:
+		close(c.stopChan)
+	}
+
+	// Get reference to cleanup task before unlocking
+	cleanupTask := c.cleanupTask
+	c.mutex.Unlock()
+
+	// Stop the cleanup task WITHOUT holding the lock to avoid deadlock
+	if cleanupTask != nil {
+		cleanupTask.Stop()
+	}
+
+	// Now safely clear cache entries with lock
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	// Clear the cleanup task reference
+	c.cleanupTask = nil
+
+	// Clear all cache entries with secure cleanup for sensitive data
+	for key, entry := range c.items {
+		c.securelyZeroEntry(&entry)
+		delete(c.items, key)
+	}
+
+	if c.logger != nil {
+		c.logger.Debug("Cache closed and resources cleaned up")
+	}
+}
+
+// securelyZeroEntry securely clears sensitive data from a cache entry
+func (c *Cache) securelyZeroEntry(entry *CacheItem) {
+	if entry == nil {
+		return
+	}
+
+	// Securely zero value if it contains sensitive data
+	switch v := entry.Value.(type) {
+	case []byte:
+		for i := range v {
+			v[i] = 0
+		}
+	case string:
+		// For string values that might contain tokens, set to empty to help GC
+		entry.Value = ""
+	default:
+		// Clear reference to help GC
+		entry.Value = nil
 	}
 }

@@ -692,7 +692,18 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	logger.Debugf("TraefikOidc.New: Final t.scopes initialized to: %v", t.scopes)
 
 	t.providerURL = config.ProviderURL
-	go t.initializeMetadata(config.ProviderURL)
+	// Initialize metadata in background but track the goroutine
+	if t.goroutineWG != nil {
+		t.goroutineWG.Add(1)
+	}
+	go func() {
+		defer func() {
+			if t.goroutineWG != nil {
+				t.goroutineWG.Done()
+			}
+		}()
+		t.initializeMetadata(config.ProviderURL)
+	}()
 
 	return t, nil
 }

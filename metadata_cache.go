@@ -192,8 +192,42 @@ func (c *MetadataCache) startAutoCleanup() {
 // Close stops the automatic cleanup task and releases resources.
 // This should be called when the cache is no longer needed to prevent resource leaks.
 func (c *MetadataCache) Close() {
-	if c.cleanupTask != nil {
-		c.cleanupTask.Stop()
-		c.cleanupTask = nil
+	// First, close the stop channel and get cleanup task reference without holding lock
+	c.mutex.Lock()
+
+	// Stop channel first
+	select {
+	case <-c.stopChan:
+		// Already closed
+		c.mutex.Unlock()
+		return
+	default:
+		close(c.stopChan)
+	}
+
+	// Get reference to cleanup task before unlocking
+	cleanupTask := c.cleanupTask
+	c.mutex.Unlock()
+
+	// Stop the cleanup task WITHOUT holding the lock to avoid deadlock
+	if cleanupTask != nil {
+		cleanupTask.Stop()
+	}
+
+	// Wait for background operations if WaitGroup is provided
+	if c.wg != nil {
+		c.wg.Wait()
+	}
+
+	// Now safely clear the cleanup task reference
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.cleanupTask = nil
+
+	// Clear cached metadata
+	c.metadata = nil
+
+	if c.logger != nil {
+		c.logger.Debug("MetadataCache closed and resources cleaned up")
 	}
 }

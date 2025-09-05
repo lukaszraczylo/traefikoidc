@@ -727,6 +727,12 @@ type GracefulDegradation struct {
 	config GracefulDegradationConfig
 	// mutex protects shared state
 	mutex sync.RWMutex
+	// healthCheckTask manages background health checking
+	healthCheckTask *BackgroundTask
+	// stopChan signals shutdown
+	stopChan chan struct{}
+	// shutdownOnce ensures shutdown happens only once
+	shutdownOnce sync.Once
 }
 
 // GracefulDegradationConfig holds configuration for graceful degradation behavior.
@@ -762,6 +768,7 @@ func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *G
 		config:                config,
 	}
 
+	gd.stopChan = make(chan struct{})
 	go gd.startHealthCheckRoutine()
 
 	return gd
@@ -867,13 +874,13 @@ func (gd *GracefulDegradation) executeFallback(serviceName string) (interface{},
 
 // startHealthCheckRoutine starts the background health check routine
 func (gd *GracefulDegradation) startHealthCheckRoutine() {
-	healthCheckTask := NewBackgroundTask(
+	gd.healthCheckTask = NewBackgroundTask(
 		"graceful-degradation-health-check",
 		gd.config.HealthCheckInterval,
 		gd.performHealthChecks,
 		gd.BaseRecoveryMechanism.logger,
 	)
-	healthCheckTask.Start()
+	gd.healthCheckTask.Start()
 }
 
 // performHealthChecks runs health checks for all registered services
@@ -919,6 +926,27 @@ func (gd *GracefulDegradation) Reset() {
 
 	gd.degradedServices = make(map[string]time.Time)
 	gd.LogInfo("Graceful degradation state has been reset")
+}
+
+// Close shuts down the graceful degradation system and cleans up resources
+func (gd *GracefulDegradation) Close() {
+	gd.shutdownOnce.Do(func() {
+		// Signal shutdown
+		select {
+		case <-gd.stopChan:
+			// Already closed
+		default:
+			close(gd.stopChan)
+		}
+
+		// Stop health check task
+		if gd.healthCheckTask != nil {
+			gd.healthCheckTask.Stop()
+			gd.healthCheckTask = nil
+		}
+
+		gd.logger.Info("GracefulDegradation shut down successfully")
+	})
 }
 
 // IsAvailable returns whether the mechanism is available for use

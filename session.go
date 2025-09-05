@@ -291,6 +291,11 @@ func (sm *SessionManager) PeriodicChunkCleanup() {
 		}
 	}
 
+	// Cleanup expired sessions in chunk manager to prevent memory leaks
+	if sm.chunkManager != nil {
+		sm.chunkManager.CleanupExpiredSessions()
+	}
+
 	poolCleaned := 0
 	for i := 0; i < 10; i++ {
 		if poolSession := sm.sessionPool.Get(); poolSession != nil {

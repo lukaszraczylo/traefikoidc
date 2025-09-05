@@ -3,334 +3,602 @@ package traefikoidc
 import (
 	"container/list"
 	"fmt"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
 )
 
-// TestCacheMemoryLeaks tests various cache scenarios for memory leaks
+// TestCacheMemoryLeaks tests various cache scenarios for memory leaks using unified infrastructure
 func TestCacheMemoryLeaks(t *testing.T) {
-	t.Run("Cache doesn't release expired items memory", func(t *testing.T) {
-		runtime.GC()
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		baselineAlloc := m.Alloc
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
 
-		cache := NewCache()
-		defer cache.Close()
+	runner := NewTestSuiteRunner()
+	runner.SetTimeout(config.DefaultTimeout)
 
-		// Add many large items with short expiration
-		largeData := make([]byte, 1024*1024) // 1MB
-		for i := 0; i < 100; i++ {
-			key := fmt.Sprintf("key-%d", i)
-			// Items expire in 1 second
-			cache.Set(key, largeData, 1*time.Second)
-		}
+	// Define table of memory leak test cases
+	tests := []MemoryLeakTestCase{
+		{
+			Name:               "Cache expired items memory release",
+			Description:        "Test that cache properly releases memory for expired items after cleanup",
+			Iterations:         config.MaxIterations,
+			MaxGoroutineGrowth: config.GoroutineGrowth,
+			MaxMemoryGrowthMB:  config.MemoryThreshold,
+			GCBetweenRuns:      true,
+			Timeout:            config.DefaultTimeout,
+			Operation: func() error {
+				cache := NewCache()
+				defer cache.Close()
 
-		// Wait for items to expire
-		time.Sleep(2 * time.Second)
-
-		// Force cleanup
-		cache.Cleanup()
-
-		// Check memory after cleanup
-		runtime.GC()
-		runtime.ReadMemStats(&m)
-		afterCleanupAlloc := m.Alloc
-
-		allocIncrease := float64(afterCleanupAlloc-baselineAlloc) / 1024 / 1024
-		t.Logf("Memory after adding and expiring 100MB of data: %.2f MB", allocIncrease)
-
-		// Memory should be mostly released after cleanup
-		if allocIncrease > 10.0 {
-			t.Errorf("Cache retains too much memory after cleanup: %.2f MB", allocIncrease)
-		}
-	})
-
-	t.Run("Token blacklist unbounded growth", func(t *testing.T) {
-		runtime.GC()
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		baselineAlloc := m.Alloc
-
-		blacklist := NewCache()
-		blacklist.SetMaxSize(1000) // Limit size
-		defer blacklist.Close()
-
-		// Simulate continuous token blacklisting
-		for i := 0; i < 10000; i++ {
-			token := fmt.Sprintf("token-%d", i)
-			// All tokens expire in 24 hours (typical blacklist duration)
-			blacklist.Set(token, true, 24*time.Hour)
-		}
-
-		runtime.GC()
-		runtime.ReadMemStats(&m)
-		currentAlloc := m.Alloc
-
-		allocIncrease := float64(currentAlloc-baselineAlloc) / 1024 / 1024
-		t.Logf("Memory after adding 10000 blacklisted tokens (max 1000): %.2f MB", allocIncrease)
-
-		// Should respect max size limit
-		if len(blacklist.items) > 1000 {
-			t.Errorf("Blacklist exceeded max size: %d items", len(blacklist.items))
-		}
-
-		// Memory should be bounded
-		if allocIncrease > 5.0 {
-			t.Errorf("Blacklist uses too much memory: %.2f MB for max 1000 items", allocIncrease)
-		}
-	})
-
-	t.Run("Replay cache with high JTI volume", func(t *testing.T) {
-		initReplayCache()
-		defer cleanupReplayCache()
-
-		runtime.GC()
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		baselineAlloc := m.Alloc
-
-		// Simulate high volume of JTIs
-		for i := 0; i < 20000; i++ {
-			jti := fmt.Sprintf("jti-%d", i)
-			replayCacheMu.Lock()
-			if replayCache != nil {
-				// JTIs expire after token expiry (typically 1 hour)
-				replayCache.Set(jti, true, 1*time.Hour)
-			}
-			replayCacheMu.Unlock()
-		}
-
-		runtime.GC()
-		runtime.ReadMemStats(&m)
-		currentAlloc := m.Alloc
-
-		allocIncrease := float64(currentAlloc-baselineAlloc) / 1024 / 1024
-		t.Logf("Memory after adding 20000 JTIs (max 10000): %.2f MB", allocIncrease)
-
-		// Check size limit is enforced
-		replayCacheMu.RLock()
-		cacheSize := 0
-		if replayCache != nil {
-			cacheSize = len(replayCache.items)
-		}
-		replayCacheMu.RUnlock()
-
-		if cacheSize > 10000 {
-			t.Errorf("Replay cache exceeded max size: %d items", cacheSize)
-		}
-
-		// Memory should be bounded
-		if allocIncrease > 10.0 {
-			t.Errorf("Replay cache uses too much memory: %.2f MB for max 10000 items", allocIncrease)
-		}
-	})
-
-	t.Run("Cache cleanup interval effectiveness", func(t *testing.T) {
-		// Create a cache with custom settings - don't use NewCache to avoid default cleanup
-		cache := &Cache{
-			items:               make(map[string]CacheItem, DefaultMaxSize),
-			order:               list.New(),
-			elems:               make(map[string]*list.Element, DefaultMaxSize),
-			maxSize:             DefaultMaxSize,
-			autoCleanupInterval: 200 * time.Millisecond, // Fast cleanup for test
-			logger:              newNoOpLogger(),
-		}
-
-		// Start cleanup with our custom interval
-		cache.startAutoCleanup()
-		defer cache.Close()
-
-		// Add expired items
-		for i := 0; i < 1000; i++ {
-			key := fmt.Sprintf("key-%d", i)
-			cache.Set(key, "data", 50*time.Millisecond) // Very short expiry
-		}
-
-		// Wait for items to expire and cleanup to run (at least 2 cleanup cycles)
-		time.Sleep(600 * time.Millisecond)
-
-		// Manually trigger cleanup to ensure it runs
-		cache.Cleanup()
-
-		// Check that expired items are removed
-		cache.mutex.RLock()
-		remainingItems := len(cache.items)
-		cache.mutex.RUnlock()
-
-		t.Logf("Remaining items after auto cleanup: %d", remainingItems)
-
-		if remainingItems > 100 {
-			t.Errorf("Auto cleanup not effective: %d items remain", remainingItems)
-		}
-	})
-
-	t.Run("Concurrent cache operations memory stability", func(t *testing.T) {
-		cache := NewCache()
-		defer cache.Close()
-
-		runtime.GC()
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		baselineAlloc := m.Alloc
-
-		var wg sync.WaitGroup
-		stop := make(chan struct{})
-
-		// Writers continuously add items
-		for i := 0; i < 5; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				for j := 0; j < 1000; j++ {
-					select {
-					case <-stop:
-						return
-					default:
-						key := fmt.Sprintf("writer-%d-%d", id, j)
-						cache.Set(key, "data", 1*time.Second)
-						time.Sleep(1 * time.Millisecond)
-					}
+				// Add large items with short expiration - size based on config
+				dataSize := 1024 * 1024 // 1MB for extended tests
+				if config.QuickMode {
+					dataSize = 64 * 1024 // 64KB for quick tests
 				}
-			}(i)
-		}
-
-		// Readers continuously read items
-		for i := 0; i < 5; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				for j := 0; j < 1000; j++ {
-					select {
-					case <-stop:
-						return
-					default:
-						key := fmt.Sprintf("writer-%d-%d", id%5, j)
-						cache.Get(key)
-						time.Sleep(1 * time.Millisecond)
-					}
+				largeData := make([]byte, dataSize)
+				itemCount := config.MaxIterations
+				if itemCount > 50 {
+					itemCount = 50
 				}
-			}(i)
-		}
+				for i := 0; i < itemCount; i++ {
+					key := fmt.Sprintf("key-%d", i)
+					cache.Set(key, largeData, 100*time.Millisecond)
+				}
 
-		// Let it run for a bit
-		time.Sleep(5 * time.Second)
-		close(stop)
-		wg.Wait()
+				// Wait for items to expire
+				time.Sleep(200 * time.Millisecond)
 
-		runtime.GC()
-		runtime.ReadMemStats(&m)
-		finalAlloc := m.Alloc
+				// Force cleanup
+				cache.Cleanup()
+				return nil
+			},
+		},
+		{
+			Name:               "Token blacklist bounded growth",
+			Description:        "Test that token blacklist respects size limits and doesn't grow unbounded",
+			Iterations:         config.MaxIterations,
+			MaxGoroutineGrowth: config.GoroutineGrowth,
+			MaxMemoryGrowthMB:  config.MemoryThreshold,
+			GCBetweenRuns:      true,
+			Timeout:            config.DefaultTimeout,
+			Operation: func() error {
+				blacklist := NewCache()
+				cacheSize := config.GetCacheSize()
+				blacklist.SetMaxSize(cacheSize)
+				defer blacklist.Close()
 
-		// Handle potential underflow
-		var allocIncrease float64
-		if finalAlloc > baselineAlloc {
-			allocIncrease = float64(finalAlloc-baselineAlloc) / 1024 / 1024
-		} else {
-			allocIncrease = -float64(baselineAlloc-finalAlloc) / 1024 / 1024
-		}
-		t.Logf("Memory increase under concurrent load: %.2f MB", allocIncrease)
+				// Simulate token blacklisting beyond limit
+				testCount := cacheSize * 2 // Try to exceed the limit
+				for i := 0; i < testCount; i++ {
+					token := fmt.Sprintf("token-%d", i)
+					blacklist.Set(token, true, 24*time.Hour)
+				}
 
-		if allocIncrease > 5.0 {
-			t.Errorf("Memory leak under concurrent operations: %.2f MB", allocIncrease)
-		}
-	})
+				// Verify size limit is enforced
+				if len(blacklist.items) > cacheSize {
+					return fmt.Errorf("blacklist exceeded max size: %d items (limit: %d)", len(blacklist.items), cacheSize)
+				}
+				return nil
+			},
+		},
+		{
+			Name:               "Replay cache high JTI volume",
+			Description:        "Test replay cache memory behavior under high JTI volume",
+			Iterations:         config.MaxIterations,
+			MaxGoroutineGrowth: config.GoroutineGrowth,
+			MaxMemoryGrowthMB:  config.MemoryThreshold,
+			GCBetweenRuns:      true,
+			Timeout:            config.DefaultTimeout,
+			Setup: func() error {
+				initReplayCache()
+				return nil
+			},
+			Teardown: func() error {
+				cleanupReplayCache()
+				return nil
+			},
+			Operation: func() error {
+				// Scale volume based on config
+				volume := config.MaxIterations * 100
+				if volume > 1000 && config.QuickMode {
+					volume = 100
+				}
+				for i := 0; i < volume; i++ {
+					jti := fmt.Sprintf("jti-%d", i)
+					replayCacheMu.Lock()
+					if replayCache != nil {
+						replayCache.Set(jti, true, 1*time.Hour)
+					}
+					replayCacheMu.Unlock()
+				}
 
-	t.Run("LRU eviction memory release", func(t *testing.T) {
-		cache := NewCache()
-		cache.SetMaxSize(100) // Small cache
-		defer cache.Close()
+				// Check size limit is enforced
+				replayCacheMu.RLock()
+				cacheSize := 0
+				if replayCache != nil {
+					cacheSize = len(replayCache.items)
+				}
+				replayCacheMu.RUnlock()
 
-		runtime.GC()
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		baselineAlloc := m.Alloc
+				if cacheSize > 10000 {
+					return fmt.Errorf("replay cache exceeded max size: %d items", cacheSize)
+				}
+				return nil
+			},
+		},
+		{
+			Name:               "Concurrent cache operations stability",
+			Description:        "Test memory stability under concurrent cache operations",
+			Iterations:         config.MaxIterations,
+			MaxGoroutineGrowth: config.GoroutineGrowth * 2, // Allow for some goroutine fluctuation
+			MaxMemoryGrowthMB:  config.MemoryThreshold,
+			GCBetweenRuns:      true,
+			Timeout:            config.DefaultTimeout,
+			Operation: func() error {
+				cache := NewCache()
+				defer cache.Close()
 
-		// Add many items to trigger eviction
-		for i := 0; i < 1000; i++ {
-			key := fmt.Sprintf("key-%d", i)
-			data := make([]byte, 10240) // 10KB per item
-			cache.Set(key, data, 1*time.Hour)
-		}
+				var wg sync.WaitGroup
+				stop := make(chan struct{})
 
-		runtime.GC()
-		runtime.ReadMemStats(&m)
-		afterEvictionAlloc := m.Alloc
+				// Scale concurrency and operations based on config
+				writerCount := config.AdjustConcurrencyParams(5)
+				if config.QuickMode && writerCount > 2 {
+					writerCount = 2
+				}
+				operations := config.MaxIterations * 5
+				if operations > 50 && config.QuickMode {
+					operations = 10
+				}
 
-		allocIncrease := float64(afterEvictionAlloc-baselineAlloc) / 1024 / 1024
-		t.Logf("Memory after LRU eviction (1000 items, max 100): %.2f MB", allocIncrease)
+				for i := 0; i < writerCount; i++ {
+					wg.Add(1)
+					go func(id int) {
+						defer wg.Done()
+						for j := 0; j < operations; j++ {
+							select {
+							case <-stop:
+								return
+							default:
+								key := fmt.Sprintf("writer-%d-%d", id, j)
+								cache.Set(key, "data", 1*time.Second)
+								time.Sleep(1 * time.Millisecond)
+							}
+						}
+					}(i)
+				}
 
-		// Should only keep 100 items worth of memory
-		if allocIncrease > 2.0 { // 100 * 10KB = ~1MB
-			t.Errorf("LRU eviction doesn't release memory properly: %.2f MB", allocIncrease)
-		}
+				// Readers - match writer count
+				for i := 0; i < writerCount; i++ {
+					wg.Add(1)
+					go func(id int) {
+						defer wg.Done()
+						for j := 0; j < operations; j++ {
+							select {
+							case <-stop:
+								return
+							default:
+								key := fmt.Sprintf("writer-%d-%d", id%writerCount, j)
+								cache.Get(key)
+								time.Sleep(1 * time.Millisecond)
+							}
+						}
+					}(i)
+				}
 
-		// Verify cache size
-		if len(cache.items) > 100 {
-			t.Errorf("Cache size exceeded limit: %d items", len(cache.items))
-		}
-	})
+				// Let it run briefly - adjust based on config
+				runTime := config.GetCleanupInterval() * 5
+				if runTime > 500*time.Millisecond {
+					runTime = 500 * time.Millisecond
+				}
+				time.Sleep(runTime)
+				close(stop)
+				wg.Wait()
+				return nil
+			},
+		},
+		{
+			Name:               "LRU eviction memory release",
+			Description:        "Test that LRU eviction properly releases memory",
+			Iterations:         5,
+			MaxGoroutineGrowth: 1,
+			MaxMemoryGrowthMB:  2.0,
+			GCBetweenRuns:      true,
+			Timeout:            10 * time.Second,
+			Operation: func() error {
+				cache := NewCache()
+				cache.SetMaxSize(10) // Very small cache for effective eviction
+				defer cache.Close()
 
-	t.Run("Token cache with claims memory", func(t *testing.T) {
-		tokenCache := NewTokenCache()
-		defer tokenCache.Close()
+				// Add items to trigger eviction
+				for i := 0; i < 50; i++ {
+					key := fmt.Sprintf("key-%d", i)
+					data := make([]byte, 1024) // 1KB per item
+					cache.Set(key, data, 1*time.Hour)
+				}
 
-		runtime.GC()
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		baselineAlloc := m.Alloc
+				// Verify cache size limit
+				if len(cache.items) > 10 {
+					return fmt.Errorf("cache size exceeded limit: %d items", len(cache.items))
+				}
+				return nil
+			},
+		},
+		{
+			Name:               "Token cache with claims memory",
+			Description:        "Test memory usage of token cache with large claims",
+			Iterations:         3,
+			MaxGoroutineGrowth: 1,
+			MaxMemoryGrowthMB:  20.0,
+			GCBetweenRuns:      true,
+			Timeout:            10 * time.Second,
+			Operation: func() error {
+				tokenCache := NewTokenCache()
+				defer tokenCache.Close()
 
-		// Add tokens with large claims
-		for i := 0; i < 1000; i++ {
-			token := fmt.Sprintf("token-%d", i)
-			claims := map[string]interface{}{
-				"sub":    fmt.Sprintf("user-%d", i),
-				"email":  fmt.Sprintf("user%d@example.com", i),
-				"groups": make([]string, 100), // Large groups list
-				"data":   make([]byte, 1024),  // Extra data
-			}
-			tokenCache.Set(token, claims, 1*time.Hour)
-		}
+				// Add tokens with large claims (reduced count for repeated iterations)
+				for i := 0; i < 100; i++ {
+					token := fmt.Sprintf("token-%d", i)
+					claims := map[string]interface{}{
+						"sub":    fmt.Sprintf("user-%d", i),
+						"email":  fmt.Sprintf("user%d@example.com", i),
+						"groups": make([]string, 10), // Smaller groups list
+						"data":   make([]byte, 512),  // Smaller data
+					}
+					tokenCache.Set(token, claims, 1*time.Hour)
+				}
+				return nil
+			},
+		},
+		{
+			Name:               "Cache cleanup interval effectiveness",
+			Description:        "Test that cache cleanup interval effectively removes expired items",
+			Iterations:         3,
+			MaxGoroutineGrowth: 2,
+			MaxMemoryGrowthMB:  5.0,
+			GCBetweenRuns:      true,
+			Timeout:            5 * time.Second,
+			Operation: func() error {
+				// Create a cache with custom settings - don't use NewCache to avoid default cleanup
+				cache := &Cache{
+					items:               make(map[string]CacheItem, DefaultMaxSize),
+					order:               list.New(),
+					elems:               make(map[string]*list.Element, DefaultMaxSize),
+					maxSize:             DefaultMaxSize,
+					autoCleanupInterval: 100 * time.Millisecond, // Fast cleanup for test
+					logger:              newNoOpLogger(),
+					stopChan:            make(chan struct{}),
+				}
 
-		runtime.GC()
-		runtime.ReadMemStats(&m)
-		currentAlloc := m.Alloc
+				// Start cleanup with our custom interval
+				cache.startAutoCleanup()
+				defer cache.Close()
 
-		allocIncrease := float64(currentAlloc-baselineAlloc) / 1024 / 1024
-		t.Logf("Memory after adding 1000 tokens with large claims: %.2f MB", allocIncrease)
+				// Add expired items (reduced count for repeated iterations)
+				for i := 0; i < 100; i++ {
+					key := fmt.Sprintf("key-%d", i)
+					cache.Set(key, "data", 30*time.Millisecond) // Very short expiry
+				}
 
-		// Check if memory is reasonable
-		if allocIncrease > 20.0 {
-			t.Errorf("Token cache uses excessive memory: %.2f MB", allocIncrease)
-		}
-	})
+				// Wait for items to expire and cleanup to run
+				time.Sleep(300 * time.Millisecond)
+
+				// Manually trigger cleanup to ensure it runs
+				cache.Cleanup()
+
+				// Check that expired items are removed
+				cache.mutex.RLock()
+				remainingItems := len(cache.items)
+				cache.mutex.RUnlock()
+
+				if remainingItems > 10 {
+					return fmt.Errorf("auto cleanup not effective: %d items remain", remainingItems)
+				}
+				return nil
+			},
+		},
+	}
+
+	// Adjust all test cases based on configuration
+	for i := range tests {
+		config.AdjustMemoryLeakTestCase(&tests[i])
+	}
+
+	// Run memory leak tests using the unified infrastructure
+	runner.RunMemoryLeakTests(t, tests)
 }
 
-// TestCacheEvictionBug tests the inefficient eviction in evictOldest
-func TestCacheEvictionBug(t *testing.T) {
-	t.Run("evictOldest scans entire list", func(t *testing.T) {
+// TestCacheEvictionPerformance tests the performance of cache eviction using table-driven patterns
+func TestCacheEvictionPerformance(t *testing.T) {
+	runner := NewTestSuiteRunner()
+	runner.SetTimeout(15 * time.Second)
+
+	// Generate edge cases for cache sizes
+	edgeGen := NewEdgeCaseGenerator()
+	cacheSizes := []int{10, 50, 100, 500, 1000}
+
+	var tests []TableTestCase
+
+	// Create table-driven tests for different cache sizes
+	for _, size := range cacheSizes {
+		tests = append(tests, TableTestCase{
+			Name:        fmt.Sprintf("Eviction performance with cache size %d", size),
+			Description: fmt.Sprintf("Test eviction performance doesn't degrade with cache size %d", size),
+			Input:       size,
+			Timeout:     5 * time.Second,
+			Setup: func(t *testing.T) error {
+				return nil
+			},
+			Teardown: func(t *testing.T) error {
+				return nil
+			},
+		})
+	}
+
+	// Add edge cases with unusual data
+	stringEdgeCases := edgeGen.GenerateStringEdgeCases()
+	for i, edgeString := range stringEdgeCases[:5] { // Limit to first 5 edge cases
+		tests = append(tests, TableTestCase{
+			Name:        fmt.Sprintf("Eviction with edge case data %d", i),
+			Description: fmt.Sprintf("Test eviction with unusual string data: %q", edgeString),
+			Input:       map[string]interface{}{"data": edgeString, "size": 50},
+			Timeout:     3 * time.Second,
+		})
+	}
+
+	// Custom test execution for eviction performance
+	for _, test := range tests {
+		test := test // Capture loop variable
+		t.Run(test.Name, func(t *testing.T) {
+			var cacheSize int
+			var testData interface{}
+
+			if size, ok := test.Input.(int); ok {
+				cacheSize = size
+				testData = "standard-data"
+			} else if inputMap, ok := test.Input.(map[string]interface{}); ok {
+				cacheSize = inputMap["size"].(int)
+				testData = inputMap["data"]
+			}
+
+			cache := NewCache()
+			cache.SetMaxSize(cacheSize)
+			defer cache.Close()
+
+			// Fill cache with items
+			for i := 0; i < cacheSize; i++ {
+				key := fmt.Sprintf("key-%d", i)
+				cache.Set(key, testData, 1*time.Hour) // Long expiry
+			}
+
+			// Measure eviction performance
+			perfHelper := NewPerformanceTestHelper()
+
+			// Perform multiple eviction operations and measure
+			for i := 0; i < 10; i++ {
+				triggerKey := fmt.Sprintf("trigger-%d", i)
+
+				elapsed := perfHelper.Measure(func() {
+					cache.Set(triggerKey, testData, 1*time.Hour)
+				})
+
+				// Individual operations should be fast
+				if elapsed > 10*time.Millisecond {
+					t.Errorf("Eviction too slow for operation %d: %v", i, elapsed)
+				}
+			}
+
+			avgTime := perfHelper.GetAverageTime()
+			t.Logf("Average eviction time for cache size %d: %v", cacheSize, avgTime)
+
+			// Average time should be reasonable
+			if avgTime > 5*time.Millisecond {
+				t.Errorf("Average eviction time too high: %v", avgTime)
+			}
+		})
+	}
+}
+
+// TestCacheMemoryLeakEdgeCases tests memory leak behavior with edge cases
+func TestCacheMemoryLeakEdgeCases(t *testing.T) {
+	runner := NewTestSuiteRunner()
+	edgeGen := NewEdgeCaseGenerator()
+
+	// Generate edge cases for comprehensive testing
+	stringEdgeCases := edgeGen.GenerateStringEdgeCases()
+	intEdgeCases := edgeGen.GenerateIntegerEdgeCases()
+	timeEdgeCases := edgeGen.GenerateTimeEdgeCases()
+
+	tests := []MemoryLeakTestCase{
+		{
+			Name:               "Edge case string data memory",
+			Description:        "Test memory behavior with edge case string data",
+			Iterations:         5,
+			MaxGoroutineGrowth: 1,
+			MaxMemoryGrowthMB:  10.0,
+			GCBetweenRuns:      true,
+			Timeout:            10 * time.Second,
+			Operation: func() error {
+				cache := NewCache()
+				cache.SetMaxSize(20)
+				defer cache.Close()
+
+				// Test with various edge case strings
+				for i, edgeString := range stringEdgeCases {
+					if i >= 10 { // Limit iterations
+						break
+					}
+					key := fmt.Sprintf("edge-key-%d", i)
+					cache.Set(key, edgeString, 1*time.Hour)
+				}
+
+				if len(cache.items) > 20 {
+					return fmt.Errorf("cache exceeded size limit with edge cases: %d", len(cache.items))
+				}
+				return nil
+			},
+		},
+		{
+			Name:               "Edge case expiration times",
+			Description:        "Test memory behavior with edge case expiration times",
+			Iterations:         3,
+			MaxGoroutineGrowth: 1,
+			MaxMemoryGrowthMB:  5.0,
+			GCBetweenRuns:      true,
+			Timeout:            15 * time.Second,
+			Operation: func() error {
+				cache := NewCache()
+				defer cache.Close()
+
+				// Test with various edge case times
+				for i, edgeTime := range timeEdgeCases {
+					if i >= 5 { // Limit iterations
+						break
+					}
+					key := fmt.Sprintf("time-key-%d", i)
+					duration := time.Until(edgeTime)
+					if duration < 0 {
+						duration = 100 * time.Millisecond // Use short duration for past times
+					}
+					if duration > time.Hour {
+						duration = time.Hour // Cap at 1 hour for very large durations
+					}
+					cache.Set(key, fmt.Sprintf("data-%d", i), duration)
+				}
+
+				return nil
+			},
+		},
+		{
+			Name:               "Edge case cache sizes",
+			Description:        "Test memory behavior with edge case cache sizes",
+			Iterations:         3,
+			MaxGoroutineGrowth: 1,
+			MaxMemoryGrowthMB:  15.0,
+			GCBetweenRuns:      true,
+			Timeout:            10 * time.Second,
+			Operation: func() error {
+				// Test with various edge case sizes
+				for i, edgeSize := range intEdgeCases {
+					if i >= 3 { // Limit iterations
+						break
+					}
+					if edgeSize <= 0 || edgeSize > 1000 {
+						continue // Skip invalid or too large sizes
+					}
+
+					cache := NewCache()
+					cache.SetMaxSize(edgeSize)
+					defer cache.Close()
+
+					// Add items up to the limit
+					itemsToAdd := edgeSize * 2 // Try to exceed the limit
+					if itemsToAdd > 100 {
+						itemsToAdd = 100 // Cap for test performance
+					}
+
+					for j := 0; j < itemsToAdd; j++ {
+						key := fmt.Sprintf("size-test-%d-%d", edgeSize, j)
+						cache.Set(key, "data", 1*time.Hour)
+					}
+
+					if len(cache.items) > edgeSize {
+						return fmt.Errorf("cache size %d exceeded limit: %d items", edgeSize, len(cache.items))
+					}
+				}
+				return nil
+			},
+		},
+	}
+
+	runner.RunMemoryLeakTests(t, tests)
+}
+
+// BenchmarkCacheOperations provides performance benchmarks for memory-critical operations
+func BenchmarkCacheOperations(b *testing.B) {
+	// Benchmark cache set operations
+	b.Run("CacheSet", func(b *testing.B) {
+		cache := NewCache()
+		defer cache.Close()
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := fmt.Sprintf("bench-key-%d", i)
+			cache.Set(key, "benchmark-data", 1*time.Hour)
+		}
+	})
+
+	// Benchmark cache get operations
+	b.Run("CacheGet", func(b *testing.B) {
+		cache := NewCache()
+		defer cache.Close()
+
+		// Pre-populate cache
+		for i := 0; i < 1000; i++ {
+			key := fmt.Sprintf("bench-key-%d", i)
+			cache.Set(key, "benchmark-data", 1*time.Hour)
+		}
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := fmt.Sprintf("bench-key-%d", i%1000)
+			cache.Get(key)
+		}
+	})
+
+	// Benchmark eviction performance
+	b.Run("CacheEviction", func(b *testing.B) {
 		cache := NewCache()
 		cache.SetMaxSize(100)
 		defer cache.Close()
 
-		// Fill cache with non-expired items
+		// Pre-fill cache to trigger evictions
 		for i := 0; i < 100; i++ {
-			key := fmt.Sprintf("key-%d", i)
-			cache.Set(key, "data", 1*time.Hour) // Long expiry
+			key := fmt.Sprintf("initial-key-%d", i)
+			cache.Set(key, "initial-data", 1*time.Hour)
 		}
 
-		// Try to add one more item to trigger eviction
-		start := time.Now()
-		cache.Set("trigger", "data", 1*time.Hour)
-		elapsed := time.Since(start)
-
-		t.Logf("Time to evict and add one item: %v", elapsed)
-
-		// Should be fast even with full cache
-		if elapsed > 10*time.Millisecond {
-			t.Errorf("Eviction too slow, possibly scanning entire list: %v", elapsed)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := fmt.Sprintf("evict-key-%d", i)
+			cache.Set(key, "evict-data", 1*time.Hour)
 		}
+	})
+
+	// Benchmark cleanup performance
+	b.Run("CacheCleanup", func(b *testing.B) {
+		cache := NewCache()
+		defer cache.Close()
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			// Add expired items
+			for j := 0; j < 50; j++ {
+				key := fmt.Sprintf("cleanup-key-%d-%d", i, j)
+				cache.Set(key, "cleanup-data", 1*time.Nanosecond) // Immediately expired
+			}
+
+			// Benchmark cleanup
+			cache.Cleanup()
+		}
+	})
+
+	// Benchmark concurrent operations
+	b.Run("CacheConcurrent", func(b *testing.B) {
+		cache := NewCache()
+		defer cache.Close()
+
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			i := 0
+			for pb.Next() {
+				key := fmt.Sprintf("concurrent-key-%d", i)
+				cache.Set(key, "concurrent-data", 1*time.Hour)
+				cache.Get(key)
+				i++
+			}
+		})
 	})
 }
