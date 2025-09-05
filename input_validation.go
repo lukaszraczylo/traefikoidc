@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -319,6 +320,42 @@ func (iv *InputValidator) ValidateURL(urlStr string) ValidationResult {
 		return result
 	}
 
+	// Check for localhost or private IPs for security
+	// Allow localhost for HTTPS (development/testing) but warn about it
+	hostname := strings.ToLower(parsedURL.Hostname())
+	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
+		if parsedURL.Scheme == "https" {
+			// Allow HTTPS localhost for development but warn
+			result.Warnings = append(result.Warnings, "localhost URLs should only be used for development/testing")
+		} else {
+			// Reject non-HTTPS localhost for security
+			result.IsValid = false
+			result.Errors = append(result.Errors, "non-HTTPS localhost URLs are not allowed for security")
+			return result
+		}
+	}
+
+	// Check for private IP ranges (RFC 1918)
+	if strings.HasPrefix(hostname, "10.") ||
+		strings.HasPrefix(hostname, "192.168.") ||
+		strings.HasPrefix(hostname, "172.") {
+		// For 172.x check if it's in the 172.16.0.0/12 range
+		if strings.HasPrefix(hostname, "172.") {
+			parts := strings.Split(hostname, ".")
+			if len(parts) >= 2 {
+				if second, err := strconv.Atoi(parts[1]); err == nil && second >= 16 && second <= 31 {
+					result.IsValid = false
+					result.Errors = append(result.Errors, "private IP URLs are not allowed for security")
+					return result
+				}
+			}
+		} else {
+			result.IsValid = false
+			result.Errors = append(result.Errors, "private IP URLs are not allowed for security")
+			return result
+		}
+	}
+
 	// Check for suspicious patterns
 	if risk := iv.detectSecurityRisk(sanitized); risk != "" {
 		result.SecurityRisk = risk
@@ -407,7 +444,9 @@ func (iv *InputValidator) ValidateClaim(claimName, claimValue string) Validation
 	}
 
 	if iv.containsControlCharacters(claimValue) {
-		result.Warnings = append(result.Warnings, "claim value contains control characters")
+		result.IsValid = false
+		result.Errors = append(result.Errors, "claim value contains control characters")
+		return result
 	}
 
 	// Validate UTF-8 encoding
@@ -420,7 +459,25 @@ func (iv *InputValidator) ValidateClaim(claimName, claimValue string) Validation
 	// Check for suspicious patterns
 	if risk := iv.detectSecurityRisk(claimValue); risk != "" {
 		result.SecurityRisk = risk
-		result.Warnings = append(result.Warnings, fmt.Sprintf("potential security risk detected: %s", risk))
+		result.IsValid = false
+		result.Errors = append(result.Errors, fmt.Sprintf("potential security risk detected: %s", risk))
+		return result
+	}
+
+	// Check for excessive unicode (emojis and special characters)
+	unicodeCount := 0
+	runeCount := 0
+	for _, r := range claimValue {
+		runeCount++
+		if r > 127 { // Non-ASCII character
+			unicodeCount++
+		}
+	}
+	// If more than 50% of the characters are unicode, consider it suspicious
+	if runeCount > 0 && unicodeCount > runeCount/2 {
+		result.IsValid = false
+		result.Errors = append(result.Errors, "claim value contains excessive unicode characters")
+		return result
 	}
 
 	// Specific validations based on claim name
@@ -505,6 +562,13 @@ func (iv *InputValidator) ValidateHeader(headerName, headerValue string) Validat
 		return result
 	}
 
+	// Check for control characters in header value
+	if iv.containsControlCharacters(headerValue) {
+		result.IsValid = false
+		result.Errors = append(result.Errors, "header value contains control characters")
+		return result
+	}
+
 	// Validate UTF-8 encoding
 	if !utf8.ValidString(headerValue) {
 		result.IsValid = false
@@ -515,7 +579,9 @@ func (iv *InputValidator) ValidateHeader(headerName, headerValue string) Validat
 	// Check for suspicious patterns
 	if risk := iv.detectSecurityRisk(headerValue); risk != "" {
 		result.SecurityRisk = risk
-		result.Warnings = append(result.Warnings, fmt.Sprintf("potential security risk detected: %s", risk))
+		result.IsValid = false
+		result.Errors = append(result.Errors, fmt.Sprintf("potential security risk detected: %s", risk))
+		return result
 	}
 
 	result.SanitizedValue = strings.TrimSpace(headerValue)

@@ -1,6 +1,8 @@
 package traefikoidc
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"time"
 )
@@ -44,6 +46,19 @@ type OptimizedCache struct {
 	mutex sync.RWMutex
 }
 
+// normalizeKey ensures keys are within reasonable limits by hashing long keys.
+// This prevents memory exhaustion while still allowing long keys to be used.
+func (c *OptimizedCache) normalizeKey(key string) string {
+	if len(key) <= MaxKeyLength {
+		return key
+	}
+
+	// Hash long keys to create a fixed-size key
+	hasher := sha256.New()
+	hasher.Write([]byte(key))
+	return "hash:" + hex.EncodeToString(hasher.Sum(nil))
+}
+
 // NewOptimizedCache creates a new optimized cache with default settings.
 // It uses the default maximum size and 64MB memory limit.
 func NewOptimizedCache() *OptimizedCache {
@@ -61,6 +76,11 @@ func NewOptimizedCache() *OptimizedCache {
 func NewOptimizedCacheWithConfig(maxSize int, maxMemoryMB int, logger *Logger) *OptimizedCache {
 	if logger == nil {
 		logger = GetSingletonNoOpLogger()
+	}
+
+	// Use default max size if not specified
+	if maxSize <= 0 {
+		maxSize = DefaultMaxSize
 	}
 
 	head := &OptimizedCacheEntry{}
@@ -95,18 +115,22 @@ func NewOptimizedCacheWithConfig(maxSize int, maxMemoryMB int, logger *Logger) *
 //   - value: The value to store
 //   - expiration: Time until the item expires
 func (c *OptimizedCache) Set(key string, value interface{}, expiration time.Duration) {
-	if len(key) > MaxKeyLength {
-		c.logger.Debugf("Cache key too long (%d > %d), ignoring", len(key), MaxKeyLength)
-		return
-	}
+	// Normalize the key to handle long keys
+	normalizedKey := c.normalizeKey(key)
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
 	now := time.Now()
-	expTime := now.Add(expiration)
+	var expTime time.Time
+	if expiration == 0 {
+		// Permanent entry - set to far future to avoid expiration
+		expTime = now.Add(100 * 365 * 24 * time.Hour) // 100 years
+	} else {
+		expTime = now.Add(expiration)
+	}
 
-	if entry, exists := c.items[key]; exists {
+	if entry, exists := c.items[normalizedKey]; exists {
 		oldSize := c.estimateEntrySize(entry)
 		entry.Value = value
 		entry.ExpiresAt = expTime
@@ -119,7 +143,7 @@ func (c *OptimizedCache) Set(key string, value interface{}, expiration time.Dura
 	entry := &OptimizedCacheEntry{
 		Value:     value,
 		ExpiresAt: expTime,
-		Key:       key,
+		Key:       normalizedKey,
 	}
 
 	entrySize := c.estimateEntrySize(entry)
@@ -130,7 +154,7 @@ func (c *OptimizedCache) Set(key string, value interface{}, expiration time.Dura
 		}
 	}
 
-	c.items[key] = entry
+	c.items[normalizedKey] = entry
 	c.currentMemoryBytes += entrySize
 	c.addToTail(entry)
 }
@@ -140,10 +164,13 @@ func (c *OptimizedCache) Set(key string, value interface{}, expiration time.Dura
 // automatically removes expired items when encountered.
 // Returns the value and true if found and valid, or nil and false otherwise.
 func (c *OptimizedCache) Get(key string) (interface{}, bool) {
+	// Normalize the key to handle long keys
+	normalizedKey := c.normalizeKey(key)
+
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	entry, exists := c.items[key]
+	entry, exists := c.items[normalizedKey]
 	if !exists {
 		return nil, false
 	}
@@ -160,10 +187,13 @@ func (c *OptimizedCache) Get(key string) (interface{}, bool) {
 // Delete removes an item from the cache, freeing its memory and updating tracking.
 // This is a manual removal that updates both the hash map and LRU list.
 func (c *OptimizedCache) Delete(key string) {
+	// Normalize the key to handle long keys
+	normalizedKey := c.normalizeKey(key)
+
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if entry, exists := c.items[key]; exists {
+	if entry, exists := c.items[normalizedKey]; exists {
 		c.removeEntry(entry)
 	}
 }

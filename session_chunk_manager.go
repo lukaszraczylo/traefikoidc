@@ -370,6 +370,16 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 // Returns:
 //   - An error if the opaque token format is invalid, nil if valid.
 func (cm *ChunkManager) validateOpaqueToken(token string, tokenType string) error {
+	// Check for empty token
+	if token == "" {
+		return fmt.Errorf("%s opaque token cannot be empty", tokenType)
+	}
+
+	// Check minimum length
+	if len(token) < 20 {
+		return fmt.Errorf("%s opaque token too short (length: %d, minimum: 20)", tokenType, len(token))
+	}
+
 	if strings.Contains(token, " ") {
 		err := fmt.Errorf("%s opaque token contains spaces", tokenType)
 		return err
@@ -531,6 +541,14 @@ func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConf
 	if strings.ContainsAny(token, "\r\n") {
 		err := fmt.Errorf("%s token contains line breaks", config.Type)
 		return err
+	}
+
+	// Check for control characters (ASCII 0-31 and 127)
+	for i, char := range token {
+		if char < 32 || char == 127 {
+			err := fmt.Errorf("%s token contains control character at position %d", config.Type, i)
+			return err
+		}
 	}
 
 	suspiciousPatterns := []string{
