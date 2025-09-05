@@ -1117,12 +1117,16 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			json.NewEncoder(rw).Encode(map[string]string{"error": "unauthorized", "message": "Token refresh failed"})
 		} else {
 			t.logger.Debug("Client does not prefer JSON, handling refresh failure by initiating re-auth")
+			// Reset redirect count when starting fresh auth after failed refresh to prevent redirect loops
+			session.ResetRedirectCount()
 			t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		}
 		return
 	}
 
 	t.logger.Debugf("Initiating full OIDC authentication flow (authenticated=%v, needsRefresh=%v, refreshTokenPresent=%v)", authenticated, needsRefresh, refreshTokenPresent)
+	// Reset redirect count when starting fresh authentication flow
+	session.ResetRedirectCount()
 	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 }
 
@@ -1139,6 +1143,8 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 	email := session.GetEmail()
 	if email == "" {
 		t.logger.Info("No email found in session during final processing, initiating re-auth")
+		// Reset redirect count to prevent loops when session is invalid
+		session.ResetRedirectCount()
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		return
 	}
@@ -1148,6 +1154,8 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		tokenForClaims = session.GetAccessToken()
 		if tokenForClaims == "" && len(t.allowedRolesAndGroups) > 0 {
 			t.logger.Error("No token available but roles/groups checks are required")
+			// Reset redirect count to prevent loops when token is missing
+			session.ResetRedirectCount()
 			t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 			return
 		}
@@ -1161,6 +1169,8 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		groups, roles, err = t.extractGroupsAndRoles(tokenForClaims)
 		if err != nil && len(t.allowedRolesAndGroups) > 0 {
 			t.logger.Errorf("Failed to extract groups and roles: %v", err)
+			// Reset redirect count to prevent loops when claim extraction fails
+			session.ResetRedirectCount()
 			t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 			return
 		} else if err == nil {
@@ -1272,6 +1282,8 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	session.SetAccessToken("")
 	session.SetRefreshToken("")
 	session.SetEmail("")
+	// Reset redirect count to prevent loops when handling expired tokens
+	session.ResetRedirectCount()
 
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("Failed to save cleared session during expired token handling: %v", err)
