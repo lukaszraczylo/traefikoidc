@@ -27,8 +27,6 @@ var (
 	replayCacheOnce sync.Once
 	// replayCacheCleanupWG waits for cleanup goroutine to finish
 	replayCacheCleanupWG sync.WaitGroup
-	// replayCacheCtx provides context for cleanup operations
-	replayCacheCtx context.Context
 	// replayCacheCancel cancels the cleanup context
 	replayCacheCancel context.CancelFunc
 	// replayCacheCleanupMu protects cleanup operations
@@ -53,7 +51,6 @@ func cleanupReplayCache() {
 	if replayCacheCancel != nil {
 		replayCacheCancel()
 		replayCacheCancel = nil
-		replayCacheCtx = nil
 	}
 	replayCacheCleanupMu.Unlock()
 
@@ -86,48 +83,49 @@ func getReplayCacheStats() (size int, maxSize int) {
 
 // startReplayCacheCleanup starts a background goroutine for periodic cache maintenance.
 // The goroutine runs every 5 minutes to clean expired entries and log cache statistics.
+// Uses the global task registry with circuit breaker pattern to prevent duplicate tasks.
 // Parameters:
 //   - ctx: Parent context for cancellation
 //   - logger: Logger for debug output (can be nil)
 func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
-	replayCacheCleanupMu.Lock()
-	defer replayCacheCleanupMu.Unlock()
+	registry := GetGlobalTaskRegistry()
 
-	if replayCacheCancel != nil {
-		replayCacheCancel()
-		replayCacheCleanupWG.Wait()
+	// Define the cleanup task function
+	cleanupFunc := func() {
+		size, maxSize := getReplayCacheStats()
+		if logger != nil {
+			logger.Debugf("Replay cache stats: size=%d, maxSize=%d", size, maxSize)
+		}
+
+		replayCacheMu.RLock()
+		if replayCache != nil {
+			replayCache.Cleanup()
+		}
+		replayCacheMu.RUnlock()
 	}
 
-	replayCacheCtx, replayCacheCancel = context.WithCancel(ctx)
+	// Create or get singleton cleanup task
+	task, err := registry.CreateSingletonTask(
+		"replay-cache-cleanup",
+		5*time.Minute,
+		cleanupFunc,
+		logger,
+		&replayCacheCleanupWG,
+	)
 
-	replayCacheCleanupWG.Add(1)
-	go func() {
-		defer replayCacheCleanupWG.Done()
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				size, maxSize := getReplayCacheStats()
-				if logger != nil {
-					logger.Debugf("Replay cache stats: size=%d, maxSize=%d", size, maxSize)
-				}
-
-				replayCacheMu.RLock()
-				if replayCache != nil {
-					replayCache.Cleanup()
-				}
-				replayCacheMu.RUnlock()
-
-			case <-replayCacheCtx.Done():
-				if logger != nil {
-					logger.Debug("Replay cache cleanup goroutine stopped due to context cancellation")
-				}
-				return
-			}
+	if err != nil {
+		if logger != nil {
+			logger.Errorf("Failed to create replay cache cleanup task: %v", err)
 		}
-	}()
+		return
+	}
+
+	// Start the task
+	task.Start()
+
+	if logger != nil {
+		logger.Debug("Started replay cache cleanup task with circuit breaker protection")
+	}
 }
 
 // ClockSkewToleranceFuture defines the maximum allowable clock skew for future time validation.

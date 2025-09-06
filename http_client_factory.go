@@ -49,9 +49,9 @@ func DefaultHTTPClientConfig() HTTPClientConfig {
 		ResponseHeaderTimeout: 3 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		IdleConnTimeout:       5 * time.Second,
-		MaxIdleConns:          2,
-		MaxIdleConnsPerHost:   1,
-		MaxConnsPerHost:       2,
+		MaxIdleConns:          100, // Increased from 2 to 100 to prevent connection pool exhaustion
+		MaxIdleConnsPerHost:   10,  // Increased from 1 to 10 to handle concurrent requests better
+		MaxConnsPerHost:       10,  // Increased from 2 to 10 to allow more concurrent connections
 		WriteBufferSize:       4096,
 		ReadBufferSize:        4096,
 		ForceHTTP2:            true,
@@ -77,8 +77,103 @@ func NewHTTPClientFactory() *HTTPClientFactory {
 	return &HTTPClientFactory{}
 }
 
+// ValidateHTTPClientConfig validates HTTP client configuration parameters
+func (f *HTTPClientFactory) ValidateHTTPClientConfig(config *HTTPClientConfig) error {
+	// Validate connection pool limits
+	if config.MaxIdleConns < 0 {
+		return fmt.Errorf("MaxIdleConns cannot be negative: %d", config.MaxIdleConns)
+	}
+	if config.MaxIdleConns > 1000 {
+		return fmt.Errorf("MaxIdleConns too high (max 1000): %d", config.MaxIdleConns)
+	}
+
+	if config.MaxIdleConnsPerHost < 0 {
+		return fmt.Errorf("MaxIdleConnsPerHost cannot be negative: %d", config.MaxIdleConnsPerHost)
+	}
+	if config.MaxIdleConnsPerHost > 100 {
+		return fmt.Errorf("MaxIdleConnsPerHost too high (max 100): %d", config.MaxIdleConnsPerHost)
+	}
+
+	if config.MaxConnsPerHost < 0 {
+		return fmt.Errorf("MaxConnsPerHost cannot be negative: %d", config.MaxConnsPerHost)
+	}
+	if config.MaxConnsPerHost > 100 {
+		return fmt.Errorf("MaxConnsPerHost too high (max 100): %d", config.MaxConnsPerHost)
+	}
+
+	// Validate that MaxIdleConnsPerHost is not greater than MaxConnsPerHost
+	if config.MaxIdleConnsPerHost > config.MaxConnsPerHost && config.MaxConnsPerHost > 0 {
+		return fmt.Errorf("MaxIdleConnsPerHost (%d) cannot exceed MaxConnsPerHost (%d)",
+			config.MaxIdleConnsPerHost, config.MaxConnsPerHost)
+	}
+
+	// Validate timeout values
+	if config.Timeout <= 0 {
+		return fmt.Errorf("timeout must be positive: %v", config.Timeout)
+	}
+	if config.Timeout > 5*time.Minute {
+		return fmt.Errorf("timeout too high (max 5m): %v", config.Timeout)
+	}
+
+	if config.DialTimeout <= 0 {
+		return fmt.Errorf("DialTimeout must be positive: %v", config.DialTimeout)
+	}
+	if config.TLSHandshakeTimeout <= 0 {
+		return fmt.Errorf("TLSHandshakeTimeout must be positive: %v", config.TLSHandshakeTimeout)
+	}
+
+	return nil
+}
+
 // CreateHTTPClient creates an HTTP client with the given configuration
+// Validates configuration parameters before creating the client
 func (f *HTTPClientFactory) CreateHTTPClient(config HTTPClientConfig) *http.Client {
+	// Set defaults for zero values before validation
+	if config.Timeout == 0 {
+		config.Timeout = 30 * time.Second
+	}
+	if config.DialTimeout == 0 {
+		config.DialTimeout = 5 * time.Second
+	}
+	if config.TLSHandshakeTimeout == 0 {
+		config.TLSHandshakeTimeout = 2 * time.Second
+	}
+	if config.KeepAlive == 0 {
+		config.KeepAlive = 15 * time.Second
+	}
+	if config.ResponseHeaderTimeout == 0 {
+		config.ResponseHeaderTimeout = 3 * time.Second
+	}
+	if config.ExpectContinueTimeout == 0 {
+		config.ExpectContinueTimeout = 1 * time.Second
+	}
+	if config.IdleConnTimeout == 0 {
+		config.IdleConnTimeout = 5 * time.Second
+	}
+	if config.MaxIdleConns == 0 {
+		config.MaxIdleConns = 100
+	}
+	if config.MaxIdleConnsPerHost == 0 {
+		config.MaxIdleConnsPerHost = 10
+	}
+	if config.MaxConnsPerHost == 0 {
+		config.MaxConnsPerHost = 10
+	}
+	if config.WriteBufferSize == 0 {
+		config.WriteBufferSize = 4096
+	}
+	if config.ReadBufferSize == 0 {
+		config.ReadBufferSize = 4096
+	}
+
+	// Validate configuration - only fail on critical errors
+	if err := f.ValidateHTTPClientConfig(&config); err != nil {
+		// Only use default config for critical validation failures
+		// For example, if timeout is negative or extremely high
+		if config.Timeout <= 0 || config.Timeout > 5*time.Minute {
+			config.Timeout = 30 * time.Second
+		}
+	}
 	// Create transport with configured settings
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,

@@ -705,6 +705,12 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	startReplayCacheCleanup(pluginCtx, logger)
+
+	// Start memory monitoring for leak detection and performance insights
+	memoryMonitor := GetGlobalMemoryMonitor()
+	memoryMonitor.StartMonitoring(pluginCtx, 60*time.Second) // Monitor every minute
+	logger.Debug("Started global memory monitoring")
+
 	logger.Debugf("TraefikOidc.New: Final t.scopes initialized to: %v", t.scopes)
 
 	t.providerURL = config.ProviderURL
@@ -716,6 +722,10 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		defer func() {
 			if t.goroutineWG != nil {
 				t.goroutineWG.Done()
+			}
+			// Recover from panics to prevent goroutine leaks
+			if r := recover(); r != nil {
+				t.logger.Errorf("Initialize metadata goroutine panic recovered: %v", r)
 			}
 		}()
 		t.initializeMetadata(config.ProviderURL)
@@ -778,44 +788,80 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	ticker := time.NewTicker(2 * time.Hour)
 
+	// Track this goroutine for proper cleanup
+	if t.goroutineWG != nil {
+		t.goroutineWG.Add(1)
+	}
+
 	go func() {
-		defer ticker.Stop()
+		defer func() {
+			// Ensure ticker is always stopped
+			ticker.Stop()
+
+			// Always call Done() even if panic occurs
+			if t.goroutineWG != nil {
+				t.goroutineWG.Done()
+			}
+
+			// Recover from panics to prevent goroutine leaks
+			if r := recover(); r != nil {
+				t.logger.Errorf("Metadata refresh goroutine panic recovered: %v", r)
+			}
+		}()
 
 		consecutiveFailures := 0
 		for {
 			select {
 			case <-ticker.C:
-				if consecutiveFailures >= 3 {
-					t.logger.Debug("Skipping metadata refresh due to consecutive failures")
-					consecutiveFailures++
-					if consecutiveFailures > 10 {
-						consecutiveFailures = 3
+				// Add timeout for metadata refresh operations
+				refreshCtx, cancel := context.WithTimeout(t.ctx, 30*time.Second)
+
+				func() {
+					defer cancel() // Ensure context is always canceled
+
+					if consecutiveFailures >= 3 {
+						t.logger.Debug("Skipping metadata refresh due to consecutive failures")
+						consecutiveFailures++
+						if consecutiveFailures > 10 {
+							consecutiveFailures = 3
+						}
+						return
 					}
-					continue
-				}
 
-				t.logger.Debug("Refreshing OIDC metadata")
-				var metadata *ProviderMetadata
-				var err error
-				if t.errorRecoveryManager != nil {
-					metadata, err = t.metadataCache.GetMetadataWithRecovery(providerURL, t.httpClient, t.logger, t.errorRecoveryManager)
-				} else {
-					metadata, err = t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
-				}
-				if err != nil {
-					consecutiveFailures++
-					t.logger.Errorf("Failed to refresh metadata (attempt %d): %v", consecutiveFailures, err)
-					continue
-				}
+					t.logger.Debug("Refreshing OIDC metadata")
+					var metadata *ProviderMetadata
+					var err error
+					if t.errorRecoveryManager != nil {
+						metadata, err = t.metadataCache.GetMetadataWithRecovery(providerURL, t.httpClient, t.logger, t.errorRecoveryManager)
+					} else {
+						metadata, err = t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+					}
 
-				if metadata != nil {
-					t.updateMetadataEndpoints(metadata)
-					t.logger.Debug("Successfully refreshed metadata")
-					consecutiveFailures = 0
-				} else {
-					consecutiveFailures++
-					t.logger.Error("Received nil metadata during refresh")
-				}
+					// Check for context cancellation
+					select {
+					case <-refreshCtx.Done():
+						t.logger.Debug("Metadata refresh timeout or cancellation")
+						consecutiveFailures++
+						return
+					default:
+					}
+
+					if err != nil {
+						consecutiveFailures++
+						t.logger.Errorf("Failed to refresh metadata (attempt %d): %v", consecutiveFailures, err)
+						return
+					}
+
+					if metadata != nil {
+						t.updateMetadataEndpoints(metadata)
+						t.logger.Debug("Successfully refreshed metadata")
+						consecutiveFailures = 0
+					} else {
+						consecutiveFailures++
+						t.logger.Error("Received nil metadata during refresh")
+					}
+				}()
+
 			case <-t.metadataRefreshStopChan:
 				t.logger.Debug("Metadata refresh goroutine stopped.")
 				return
@@ -950,6 +996,10 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 					defer func() {
 						if t.goroutineWG != nil {
 							t.goroutineWG.Done()
+						}
+						// Recover from panics to prevent goroutine leaks
+						if r := recover(); r != nil {
+							t.logger.Errorf("Start metadata refresh goroutine panic recovered: %v", r)
 						}
 					}()
 					t.startMetadataRefresh(t.providerURL)
@@ -2686,6 +2736,17 @@ func (t *TraefikOidc) Close() error {
 			t.jwkCache.Close()
 			t.logger.Debug("t.jwkCache.Close() called as per original instruction.")
 		}
+
+		// Clean up error recovery manager
+		if t.errorRecoveryManager != nil && t.errorRecoveryManager.gracefulDegradation != nil {
+			t.errorRecoveryManager.gracefulDegradation.Close()
+			t.logger.Debug("Error recovery manager graceful degradation closed")
+		}
+
+		// Stop all global background tasks
+		taskRegistry := GetGlobalTaskRegistry()
+		taskRegistry.StopAllTasks()
+		t.logger.Debug("All global background tasks stopped")
 
 		CleanupGlobalMemoryPools()
 		t.logger.Debug("Global memory pools cleaned up")

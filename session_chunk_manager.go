@@ -971,16 +971,29 @@ func (cm *ChunkManager) extractJWTIssuedAt(token string) (*time.Time, error) {
 
 // CleanupExpiredSessions removes expired sessions to prevent memory leaks.
 // This is called periodically to maintain memory efficiency and prevent unbounded growth.
-func (cm *ChunkManager) CleanupExpiredSessions() {
+// It can be called with force=true to bypass time restrictions for testing.
+func (cm *ChunkManager) CleanupExpiredSessions(force ...bool) {
 	cm.mutex.Lock()
 	defer cm.mutex.Unlock()
 
-	// Only cleanup if enough time has passed
-	if time.Since(cm.lastCleanup) < time.Hour {
+	// Check if we should bypass time restrictions
+	forceCleanup := len(force) > 0 && force[0]
+
+	// Check if we have expired sessions that need immediate attention
+	now := time.Now()
+	hasExpiredSessions := false
+	for _, entry := range cm.sessionMap {
+		if now.After(entry.ExpiresAt) || now.Sub(entry.LastUsed) > cm.sessionTTL {
+			hasExpiredSessions = true
+			break
+		}
+	}
+
+	// Only cleanup if enough time has passed, unless forced or we have expired sessions
+	if !forceCleanup && !hasExpiredSessions && time.Since(cm.lastCleanup) < time.Hour {
 		return
 	}
 
-	now := time.Now()
 	expiredKeys := make([]string, 0)
 
 	// Find expired sessions
@@ -1040,4 +1053,106 @@ func (cm *ChunkManager) enforceSessionLimit() {
 	}
 
 	cm.logger.Info("Enforced session limit: removed %d excess sessions", excessCount)
+}
+
+// CanCreateSession checks if a new session can be created within limits
+func (cm *ChunkManager) CanCreateSession() (bool, error) {
+	cm.mutex.RLock()
+	currentCount := len(cm.sessionMap)
+	cm.mutex.RUnlock()
+
+	// Hard limit check - never exceed maxSessions
+	if currentCount >= cm.maxSessions {
+		cm.logger.Error("Cannot create session: at maximum limit (%d)", cm.maxSessions)
+		return false, fmt.Errorf("session storage at maximum capacity (%d sessions)", cm.maxSessions)
+	}
+
+	// Emergency cleanup at 90% capacity
+	emergencyThreshold := int(float64(cm.maxSessions) * 0.9)
+	if currentCount >= emergencyThreshold {
+		cm.logger.Info("Session storage at %d%% capacity, triggering emergency cleanup",
+			(currentCount*100)/cm.maxSessions)
+		cm.EmergencyCleanup()
+
+		// Recheck after cleanup
+		cm.mutex.RLock()
+		newCount := len(cm.sessionMap)
+		cm.mutex.RUnlock()
+
+		if newCount >= cm.maxSessions {
+			return false, fmt.Errorf("session storage full even after emergency cleanup (%d sessions)", newCount)
+		}
+	}
+
+	return true, nil
+}
+
+// EmergencyCleanup performs aggressive session cleanup when approaching limits
+func (cm *ChunkManager) EmergencyCleanup() {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+
+	now := time.Now()
+	removed := 0
+
+	// Remove any expired sessions first
+	expiredKeys := make([]string, 0)
+	for key, entry := range cm.sessionMap {
+		if now.After(entry.ExpiresAt) || now.Sub(entry.LastUsed) > cm.sessionTTL {
+			expiredKeys = append(expiredKeys, key)
+		}
+	}
+
+	for _, key := range expiredKeys {
+		delete(cm.sessionMap, key)
+		removed++
+	}
+
+	// If still over 80% capacity, remove oldest sessions more aggressively
+	targetCapacity := int(float64(cm.maxSessions) * 0.8)
+	if len(cm.sessionMap) > targetCapacity {
+		type sessionAge struct {
+			key      string
+			lastUsed time.Time
+		}
+
+		sessions := make([]sessionAge, 0, len(cm.sessionMap))
+		for key, entry := range cm.sessionMap {
+			sessions = append(sessions, sessionAge{key: key, lastUsed: entry.LastUsed})
+		}
+
+		// Sort by last used time (oldest first)
+		for i := 0; i < len(sessions)-1; i++ {
+			for j := i + 1; j < len(sessions); j++ {
+				if sessions[i].lastUsed.After(sessions[j].lastUsed) {
+					sessions[i], sessions[j] = sessions[j], sessions[i]
+				}
+			}
+		}
+
+		// Remove sessions until we reach target capacity
+		excessCount := len(cm.sessionMap) - targetCapacity
+		for i := 0; i < excessCount && i < len(sessions); i++ {
+			delete(cm.sessionMap, sessions[i].key)
+			removed++
+		}
+	}
+
+	cm.lastCleanup = now
+	cm.logger.Info("Emergency cleanup completed: removed %d sessions, %d remaining",
+		removed, len(cm.sessionMap))
+
+	// Log memory stats after emergency cleanup
+	memMonitor := GetGlobalMemoryMonitor()
+	if stats := memMonitor.GetCurrentStats(); stats != nil {
+		cm.logger.Info("Memory after emergency cleanup - Heap: %.1fMB, Pressure: %s",
+			float64(stats.HeapAllocBytes)/(1024*1024), stats.MemoryPressure.String())
+	}
+}
+
+// GetSessionCount returns the current number of active sessions (for monitoring)
+func (cm *ChunkManager) GetSessionCount() int {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
+	return len(cm.sessionMap)
 }
