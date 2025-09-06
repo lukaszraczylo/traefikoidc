@@ -115,7 +115,7 @@ func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
 
 	if err != nil {
 		if logger != nil {
-			logger.Errorf("Failed to create replay cache cleanup task: %v", err)
+			logger.Debugf("Replay cache cleanup task already exists or circuit breaker limit reached: %v (this is expected with multiple instances)", err)
 		}
 		return
 	}

@@ -72,7 +72,7 @@ func (bt *BackgroundTask) Start() {
 		registry := GetGlobalTaskRegistry()
 		if err := registry.cb.CanCreateTask(bt.name); err != nil {
 			if bt.logger != nil {
-				bt.logger.Errorf("Cannot start task %s: %v", bt.name, err)
+				bt.logger.Debugf("Cannot start task %s: %v (circuit breaker protection working as expected)", bt.name, err)
 			}
 			return
 		}
