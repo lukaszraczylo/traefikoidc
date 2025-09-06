@@ -13,6 +13,7 @@ import (
 // It supports both internal and external WaitGroup coordination for complex cleanup scenarios.
 type BackgroundTask struct {
 	stopChan   chan struct{}
+	doneChan   chan struct{} // Signals when the task goroutine has completed
 	taskFunc   func()
 	logger     *Logger
 	externalWG *sync.WaitGroup
@@ -21,9 +22,10 @@ type BackgroundTask struct {
 	interval   time.Duration
 	stopOnce   sync.Once
 	startOnce  sync.Once
-	mu         sync.Mutex
-	stopped    bool
-	started    bool
+	// Use atomic fields to avoid race conditions
+	stopped    int32 // 1 = stopped, 0 = not stopped
+	started    int32 // 1 = started, 0 = not started
+	doneClosed int32 // 1 = doneChan closed, 0 = not closed
 }
 
 // NewBackgroundTask creates a new background task with the specified configuration.
@@ -46,6 +48,7 @@ func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), log
 		name:       name,
 		interval:   interval,
 		stopChan:   make(chan struct{}),
+		doneChan:   make(chan struct{}),
 		taskFunc:   taskFunc,
 		logger:     logger,
 		externalWG: externalWG,
@@ -58,12 +61,14 @@ func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), log
 // This method is safe to call multiple times - only the first call will start the task.
 func (bt *BackgroundTask) Start() {
 	bt.startOnce.Do(func() {
-		bt.mu.Lock()
-		defer bt.mu.Unlock()
-
-		if bt.stopped {
+		// Check if already stopped using atomic operation
+		if atomic.LoadInt32(&bt.stopped) == 1 {
 			if bt.logger != nil {
 				bt.logger.Infof("Attempted to start already stopped task: %s", bt.name)
+			}
+			// Close doneChan since the task won't run
+			if atomic.CompareAndSwapInt32(&bt.doneClosed, 0, 1) {
+				close(bt.doneChan)
 			}
 			return
 		}
@@ -74,13 +79,17 @@ func (bt *BackgroundTask) Start() {
 			if bt.logger != nil {
 				bt.logger.Debugf("Cannot start task %s: %v (circuit breaker protection working as expected)", bt.name, err)
 			}
+			// Close doneChan since the task won't run
+			if atomic.CompareAndSwapInt32(&bt.doneClosed, 0, 1) {
+				close(bt.doneChan)
+			}
 			return
 		}
 
 		// Reserve the task slot immediately when starting
 		registry.cb.OnTaskStart(bt.name)
 
-		bt.started = true
+		atomic.StoreInt32(&bt.started, 1)
 		bt.internalWG.Add(1)
 		if bt.externalWG != nil {
 			bt.externalWG.Add(1)
@@ -94,9 +103,17 @@ func (bt *BackgroundTask) Start() {
 // This method is safe to call multiple times.
 func (bt *BackgroundTask) Stop() {
 	bt.stopOnce.Do(func() {
-		bt.mu.Lock()
-		bt.stopped = true
-		bt.mu.Unlock()
+		// Set stopped flag atomically
+		atomic.StoreInt32(&bt.stopped, 1)
+
+		// Check if the task was actually started
+		if atomic.LoadInt32(&bt.started) == 0 {
+			// Task was never started, close doneChan to unblock any waiters
+			if atomic.CompareAndSwapInt32(&bt.doneClosed, 0, 1) {
+				close(bt.doneChan)
+			}
+			return
+		}
 
 		// Safe close with panic recovery
 		func() {
@@ -111,21 +128,19 @@ func (bt *BackgroundTask) Stop() {
 			close(bt.stopChan)
 		}()
 
-		// Wait for the goroutine to finish with timeout
-		done := make(chan struct{})
-		go func() {
-			bt.internalWG.Wait()
-			close(done)
-		}()
-
+		// Wait for the task goroutine to complete using doneChan
+		// This avoids the race condition with WaitGroup
 		select {
-		case <-done:
+		case <-bt.doneChan:
 			// Normal completion
 		case <-time.After(5 * time.Second):
 			if bt.logger != nil {
 				bt.logger.Errorf("Timeout waiting for background task %s to stop", bt.name)
 			}
 		}
+
+		// Wait for the internal WaitGroup synchronously after doneChan signals
+		bt.internalWG.Wait()
 	})
 }
 
@@ -139,6 +154,11 @@ func (bt *BackgroundTask) run() {
 	defer func() {
 		// Register task completion with circuit breaker
 		registry.cb.OnTaskComplete(bt.name)
+
+		// Close doneChan to signal that the task has completed
+		if atomic.CompareAndSwapInt32(&bt.doneClosed, 0, 1) {
+			close(bt.doneChan)
+		}
 
 		bt.internalWG.Done()
 		if bt.externalWG != nil {

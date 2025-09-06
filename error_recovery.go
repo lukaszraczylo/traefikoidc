@@ -874,13 +874,18 @@ func (gd *GracefulDegradation) executeFallback(serviceName string) (interface{},
 
 // startHealthCheckRoutine starts the background health check routine
 func (gd *GracefulDegradation) startHealthCheckRoutine() {
-	gd.healthCheckTask = NewBackgroundTask(
+	task := NewBackgroundTask(
 		"graceful-degradation-health-check",
 		gd.config.HealthCheckInterval,
 		gd.performHealthChecks,
 		gd.BaseRecoveryMechanism.logger,
 	)
-	gd.healthCheckTask.Start()
+
+	gd.mutex.Lock()
+	gd.healthCheckTask = task
+	gd.mutex.Unlock()
+
+	task.Start()
 }
 
 // performHealthChecks runs health checks for all registered services
@@ -940,9 +945,13 @@ func (gd *GracefulDegradation) Close() {
 		}
 
 		// Stop health check task
-		if gd.healthCheckTask != nil {
-			gd.healthCheckTask.Stop()
-			gd.healthCheckTask = nil
+		gd.mutex.Lock()
+		task := gd.healthCheckTask
+		gd.mutex.Unlock()
+
+		if task != nil {
+			task.Stop()
+			// Don't set to nil to avoid race conditions
 		}
 
 		gd.logger.Info("GracefulDegradation shut down successfully")

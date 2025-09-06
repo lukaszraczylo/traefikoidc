@@ -143,7 +143,8 @@ func TestBackgroundTaskCircuitBreaker_SingletonPattern(t *testing.T) {
 
 	// Simulate multiple attempts to start cleanup tasks (like from different middleware instances)
 	var wg sync.WaitGroup
-	tasks := make([]*BackgroundTask, 0, numAttempts)
+	tasks := make([]*BackgroundTask, numAttempts)
+	var tasksMu sync.Mutex
 
 	for i := 0; i < numAttempts; i++ {
 		wg.Add(1)
@@ -175,7 +176,9 @@ func TestBackgroundTaskCircuitBreaker_SingletonPattern(t *testing.T) {
 			// Here we test that even if multiple start, resource usage is controlled
 			task.Start()
 
-			tasks = append(tasks, task)
+			tasksMu.Lock()
+			tasks[id] = task
+			tasksMu.Unlock()
 		}(i)
 	}
 

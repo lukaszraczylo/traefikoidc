@@ -134,15 +134,18 @@ func (mm *MemoryMonitor) GetCurrentStats() *MemoryStats {
 
 	// Calculate GC frequency
 	gcFrequency := 0.0
-	if mm.lastStats != nil {
-		timeDiff := now.Sub(mm.lastStats.Timestamp).Minutes()
+	mm.mu.RLock()
+	lastStats := mm.lastStats
+	lastGCCount := mm.lastGCCount
+	mm.mu.RUnlock()
+
+	if lastStats != nil {
+		timeDiff := now.Sub(lastStats.Timestamp).Minutes()
 		if timeDiff > 0 {
-			gcDiff := float64(memStats.NumGC - mm.lastGCCount)
+			gcDiff := float64(memStats.NumGC - lastGCCount)
 			gcFrequency = gcDiff / timeDiff
 		}
 	}
-
-	mm.lastGCCount = memStats.NumGC
 
 	stats := &MemoryStats{
 		HeapAllocBytes:    memStats.HeapAlloc,
@@ -174,6 +177,7 @@ func (mm *MemoryMonitor) GetCurrentStats() *MemoryStats {
 
 	mm.mu.Lock()
 	mm.lastStats = stats
+	mm.lastGCCount = memStats.NumGC
 	mm.mu.Unlock()
 
 	return stats
@@ -234,32 +238,54 @@ func (mm *MemoryMonitor) updateGoroutineTracking(stats *MemoryStats) {
 
 	// Check for potential goroutine leak
 	if stats.NumGoroutines > mm.baselineGoroutines+int(mm.alertThresholds.GoroutineCount) {
-		if !mm.goroutineLeakAlert {
+		mm.mu.Lock()
+		wasAlert := mm.goroutineLeakAlert
+		if !wasAlert {
 			mm.goroutineLeakAlert = true
+		}
+		mm.mu.Unlock()
+		if !wasAlert {
 			mm.logger.Error("Potential goroutine leak detected: %d goroutines (baseline: %d)",
 				stats.NumGoroutines, mm.baselineGoroutines)
 		}
 	} else {
+		mm.mu.Lock()
 		mm.goroutineLeakAlert = false
+		mm.mu.Unlock()
 	}
 }
 
 // updateHeapGrowthTracking monitors heap growth rate
 func (mm *MemoryMonitor) updateHeapGrowthTracking(stats *MemoryStats) {
-	if mm.lastStats != nil {
-		timeDiff := stats.Timestamp.Sub(mm.lastStats.Timestamp).Seconds()
-		if timeDiff > 0 {
-			heapDiff := float64(stats.HeapAllocBytes) - float64(mm.lastStats.HeapAllocBytes)
-			mm.heapGrowthRate = heapDiff / timeDiff // bytes per second
+	mm.mu.RLock()
+	lastStats := mm.lastStats
+	mm.mu.RUnlock()
 
-			growthRateMB := mm.heapGrowthRate / (1024 * 1024)
+	if lastStats != nil {
+		timeDiff := stats.Timestamp.Sub(lastStats.Timestamp).Seconds()
+		if timeDiff > 0 {
+			heapDiff := float64(stats.HeapAllocBytes) - float64(lastStats.HeapAllocBytes)
+			heapGrowthRate := heapDiff / timeDiff // bytes per second
+
+			mm.mu.Lock()
+			mm.heapGrowthRate = heapGrowthRate
+			mm.mu.Unlock()
+
+			growthRateMB := heapGrowthRate / (1024 * 1024)
 			if growthRateMB > mm.alertThresholds.HeapGrowthRateMB {
-				if !mm.suspiciousGrowth {
+				mm.mu.Lock()
+				wasSuspicious := mm.suspiciousGrowth
+				if !wasSuspicious {
 					mm.suspiciousGrowth = true
+				}
+				mm.mu.Unlock()
+				if !wasSuspicious {
 					mm.logger.Error("Suspicious heap growth rate: %.2f MB/sec", growthRateMB)
 				}
 			} else {
+				mm.mu.Lock()
 				mm.suspiciousGrowth = false
+				mm.mu.Unlock()
 			}
 		}
 	}
