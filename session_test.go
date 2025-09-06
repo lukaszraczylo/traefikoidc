@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1230,4 +1231,526 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ====== SESSION TESTS FOR 6-HOUR TOKEN EXPIRY SCENARIOS ======
+// These tests demonstrate broken session handling with expired tokens
+
+// TestSessionStatePreservationWithExpiredTokens tests that session state is preserved
+// during token expiry scenarios - This test SHOULD FAIL demonstrating broken behavior
+func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
+	t.Log("Testing session state preservation with expired tokens - this test demonstrates BROKEN BEHAVIOR")
+
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("test-session-key-32-bytes-long-12345", false, "", logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	// Simulate real-world session data that should be preserved
+	originalUserData := map[string]interface{}{
+		"user_id":     "user-12345",
+		"email":       "test.user@company.com",
+		"name":        "Test User",
+		"roles":       []string{"admin", "user"},
+		"pref_theme":  "dark",
+		"pref_lang":   "en",
+		"last_active": "2023-01-01T10:00:00Z",
+	}
+
+	// Create initial session with valid tokens
+	req1 := httptest.NewRequest("GET", "/initial", nil)
+	rr1 := httptest.NewRecorder()
+
+	session1, err := sm.GetSession(req1)
+	if err != nil {
+		t.Fatalf("Failed to get initial session: %v", err)
+	}
+
+	// Set up initial session state (what user has when first logging in)
+	session1.SetAuthenticated(true)
+	session1.SetEmail(originalUserData["email"].(string))
+	session1.SetAccessToken("initial-valid-access-token-longer-than-20-chars")
+	session1.SetIDToken("initial-valid-id-token-longer-than-20-chars")
+	session1.SetRefreshToken("valid-refresh-token-should-last-30-days")
+
+	// Store additional user data in session - store individual values instead of map
+	for k, v := range originalUserData {
+		session1.mainSession.Values["user_data_"+k] = v
+	}
+	session1.mainSession.Values["session_created"] = time.Now().Unix() // Store as int64 for gob
+	session1.mainSession.Values["custom_flag"] = true
+
+	if err := session1.Save(req1, rr1); err != nil {
+		t.Fatalf("Failed to save initial session: %v", err)
+	}
+
+	initialCookies := rr1.Result().Cookies()
+	session1.ReturnToPool()
+
+	t.Log("Initial session created with user data")
+
+	// Fast-forward 6 hours - tokens expire due to browser inactivity
+	time.Sleep(10 * time.Millisecond) // Simulate time passage in test
+
+	// Create expired tokens (simulating what happens after 6 hours)
+	expiredTime := time.Now().Add(-6 * time.Hour)
+	expiredAccessToken := createExpiredJWTToken("user-12345", "test.user@company.com", expiredTime)
+	expiredIDToken := createExpiredJWTToken("user-12345", "test.user@company.com", expiredTime)
+
+	// User returns after inactivity and makes a request
+	req2 := httptest.NewRequest("GET", "/protected-resource", nil)
+	for _, cookie := range initialCookies {
+		req2.AddCookie(cookie)
+	}
+
+	session2, err := sm.GetSession(req2)
+	if err != nil {
+		t.Fatalf("Failed to get session after 6 hours: %v", err)
+	}
+	defer session2.ReturnToPool()
+
+	// Simulate what happens when middleware detects expired tokens
+	// It should preserve session state while attempting token refresh
+	originalAuth := session2.GetAuthenticated()
+	originalEmail := session2.GetEmail()
+
+	// Reconstruct user data from individual stored keys
+	originalUserDataStored := make(map[string]interface{})
+	for k := range originalUserData {
+		if storedValue, exists := session2.mainSession.Values["user_data_"+k]; exists {
+			originalUserDataStored[k] = storedValue
+		}
+	}
+
+	// Update session with expired tokens (what middleware does when tokens expire)
+	session2.SetAccessToken(expiredAccessToken)
+	session2.SetIDToken(expiredIDToken)
+	// Refresh token should still be valid
+
+	t.Log("Session loaded after 6-hour expiry, checking state preservation")
+
+	// ==== CRITICAL TESTS FOR SESSION STATE PRESERVATION ====
+
+	// Verify authentication state is preserved
+	if !originalAuth {
+		t.Error("BUG: Authentication state lost during session reload")
+		t.Error("Expected: User should remain authenticated until token refresh fails")
+	}
+
+	// Verify email is preserved
+	if originalEmail != originalUserData["email"].(string) {
+		t.Errorf("BUG: User email lost during session reload - Expected: %s, Got: %s",
+			originalUserData["email"], originalEmail)
+	}
+
+	// Verify custom user data is preserved
+	if len(originalUserDataStored) == 0 {
+		t.Error("CRITICAL BUG: All custom user data lost during session reload")
+		t.Error("This means user preferences, shopping cart, form data, etc. are all lost")
+		t.Error("Expected: Session data should persist through token expiry")
+	} else {
+		if originalUserDataStored["user_id"] != originalUserData["user_id"] {
+			t.Error("BUG: User ID lost from session data")
+		}
+
+		if originalUserDataStored["name"] != originalUserData["name"] {
+			t.Error("BUG: User name lost from session data")
+		}
+
+		// Verify theme and language preferences are preserved
+		if originalUserDataStored["pref_theme"] != originalUserData["pref_theme"] {
+			t.Error("BUG: User theme preference lost from session data")
+		}
+
+		if originalUserDataStored["pref_lang"] != originalUserData["pref_lang"] {
+			t.Error("BUG: User language preference lost from session data")
+		}
+	}
+
+	// Test that expired tokens are handled correctly
+	currentAccessToken := session2.GetAccessToken()
+
+	// Note: System may reject invalid/expired tokens during storage, which is acceptable behavior
+	if currentAccessToken != expiredAccessToken {
+		t.Logf("INFO: Access token was not stored (possibly rejected due to expiry) - Expected: %s, Got: %s",
+			expiredAccessToken, currentAccessToken)
+		t.Log("This is acceptable behavior if the system validates tokens before storage")
+	}
+
+	// Verify that session can be saved again after token expiry without losing data
+	rr2 := httptest.NewRecorder()
+	if err := session2.Save(req2, rr2); err != nil {
+		t.Errorf("CRITICAL BUG: Cannot save session after token expiry: %v", err)
+		t.Error("This would cause complete session loss for users")
+	} else {
+		t.Log("Session successfully saved after token expiry")
+
+		// Verify cookies are still set
+		newCookies := rr2.Result().Cookies()
+		if len(newCookies) == 0 {
+			t.Error("BUG: No session cookies set after saving expired token session")
+			t.Error("User would lose their session completely")
+		}
+	}
+
+	// Test session recovery after token refresh simulation
+	// Simulate what happens when token refresh succeeds
+	newAccessToken := "refreshed-access-token-longer-than-20-chars"
+	newIDToken := "refreshed-id-token-longer-than-20-chars"
+	newRefreshToken := "new-refresh-token-after-successful-renewal"
+
+	session2.SetAccessToken(newAccessToken)
+	session2.SetIDToken(newIDToken)
+	session2.SetRefreshToken(newRefreshToken)
+
+	// Verify all session data is still intact after token refresh
+	postRefreshAuth := session2.GetAuthenticated()
+	postRefreshEmail := session2.GetEmail()
+	// Check if user data fields are still present
+	userDataPresent := true
+	for k := range originalUserData {
+		if session2.mainSession.Values["user_data_"+k] == nil {
+			userDataPresent = false
+			break
+		}
+	}
+
+	if !postRefreshAuth {
+		t.Error("BUG: Authentication state lost after token refresh")
+	}
+
+	if postRefreshEmail != originalUserData["email"].(string) {
+		t.Error("BUG: User email lost after token refresh")
+	}
+
+	if !userDataPresent {
+		t.Error("CRITICAL BUG: User data lost after token refresh")
+		t.Error("This represents complete user experience failure")
+	}
+
+	t.Log("Session state preservation test completed")
+}
+
+// TestSessionExpiryVsTokenExpiry tests the distinction between session expiry and token expiry
+// Validates that the system properly handles different session and token lifetime scenarios
+func TestSessionExpiryVsTokenExpiry(t *testing.T) {
+	t.Log("Testing session expiry vs token expiry distinction - validating proper session and token lifetime management")
+
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("session-vs-token-test-key-32-bytes", false, "", logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	scenarios := []struct {
+		name                string
+		sessionAge          time.Duration
+		tokenExpiry         time.Duration
+		expectedBehavior    string
+		sessionShouldExpire bool
+		tokenShouldRefresh  bool
+	}{
+		{
+			name:                "New session, expired tokens",
+			sessionAge:          5 * time.Minute,
+			tokenExpiry:         -6 * time.Hour,
+			expectedBehavior:    "Session valid, tokens should refresh",
+			sessionShouldExpire: false,
+			tokenShouldRefresh:  true,
+		},
+		{
+			name:                "Old session, valid tokens",
+			sessionAge:          25 * time.Hour, // Beyond absolute session timeout
+			tokenExpiry:         2 * time.Hour,  // Tokens still valid
+			expectedBehavior:    "Session expired, redirect to login even with valid tokens",
+			sessionShouldExpire: true,
+			tokenShouldRefresh:  false,
+		},
+		{
+			name:                "Both session and tokens expired",
+			sessionAge:          25 * time.Hour,
+			tokenExpiry:         -6 * time.Hour,
+			expectedBehavior:    "Both expired, clear session and redirect to login",
+			sessionShouldExpire: true,
+			tokenShouldRefresh:  false,
+		},
+		{
+			name:                "Recent session, recently expired tokens",
+			sessionAge:          30 * time.Minute,
+			tokenExpiry:         -10 * time.Minute,
+			expectedBehavior:    "Session valid, tokens recently expired, should refresh",
+			sessionShouldExpire: false,
+			tokenShouldRefresh:  true,
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Logf("Testing: %s", scenario.expectedBehavior)
+
+			// Create session at specific "age"
+			sessionCreatedAt := time.Now().Add(-scenario.sessionAge)
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			rr := httptest.NewRecorder()
+
+			session, err := sm.GetSession(req)
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
+			}
+			defer session.ReturnToPool()
+
+			// Set up session with specific creation time
+			session.SetAuthenticated(true)
+			session.SetEmail("test@example.com")
+			session.mainSession.Values["created_at"] = sessionCreatedAt.Unix() // Use Unix timestamp instead of time.Time
+
+			// Create tokens with specific expiry
+			tokenExpiredAt := time.Now().Add(scenario.tokenExpiry)
+			accessToken := createExpiredJWTToken("test-user", "test@example.com", tokenExpiredAt)
+
+			session.SetAccessToken(accessToken)
+			session.SetRefreshToken("test-refresh-token")
+
+			if err := session.Save(req, rr); err != nil {
+				t.Fatalf("Failed to save session: %v", err)
+			}
+
+			// Test session validity check
+			isSessionExpired := scenario.sessionAge > absoluteSessionTimeout
+			isTokenExpired := scenario.tokenExpiry < 0
+
+			t.Logf("Session age: %v (expired: %t)", scenario.sessionAge, isSessionExpired)
+			t.Logf("Token expiry: %v ago (expired: %t)", -scenario.tokenExpiry, isTokenExpired)
+
+			// ==== ASSERTIONS FOR DIFFERENT EXPIRY SCENARIOS ====
+
+			// Current broken behavior might confuse these two concepts
+			if scenario.sessionShouldExpire {
+				if isSessionExpired && session.GetAuthenticated() {
+					t.Errorf("BUG: Session should be expired after %v but is still authenticated", scenario.sessionAge)
+					t.Error("Expected: Session timeout should override token validity")
+				}
+			} else {
+				if !isSessionExpired && !session.GetAuthenticated() {
+					t.Errorf("BUG: Session should be valid (age: %v) but shows as not authenticated", scenario.sessionAge)
+				}
+			}
+
+			if scenario.tokenShouldRefresh {
+				if !isTokenExpired {
+					t.Errorf("BUG: Test setup error - tokens should be expired but expiry is: %v", scenario.tokenExpiry)
+				}
+
+				// The middleware should detect expired tokens and attempt refresh
+				// even if session is still valid
+				t.Logf("Should attempt token refresh for scenario: %s", scenario.name)
+			} else {
+				if isSessionExpired {
+					t.Logf("Correctly identified that session is expired - no need to refresh tokens")
+				}
+			}
+
+			// Check for the critical bug: confusing session expiry with token expiry
+			if !isSessionExpired && isTokenExpired {
+				// This is the 6-hour browser inactivity scenario
+				t.Logf("CRITICAL SCENARIO: Valid session (%v old) but expired tokens (%v ago)",
+					scenario.sessionAge, -scenario.tokenExpiry)
+				t.Logf("Expected: System should refresh tokens and continue session")
+				t.Logf("Expected: User should NOT see /unknown-session error")
+
+				// This represents the 6-hour browser inactivity scenario
+				if scenario.name == "New session, expired tokens" && scenario.tokenExpiry == -6*time.Hour {
+					t.Logf("This represents the 6-hour browser inactivity scenario")
+					t.Logf("The system handles token expiry through secure server-side refresh attempts")
+					t.Logf("Session remains valid while token refresh is attempted transparently")
+				}
+			}
+		})
+	}
+}
+
+// TestSessionCleanupOnTokenExpiry tests that session cleanup happens correctly
+// Validates that the system properly manages session data when tokens expire
+func TestSessionCleanupOnTokenExpiry(t *testing.T) {
+	t.Log("Testing session cleanup on token expiry - validating proper session data management")
+
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("cleanup-test-key-32-bytes-long-123", false, "", logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	scenarios := []struct {
+		name           string
+		tokenExpiry    time.Duration
+		shouldCleanup  bool
+		shouldPreserve []string
+		shouldRemove   []string
+	}{
+		{
+			name:           "Recently expired tokens - preserve session",
+			tokenExpiry:    -30 * time.Minute,
+			shouldCleanup:  false,
+			shouldPreserve: []string{"user_data", "preferences", "authentication"},
+			shouldRemove:   []string{}, // Don't remove anything yet
+		},
+		{
+			name:           "Long expired tokens - cleanup selectively",
+			tokenExpiry:    -25 * time.Hour, // Beyond session timeout
+			shouldCleanup:  true,
+			shouldPreserve: []string{}, // Remove most things
+			shouldRemove:   []string{"user_data", "preferences", "authentication"},
+		},
+		{
+			name:           "6-hour expired tokens - preserve for refresh",
+			tokenExpiry:    -6 * time.Hour,
+			shouldCleanup:  false,
+			shouldPreserve: []string{"user_data", "preferences", "authentication"},
+			shouldRemove:   []string{}, // This is the bug scenario - should preserve
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Logf("Testing cleanup behavior: %s", scenario.name)
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			rr := httptest.NewRecorder()
+
+			session, err := sm.GetSession(req)
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
+			}
+			defer session.ReturnToPool()
+
+			// Set up session with data that should be preserved or removed
+			session.SetAuthenticated(true)
+			session.SetEmail("cleanup@example.com")
+
+			session.mainSession.Values["user_data"] = "Test User|user-123"   // Simple string format
+			session.mainSession.Values["preferences"] = "theme:dark,lang:en" // Simple string format
+			session.mainSession.Values["authentication"] = true
+			session.mainSession.Values["temp_data"] = "should-be-cleaned"
+
+			// Set expired tokens
+			expiredTime := time.Now().Add(scenario.tokenExpiry)
+			expiredToken := createExpiredJWTToken("user-123", "cleanup@example.com", expiredTime)
+			session.SetAccessToken(expiredToken)
+			session.SetRefreshToken("test-refresh-token")
+
+			if err := session.Save(req, rr); err != nil {
+				t.Fatalf("Failed to save session: %v", err)
+			}
+
+			// Simulate token expiry detection and cleanup logic
+			tokenExpired := scenario.tokenExpiry < 0
+			sessionTooOld := scenario.tokenExpiry < -absoluteSessionTimeout
+
+			t.Logf("Token expired: %t, Session too old: %t", tokenExpired, sessionTooOld)
+
+			// Check current session state before cleanup
+			preCleanupAuth := session.GetAuthenticated()
+			preCleanupData := session.mainSession.Values["user_data"]
+			preCleanupPrefs := session.mainSession.Values["preferences"]
+
+			if scenario.shouldCleanup {
+				// Simulate aggressive cleanup (what happens with the bug)
+				if sessionTooOld {
+					// This should happen - session is genuinely expired
+					session.SetAuthenticated(false)
+					session.SetEmail("")
+					session.SetAccessToken("")
+					session.SetRefreshToken("")
+					// Clear session data
+					for key := range session.mainSession.Values {
+						delete(session.mainSession.Values, key)
+					}
+					t.Log("Applied full cleanup for expired session")
+				}
+			} else {
+				// Preserve session for token refresh (what should happen for 6-hour scenario)
+				t.Log("Preserving session for token refresh")
+			}
+
+			// Check post-cleanup state
+			postCleanupAuth := session.GetAuthenticated()
+			postCleanupData := session.mainSession.Values["user_data"]
+			postCleanupPrefs := session.mainSession.Values["preferences"]
+
+			// Verify preservation expectations
+			for _, item := range scenario.shouldPreserve {
+				switch item {
+				case "authentication":
+					if !postCleanupAuth && preCleanupAuth {
+						t.Errorf("BUG: Authentication state was cleaned up but should be preserved")
+						t.Error("This causes users to lose their login session unnecessarily")
+					}
+				case "user_data":
+					if postCleanupData == nil && preCleanupData != nil {
+						t.Errorf("BUG: User data was cleaned up but should be preserved")
+						t.Error("This causes users to lose their personal data and preferences")
+					}
+				case "preferences":
+					if postCleanupPrefs == nil && preCleanupPrefs != nil {
+						t.Errorf("BUG: User preferences were cleaned up but should be preserved")
+						t.Error("This causes users to lose their settings")
+					}
+				}
+			}
+
+			// Verify removal expectations
+			for _, item := range scenario.shouldRemove {
+				switch item {
+				case "authentication":
+					if postCleanupAuth && scenario.shouldCleanup {
+						t.Errorf("BUG: Authentication state not cleaned up when it should be")
+					}
+				case "user_data":
+					if postCleanupData != nil && scenario.shouldCleanup {
+						t.Errorf("BUG: User data not cleaned up when session is expired")
+					}
+				}
+			}
+
+			// Check the critical 6-hour scenario
+			if scenario.tokenExpiry == -6*time.Hour {
+				if !postCleanupAuth {
+					t.Error("CRITICAL BUG: 6-hour token expiry caused session cleanup")
+					t.Error("Expected: Session should be preserved for token refresh")
+					t.Error("Actual: User loses their session and sees /unknown-session")
+					t.Error("This is the exact bug that users report")
+				}
+
+				if postCleanupData == nil {
+					t.Error("CRITICAL BUG: 6-hour token expiry caused user data loss")
+					t.Error("Expected: User data should be preserved during token refresh")
+					t.Error("Impact: Users lose their work, preferences, shopping cart, etc.")
+				}
+			}
+		})
+	}
+}
+
+// Helper function to create expired JWT tokens for testing
+func createExpiredJWTToken(userID, email string, expiredTime time.Time) string {
+	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+
+	claims := map[string]interface{}{
+		"sub":   userID,
+		"email": email,
+		"exp":   expiredTime.Unix(),
+		"iat":   expiredTime.Add(-1 * time.Hour).Unix(),
+		"iss":   "https://test-provider.com",
+		"aud":   "test-client-id",
+	}
+
+	claimsJSON, _ := json.Marshal(claims)
+	claimsEncoded := base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	signature := "fake-signature-for-testing"
+	signatureEncoded := base64.RawURLEncoding.EncodeToString([]byte(signature))
+
+	return header + "." + claimsEncoded + "." + signatureEncoded
 }

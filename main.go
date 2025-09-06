@@ -1113,7 +1113,21 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	refreshTokenPresent := session.GetRefreshToken() != ""
-	shouldAttemptRefresh := needsRefresh && refreshTokenPresent
+
+	// Check if this is an AJAX request that should receive 401 instead of redirect
+	isAjaxRequest := t.isAjaxRequest(req)
+
+	// Check if refresh token is likely expired (older than 6 hours)
+	refreshTokenExpired := refreshTokenPresent && t.isRefreshTokenExpired(session)
+
+	shouldAttemptRefresh := needsRefresh && refreshTokenPresent && !refreshTokenExpired
+
+	// If AJAX request and refresh token expired, return 401 immediately
+	if isAjaxRequest && refreshTokenExpired {
+		t.logger.Debug("AJAX request with expired refresh token, returning 401")
+		t.sendErrorResponse(rw, req, "Session expired", http.StatusUnauthorized)
+		return
+	}
 
 	if shouldAttemptRefresh {
 		idToken := session.GetIDToken()
@@ -1159,12 +1173,11 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 
 		t.logger.Debug("Token refresh failed, requiring re-authentication")
-		acceptHeader := req.Header.Get("Accept")
-		if strings.Contains(acceptHeader, "application/json") {
-			t.logger.Debug("Client accepts JSON, sending 401 Unauthorized on refresh failure")
+		if isAjaxRequest {
+			t.logger.Debug("AJAX request with failed token refresh, sending 401 Unauthorized")
 			t.sendErrorResponse(rw, req, "Token refresh failed", http.StatusUnauthorized)
 		} else {
-			t.logger.Debug("Client does not prefer JSON, handling refresh failure by initiating re-auth")
+			t.logger.Debug("Browser request with failed token refresh, initiating re-auth")
 			// Reset redirect count when starting fresh auth after failed refresh to prevent redirect loops
 			session.ResetRedirectCount()
 			t.defaultInitiateAuthentication(rw, req, session, redirectURL)
@@ -1173,6 +1186,14 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	t.logger.Debugf("Initiating full OIDC authentication flow (authenticated=%v, needsRefresh=%v, refreshTokenPresent=%v)", authenticated, needsRefresh, refreshTokenPresent)
+
+	// If AJAX request without valid authentication, return 401
+	if isAjaxRequest {
+		t.logger.Debug("AJAX request requires authentication, sending 401 Unauthorized")
+		t.sendErrorResponse(rw, req, "Authentication required", http.StatusUnauthorized)
+		return
+	}
+
 	// Reset redirect count when starting fresh authentication flow
 	session.ResetRedirectCount()
 	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
@@ -2754,4 +2775,43 @@ func (t *TraefikOidc) Close() error {
 		t.logger.Info("TraefikOidc plugin instance closed successfully.")
 	})
 	return closeErr
+}
+
+// isAjaxRequest determines if the request is an AJAX/fetch request that should
+// receive JSON responses instead of HTML redirects.
+// Returns true if the request contains AJAX indicators.
+func (t *TraefikOidc) isAjaxRequest(req *http.Request) bool {
+	// Check for XMLHttpRequest header (set by jQuery and many AJAX libraries)
+	if req.Header.Get("X-Requested-With") == "XMLHttpRequest" {
+		return true
+	}
+
+	// Check if client prefers JSON response
+	acceptHeader := req.Header.Get("Accept")
+	if strings.Contains(acceptHeader, "application/json") {
+		return true
+	}
+
+	// Check for fetch API requests (often contain these headers)
+	if req.Header.Get("Sec-Fetch-Mode") == "cors" {
+		return true
+	}
+
+	return false
+}
+
+// isRefreshTokenExpired checks if the refresh token is likely expired based on
+// when it was last obtained. Refresh tokens typically expire after 6+ hours.
+// Returns true if the refresh token is likely expired and refresh should be skipped.
+func (t *TraefikOidc) isRefreshTokenExpired(session *SessionData) bool {
+	refreshTokenIssuedAt := session.GetRefreshTokenIssuedAt()
+	if refreshTokenIssuedAt.IsZero() {
+		// If we don't have issue time, assume it might be old but try refresh anyway
+		return false
+	}
+
+	// Consider refresh token expired if it's older than 6 hours
+	// This is a conservative estimate as most providers use 6-24 hour expiry
+	refreshTokenMaxAge := 6 * time.Hour
+	return time.Since(refreshTokenIssuedAt) > refreshTokenMaxAge
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -610,4 +611,511 @@ func createMockJWTWithExpiry(t *testing.T, sub, email string, expiry time.Time) 
 	signature := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
 
 	return headerEncoded + "." + claimsEncoded + "." + signature
+}
+
+// ====== COMPREHENSIVE 6-HOUR EXPIRY TESTS FOR GRACE PERIOD ======
+// These tests demonstrate the broken behavior with 6-hour token expiry scenarios
+
+// TestSixHourExpiryWithGracePeriod tests the interaction between 6-hour expiry and grace periods
+// This test SHOULD FAIL - it demonstrates broken 6-hour expiry handling
+func TestSixHourExpiryWithGracePeriod(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	t.Log("Testing 6-hour token expiry with grace period - this test demonstrates BROKEN BEHAVIOR")
+
+	// Reset global state
+	resetGlobalState()
+
+	refreshAttempts := int32(0)
+	unknownSessionRedirects := int32(0)
+
+	// Mock token server for refresh attempts
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&refreshAttempts, 1)
+		t.Logf("6-hour expiry test - refresh attempt #%d", atomic.LoadInt32(&refreshAttempts))
+
+		// Return new valid tokens
+		newToken := createMockJWTWithExpiry(t, "user123", "test@example.com", time.Now().Add(1*time.Hour))
+		response := map[string]interface{}{
+			"access_token":  "new-6hour-access-token-longer-than-20-chars",
+			"id_token":      newToken,
+			"refresh_token": "new-6hour-refresh-token",
+			"expires_in":    3600,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer tokenServer.Close()
+
+	// Configure with grace period
+	config := createTestConfig()
+	config.RefreshGracePeriodSeconds = 300 // 5 minutes grace period
+
+	oidc, _ := setupTestOIDCMiddleware(t, config)
+	oidc.tokenURL = tokenServer.URL
+	oidc.refreshGracePeriod = time.Duration(300) * time.Second
+
+	// Mock the token verifier
+	oidc.tokenVerifier = &mockTokenVerifier{
+		verifyFunc: func(token string) error {
+			claims, err := extractClaims(token)
+			if err != nil {
+				return err
+			}
+			oidc.tokenCache.Set(token, claims, time.Hour)
+			return nil
+		},
+	}
+
+	// Create tokens that expired exactly 6 hours ago (browser inactivity scenario)
+	sixHoursAgo := time.Now().Add(-6 * time.Hour)
+	expiredToken := createMockJWTWithExpiry(t, "user123", "test@example.com", sixHoursAgo)
+
+	session := createAuthenticatedSession("expired-6hour-access-token-longer-than-20", expiredToken, "valid-refresh-token")
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	rec := httptest.NewRecorder()
+
+	// Inject session into request
+	injectSessionIntoRequest(t, req, session)
+
+	// Set up next handler to detect unknown-session redirects
+	oidc.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("SUCCESS: Request processed after 6-hour token renewal"))
+	})
+
+	// We'll check the response after the call instead of wrapping ServeHTTP
+
+	t.Log("Making request with 6-hour expired token - should refresh within grace period")
+
+	// This should detect the 6-hour expired token and attempt refresh
+	oidc.ServeHTTP(rec, req)
+
+	// Check if response was a redirect to /unknown-session
+	if rec.Code == http.StatusTemporaryRedirect {
+		location := rec.Header().Get("Location")
+		if strings.Contains(location, "/unknown-session") {
+			atomic.AddInt32(&unknownSessionRedirects, 1)
+		}
+	}
+
+	// ==== ASSERTIONS DEMONSTRATING THE 6-HOUR BUG ====
+
+	finalRefreshAttempts := atomic.LoadInt32(&refreshAttempts)
+	finalUnknownRedirects := atomic.LoadInt32(&unknownSessionRedirects)
+
+	t.Logf("Refresh attempts: %d", finalRefreshAttempts)
+	t.Logf("Unknown session redirects: %d", finalUnknownRedirects)
+	t.Logf("Response code: %d", rec.Code)
+	t.Logf("Response body: %s", rec.Body.String())
+
+	// Current broken behavior - 6-hour expired tokens redirect to /unknown-session
+	if finalUnknownRedirects > 0 {
+		t.Errorf("BUG DEMONSTRATED: 6-hour expired token caused %d redirects to /unknown-session", finalUnknownRedirects)
+		t.Error("BROKEN: Users see /unknown-session instead of transparent token renewal")
+		t.Error("Expected: Automatic token refresh should happen transparently")
+		t.Error("Expected: Grace period should allow renewal of recently expired tokens")
+
+		if finalRefreshAttempts == 0 {
+			t.Error("CRITICAL: No refresh attempt was made despite valid refresh token")
+			t.Error("This proves the 6-hour expiry detection is completely broken")
+		}
+		return // Test fails as expected - demonstrates the bug
+	}
+
+	// This is what SHOULD happen (but doesn't currently work):
+	if rec.Code == http.StatusOK && finalRefreshAttempts > 0 {
+		t.Log("SUCCESS: 6-hour expired token was properly renewed within grace period")
+
+		if !strings.Contains(rec.Body.String(), "SUCCESS") {
+			t.Error("Expected success message after renewal")
+		}
+
+		// Verify the grace period was applied correctly
+		if finalRefreshAttempts > 1 {
+			t.Errorf("INEFFICIENCY: Too many refresh attempts (%d) - grace period not working", finalRefreshAttempts)
+		}
+	} else if finalRefreshAttempts == 0 {
+		t.Error("BUG DEMONSTRATED: No refresh attempt made for 6-hour expired token")
+		t.Error("Expected: Grace period should trigger refresh for recently expired tokens")
+		t.Errorf("Response: Code=%d, Body=%s", rec.Code, rec.Body.String())
+	} else {
+		t.Errorf("UNEXPECTED: Response after refresh attempt - Code=%d, Body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestGracePeriodSixHourEdgeCase tests the exact edge case of 6-hour token expiry
+// This test SHOULD FAIL - it demonstrates the specific 6-hour boundary bug
+func TestGracePeriodSixHourEdgeCase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	t.Log("Testing grace period at 6-hour boundary - this test demonstrates BROKEN BEHAVIOR")
+
+	testCases := []struct {
+		name           string
+		expiryTime     time.Duration
+		gracePeriod    time.Duration
+		shouldRefresh  bool
+		expectRedirect bool
+		description    string
+	}{
+		{
+			name:           "6 hours expired, 5 min grace",
+			expiryTime:     -6 * time.Hour,
+			gracePeriod:    5 * time.Minute,
+			shouldRefresh:  false, // Outside grace period
+			expectRedirect: true,
+			description:    "6-hour expiry should be outside 5-minute grace period",
+		},
+		{
+			name:           "6 hours expired, 7 hour grace",
+			expiryTime:     -6 * time.Hour,
+			gracePeriod:    7 * time.Hour,
+			shouldRefresh:  true, // Within grace period
+			expectRedirect: false,
+			description:    "6-hour expiry should be within 7-hour grace period",
+		},
+		{
+			name:           "Exactly 6 hours expired, 6 hour grace",
+			expiryTime:     -6 * time.Hour,
+			gracePeriod:    6 * time.Hour,
+			shouldRefresh:  true, // At boundary - should refresh
+			expectRedirect: false,
+			description:    "At exact boundary should favor refresh",
+		},
+		{
+			name:           "5h59m expired, 6 hour grace",
+			expiryTime:     -5*time.Hour - 59*time.Minute,
+			gracePeriod:    6 * time.Hour,
+			shouldRefresh:  true,
+			expectRedirect: false,
+			description:    "Just under 6 hours should refresh within 6-hour grace",
+		},
+		{
+			name:           "6h01m expired, 6 hour grace",
+			expiryTime:     -6*time.Hour - 1*time.Minute,
+			gracePeriod:    6 * time.Hour,
+			shouldRefresh:  false, // Just outside grace period
+			expectRedirect: true,
+			description:    "Just over 6 hours should be outside 6-hour grace period",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Logf("Testing: %s", tc.description)
+
+			resetGlobalState()
+
+			refreshCount := int32(0)
+			redirectCount := int32(0)
+			unknownSessionCount := int32(0)
+
+			// Mock token server
+			tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&refreshCount, 1)
+				t.Logf("Grace period test '%s' - refresh attempt #%d", tc.name, atomic.LoadInt32(&refreshCount))
+
+				newToken := createMockJWTWithExpiry(t, "user123", "test@example.com", time.Now().Add(1*time.Hour))
+				response := map[string]interface{}{
+					"access_token":  fmt.Sprintf("refreshed-%s-token-longer-than-20-chars", tc.name),
+					"id_token":      newToken,
+					"refresh_token": fmt.Sprintf("refreshed-%s-refresh-token", tc.name),
+					"expires_in":    3600,
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			}))
+			defer tokenServer.Close()
+
+			// Configure with specific grace period
+			config := createTestConfig()
+			config.RefreshGracePeriodSeconds = int(tc.gracePeriod.Seconds())
+
+			oidc, _ := setupTestOIDCMiddleware(t, config)
+			oidc.tokenURL = tokenServer.URL
+			oidc.refreshGracePeriod = tc.gracePeriod
+
+			// Mock token verifier
+			oidc.tokenVerifier = &mockTokenVerifier{
+				verifyFunc: func(token string) error {
+					claims, err := extractClaims(token)
+					if err != nil {
+						return err
+					}
+					oidc.tokenCache.Set(token, claims, time.Hour)
+					return nil
+				},
+			}
+
+			// Create token with specific expiry time
+			expiredTime := time.Now().Add(tc.expiryTime)
+			expiredToken := createMockJWTWithExpiry(t, "user123", "test@example.com", expiredTime)
+
+			session := createAuthenticatedSession(
+				fmt.Sprintf("test-%s-access-token-longer-than-20", tc.name),
+				expiredToken,
+				"test-refresh-token",
+			)
+
+			req := httptest.NewRequest("GET", "/grace-test", nil)
+			rec := httptest.NewRecorder()
+
+			injectSessionIntoRequest(t, req, session)
+
+			// Set up handlers to track behavior
+			oidc.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(fmt.Sprintf("SUCCESS: %s processed", tc.name)))
+			})
+
+			// We'll check redirects after the call
+
+			t.Logf("Executing grace period test for: %s", tc.name)
+			t.Logf("Token expired: %v ago, Grace period: %v", -tc.expiryTime, tc.gracePeriod)
+
+			// Execute the test
+			oidc.ServeHTTP(rec, req)
+
+			// Check for redirects after the call
+			if rec.Code == http.StatusTemporaryRedirect {
+				atomic.AddInt32(&redirectCount, 1)
+				location := rec.Header().Get("Location")
+				if strings.Contains(location, "/unknown-session") {
+					atomic.AddInt32(&unknownSessionCount, 1)
+				}
+			}
+
+			// Analyze results
+			finalRefreshCount := atomic.LoadInt32(&refreshCount)
+			finalRedirectCount := atomic.LoadInt32(&redirectCount)
+			finalUnknownCount := atomic.LoadInt32(&unknownSessionCount)
+
+			t.Logf("Results for '%s':", tc.name)
+			t.Logf("  Refresh attempts: %d", finalRefreshCount)
+			t.Logf("  Redirects: %d", finalRedirectCount)
+			t.Logf("  Unknown session redirects: %d", finalUnknownCount)
+			t.Logf("  Response code: %d", rec.Code)
+
+			// Verify expected behavior
+			if tc.shouldRefresh {
+				if finalRefreshCount == 0 {
+					t.Errorf("BUG: Expected refresh for '%s' within grace period, but none occurred", tc.name)
+					t.Errorf("Grace period %v should cover expiry %v ago", tc.gracePeriod, -tc.expiryTime)
+
+					if finalUnknownCount > 0 {
+						t.Error("CRITICAL: Got /unknown-session redirect instead of refresh")
+					}
+				} else if rec.Code == http.StatusOK {
+					t.Logf("SUCCESS: '%s' correctly refreshed within grace period", tc.name)
+				}
+			} else {
+				// Should not refresh, but should redirect properly
+				if finalRefreshCount > 0 {
+					t.Errorf("INEFFICIENCY: Unnecessary refresh attempt for '%s' outside grace period", tc.name)
+					t.Errorf("Grace period %v should NOT cover expiry %v ago", tc.gracePeriod, -tc.expiryTime)
+				}
+			}
+
+			if tc.expectRedirect {
+				if finalRedirectCount == 0 {
+					t.Errorf("BUG: Expected redirect for '%s' outside grace period", tc.name)
+				} else if finalUnknownCount > 0 {
+					t.Errorf("BUG: Got /unknown-session redirect instead of proper auth redirect")
+					t.Error("Expected: Redirect to OAuth provider for re-authentication")
+				}
+			}
+
+			// Check for the critical /unknown-session bug
+			if finalUnknownCount > 0 {
+				t.Errorf("CRITICAL BUG: '%s' caused %d /unknown-session redirects", tc.name, finalUnknownCount)
+				t.Error("This is the exact bug reported - users see /unknown-session after browser inactivity")
+			}
+		})
+	}
+}
+
+// TestSixHourBrowserInactivityScenario simulates the exact real-world scenario
+// This test SHOULD FAIL - it demonstrates the exact user experience bug
+func TestSixHourBrowserInactivityScenario(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	t.Log("Simulating real-world 6-hour browser inactivity scenario - this demonstrates USER-VISIBLE BUG")
+
+	resetGlobalState()
+
+	userExperienceLog := []string{}
+
+	// Mock what happens during browser inactivity:
+	// 1. User leaves browser open on protected page
+	// 2. 6 hours pass with no activity
+	// 3. User returns and clicks on something or refreshes
+	// 4. System should renew tokens transparently
+	// 5. But currently redirects to /unknown-session instead
+
+	tokenRefreshAttempted := false
+	unknownSessionShown := false
+	userSawError := false
+
+	// Mock token server (OIDC provider)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenRefreshAttempted = true
+		userExperienceLog = append(userExperienceLog, "Token server received refresh request")
+
+		// Provider would normally return new tokens
+		newToken := createMockJWTWithExpiry(t, "real-user", "user@company.com", time.Now().Add(8*time.Hour))
+		response := map[string]interface{}{
+			"access_token":  "new-valid-access-token-after-6hour-expiry",
+			"id_token":      newToken,
+			"refresh_token": "new-valid-refresh-token-after-6hour-expiry",
+			"expires_in":    28800, // 8 hours
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		userExperienceLog = append(userExperienceLog, "Token server returned new tokens successfully")
+	}))
+	defer tokenServer.Close()
+
+	// Set up middleware with real-world configuration
+	config := createTestConfig()
+	config.RefreshGracePeriodSeconds = 300 // 5 minutes grace period (typical)
+
+	oidc, _ := setupTestOIDCMiddleware(t, config)
+	oidc.tokenURL = tokenServer.URL
+	oidc.refreshGracePeriod = 5 * time.Minute
+
+	oidc.tokenVerifier = &mockTokenVerifier{
+		verifyFunc: func(token string) error {
+			claims, err := extractClaims(token)
+			if err != nil {
+				userExperienceLog = append(userExperienceLog, fmt.Sprintf("Token verification failed: %v", err))
+				return err
+			}
+			oidc.tokenCache.Set(token, claims, time.Hour)
+			return nil
+		},
+	}
+
+	// Step 1: User initially logs in successfully (6+ hours ago)
+	userExperienceLog = append(userExperienceLog, "User logged in successfully 6 hours ago")
+
+	// Step 2: Simulate tokens that expired exactly 6 hours ago (realistic expiry time)
+	sixHoursAgo := time.Now().Add(-6 * time.Hour)
+	expiredAccessToken := createMockJWTWithExpiry(t, "real-user", "user@company.com", sixHoursAgo)
+	expiredIDToken := createMockJWTWithExpiry(t, "real-user", "user@company.com", sixHoursAgo)
+
+	// Refresh token should still be valid (typically 30-day expiry)
+	validRefreshToken := "long-lived-refresh-token-still-valid"
+
+	userExperienceLog = append(userExperienceLog, "6 hours of browser inactivity - tokens expired")
+
+	// Step 3: User returns and tries to access protected resource
+	userExperienceLog = append(userExperienceLog, "User returns and clicks on protected resource")
+
+	session := createAuthenticatedSession(expiredAccessToken, expiredIDToken, validRefreshToken)
+	session.SetEmail("user@company.com")
+
+	req := httptest.NewRequest("GET", "/dashboard/important-page", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "myapp.company.com")
+	rec := httptest.NewRecorder()
+
+	injectSessionIntoRequest(t, req, session)
+
+	// Set up what the user SHOULD see (success page)
+	oidc.next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userExperienceLog = append(userExperienceLog, "SUCCESS: User sees the protected page they requested")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body><h1>Welcome back! Your tokens were refreshed automatically.</h1></body></html>"))
+	})
+
+	// We'll check the user experience after the call
+
+	t.Log("Simulating user returning after 6 hours of inactivity...")
+
+	// Step 4: Execute the request (what happens when user returns)
+	oidc.ServeHTTP(rec, req)
+
+	// Check what the user actually sees due to the bug
+	if rec.Code == http.StatusTemporaryRedirect {
+		location := rec.Header().Get("Location")
+		userExperienceLog = append(userExperienceLog, fmt.Sprintf("User redirected to: %s", location))
+
+		if strings.Contains(location, "/unknown-session") {
+			unknownSessionShown = true
+			userSawError = true
+			userExperienceLog = append(userExperienceLog, "BUG: User sees confusing /unknown-session error page")
+			userExperienceLog = append(userExperienceLog, "User experience: 'What happened to my session? Why do I see this error?'")
+		} else if strings.Contains(location, "auth") || strings.Contains(location, "login") {
+			userExperienceLog = append(userExperienceLog, "User redirected to login (acceptable fallback)")
+		}
+	} else if rec.Code == http.StatusOK {
+		userExperienceLog = append(userExperienceLog, "User successfully sees requested page")
+	} else {
+		userSawError = true
+		userExperienceLog = append(userExperienceLog, fmt.Sprintf("User sees error: HTTP %d", rec.Code))
+	}
+
+	// ==== ANALYZE USER EXPERIENCE ====
+
+	t.Log("\n=== USER EXPERIENCE ANALYSIS ===")
+	for i, logEntry := range userExperienceLog {
+		t.Logf("%d. %s", i+1, logEntry)
+	}
+
+	t.Logf("\nFinal Results:")
+	t.Logf("  Token refresh attempted: %t", tokenRefreshAttempted)
+	t.Logf("  User saw /unknown-session: %t", unknownSessionShown)
+	t.Logf("  User experienced error: %t", userSawError)
+	t.Logf("  HTTP Response Code: %d", rec.Code)
+
+	// ==== ASSERTIONS FOR USER EXPERIENCE BUG ====
+
+	if unknownSessionShown {
+		t.Error("BUG DEMONSTRATED: Real user sees /unknown-session after 6 hours of browser inactivity")
+		t.Error("IMPACT: User is confused and doesn't understand what happened")
+		t.Error("IMPACT: User may lose work or have to restart their workflow")
+		t.Error("EXPECTED: Tokens should refresh transparently in background")
+		t.Error("EXPECTED: User should see the page they requested without interruption")
+
+		if !tokenRefreshAttempted {
+			t.Error("CRITICAL: System didn't even try to refresh the token")
+			t.Error("This indicates fundamental failure in expired token detection")
+		}
+
+		// This represents the actual bug report
+		t.Error("==== USER REPORT ====")
+		t.Error("User: 'I left my browser open overnight and when I came back, I got some /unknown-session error'")
+		t.Error("User: 'I had to log in again and lost my place. Why doesn't it just work?'")
+		t.Error("Support: 'This is the 6-hour token expiry bug we need to fix'")
+
+		return // Test fails as expected - demonstrates the exact bug
+	}
+
+	// This is what SHOULD happen:
+	if rec.Code == http.StatusOK && tokenRefreshAttempted {
+		t.Log("SUCCESS: User experience is seamless - tokens refreshed transparently")
+		t.Log("User doesn't see any errors or confusing redirects")
+		t.Log("User continues their work without interruption")
+
+		bodyContent := rec.Body.String()
+		if strings.Contains(bodyContent, "Welcome back") {
+			t.Log("Perfect: User sees welcoming message confirming automatic renewal")
+		}
+	} else if !tokenRefreshAttempted {
+		t.Error("BUG: System failed to attempt token refresh for 6-hour expired tokens")
+		t.Error("This indicates the core issue - expired token detection is broken")
+	} else {
+		t.Errorf("UNEXPECTED: User experience unclear - Code: %d, Refresh: %t", rec.Code, tokenRefreshAttempted)
+	}
 }

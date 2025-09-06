@@ -1331,9 +1331,11 @@ func (sd *SessionData) SetRefreshToken(token string) {
 	if len(compressed) <= maxCookieSize {
 		sd.refreshSession.Values["token"] = compressed
 		sd.refreshSession.Values["compressed"] = (compressed != token)
+		sd.refreshSession.Values["issued_at"] = time.Now().Unix()
 	} else {
 		sd.refreshSession.Values["token"] = ""
 		sd.refreshSession.Values["compressed"] = (compressed != token)
+		sd.refreshSession.Values["issued_at"] = time.Now().Unix()
 
 		chunks := splitIntoChunks(compressed, maxCookieSize)
 
@@ -1390,6 +1392,28 @@ func (sd *SessionData) SetRefreshToken(token string) {
 
 		sd.manager.logger.Debugf("SUCCESS: Stored refresh token in %d chunks", len(chunks))
 	}
+}
+
+// GetRefreshTokenIssuedAt retrieves the timestamp when the refresh token was issued/stored.
+// Returns the time when the current refresh token was obtained, or zero time if not available.
+func (sd *SessionData) GetRefreshTokenIssuedAt() time.Time {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
+
+	if issuedAtUnix, ok := sd.refreshSession.Values["issued_at"].(int64); ok {
+		return time.Unix(issuedAtUnix, 0)
+	}
+
+	// For chunked tokens, check the first chunk for timestamp
+	if len(sd.refreshTokenChunks) > 0 {
+		if session, exists := sd.refreshTokenChunks[0]; exists {
+			if chunkCreatedAt, ok := session.Values["chunk_created_at"].(int64); ok {
+				return time.Unix(chunkCreatedAt, 0)
+			}
+		}
+	}
+
+	return time.Time{}
 }
 
 // expireAccessTokenChunksEnhanced expires all access token chunks and detects orphaned chunks.

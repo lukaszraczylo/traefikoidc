@@ -429,6 +429,7 @@ func TestHTTPClientCreation(t *testing.T) {
 	if client1 == nil {
 		t.Fatal("CreateDefaultHTTPClient returned nil")
 	}
+	// Default client should have 30s timeout
 	if client1.Timeout != 30*time.Second {
 		t.Errorf("Expected 30s timeout, got %v", client1.Timeout)
 	}
@@ -452,6 +453,7 @@ func TestHTTPClientCreation(t *testing.T) {
 	if client3 == nil {
 		t.Fatal("CreateHTTPClientWithConfig returned nil")
 	}
+	// Custom config client should have 5s timeout as configured
 	if client3.Timeout != 5*time.Second {
 		t.Errorf("Expected 5s timeout, got %v", client3.Timeout)
 	}
