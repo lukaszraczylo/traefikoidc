@@ -1041,9 +1041,18 @@ func (sd *SessionData) Reset() {
 	resetSession(sd.refreshSession)
 	resetSession(sd.idTokenSession)
 
+	// Clear redirect count to prevent leaking between sessions
+	if sd.mainSession != nil && sd.mainSession.Values != nil {
+		delete(sd.mainSession.Values, "redirect_count")
+	}
+
 	sd.dirty = false
 	sd.inUse = false
 	sd.request = nil
+
+	// Reset the refresh mutex to ensure clean state
+	// Note: We don't need to lock it since sessionMutex is already held
+	// and this session is not in use by any request
 }
 
 // ReturnToPool manually returns the session to the object pool.

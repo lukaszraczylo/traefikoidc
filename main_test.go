@@ -620,7 +620,7 @@ func TestServeHTTP(t *testing.T) {
 				"Accept": "application/json",
 			},
 			expectedStatus: http.StatusUnauthorized, // Expect 401 for API client after failed refresh attempt
-			expectedBody:   `{"error":"unauthorized","message":"Token refresh failed"}`,
+			expectedBody:   `{"error":"Unauthorized","error_description":"Token refresh failed","status_code":401}`,
 		},
 		// This test case remains valid as the logic should still redirect browser clients on refresh failure
 		{

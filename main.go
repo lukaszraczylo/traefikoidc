@@ -963,16 +963,16 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	case <-t.initComplete:
 		if t.issuerURL == "" {
 			t.logger.Error("OIDC provider metadata initialization failed or incomplete")
-			http.Error(rw, "OIDC provider metadata initialization failed - please check provider availability and configuration", http.StatusServiceUnavailable)
+			t.sendErrorResponse(rw, req, "OIDC provider metadata initialization failed - please check provider availability and configuration", http.StatusServiceUnavailable)
 			return
 		}
 	case <-req.Context().Done():
 		t.logger.Debug("Request cancelled while waiting for OIDC initialization")
-		http.Error(rw, "Request cancelled", http.StatusRequestTimeout)
+		t.sendErrorResponse(rw, req, "Request cancelled", http.StatusRequestTimeout)
 		return
 	case <-time.After(30 * time.Second):
 		t.logger.Error("Timeout waiting for OIDC initialization")
-		http.Error(rw, "Timeout waiting for OIDC provider initialization - please try again later", http.StatusServiceUnavailable)
+		t.sendErrorResponse(rw, req, "Timeout waiting for OIDC provider initialization - please try again later", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -1002,7 +1002,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			}
 		} else {
 			t.logger.Error("Critical session error: Failed to get even a new session.")
-			http.Error(rw, "Critical session error", http.StatusInternalServerError)
+			t.sendErrorResponse(rw, req, "Critical session error", http.StatusInternalServerError)
 			return
 		}
 		scheme := t.determineScheme(req)
@@ -1112,9 +1112,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		acceptHeader := req.Header.Get("Accept")
 		if strings.Contains(acceptHeader, "application/json") {
 			t.logger.Debug("Client accepts JSON, sending 401 Unauthorized on refresh failure")
-			rw.Header().Set("Content-Type", "application/json")
-			rw.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(rw).Encode(map[string]string{"error": "unauthorized", "message": "Token refresh failed"})
+			t.sendErrorResponse(rw, req, "Token refresh failed", http.StatusUnauthorized)
 		} else {
 			t.logger.Debug("Client does not prefer JSON, handling refresh failure by initiating re-auth")
 			// Reset redirect count when starting fresh auth after failed refresh to prevent redirect loops
@@ -1282,6 +1280,10 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	session.SetAccessToken("")
 	session.SetRefreshToken("")
 	session.SetEmail("")
+	// Clear CSRF tokens to prevent replay attacks
+	session.SetCSRF("")
+	session.SetNonce("")
+	session.SetCodeVerifier("")
 	// Reset redirect count to prevent loops when handling expired tokens
 	session.ResetRedirectCount()
 
@@ -1303,7 +1305,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	session, err := t.sessionManager.GetSession(req)
 	if err != nil {
 		t.logger.Errorf("Session error during callback: %v", err)
-		http.Error(rw, "Session error during callback", http.StatusInternalServerError)
+		t.sendErrorResponse(rw, req, "Session error during callback", http.StatusInternalServerError)
 		return
 	}
 	defer session.returnToPoolSafely()
@@ -1412,7 +1414,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 
 	if err := session.SetAuthenticated(true); err != nil {
 		t.logger.Errorf("Failed to set authenticated state and regenerate session ID: %v", err)
-		http.Error(rw, "Failed to update session", http.StatusInternalServerError)
+		t.sendErrorResponse(rw, req, "Failed to update session", http.StatusInternalServerError)
 		return
 	}
 	session.SetEmail(email)
@@ -1434,7 +1436,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("Failed to save session after callback: %v", err)
-		http.Error(rw, "Failed to save session after callback", http.StatusInternalServerError)
+		t.sendErrorResponse(rw, req, "Failed to save session after callback", http.StatusInternalServerError)
 		return
 	}
 
@@ -1526,7 +1528,7 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	if redirectCount >= maxRedirects {
 		t.logger.Errorf("Maximum redirect limit (%d) exceeded, possible redirect loop detected", maxRedirects)
 		session.ResetRedirectCount()
-		http.Error(rw, "Authentication failed: Too many redirects", http.StatusLoopDetected)
+		t.sendErrorResponse(rw, req, "Authentication failed: Too many redirects", http.StatusLoopDetected)
 		return
 	}
 
@@ -2052,9 +2054,18 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "invalid_grant") || strings.Contains(errMsg, "token expired") {
 			t.logger.Debug("Refresh token expired or revoked: %v", err)
+			// Clear all tokens and authentication state when refresh token is invalid
+			session.SetAuthenticated(false)
 			session.SetRefreshToken("")
+			session.SetAccessToken("")
+			session.SetIDToken("")
+			session.SetEmail("")
+			// Clear CSRF tokens as well to prevent any replay attacks
+			session.SetCSRF("")
+			session.SetNonce("")
+			session.SetCodeVerifier("")
 			if err = session.Save(req, rw); err != nil {
-				t.logger.Errorf("Failed to remove invalid refresh token from session: %v", err)
+				t.logger.Errorf("Failed to clear session after invalid refresh token: %v", err)
 			}
 		} else if strings.Contains(errMsg, "invalid_client") {
 			t.logger.Errorf("Client credentials rejected: %v - check client_id and client_secret configuration", err)
@@ -2116,11 +2127,19 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	}
 
 	if err := session.SetAuthenticated(true); err != nil {
-		t.logger.Errorf("refreshToken warning: Failed to set authenticated flag: %v", err)
+		t.logger.Errorf("refreshToken failed: Failed to set authenticated flag: %v", err)
+		// Clear tokens on failure to maintain consistent state
+		session.SetAccessToken("")
+		session.SetIDToken("")
+		session.SetRefreshToken("")
+		session.SetEmail("")
+		return false
 	}
 
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("refreshToken failed: Failed to save session after successful token refresh: %v", err)
+		// Reset authentication state since we couldn't persist it
+		session.SetAuthenticated(false)
 		return false
 	}
 
