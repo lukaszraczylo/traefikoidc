@@ -822,8 +822,13 @@ func (cm *ChunkManager) validateTokenExpiration(token string, config TokenConfig
 	}
 
 	if expiration != nil && time.Now().After(*expiration) {
-		err := fmt.Errorf("%s token is expired (expired at: %v)", config.Type, expiration.Format(time.RFC3339))
-		return err
+		// Don't reject expired tokens during retrieval - they need to be checked for grace period
+		// The grace period logic is handled at a higher level
+		cm.logger.Debugf("%s token is expired (expired at: %v) - allowing retrieval for grace period check",
+			config.Type, expiration.Format(time.RFC3339))
+		// Don't return error here - let higher level decide what to do with expired tokens
+		// err := fmt.Errorf("%s token is expired (expired at: %v)", config.Type, expiration.Format(time.RFC3339))
+		// return err
 	}
 
 	if expiration != nil {

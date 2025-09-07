@@ -6,6 +6,7 @@ package traefikoidc
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1932,6 +1933,15 @@ func (t *TraefikOidc) startTokenCleanup() {
 	if goroutineWG != nil {
 		goroutineWG.Add(1)
 	}
+
+	// Ensure cleanup channels are available
+	if stopChan == nil && ctx == nil {
+		if logger != nil {
+			logger.Debug("No cleanup mechanism available for token cleanup goroutine, skipping")
+		}
+		return
+	}
+
 	go func() {
 		defer func() {
 			if goroutineWG != nil {
@@ -1946,9 +1956,91 @@ func (t *TraefikOidc) startTokenCleanup() {
 			}
 		}()
 
+		// Build dynamic select cases
 		for {
-			select {
-			case <-ticker.C:
+			if stopChan != nil && ctx != nil {
+				// Both channels available
+				select {
+				case <-ticker.C:
+					if logger != nil {
+						logger.Debug("Starting token cleanup cycle")
+					}
+					if tokenCache != nil {
+						tokenCache.Cleanup()
+					}
+					if jwkCache != nil {
+						jwkCache.Cleanup()
+					}
+					if sessionManager != nil {
+						sessionManager.PeriodicChunkCleanup()
+						if logger != nil {
+							logger.Debug("Running session health monitoring")
+						}
+					}
+				case <-stopChan:
+					if logger != nil {
+						logger.Debug("Token cleanup goroutine stopped.")
+					}
+					return
+				case <-ctx.Done():
+					if logger != nil {
+						logger.Debug("Token cleanup goroutine stopped due to context cancellation.")
+					}
+					return
+				}
+			} else if stopChan != nil {
+				// Only stopChan available
+				select {
+				case <-ticker.C:
+					if logger != nil {
+						logger.Debug("Starting token cleanup cycle")
+					}
+					if tokenCache != nil {
+						tokenCache.Cleanup()
+					}
+					if jwkCache != nil {
+						jwkCache.Cleanup()
+					}
+					if sessionManager != nil {
+						sessionManager.PeriodicChunkCleanup()
+						if logger != nil {
+							logger.Debug("Running session health monitoring")
+						}
+					}
+				case <-stopChan:
+					if logger != nil {
+						logger.Debug("Token cleanup goroutine stopped.")
+					}
+					return
+				}
+			} else if ctx != nil {
+				// Only ctx available
+				select {
+				case <-ticker.C:
+					if logger != nil {
+						logger.Debug("Starting token cleanup cycle")
+					}
+					if tokenCache != nil {
+						tokenCache.Cleanup()
+					}
+					if jwkCache != nil {
+						jwkCache.Cleanup()
+					}
+					if sessionManager != nil {
+						sessionManager.PeriodicChunkCleanup()
+						if logger != nil {
+							logger.Debug("Running session health monitoring")
+						}
+					}
+				case <-ctx.Done():
+					if logger != nil {
+						logger.Debug("Token cleanup goroutine stopped due to context cancellation.")
+					}
+					return
+				}
+			} else {
+				// Neither available - just use ticker (this should not happen due to the check above)
+				<-ticker.C
 				if logger != nil {
 					logger.Debug("Starting token cleanup cycle")
 				}
@@ -1964,31 +2056,6 @@ func (t *TraefikOidc) startTokenCleanup() {
 						logger.Debug("Running session health monitoring")
 					}
 				}
-
-			case <-func() <-chan struct{} {
-				if stopChan != nil {
-					return stopChan
-				}
-				// Return a channel that never receives anything
-				c := make(chan struct{})
-				return c
-			}():
-				if logger != nil {
-					logger.Debug("Token cleanup goroutine stopped.")
-				}
-				return
-			case <-func() <-chan struct{} {
-				if ctx != nil {
-					return ctx.Done()
-				}
-				// Return a channel that never receives anything
-				c := make(chan struct{})
-				return c
-			}():
-				if logger != nil {
-					logger.Debug("Token cleanup goroutine stopped due to context cancellation.")
-				}
-				return
 			}
 		}
 	}()
@@ -2581,6 +2648,36 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 	if accessToken == "" {
 		t.logger.Debug("Authenticated flag set, but no access token found in session")
 		if session.GetRefreshToken() != "" {
+			// Check if we have an ID token to determine if we're beyond grace period
+			// When access token is missing, check ID token expiry to determine if refresh is viable
+			idToken := session.GetIDToken()
+			t.logger.Debugf("Checking ID token for grace period: ID token present: %v", idToken != "")
+			if idToken != "" {
+				// Try to parse the ID token to check its expiry
+				parts := strings.Split(idToken, ".")
+				if len(parts) == 3 {
+					// Decode the claims part
+					claimsData, err := base64.RawURLEncoding.DecodeString(parts[1])
+					if err == nil {
+						var claims map[string]interface{}
+						if err := json.Unmarshal(claimsData, &claims); err == nil {
+							if expClaim, ok := claims["exp"].(float64); ok {
+								expTime := time.Unix(int64(expClaim), 0)
+								if time.Now().After(expTime) {
+									expiredDuration := time.Since(expTime)
+									if expiredDuration > t.refreshGracePeriod {
+										t.logger.Debugf("ID token expired beyond grace period (%v > %v), must re-authenticate",
+											expiredDuration, t.refreshGracePeriod)
+										return false, false, true // expired, cannot refresh
+									}
+									t.logger.Debugf("ID token expired %v ago, within grace period %v, allowing refresh",
+										expiredDuration, t.refreshGracePeriod)
+								}
+							}
+						}
+					}
+				}
+			}
 			t.logger.Debug("Access token missing, but refresh token exists. Signaling need for refresh.")
 			return false, true, false
 		}
@@ -2653,6 +2750,28 @@ func (t *TraefikOidc) validateTokenExpiry(session *SessionData, token string) (b
 	expTime := int64(expClaim)
 	expTimeObj := time.Unix(expTime, 0)
 	nowObj := time.Now()
+
+	// Check if token has already expired
+	if expTimeObj.Before(nowObj) {
+		// Token has expired
+		expiredDuration := nowObj.Sub(expTimeObj)
+
+		t.logger.Debugf("Token expired %v ago, grace period is %v",
+			expiredDuration, t.refreshGracePeriod)
+
+		// If we have a refresh token, always attempt to use it regardless of grace period
+		// The refresh token has its own expiry and the provider will reject it if invalid
+		if session.GetRefreshToken() != "" {
+			t.logger.Debugf("Token expired, attempting refresh with available refresh token")
+			return false, true, false // needs refresh
+		}
+
+		// No refresh token available - must re-authenticate
+		t.logger.Debugf("Token expired and no refresh token available, must re-authenticate")
+		return false, false, true // expired, cannot refresh
+	}
+
+	// Token not yet expired - check if nearing expiration
 	refreshThreshold := nowObj.Add(t.refreshGracePeriod)
 
 	t.logger.Debugf("Token expires at %v, now is %v, refresh threshold is %v",

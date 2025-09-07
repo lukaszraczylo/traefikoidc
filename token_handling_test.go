@@ -1990,6 +1990,7 @@ func TestRefreshTokenValidityCheck(t *testing.T) {
 				tokenBlacklist:     NewCache(),
 				jwksURL:            "https://test-jwks-url.com",
 				refreshGracePeriod: 1 * time.Minute,
+				limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
 			}
 			tOidc.tokenVerifier = tOidc
 			tOidc.jwtVerifier = tOidc

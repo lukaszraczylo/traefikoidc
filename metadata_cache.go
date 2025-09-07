@@ -14,6 +14,7 @@ import (
 type MetadataCache struct {
 	expiresAt           time.Time
 	metadata            *ProviderMetadata
+	providerURL         string
 	cleanupTask         *BackgroundTask
 	logger              *Logger
 	wg                  *sync.WaitGroup
@@ -58,13 +59,15 @@ func (c *MetadataCache) Cleanup() {
 	now := time.Now()
 	if c.metadata != nil && now.After(c.expiresAt) {
 		c.metadata = nil
+		c.providerURL = ""
 	}
 }
 
-// isCacheValid checks if the cached metadata is still within its expiration time.
+// isCacheValid checks if the cached metadata is still within its expiration time
+// and matches the requested provider URL.
 // This method assumes the caller holds the appropriate lock.
-func (c *MetadataCache) isCacheValid() bool {
-	return c.metadata != nil && time.Now().Before(c.expiresAt)
+func (c *MetadataCache) isCacheValid(providerURL string) bool {
+	return c.metadata != nil && time.Now().Before(c.expiresAt) && c.providerURL == providerURL
 }
 
 // GetMetadataWithRecovery retrieves provider metadata with error recovery and fallback mechanisms.
@@ -80,7 +83,7 @@ func (c *MetadataCache) isCacheValid() bool {
 //   - An error if metadata cannot be retrieved from cache or fetched from the provider
 func (c *MetadataCache) GetMetadataWithRecovery(providerURL string, httpClient *http.Client, logger *Logger, errorRecoveryManager *ErrorRecoveryManager) (*ProviderMetadata, error) {
 	c.mutex.RLock()
-	if c.isCacheValid() {
+	if c.isCacheValid(providerURL) {
 		defer c.mutex.RUnlock()
 		return c.metadata, nil
 	}
@@ -89,7 +92,7 @@ func (c *MetadataCache) GetMetadataWithRecovery(providerURL string, httpClient *
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.isCacheValid() {
+	if c.isCacheValid(providerURL) {
 		return c.metadata, nil
 	}
 
@@ -126,6 +129,7 @@ func (c *MetadataCache) GetMetadataWithRecovery(providerURL string, httpClient *
 			if fallbackMetadata, ok := fallbackResult.(*ProviderMetadata); ok {
 				logger.Infof("Successfully used fallback metadata for service %s", serviceName)
 				c.metadata = fallbackMetadata
+				c.providerURL = providerURL
 				c.expiresAt = time.Now().Add(10 * time.Minute)
 				return fallbackMetadata, nil
 			}
@@ -135,6 +139,7 @@ func (c *MetadataCache) GetMetadataWithRecovery(providerURL string, httpClient *
 	}
 
 	c.metadata = metadata
+	c.providerURL = providerURL
 	c.expiresAt = time.Now().Add(1 * time.Hour)
 
 	return metadata, nil
@@ -153,7 +158,7 @@ func (c *MetadataCache) GetMetadataWithRecovery(providerURL string, httpClient *
 //   - An error if metadata cannot be retrieved from cache or fetched from the provider
 func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client, logger *Logger) (*ProviderMetadata, error) {
 	c.mutex.RLock()
-	if c.isCacheValid() {
+	if c.isCacheValid(providerURL) {
 		defer c.mutex.RUnlock()
 		return c.metadata, nil
 	}
@@ -162,7 +167,7 @@ func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client,
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.isCacheValid() {
+	if c.isCacheValid(providerURL) {
 		return c.metadata, nil
 	}
 
@@ -177,6 +182,7 @@ func (c *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client,
 	}
 
 	c.metadata = metadata
+	c.providerURL = providerURL
 	c.expiresAt = time.Now().Add(1 * time.Hour)
 
 	return metadata, nil
@@ -226,6 +232,7 @@ func (c *MetadataCache) Close() {
 
 	// Clear cached metadata
 	c.metadata = nil
+	c.providerURL = ""
 
 	if c.logger != nil {
 		c.logger.Debug("MetadataCache closed and resources cleaned up")

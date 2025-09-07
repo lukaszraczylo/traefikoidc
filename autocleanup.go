@@ -381,12 +381,16 @@ type TaskRegistry struct {
 
 // GlobalTaskRegistry is the singleton instance for managing all background tasks
 var (
-	globalTaskRegistry     *TaskRegistry
-	globalTaskRegistryOnce sync.Once
+	globalTaskRegistry      *TaskRegistry
+	globalTaskRegistryOnce  sync.Once
+	globalTaskRegistryMutex sync.Mutex // Protect reset operations
 )
 
 // GetGlobalTaskRegistry returns the singleton task registry
 func GetGlobalTaskRegistry() *TaskRegistry {
+	globalTaskRegistryMutex.Lock()
+	defer globalTaskRegistryMutex.Unlock()
+
 	globalTaskRegistryOnce.Do(func() {
 		logger := GetSingletonNoOpLogger()
 		circuitBreaker := NewTaskCircuitBreaker(3, 30*time.Second, logger)
@@ -397,6 +401,33 @@ func GetGlobalTaskRegistry() *TaskRegistry {
 		}
 	})
 	return globalTaskRegistry
+}
+
+// ResetGlobalTaskRegistry resets the global task registry for testing
+// This should only be used in tests to prevent task exhaustion
+func ResetGlobalTaskRegistry() {
+	globalTaskRegistryMutex.Lock()
+	defer globalTaskRegistryMutex.Unlock()
+
+	if globalTaskRegistry != nil {
+		// Stop all existing tasks
+		globalTaskRegistry.mu.Lock()
+		for _, task := range globalTaskRegistry.tasks {
+			if task != nil {
+				task.Stop()
+			}
+		}
+		globalTaskRegistry.tasks = make(map[string]*BackgroundTask)
+		// Reset circuit breaker counters
+		atomic.StoreInt32(&globalTaskRegistry.cb.concurrentTasks, 0)
+		globalTaskRegistry.cb.tasksMu.Lock()
+		globalTaskRegistry.cb.activeTasks = make(map[string]struct{})
+		globalTaskRegistry.cb.tasksMu.Unlock()
+		globalTaskRegistry.mu.Unlock()
+	}
+	// Reset the singleton so next call creates fresh instance
+	globalTaskRegistryOnce = sync.Once{}
+	globalTaskRegistry = nil
 }
 
 // RegisterTask registers a new background task with the registry

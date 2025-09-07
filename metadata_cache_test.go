@@ -210,6 +210,7 @@ func TestMetadataCache_CacheHitMiss(t *testing.T) {
 				suite.setup()
 				suite.testCache.metadata = testMetadata
 				suite.testCache.expiresAt = time.Now().Add(1 * time.Hour)
+				suite.testCache.providerURL = server.URL
 				return nil
 			},
 			Teardown: func(t *testing.T) error {

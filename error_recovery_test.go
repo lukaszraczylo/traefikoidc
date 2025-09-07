@@ -203,10 +203,7 @@ func TestGracefulDegradation(t *testing.T) {
 	config.RecoveryTimeout = 100 * time.Millisecond
 
 	gd := NewGracefulDegradation(config, logger)
-	defer func() {
-		// Clean up goroutine
-		time.Sleep(100 * time.Millisecond)
-	}()
+	defer gd.Close()
 
 	t.Run("Register fallback and health check", func(t *testing.T) {
 		gd.RegisterFallback("test-service", func() (interface{}, error) {
@@ -819,9 +816,7 @@ func TestGracefulDegradationConcurrent(t *testing.T) {
 			EnableFallbacks:     true,
 		}
 		gd := NewGracefulDegradation(config, logger)
-		defer func() {
-			time.Sleep(150 * time.Millisecond) // Allow cleanup
-		}()
+		defer gd.Close()
 
 		var wg sync.WaitGroup
 		var registrationWG sync.WaitGroup

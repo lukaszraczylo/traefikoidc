@@ -45,6 +45,9 @@ func resetGlobalState() {
 	globalMemoryPools = nil
 	memoryPoolOnce = sync.Once{}
 	memoryPoolMutex.Unlock()
+
+	// Reset global task registry to clear all background tasks
+	ResetGlobalTaskRegistry()
 }
 
 // testCleanup provides comprehensive cleanup for tests to prevent goroutine leaks

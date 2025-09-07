@@ -124,6 +124,9 @@ func TestBackgroundTaskCoverage(t *testing.T) {
 		t.Skip("Skipping test in short mode")
 	}
 
+	// Reset global task registry to ensure clean state
+	ResetGlobalTaskRegistry()
+
 	logger := NewLogger("debug")
 	counter := 0
 

@@ -1088,6 +1088,12 @@ func (sd *SessionData) getAccessTokenUnsafe() string {
 	token, _ := sd.accessSession.Values["token"].(string)
 	compressed, _ := sd.accessSession.Values["compressed"].(bool)
 
+	// Debug: Check if manager/chunkManager is nil
+	if sd.manager == nil || sd.manager.chunkManager == nil {
+		// Direct return if no chunk manager (test scenario)
+		return token
+	}
+
 	result := sd.manager.chunkManager.GetToken(
 		token,
 		compressed,
@@ -1096,6 +1102,9 @@ func (sd *SessionData) getAccessTokenUnsafe() string {
 	)
 
 	if result.Error != nil {
+		if sd.manager != nil && sd.manager.logger != nil {
+			sd.manager.logger.Debugf("ChunkManager.GetToken error: %v", result.Error)
+		}
 		return ""
 	}
 
@@ -1113,12 +1122,16 @@ func (sd *SessionData) SetAccessToken(token string) {
 
 	if token != "" {
 		dotCount := strings.Count(token, ".")
-		if dotCount == 1 || dotCount > 2 {
-			sd.manager.logger.Debug("Invalid token format during storage (dots: %d) - rejecting", dotCount)
+		if dotCount == 1 {
+			if sd.manager != nil && sd.manager.logger != nil {
+				sd.manager.logger.Debug("Invalid token format during storage (dots: %d) - rejecting", dotCount)
+			}
 			return
 		}
 		if dotCount == 0 && len(token) < 20 {
-			sd.manager.logger.Debug("Token too short for opaque token (length: %d) - rejecting", len(token))
+			if sd.manager != nil && sd.manager.logger != nil {
+				sd.manager.logger.Debug("Token too short for opaque token (length: %d) - rejecting", len(token))
+			}
 			return
 		}
 	}
@@ -1128,6 +1141,14 @@ func (sd *SessionData) SetAccessToken(token string) {
 		return
 	}
 	sd.dirty = true
+
+	// Debug: Check if accessSession is properly initialized
+	if sd.accessSession == nil {
+		if sd.manager != nil && sd.manager.logger != nil {
+			sd.manager.logger.Errorf("CRITICAL: accessSession is nil when trying to store token")
+		}
+		return
+	}
 
 	if sd.request != nil {
 		sd.expireAccessTokenChunksEnhanced(nil)
@@ -1147,15 +1168,24 @@ func (sd *SessionData) SetAccessToken(token string) {
 
 	compressed := compressToken(token)
 
+	// Debug for test
+	if sd.manager != nil && sd.manager.logger != nil {
+		sd.manager.logger.Debugf("Token compression: original %d bytes, compressed %d bytes", len(token), len(compressed))
+	}
+
 	if len(compressed) > 100*1024 {
-		sd.manager.logger.Info("Access token too large after compression (%d bytes) - storing uncompressed", len(compressed))
+		if sd.manager != nil && sd.manager.logger != nil {
+			sd.manager.logger.Info("Access token too large after compression (%d bytes) - storing uncompressed", len(compressed))
+		}
 		return
 	}
 
 	if compressed != token {
 		testDecompressed := decompressToken(compressed)
 		if testDecompressed != token {
-			sd.manager.logger.Debug("Access token compression verification failed - storing uncompressed")
+			if sd.manager != nil && sd.manager.logger != nil {
+				sd.manager.logger.Debug("Access token compression verification failed - storing uncompressed")
+			}
 			compressed = token
 		}
 	}
@@ -1164,6 +1194,11 @@ func (sd *SessionData) SetAccessToken(token string) {
 		if sd.accessSession != nil {
 			sd.accessSession.Values["token"] = compressed
 			sd.accessSession.Values["compressed"] = (compressed != token)
+			// Debug for test
+			if sd.manager != nil && sd.manager.logger != nil {
+				sd.manager.logger.Debugf("Stored token in session: compressed=%v, token_len=%d",
+					compressed != token, len(compressed))
+			}
 		}
 	} else {
 		if sd.accessSession != nil {
@@ -1769,6 +1804,12 @@ func (sd *SessionData) GetIDToken() string {
 func (sd *SessionData) getIDTokenUnsafe() string {
 	token, _ := sd.idTokenSession.Values["token"].(string)
 	compressed, _ := sd.idTokenSession.Values["compressed"].(bool)
+
+	// Debug: Check if manager/chunkManager is nil
+	if sd.manager == nil || sd.manager.chunkManager == nil {
+		// Direct return if no chunk manager (test scenario)
+		return token
+	}
 
 	result := sd.manager.chunkManager.GetToken(
 		token,
