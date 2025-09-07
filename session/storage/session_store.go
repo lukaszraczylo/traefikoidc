@@ -58,6 +58,8 @@ func NewSessionData(manager SessionManager) *SessionData {
 // IsDirty returns true if the session data has been modified since it was last loaded or saved.
 // This is used to optimize session saves by only writing when necessary.
 func (sd *SessionData) IsDirty() bool {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
 	return sd.dirty
 }
 
@@ -65,6 +67,8 @@ func (sd *SessionData) IsDirty() bool {
 // This is used when session data hasn't changed in content but should still
 // trigger a session save (e.g., to ensure the cookie is re-issued).
 func (sd *SessionData) MarkDirty() {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
 	sd.dirty = true
 }
 
