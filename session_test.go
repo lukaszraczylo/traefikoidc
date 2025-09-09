@@ -231,6 +231,13 @@ func TestSessionClearAlwaysReturnsToPool(t *testing.T) {
 					return fmt.Errorf("failed to create session manager: %w", err)
 				}
 
+				// Ensure proper cleanup by calling Shutdown
+				defer func() {
+					if shutdownErr := sm.Shutdown(); shutdownErr != nil {
+						logger.Errorf("Failed to shutdown SessionManager: %v", shutdownErr)
+					}
+				}()
+
 				req := httptest.NewRequest("GET", "http://example.com/foo", nil)
 				req.Header.Set("X-Test-Error", "true")
 
@@ -261,6 +268,13 @@ func TestSessionClearAlwaysReturnsToPool(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create session manager: %v", err)
 		}
+
+		// Ensure proper cleanup
+		defer func() {
+			if shutdownErr := sm.Shutdown(); shutdownErr != nil {
+				t.Errorf("Failed to shutdown SessionManager: %v", shutdownErr)
+			}
+		}()
 
 		normalReq := httptest.NewRequest("GET", "http://example.com/foo", nil)
 		session2, err := sm.GetSession(normalReq)

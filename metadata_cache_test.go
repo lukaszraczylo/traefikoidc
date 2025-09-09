@@ -47,6 +47,31 @@ func (suite *MetadataCacheTestSuite) cleanup() {
 	suite.perfTest.Reset()
 }
 
+// Helper methods for the new cache structure
+
+// setTestMetadata sets metadata in the cache for testing
+func (suite *MetadataCacheTestSuite) setTestMetadata(providerURL string, metadata *ProviderMetadata, ttl time.Duration) {
+	if suite.testCache == nil {
+		return
+	}
+	suite.testCache.mutex.Lock()
+	suite.testCache.storeMetadataUnsafe(providerURL, metadata, ttl)
+	suite.testCache.mutex.Unlock()
+}
+
+// getTestMetadata gets metadata from cache for testing
+func (suite *MetadataCacheTestSuite) getTestMetadata(providerURL string) *ProviderMetadata {
+	if suite.testCache == nil {
+		return nil
+	}
+	suite.testCache.mutex.RLock()
+	defer suite.testCache.mutex.RUnlock()
+	if entry, exists := suite.testCache.cache[providerURL]; exists {
+		return entry.metadata
+	}
+	return nil
+}
+
 // createTestServer creates a mock HTTP server for testing
 func (suite *MetadataCacheTestSuite) createTestServer(metadata *ProviderMetadata, statusCode int, delay time.Duration) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,8 +129,8 @@ func TestMetadataCache_BasicOperations(t *testing.T) {
 			Setup: func(t *testing.T) error {
 				suite.setup()
 				// Set expired metadata
-				suite.testCache.metadata = &ProviderMetadata{Issuer: "test"}
-				suite.testCache.expiresAt = time.Now().Add(-1 * time.Hour)
+				testMetadata := &ProviderMetadata{Issuer: "test"}
+				suite.setTestMetadata("test-provider", testMetadata, -1*time.Hour)
 				return nil
 			},
 			Teardown: func(t *testing.T) error {
@@ -119,8 +144,8 @@ func TestMetadataCache_BasicOperations(t *testing.T) {
 			Setup: func(t *testing.T) error {
 				suite.setup()
 				// Set valid metadata
-				suite.testCache.metadata = &ProviderMetadata{Issuer: "test"}
-				suite.testCache.expiresAt = time.Now().Add(1 * time.Hour)
+				testMetadata := &ProviderMetadata{Issuer: "test"}
+				suite.setTestMetadata("test-provider", testMetadata, 1*time.Hour)
 				return nil
 			},
 			Teardown: func(t *testing.T) error {
@@ -133,7 +158,7 @@ func TestMetadataCache_BasicOperations(t *testing.T) {
 			Description: "Test cleanup when metadata is nil",
 			Setup: func(t *testing.T) error {
 				suite.setup()
-				suite.testCache.metadata = nil
+				// No metadata in cache (default state)
 				return nil
 			},
 			Teardown: func(t *testing.T) error {
@@ -159,20 +184,23 @@ func TestMetadataCache_BasicOperations(t *testing.T) {
 				}
 			}()
 
-			originalMetadata := suite.testCache.metadata
+			originalMetadata := suite.getTestMetadata("test-provider")
 			suite.testCache.Cleanup()
 
 			switch test.Name {
 			case "CleanupExpiredMetadata":
-				if suite.testCache.metadata != nil {
+				currentMetadata := suite.getTestMetadata("test-provider")
+				if currentMetadata != nil {
 					t.Error("Expected expired metadata to be nil after cleanup")
 				}
 			case "CleanupValidMetadata":
-				if suite.testCache.metadata != originalMetadata {
+				currentMetadata := suite.getTestMetadata("test-provider")
+				if currentMetadata != originalMetadata {
 					t.Error("Expected valid metadata to remain after cleanup")
 				}
 			case "CleanupNilMetadata":
-				if suite.testCache.metadata != nil {
+				currentMetadata := suite.getTestMetadata("test-provider")
+				if currentMetadata != nil {
 					t.Error("Expected metadata to remain nil after cleanup")
 				}
 			}
@@ -208,9 +236,7 @@ func TestMetadataCache_CacheHitMiss(t *testing.T) {
 			Description: "Test cache hit with valid cached metadata",
 			Setup: func(t *testing.T) error {
 				suite.setup()
-				suite.testCache.metadata = testMetadata
-				suite.testCache.expiresAt = time.Now().Add(1 * time.Hour)
-				suite.testCache.providerURL = server.URL
+				suite.setTestMetadata(server.URL, testMetadata, 1*time.Hour)
 				return nil
 			},
 			Teardown: func(t *testing.T) error {
@@ -223,8 +249,7 @@ func TestMetadataCache_CacheHitMiss(t *testing.T) {
 			Description: "Test cache miss with expired metadata triggers refresh",
 			Setup: func(t *testing.T) error {
 				suite.setup()
-				suite.testCache.metadata = testMetadata
-				suite.testCache.expiresAt = time.Now().Add(-1 * time.Hour)
+				suite.setTestMetadata(server.URL, testMetadata, -1*time.Hour)
 				return nil
 			},
 			Teardown: func(t *testing.T) error {
@@ -314,8 +339,8 @@ func TestMetadataCache_ErrorHandling(t *testing.T) {
 			Description: "Test network error with expired cached data falls back to cache",
 			Setup: func(t *testing.T) error {
 				suite.setup()
-				suite.testCache.metadata = &ProviderMetadata{Issuer: "cached"}
-				suite.testCache.expiresAt = time.Now().Add(-1 * time.Minute)
+				cachedMetadata := &ProviderMetadata{Issuer: "cached"}
+				suite.setTestMetadata("test-provider", cachedMetadata, -1*time.Minute)
 				return nil
 			},
 			Teardown: func(t *testing.T) error {
@@ -501,8 +526,8 @@ func TestMetadataCache_AutoCleanup(t *testing.T) {
 
 	// Set expired metadata
 	cache.mutex.Lock()
-	cache.metadata = &ProviderMetadata{Issuer: "test"}
-	cache.expiresAt = time.Now().Add(-cleanupInterval)
+	testMetadata := &ProviderMetadata{Issuer: "test"}
+	cache.storeMetadataUnsafe("test-provider", testMetadata, -cleanupInterval)
 	cache.mutex.Unlock()
 
 	// Wait for auto cleanup (adjusted for config)
@@ -513,7 +538,12 @@ func TestMetadataCache_AutoCleanup(t *testing.T) {
 	time.Sleep(waitTime)
 
 	cache.mutex.RLock()
-	result := cache.metadata
+	result := func() *ProviderMetadata {
+		if entry, exists := cache.cache["test-provider"]; exists {
+			return entry.metadata
+		}
+		return nil
+	}()
 	cache.mutex.RUnlock()
 
 	if result != nil {
@@ -583,8 +613,10 @@ func TestMetadataCache_MemoryLeaks(t *testing.T) {
 				defer cache.Close()
 
 				// Add some metadata
-				cache.metadata = &ProviderMetadata{Issuer: "test"}
-				cache.expiresAt = time.Now().Add(1 * time.Hour)
+				cache.mutex.Lock()
+				testMetadata := &ProviderMetadata{Issuer: "test"}
+				cache.storeMetadataUnsafe("test-provider", testMetadata, 1*time.Hour)
+				cache.mutex.Unlock()
 
 				return nil
 			},
@@ -726,13 +758,13 @@ func TestMetadataCache_ThreadSafety(t *testing.T) {
 				case 2:
 					// Test direct cache access (simulating expiration check)
 					suite.testCache.mutex.RLock()
-					_ = suite.testCache.metadata
+					_ = suite.getTestMetadata("test-provider")
 					suite.testCache.mutex.RUnlock()
 				case 3:
 					// Test setting expired metadata
 					suite.testCache.mutex.Lock()
-					if suite.testCache.metadata != nil {
-						suite.testCache.expiresAt = time.Now().Add(-1 * time.Minute)
+					if entry, exists := suite.testCache.cache["test-provider"]; exists && entry.metadata != nil {
+						entry.expiresAt = time.Now().Add(-1 * time.Minute)
 					}
 					suite.testCache.mutex.Unlock()
 				}
@@ -870,8 +902,12 @@ func TestMetadataCache_Close(t *testing.T) {
 		cache.Close()
 
 		// Verify metadata is cleared
-		if cache.metadata != nil {
-			t.Error("Expected metadata to be cleared after close")
+		cache.mutex.RLock()
+		cacheEmpty := len(cache.cache) == 0
+		cache.mutex.RUnlock()
+
+		if !cacheEmpty {
+			t.Error("Expected cache to be cleared after close")
 		}
 	})
 
@@ -933,8 +969,8 @@ func BenchmarkMetadataCache_CacheHit(b *testing.B) {
 	defer suite.cleanup()
 
 	// Set up cached data
-	suite.testCache.metadata = &ProviderMetadata{Issuer: "test"}
-	suite.testCache.expiresAt = time.Now().Add(1 * time.Hour)
+	testMetadata := &ProviderMetadata{Issuer: "test"}
+	suite.setTestMetadata("test-provider", testMetadata, 1*time.Hour)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

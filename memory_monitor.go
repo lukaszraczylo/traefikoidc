@@ -330,7 +330,9 @@ func (mm *MemoryMonitor) StartMonitoring(ctx context.Context, interval time.Dura
 	}
 
 	task.Start()
-	mm.logger.Info("Started memory monitoring with %v interval", interval)
+	if !isTestMode() {
+		mm.logger.Info("Started memory monitoring with %v interval", interval)
+	}
 }
 
 // checkAlerts checks for memory-related alerts

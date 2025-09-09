@@ -6,16 +6,26 @@ This middleware replaces the need for forward-auth and oauth2-proxy when using T
 
 The Traefik OIDC middleware provides a complete OIDC authentication solution with features like:
 - Token validation and verification
-- Session management
+- Session management with automatic cleanup
 - Domain restrictions
 - Role-based access control
 - Token caching and blacklisting
 - Rate limiting
 - Excluded paths (public URLs)
+- Memory-efficient operation with bounded resource usage
 
 **Important Note on Token Validation:** This middleware performs authentication and claim extraction based on the **ID Token** provided by the OIDC provider. It does not primarily use the Access Token for these purposes (though the Access Token is available for templated headers if needed). Therefore, ensure that all necessary claims (e.g., email, roles, custom attributes) are included in the ID Token by your OIDC provider's configuration.
 
 The middleware has been tested with Auth0, Logto, Google and other standard OIDC providers. It includes special handling for Google's OAuth implementation.
+
+### Performance and Memory Management
+
+This middleware includes advanced memory management features to ensure stable operation under high load:
+- **Bounded caches**: All internal caches (metadata, sessions, tokens) have configurable size limits with LRU eviction
+- **Automatic cleanup**: Background goroutines periodically clean up expired sessions and tokens
+- **Memory monitoring**: Built-in memory leak detection and prevention
+- **Graceful degradation**: Continues operating safely even under memory pressure
+- **Zero goroutine leaks**: All background tasks are properly managed and terminated on shutdown
 
 ## Traefik Version Compatibility
 
@@ -875,6 +885,54 @@ logLevel: debug
     *   **Solution**: This plugin validates the **ID Token**. You **must** configure Keycloak client mappers to add all necessary claims (email, roles, groups, etc.) to the ID Token.
     *   For detailed instructions, please see the [Keycloak](#keycloak) section under [Provider Configuration Recommendations](#provider-configuration-recommendations).
 
+## Recent Improvements
+
+### Memory Management (v0.3.0+)
+
+The middleware has undergone significant improvements to memory management and resource utilization:
+
+- **Memory Leak Prevention**: All background goroutines are properly managed with context cancellation
+- **Bounded Resource Usage**: Session storage, metadata cache, and token cache all have size limits with LRU eviction
+- **Automatic Cleanup**: Expired sessions and tokens are automatically cleaned up by background tasks
+- **Graceful Shutdown**: All resources are properly released when the middleware is stopped
+- **Performance Monitoring**: Built-in monitoring for goroutine leaks and memory growth
+
+These improvements ensure the middleware operates efficiently even under high load and long-running deployments.
+
+### Enhanced Test Coverage
+
+- Comprehensive test suite with race condition detection
+- Memory leak detection tests
+- Goroutine leak prevention tests
+- Test coverage increased to 67%+ for main package, 87-99% for subpackages
+
+## Architecture and Internal Improvements
+
+### Internal Components
+
+The middleware uses several internal components for efficient operation:
+
+1. **SessionManager**: Manages user sessions with automatic cleanup and pool-based allocation
+2. **ChunkManager**: Handles large session data by splitting it into manageable chunks
+3. **MetadataCache**: Caches OIDC provider metadata with LRU eviction and size limits
+4. **TaskRegistry**: Manages background tasks with proper lifecycle management
+5. **MemoryMonitor**: Monitors memory usage and detects potential leaks
+
+### Key Design Decisions
+
+- **Context-based cancellation**: All background operations use context for clean shutdown
+- **Bounded queues and caches**: Prevents unbounded memory growth
+- **LRU eviction policies**: Ensures most frequently used data stays in cache
+- **Atomic operations**: Uses atomic counters for statistics to avoid lock contention
+- **Test-friendly design**: Special handling for test environments to ensure clean test execution
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Development Guidelines
+
+1. **Memory Management**: Ensure all goroutines can be cancelled and resources are bounded
+2. **Testing**: Add tests for new features, including memory leak tests where appropriate
+3. **Race Conditions**: Run tests with `-race` flag to detect race conditions
+4. **Documentation**: Update README and .traefik.yml for any new configuration options

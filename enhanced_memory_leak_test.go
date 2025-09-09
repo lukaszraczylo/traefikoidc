@@ -376,7 +376,9 @@ func TestMetadataCacheRefreshLeak(t *testing.T) {
 
 			// Force cache expiry to trigger refresh
 			cache.mutex.Lock()
-			cache.expiresAt = time.Now().Add(-1 * time.Hour)
+			if entry, exists := cache.cache[server.URL]; exists {
+				entry.expiresAt = time.Now().Add(-1 * time.Hour)
+			}
 			cache.mutex.Unlock()
 
 			if i%20 == 0 && i > 0 {

@@ -106,18 +106,21 @@ func TestIsTestMode(t *testing.T) {
 	// Store original values
 	originalSuppressLogs := os.Getenv("SUPPRESS_DIAGNOSTIC_LOGS")
 	originalGoTest := os.Getenv("GO_TEST")
+	originalDisableStackCheck := os.Getenv("DISABLE_RUNTIME_STACK_CHECK")
 	originalArgs := os.Args
 
 	// Cleanup after test
 	defer func() {
 		os.Setenv("SUPPRESS_DIAGNOSTIC_LOGS", originalSuppressLogs)
 		os.Setenv("GO_TEST", originalGoTest)
+		os.Setenv("DISABLE_RUNTIME_STACK_CHECK", originalDisableStackCheck)
 		os.Args = originalArgs
 	}()
 
 	t.Run("SUPPRESS_DIAGNOSTIC_LOGS environment variable", func(t *testing.T) {
 		os.Unsetenv("SUPPRESS_DIAGNOSTIC_LOGS")
 		os.Unsetenv("GO_TEST")
+		os.Setenv("DISABLE_RUNTIME_STACK_CHECK", "1") // Disable runtime stack check for this test
 		os.Args = []string{"myprogram"}
 
 		// Should return false initially
@@ -133,6 +136,7 @@ func TestIsTestMode(t *testing.T) {
 
 		// Test other values
 		os.Setenv("SUPPRESS_DIAGNOSTIC_LOGS", "0")
+		os.Setenv("DISABLE_RUNTIME_STACK_CHECK", "1") // Keep runtime stack check disabled
 		if isTestMode() {
 			t.Error("Expected isTestMode to return false with SUPPRESS_DIAGNOSTIC_LOGS=0")
 		}
@@ -157,6 +161,12 @@ func TestIsTestMode(t *testing.T) {
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				os.Args = []string{tc.progName}
+				// Disable runtime stack check for false cases
+				if !tc.shouldMatch {
+					os.Setenv("DISABLE_RUNTIME_STACK_CHECK", "1")
+				} else {
+					os.Unsetenv("DISABLE_RUNTIME_STACK_CHECK")
+				}
 				result := isTestMode()
 				if result != tc.shouldMatch {
 					t.Errorf("Program %q: expected %v, got %v", tc.progName, tc.shouldMatch, result)
@@ -170,16 +180,19 @@ func TestIsTestMode(t *testing.T) {
 		os.Args = []string{"myprogram"}
 
 		os.Unsetenv("GO_TEST")
+		os.Setenv("DISABLE_RUNTIME_STACK_CHECK", "1") // Disable for false case
 		if isTestMode() {
 			t.Error("Expected isTestMode to return false without GO_TEST")
 		}
 
 		os.Setenv("GO_TEST", "1")
+		os.Unsetenv("DISABLE_RUNTIME_STACK_CHECK") // Enable for true case
 		if !isTestMode() {
 			t.Error("Expected isTestMode to return true with GO_TEST=1")
 		}
 
 		os.Setenv("GO_TEST", "0")
+		os.Setenv("DISABLE_RUNTIME_STACK_CHECK", "1") // Disable for false case
 		if isTestMode() {
 			t.Error("Expected isTestMode to return false with GO_TEST=0")
 		}
@@ -204,6 +217,12 @@ func TestIsTestMode(t *testing.T) {
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				os.Args = tc.args
+				// Disable runtime stack check for false cases
+				if !tc.expected {
+					os.Setenv("DISABLE_RUNTIME_STACK_CHECK", "1")
+				} else {
+					os.Unsetenv("DISABLE_RUNTIME_STACK_CHECK")
+				}
 				result := isTestMode()
 				if result != tc.expected {
 					t.Errorf("Args %v: expected %v, got %v", tc.args, tc.expected, result)
@@ -225,6 +244,7 @@ func TestIsTestMode(t *testing.T) {
 			}
 		} else {
 			// With gc compiler, should return false for normal program name
+			os.Setenv("DISABLE_RUNTIME_STACK_CHECK", "1") // Disable for false case
 			if isTestMode() {
 				t.Error("Expected isTestMode to return false with gc compiler and normal program")
 			}
@@ -276,6 +296,13 @@ func TestIsTestMode(t *testing.T) {
 				}
 
 				os.Args = tc.args
+
+				// Disable runtime stack check for false cases
+				if !tc.expected {
+					os.Setenv("DISABLE_RUNTIME_STACK_CHECK", "1")
+				} else {
+					os.Unsetenv("DISABLE_RUNTIME_STACK_CHECK")
+				}
 
 				result := isTestMode()
 				if result != tc.expected {

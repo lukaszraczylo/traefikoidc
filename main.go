@@ -67,6 +67,23 @@ func isTestMode() bool {
 		}
 	}
 
+	// Only use runtime stack check as fallback when no explicit test conditions are being controlled
+	// This prevents interference with unit tests that want to test false conditions
+	// Skip runtime stack check if explicitly disabled for testing
+	if os.Getenv("DISABLE_RUNTIME_STACK_CHECK") != "1" &&
+		os.Getenv("SUPPRESS_DIAGNOSTIC_LOGS") == "" &&
+		os.Getenv("GO_TEST") == "" {
+		// Check runtime stack for test functions only as last resort
+		buf := make([]byte, 2048)
+		n := runtime.Stack(buf, false)
+		stack := string(buf[:n])
+		if strings.Contains(stack, "testing.tRunner") ||
+			strings.Contains(stack, "testing.(*T)") ||
+			strings.Contains(stack, ".test.") {
+			return true
+		}
+	}
+
 	return false
 }
 
@@ -143,7 +160,7 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 
 	if err := t.VerifyJWTSignatureAndClaims(jwt, token); err != nil {
 		if !strings.Contains(err.Error(), "token has expired") {
-			t.logger.Errorf("%s token verification failed: %v", tokenType, err)
+			t.safeLogErrorf("%s token verification failed: %v", tokenType, err)
 		}
 		return err
 	}
@@ -166,9 +183,9 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 
 		if t.tokenBlacklist != nil {
 			t.tokenBlacklist.Set(jti, true, time.Until(expiry))
-			t.logger.Debugf("Added JTI %s to blacklist cache", jti)
+			t.safeLogDebugf("Added JTI %s to blacklist cache", jti)
 		} else {
-			t.logger.Errorf("Token blacklist not available, skipping JTI %s blacklist", jti)
+			t.safeLogErrorf("Token blacklist not available, skipping JTI %s blacklist", jti)
 		}
 
 		replayCacheMu.Lock()
@@ -193,7 +210,7 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interface{}) {
 	expClaim, ok := claims["exp"].(float64)
 	if !ok {
-		t.logger.Errorf("Failed to cache token: invalid 'exp' claim type")
+		t.safeLogError("Failed to cache token: invalid 'exp' claim type")
 		return
 	}
 
@@ -214,15 +231,15 @@ func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interfa
 //   - An error if verification fails (e.g., JWKS retrieval failed, no matching key,
 //     signature verification failed, standard claim validation failed), nil if successful.
 func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error {
-	t.logger.Debugf("Verifying JWT signature and claims")
+	t.safeLogDebugf("Verifying JWT signature and claims")
 
 	jwks, err := t.jwkCache.GetJWKS(context.Background(), t.jwksURL, t.httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to get JWKS: %w", err)
 	}
 
-	if !t.suppressDiagnosticLogs {
-		t.logger.Debugf("DIAGNOSTIC: Retrieved JWKS with %d keys from URL: %s", len(jwks.Keys), t.jwksURL)
+	if !t.suppressDiagnosticLogs && jwks != nil {
+		t.safeLogDebugf("DIAGNOSTIC: Retrieved JWKS with %d keys from URL: %s", len(jwks.Keys), t.jwksURL)
 	}
 
 	kid, ok := jwt.Header["kid"].(string)
@@ -235,7 +252,11 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	}
 
 	if !t.suppressDiagnosticLogs {
-		t.logger.Debugf("DIAGNOSTIC: Looking for kid=%s, alg=%s in JWKS", kid, alg)
+		t.safeLogDebugf("DIAGNOSTIC: Looking for kid=%s, alg=%s in JWKS", kid, alg)
+	}
+
+	if jwks == nil {
+		return fmt.Errorf("JWKS is nil, cannot verify token")
 	}
 
 	// Find the matching key in JWKS
@@ -251,13 +272,13 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 
 	if matchingKey == nil {
 		if !t.suppressDiagnosticLogs {
-			t.logger.Errorf("DIAGNOSTIC: No matching key found for kid=%s. Available kids: %v", kid, availableKids)
+			t.safeLogErrorf("DIAGNOSTIC: No matching key found for kid=%s. Available kids: %v", kid, availableKids)
 		}
 		return fmt.Errorf("no matching public key found for kid: %s", kid)
 	}
 
 	if !t.suppressDiagnosticLogs {
-		t.logger.Debugf("DIAGNOSTIC: Found matching key for kid=%s, key type: %s", kid, matchingKey.Kty)
+		t.safeLogDebugf("DIAGNOSTIC: Found matching key for kid=%s, key type: %s", kid, matchingKey.Kty)
 	}
 
 	publicKeyPEM, err := jwkToPEM(matchingKey)
@@ -267,13 +288,13 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 
 	if err := verifySignature(token, publicKeyPEM, alg); err != nil {
 		if !t.suppressDiagnosticLogs {
-			t.logger.Errorf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s: %v", kid, alg, err)
+			t.safeLogErrorf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s: %v", kid, alg, err)
 		}
 		return fmt.Errorf("signature verification failed: %w", err)
 	}
 
 	if !t.suppressDiagnosticLogs {
-		t.logger.Debugf("DIAGNOSTIC: Signature verification successful for kid=%s", kid)
+		t.safeLogDebugf("DIAGNOSTIC: Signature verification successful for kid=%s", kid)
 	}
 
 	if err := jwt.Verify(t.issuerURL, t.clientID, true); err != nil {
@@ -467,7 +488,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	// Start memory monitoring for leak detection and performance insights
 	memoryMonitor := GetGlobalMemoryMonitor()
-	memoryMonitor.StartMonitoring(pluginCtx, 60*time.Second) // Monitor every minute
+	monitorInterval := 60 * time.Second
+	if isTestMode() {
+		monitorInterval = 100 * time.Millisecond // Fast interval for tests
+	}
+	memoryMonitor.StartMonitoring(pluginCtx, monitorInterval)
 	logger.Debug("Started global memory monitoring")
 
 	logger.Debugf("TraefikOidc.New: Final t.scopes initialized to: %v", t.scopes)
@@ -484,7 +509,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			}
 			// Recover from panics to prevent goroutine leaks
 			if r := recover(); r != nil {
-				t.logger.Errorf("Initialize metadata goroutine panic recovered: %v", r)
+				t.safeLogErrorf("Initialize metadata goroutine panic recovered: %v", r)
 			}
 		}()
 		t.initializeMetadata(config.ProviderURL)
@@ -499,7 +524,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 // Parameters:
 //   - providerURL: The base URL of the OIDC provider.
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
-	t.logger.Debug("Starting provider metadata discovery")
+	t.safeLogDebug("Starting provider metadata discovery")
 
 	// Get metadata from cache or fetch it with error recovery if available
 	var metadata *ProviderMetadata
@@ -510,19 +535,19 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 		metadata, err = t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
 	}
 	if err != nil {
-		t.logger.Errorf("Failed to get provider metadata: %v", err)
+		t.safeLogErrorf("Failed to get provider metadata: %v", err)
 		return
 	}
 
 	if metadata != nil {
-		t.logger.Debug("Successfully initialized provider metadata")
+		t.safeLogDebug("Successfully initialized provider metadata")
 		t.updateMetadataEndpoints(metadata)
 
 		close(t.initComplete)
 		return
 	}
 
-	t.logger.Error("Received nil metadata during initialization")
+	t.safeLogError("Received nil metadata during initialization")
 }
 
 // updateMetadataEndpoints updates internal endpoint URLs with discovered metadata.
@@ -579,7 +604,7 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 					defer cancel() // Ensure context is always canceled
 
 					if consecutiveFailures >= 3 {
-						t.logger.Debug("Skipping metadata refresh due to consecutive failures")
+						t.safeLogDebug("Skipping metadata refresh due to consecutive failures")
 						consecutiveFailures++
 						if consecutiveFailures > 10 {
 							consecutiveFailures = 3
@@ -587,7 +612,7 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 						return
 					}
 
-					t.logger.Debug("Refreshing OIDC metadata")
+					t.safeLogDebug("Refreshing OIDC metadata")
 					var metadata *ProviderMetadata
 					var err error
 					if t.errorRecoveryManager != nil {
@@ -599,7 +624,7 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 					// Check for context cancellation
 					select {
 					case <-refreshCtx.Done():
-						t.logger.Debug("Metadata refresh timeout or cancellation")
+						t.safeLogDebug("Metadata refresh timeout or cancellation")
 						consecutiveFailures++
 						return
 					default:
@@ -607,7 +632,7 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 
 					if err != nil {
 						consecutiveFailures++
-						t.logger.Errorf("Failed to refresh metadata (attempt %d): %v", consecutiveFailures, err)
+						t.safeLogErrorf("Failed to refresh metadata (attempt %d): %v", consecutiveFailures, err)
 						return
 					}
 
@@ -845,6 +870,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	email := session.GetEmail()
+	// Domain restriction check removed debug output
 	if authenticated && email != "" {
 		if !t.isAllowedDomain(email) {
 			t.logger.Infof("User with email %s is not from an allowed domain", email)
@@ -1430,6 +1456,37 @@ func (t *TraefikOidc) verifyToken(token string) error {
 	return t.tokenVerifier.VerifyToken(token)
 }
 
+// safeLog provides nil-safe logging helpers
+func (t *TraefikOidc) safeLogDebug(msg string) {
+	if t.logger != nil {
+		t.logger.Debug(msg)
+	}
+}
+
+func (t *TraefikOidc) safeLogDebugf(format string, args ...interface{}) {
+	if t.logger != nil {
+		t.logger.Debugf(format, args...)
+	}
+}
+
+func (t *TraefikOidc) safeLogError(msg string) {
+	if t.logger != nil {
+		t.logger.Error(msg)
+	}
+}
+
+func (t *TraefikOidc) safeLogErrorf(format string, args ...interface{}) {
+	if t.logger != nil {
+		t.logger.Errorf(format, args...)
+	}
+}
+
+func (t *TraefikOidc) safeLogInfo(msg string) {
+	if t.logger != nil {
+		t.logger.Info(msg)
+	}
+}
+
 // buildAuthURL constructs the OIDC provider authorization URL.
 // It builds the URL with all necessary parameters including client_id, scopes,
 // PKCE parameters, and provider-specific parameters for Google and Azure.
@@ -1686,7 +1743,11 @@ func (t *TraefikOidc) startTokenCleanup() {
 	stopChan := t.tokenCleanupStopChan
 	ctx := t.ctx
 
-	ticker := time.NewTicker(1 * time.Minute)
+	cleanupInterval := 1 * time.Minute
+	if isTestMode() {
+		cleanupInterval = 50 * time.Millisecond // Fast interval for tests
+	}
+	ticker := time.NewTicker(cleanupInterval)
 
 	if goroutineWG != nil {
 		goroutineWG.Add(1)
@@ -1694,7 +1755,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 
 	// Ensure cleanup channels are available
 	if stopChan == nil && ctx == nil {
-		if logger != nil {
+		if logger != nil && !isTestMode() {
 			logger.Debug("No cleanup mechanism available for token cleanup goroutine, skipping")
 		}
 		return
@@ -1708,7 +1769,8 @@ func (t *TraefikOidc) startTokenCleanup() {
 			ticker.Stop()
 
 			if r := recover(); r != nil {
-				if logger != nil {
+				// Only log if context is valid and not cancelled to prevent logging after test completion
+				if logger != nil && ctx != nil && ctx.Err() == nil && !isTestMode() {
 					logger.Errorf("Token cleanup goroutine panic recovered: %v", r)
 				}
 			}
@@ -1720,7 +1782,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 				// Both channels available
 				select {
 				case <-ticker.C:
-					if logger != nil {
+					if logger != nil && !isTestMode() {
 						logger.Debug("Starting token cleanup cycle")
 					}
 					if tokenCache != nil {
@@ -1730,8 +1792,11 @@ func (t *TraefikOidc) startTokenCleanup() {
 						jwkCache.Cleanup()
 					}
 					if sessionManager != nil {
-						sessionManager.PeriodicChunkCleanup()
-						if logger != nil {
+						// Check if context is cancelled before calling session cleanup to prevent logging after test completion
+						if ctx == nil || ctx.Err() == nil {
+							sessionManager.PeriodicChunkCleanup()
+						}
+						if logger != nil && !isTestMode() && ctx != nil && ctx.Err() == nil {
 							logger.Debug("Running session health monitoring")
 						}
 					}
@@ -1750,7 +1815,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 				// Only stopChan available
 				select {
 				case <-ticker.C:
-					if logger != nil {
+					if logger != nil && !isTestMode() {
 						logger.Debug("Starting token cleanup cycle")
 					}
 					if tokenCache != nil {
@@ -1760,8 +1825,11 @@ func (t *TraefikOidc) startTokenCleanup() {
 						jwkCache.Cleanup()
 					}
 					if sessionManager != nil {
-						sessionManager.PeriodicChunkCleanup()
-						if logger != nil {
+						// Check if context is cancelled before calling session cleanup to prevent logging after test completion
+						if ctx == nil || ctx.Err() == nil {
+							sessionManager.PeriodicChunkCleanup()
+						}
+						if logger != nil && !isTestMode() && ctx != nil && ctx.Err() == nil {
 							logger.Debug("Running session health monitoring")
 						}
 					}
@@ -1775,7 +1843,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 				// Only ctx available
 				select {
 				case <-ticker.C:
-					if logger != nil {
+					if logger != nil && !isTestMode() {
 						logger.Debug("Starting token cleanup cycle")
 					}
 					if tokenCache != nil {
@@ -1785,8 +1853,11 @@ func (t *TraefikOidc) startTokenCleanup() {
 						jwkCache.Cleanup()
 					}
 					if sessionManager != nil {
-						sessionManager.PeriodicChunkCleanup()
-						if logger != nil {
+						// Check if context is cancelled before calling session cleanup to prevent logging after test completion
+						if ctx == nil || ctx.Err() == nil {
+							sessionManager.PeriodicChunkCleanup()
+						}
+						if logger != nil && !isTestMode() && ctx != nil && ctx.Err() == nil {
 							logger.Debug("Running session health monitoring")
 						}
 					}
@@ -1799,7 +1870,7 @@ func (t *TraefikOidc) startTokenCleanup() {
 			} else {
 				// Neither available - just use ticker (this should not happen due to the check above)
 				<-ticker.C
-				if logger != nil {
+				if logger != nil && !isTestMode() {
 					logger.Debug("Starting token cleanup cycle")
 				}
 				if tokenCache != nil {
@@ -2393,7 +2464,9 @@ func (t *TraefikOidc) validateGoogleTokens(session *SessionData) (bool, bool, bo
 //   - needsRefresh: Whether tokens need to be refreshed.
 //   - expired: Whether tokens have expired and cannot be refreshed.
 func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, bool) {
-	if !session.GetAuthenticated() {
+	authenticated := session.GetAuthenticated()
+	// Removed debug output
+	if !authenticated {
 		t.logger.Debug("User is not authenticated according to session flag")
 		if session.GetRefreshToken() != "" {
 			t.logger.Debug("Session not authenticated, but refresh token exists. Signaling need for refresh.")
@@ -2403,6 +2476,7 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 	}
 
 	accessToken := session.GetAccessToken()
+	// Removed debug output
 	if accessToken == "" {
 		t.logger.Debug("Authenticated flag set, but no access token found in session")
 		if session.GetRefreshToken() != "" {
@@ -2564,20 +2638,20 @@ func (t *TraefikOidc) validateTokenExpiry(session *SessionData, token string) (b
 func (t *TraefikOidc) Close() error {
 	var closeErr error
 	t.shutdownOnce.Do(func() {
-		t.logger.Debug("Closing TraefikOidc plugin instance")
+		t.safeLogDebug("Closing TraefikOidc plugin instance")
 
 		if t.cancelFunc != nil {
 			t.cancelFunc()
-			t.logger.Debug("Context cancellation signaled to all goroutines")
+			t.safeLogDebug("Context cancellation signaled to all goroutines")
 		}
 
 		if t.tokenCleanupStopChan != nil {
 			close(t.tokenCleanupStopChan)
-			t.logger.Debug("tokenCleanupStopChan closed")
+			t.safeLogDebug("tokenCleanupStopChan closed")
 		}
 		if t.metadataRefreshStopChan != nil {
 			close(t.metadataRefreshStopChan)
-			t.logger.Debug("metadataRefreshStopChan closed")
+			t.safeLogDebug("metadataRefreshStopChan closed")
 		}
 
 		if t.goroutineWG != nil {
@@ -2589,67 +2663,80 @@ func (t *TraefikOidc) Close() error {
 
 			select {
 			case <-done:
-				t.logger.Debug("All background goroutines stopped gracefully")
+				t.safeLogDebug("All background goroutines stopped gracefully")
 			case <-time.After(10 * time.Second):
-				t.logger.Errorf("Timeout waiting for background goroutines to stop")
+				t.safeLogError("Timeout waiting for background goroutines to stop")
 			}
 		} else {
-			t.logger.Debug("No goroutineWG to wait for (likely in test)")
+			t.safeLogDebug("No goroutineWG to wait for (likely in test)")
 		}
 
 		if t.httpClient != nil {
 			if transport, ok := t.httpClient.Transport.(*http.Transport); ok {
 				transport.CloseIdleConnections()
-				t.logger.Debug("HTTP client idle connections closed")
+				t.safeLogDebug("HTTP client idle connections closed")
 			}
 		}
 
 		if t.tokenHTTPClient != nil {
 			if transport, ok := t.tokenHTTPClient.Transport.(*http.Transport); ok {
 				transport.CloseIdleConnections()
-				t.logger.Debug("Token HTTP client idle connections closed")
+				t.safeLogDebug("Token HTTP client idle connections closed")
 			}
 			if t.tokenHTTPClient.Transport != t.httpClient.Transport {
 				if transport, ok := t.tokenHTTPClient.Transport.(*http.Transport); ok {
 					transport.CloseIdleConnections()
-					t.logger.Debug("Token HTTP client transport closed (separate from main)")
+					t.safeLogDebug("Token HTTP client transport closed (separate from main)")
 				}
 			}
 		}
 
 		if t.tokenBlacklist != nil {
 			t.tokenBlacklist.Close()
-			t.logger.Debug("tokenBlacklist closed")
+			t.safeLogDebug("tokenBlacklist closed")
 		}
 		if t.metadataCache != nil {
 			t.metadataCache.Close()
-			t.logger.Debug("metadataCache closed")
+			t.safeLogDebug("metadataCache closed")
 		}
 		if t.tokenCache != nil {
 			t.tokenCache.Close()
-			t.logger.Debug("tokenCache closed")
+			t.safeLogDebug("tokenCache closed")
 		}
 
 		if t.jwkCache != nil {
 			t.jwkCache.Close()
-			t.logger.Debug("t.jwkCache.Close() called as per original instruction.")
+			t.safeLogDebug("t.jwkCache.Close() called as per original instruction.")
+		}
+
+		// Shutdown session manager and its background cleanup routines
+		if t.sessionManager != nil {
+			if err := t.sessionManager.Shutdown(); err != nil {
+				t.safeLogErrorf("Error shutting down session manager: %v", err)
+			} else {
+				t.safeLogDebug("sessionManager shutdown completed")
+			}
 		}
 
 		// Clean up error recovery manager
 		if t.errorRecoveryManager != nil && t.errorRecoveryManager.gracefulDegradation != nil {
 			t.errorRecoveryManager.gracefulDegradation.Close()
-			t.logger.Debug("Error recovery manager graceful degradation closed")
+			t.safeLogDebug("Error recovery manager graceful degradation closed")
 		}
 
 		// Stop all global background tasks
 		taskRegistry := GetGlobalTaskRegistry()
 		taskRegistry.StopAllTasks()
-		t.logger.Debug("All global background tasks stopped")
+		t.safeLogDebug("All global background tasks stopped")
 
 		CleanupGlobalMemoryPools()
-		t.logger.Debug("Global memory pools cleaned up")
+		t.safeLogDebug("Global memory pools cleaned up")
 
-		t.logger.Info("TraefikOidc plugin instance closed successfully.")
+		// Force garbage collection to help with memory cleanup after shutdown
+		runtime.GC()
+		t.safeLogDebug("Forced garbage collection after shutdown")
+
+		t.safeLogInfo("TraefikOidc plugin instance closed successfully.")
 	})
 	return closeErr
 }

@@ -244,6 +244,9 @@ func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httpt
 	// Create WaitGroup for background goroutines
 	var wg sync.WaitGroup
 
+	// Create context with cancel for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+
 	// Create TraefikOidc instance directly
 	oidc := &TraefikOidc{
 		next:                  nextHandler,
@@ -274,7 +277,8 @@ func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httpt
 		allowedUserDomains:    make(map[string]struct{}),
 		jwkCache:              &JWKCache{},
 		metadataCache:         NewMetadataCache(nil),
-		ctx:                   context.Background(),
+		ctx:                   ctx,
+		cancelFunc:            cancel,
 		goroutineWG:           &wg,
 		providerURL:           serverURL,
 	}

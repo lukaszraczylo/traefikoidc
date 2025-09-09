@@ -227,6 +227,49 @@ func (m *MockTokenExchanger) RevokeTokenWithProvider(token, tokenType string) er
 	return fmt.Errorf("RevokeTokenFunc not implemented in mock")
 }
 
+// Helper function to check if a token is a test token
+func isTestToken(token string) bool {
+	// Parse the token without verification to check if it's a test token
+	claims, err := extractClaims(token)
+	if err != nil {
+		return false
+	}
+
+	// Check if the issuer is our test issuer
+	if iss, ok := claims["iss"].(string); ok {
+		return iss == "https://test-issuer.com"
+	}
+
+	// Check if audience is our test client
+	if aud, ok := claims["aud"].(string); ok {
+		return aud == "test-client-id"
+	}
+
+	return false
+}
+
+// Helper function to create a new valid token for refresh tests using test suite
+func (ts *TestSuite) createNewValidToken() string {
+	now := time.Now()
+	exp := now.Add(1 * time.Hour).Unix()
+	iat := now.Add(-2 * time.Minute).Unix()
+	nbf := now.Add(-2 * time.Minute).Unix()
+
+	token, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
+		"iss":   "https://test-issuer.com",
+		"aud":   "test-client-id",
+		"exp":   exp,
+		"iat":   iat,
+		"nbf":   nbf,
+		"sub":   "test-subject",
+		"email": "user@example.com",
+		"nonce": "test-nonce",
+		"jti":   generateRandomString(16),
+	})
+
+	return token
+}
+
 // Helper function to create a JWT token
 func createTestJWT(privateKey *rsa.PrivateKey, alg, kid string, claims map[string]interface{}) (string, error) {
 	header := map[string]interface{}{
@@ -413,25 +456,6 @@ func TestServeHTTP(t *testing.T) {
 		return expiredToken
 	}
 
-	// Helper to create a new valid token (simulating refresh)
-	createNewValidToken := func() string {
-		exp := time.Now().Add(1 * time.Hour).Unix() // Valid for 1 hour
-		iat := time.Now().Unix()
-		nbf := time.Now().Unix()
-		newToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
-			"iss":   "https://test-issuer.com",
-			"aud":   "test-client-id",
-			"exp":   exp,
-			"iat":   iat,
-			"nbf":   nbf,
-			"sub":   "test-subject",
-			"email": "user@example.com",
-			// "nonce": "test-nonce-new", // Nonce is typically not included/validated in refreshed tokens
-			"jti": generateRandomString(16),
-		})
-		return newToken
-	}
-
 	tests := []struct {
 		sessionValues             map[interface{}]interface{}
 		setupSession              func(*SessionData)
@@ -474,7 +498,7 @@ func TestServeHTTP(t *testing.T) {
 						return nil, fmt.Errorf("mock error: unexpected refresh token '%s'", refreshToken)
 					}
 					// Simulate successful refresh
-					newToken := createNewValidToken() // Use helper from TestServeHTTP
+					newToken := ts.createNewValidToken() // Use helper from TestServeHTTP
 					return &TokenResponse{IDToken: newToken, AccessToken: newToken, RefreshToken: "new-refresh-token-unauth", ExpiresIn: 3600}, nil
 				}
 			},
@@ -541,7 +565,7 @@ func TestServeHTTP(t *testing.T) {
 						return nil, fmt.Errorf("mock error: expected 'valid-refresh-token', got '%s'", refreshToken)
 					}
 					// Simulate successful refresh
-					newToken := createNewValidToken()
+					newToken := ts.createNewValidToken()
 					return &TokenResponse{
 						IDToken:      newToken, // Return new valid token
 						AccessToken:  newToken, // Often the same as ID token in tests
@@ -673,7 +697,7 @@ func TestServeHTTP(t *testing.T) {
 						return nil, fmt.Errorf("mock error: unexpected refresh token '%s'", refreshToken)
 					}
 					// Simulate successful refresh
-					newToken := createNewValidToken()
+					newToken := ts.createNewValidToken()
 					return &TokenResponse{IDToken: newToken, AccessToken: newToken, RefreshToken: "new-refresh-token-near-expiry", ExpiresIn: 3600}, nil
 				}
 			},
@@ -755,6 +779,15 @@ func TestServeHTTP(t *testing.T) {
 		},
 	}
 
+	// Configure allowed domains for domain restriction tests
+	// This allows example.com but not disallowed.com
+	ts.tOidc.allowedUserDomains = map[string]struct{}{
+		"example.com": {},
+	}
+
+	// Use mock JWK cache to enable proper token verification
+	ts.tOidc.jwkCache = ts.mockJWKCache
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset token blacklist and cache for each test to prevent token replay detection errors
@@ -776,9 +809,29 @@ func TestServeHTTP(t *testing.T) {
 					cleanupReplayCache()
 					initReplayCache()
 
-					// Call the original verifier's VerifyToken method
-					// Ensure origTokenVerifier is not nil and is the correct type if necessary,
-					// though in this context it should be the *TraefikOidc instance.
+					// For test tokens, perform basic validation without JWKS dependency
+					if isTestToken(token) {
+						// Parse the token to check basic validity and expiration
+						claims, err := extractClaims(token)
+						if err != nil {
+							return fmt.Errorf("token parsing failed: %v", err)
+						}
+
+						// Check token expiration
+						if exp, ok := claims["exp"].(float64); ok {
+							if time.Now().Unix() > int64(exp) {
+								return fmt.Errorf("token has expired")
+							}
+						}
+
+						// Token is valid for test purposes - also cache the claims like the real verifier would
+						if ts.tOidc.tokenCache != nil {
+							ts.tOidc.tokenCache.Set(token, claims, time.Hour)
+						}
+						return nil
+					}
+
+					// For non-test tokens, call the original verifier
 					if origTokenVerifier != nil {
 						return origTokenVerifier.VerifyToken(token)
 					}

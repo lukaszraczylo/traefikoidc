@@ -1,7 +1,9 @@
 package traefikoidc
 
 import (
+	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -170,14 +172,18 @@ func (bt *BackgroundTask) run() {
 	defer ticker.Stop()
 
 	if bt.logger != nil {
-		bt.logger.Info("Starting background task: %s", bt.name)
+		if !isTestMode() {
+			bt.logger.Info("Starting background task: %s", bt.name)
+		}
 	}
 
 	// Execute task function immediately, but check for stop signal first
 	select {
 	case <-bt.stopChan:
 		if bt.logger != nil {
-			bt.logger.Info("Stopping background task: %s (before initial execution)", bt.name)
+			if !isTestMode() {
+				bt.logger.Info("Stopping background task: %s (before initial execution)", bt.name)
+			}
 		}
 		return
 	default:
@@ -194,7 +200,9 @@ func (bt *BackgroundTask) run() {
 			select {
 			case <-bt.stopChan:
 				if bt.logger != nil {
-					bt.logger.Info("Stopping background task: %s (during periodic execution)", bt.name)
+					if !isTestMode() {
+						bt.logger.Info("Stopping background task: %s (during periodic execution)", bt.name)
+					}
 				}
 				return
 			default:
@@ -202,7 +210,9 @@ func (bt *BackgroundTask) run() {
 			}
 		case <-bt.stopChan:
 			if bt.logger != nil {
-				bt.logger.Info("Stopping background task: %s (direct stop signal)", bt.name)
+				if !isTestMode() {
+					bt.logger.Info("Stopping background task: %s (direct stop signal)", bt.name)
+				}
 			}
 			return
 		}
@@ -437,16 +447,26 @@ func (tr *TaskRegistry) RegisterTask(name string, task *BackgroundTask) error {
 		return fmt.Errorf("circuit breaker prevented task creation: %w", err)
 	}
 
+	// Check if task already exists and get reference outside the lock
+	var existingTask *BackgroundTask
 	tr.mu.Lock()
-	defer tr.mu.Unlock()
-
-	// Check if task already exists
 	if existing, exists := tr.tasks[name]; exists {
 		if tr.logger != nil {
 			tr.logger.Error("Task %s already exists, stopping existing task", name)
 		}
-		existing.Stop()
+		existingTask = existing
+		// Remove from tasks map immediately to prevent race conditions
+		delete(tr.tasks, name)
 	}
+	tr.mu.Unlock()
+
+	// Stop the existing task outside the lock to prevent deadlock
+	if existingTask != nil {
+		existingTask.Stop()
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
 
 	// Task execution tracking is now handled in the run() method
 
@@ -486,18 +506,23 @@ func (tr *TaskRegistry) GetTask(name string) (*BackgroundTask, bool) {
 
 // StopAllTasks stops all registered background tasks
 func (tr *TaskRegistry) StopAllTasks() {
+	// First, copy the tasks map to avoid deadlock with GetTaskCount()
 	tr.mu.Lock()
-	defer tr.mu.Unlock()
-
+	tasksCopy := make(map[string]*BackgroundTask, len(tr.tasks))
 	for name, task := range tr.tasks {
+		tasksCopy[name] = task
+	}
+	// Clear the registry immediately to prevent new task lookups
+	tr.tasks = make(map[string]*BackgroundTask)
+	tr.mu.Unlock()
+
+	// Now stop all tasks without holding the lock
+	for name, task := range tasksCopy {
 		task.Stop()
 		if tr.logger != nil {
 			tr.logger.Info("Stopped background task during shutdown: %s", name)
 		}
 	}
-
-	// Clear the registry
-	tr.tasks = make(map[string]*BackgroundTask)
 }
 
 // GetTaskCount returns the number of active tasks
@@ -554,4 +579,202 @@ func (tr *TaskRegistry) CreateSingletonTask(name string, interval time.Duration,
 	}
 
 	return task, nil
+}
+
+// TaskMemoryStats represents a snapshot of memory usage statistics for task registry
+type TaskMemoryStats struct {
+	Timestamp    time.Time
+	Goroutines   int
+	HeapAlloc    uint64
+	HeapSys      uint64
+	NumGC        uint32
+	AllocObjects uint64
+	FreeObjects  uint64
+	ActiveTasks  int
+}
+
+// TaskMemoryMonitor provides system memory monitoring and leak detection capabilities for task registry
+type TaskMemoryMonitor struct {
+	ctx          context.Context
+	cancel       context.CancelFunc
+	task         *BackgroundTask
+	logger       *Logger
+	registry     *TaskRegistry
+	statsHistory []TaskMemoryStats
+	mu           sync.RWMutex
+	maxHistory   int
+}
+
+// NewTaskMemoryMonitor creates a new memory monitor for task registry
+func NewTaskMemoryMonitor(logger *Logger, registry *TaskRegistry) *TaskMemoryMonitor {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &TaskMemoryMonitor{
+		ctx:        ctx,
+		cancel:     cancel,
+		logger:     logger,
+		registry:   registry,
+		maxHistory: 100, // Keep last 100 snapshots
+	}
+}
+
+// Start begins memory monitoring
+func (mm *TaskMemoryMonitor) Start(interval time.Duration) error {
+	task := NewBackgroundTask(
+		"memory-monitor",
+		interval,
+		mm.collectStats,
+		mm.logger,
+	)
+
+	mm.task = task
+
+	if err := mm.registry.RegisterTask("memory-monitor", task); err != nil {
+		return fmt.Errorf("failed to register memory monitor: %w", err)
+	}
+
+	task.Start()
+	return nil
+}
+
+// Stop stops memory monitoring
+func (mm *TaskMemoryMonitor) Stop() {
+	if mm.cancel != nil {
+		mm.cancel()
+	}
+	if mm.task != nil {
+		mm.task.Stop()
+	}
+	if mm.registry != nil {
+		mm.registry.UnregisterTask("memory-monitor")
+	}
+}
+
+// collectStats collects current memory statistics
+func (mm *TaskMemoryMonitor) collectStats() {
+	select {
+	case <-mm.ctx.Done():
+		return
+	default:
+	}
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	stats := TaskMemoryStats{
+		Timestamp:    time.Now(),
+		Goroutines:   runtime.NumGoroutine(),
+		HeapAlloc:    m.HeapAlloc,
+		HeapSys:      m.HeapSys,
+		NumGC:        m.NumGC,
+		AllocObjects: m.Mallocs,
+		FreeObjects:  m.Frees,
+		ActiveTasks:  0,
+	}
+
+	if mm.registry != nil {
+		stats.ActiveTasks = mm.registry.GetTaskCount()
+	}
+
+	mm.mu.Lock()
+	mm.statsHistory = append(mm.statsHistory, stats)
+	if len(mm.statsHistory) > mm.maxHistory {
+		// Keep only the most recent entries to prevent unbounded growth
+		mm.statsHistory = mm.statsHistory[len(mm.statsHistory)-mm.maxHistory:]
+	}
+	mm.mu.Unlock()
+
+	// Log potential issues
+	mm.checkForMemoryIssues(stats)
+}
+
+// checkForMemoryIssues analyzes stats and logs potential memory issues
+func (mm *TaskMemoryMonitor) checkForMemoryIssues(stats TaskMemoryStats) {
+	if mm.logger == nil {
+		return
+	}
+
+	// Check for goroutine leaks (arbitrary threshold)
+	if stats.Goroutines > 100 {
+		mm.logger.Infof("High goroutine count detected: %d", stats.Goroutines)
+	}
+
+	// Check for heap growth without corresponding GC activity
+	mm.mu.RLock()
+	historyLen := len(mm.statsHistory)
+	if historyLen >= 2 {
+		prev := mm.statsHistory[historyLen-2]
+		heapGrowth := float64(stats.HeapAlloc) / float64(prev.HeapAlloc)
+		if heapGrowth > 2.0 && stats.NumGC == prev.NumGC {
+			mm.logger.Infof("Potential memory leak: heap grew %.2fx without GC", heapGrowth)
+		}
+	}
+	mm.mu.RUnlock()
+
+	// Log memory usage periodically
+	if stats.Timestamp.Unix()%60 == 0 { // Every minute
+		mm.logger.Infof("Memory stats - Goroutines: %d, Heap: %d bytes, Tasks: %d",
+			stats.Goroutines, stats.HeapAlloc, stats.ActiveTasks)
+	}
+}
+
+// GetCurrentStats returns the latest memory statistics
+func (mm *TaskMemoryMonitor) GetCurrentStats() (TaskMemoryStats, error) {
+	mm.mu.RLock()
+	defer mm.mu.RUnlock()
+
+	if len(mm.statsHistory) == 0 {
+		return TaskMemoryStats{}, fmt.Errorf("no memory statistics available")
+	}
+
+	return mm.statsHistory[len(mm.statsHistory)-1], nil
+}
+
+// GetStatsHistory returns a copy of the memory statistics history
+func (mm *TaskMemoryMonitor) GetStatsHistory() []TaskMemoryStats {
+	mm.mu.RLock()
+	defer mm.mu.RUnlock()
+
+	history := make([]TaskMemoryStats, len(mm.statsHistory))
+	copy(history, mm.statsHistory)
+	return history
+}
+
+// ForceGC triggers garbage collection and returns stats before/after
+func (mm *TaskMemoryMonitor) ForceGC() (before, after TaskMemoryStats, err error) {
+	var m runtime.MemStats
+
+	// Capture before stats
+	runtime.ReadMemStats(&m)
+	before = TaskMemoryStats{
+		Timestamp:    time.Now(),
+		Goroutines:   runtime.NumGoroutine(),
+		HeapAlloc:    m.HeapAlloc,
+		HeapSys:      m.HeapSys,
+		NumGC:        m.NumGC,
+		AllocObjects: m.Mallocs,
+		FreeObjects:  m.Frees,
+	}
+
+	// Force garbage collection
+	runtime.GC()
+	runtime.GC() // Double GC to ensure finalization
+
+	// Capture after stats
+	runtime.ReadMemStats(&m)
+	after = TaskMemoryStats{
+		Timestamp:    time.Now(),
+		Goroutines:   runtime.NumGoroutine(),
+		HeapAlloc:    m.HeapAlloc,
+		HeapSys:      m.HeapSys,
+		NumGC:        m.NumGC,
+		AllocObjects: m.Mallocs,
+		FreeObjects:  m.Frees,
+	}
+
+	if mm.logger != nil {
+		freed := int64(before.HeapAlloc) - int64(after.HeapAlloc)
+		mm.logger.Infof("Forced GC: freed %d bytes (%.2f MB)", freed, float64(freed)/(1024*1024))
+	}
+
+	return before, after, nil
 }

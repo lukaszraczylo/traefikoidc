@@ -144,6 +144,7 @@ func TestExcludedURLsMatching(t *testing.T) {
 			config.ExcludedURLs = tt.excludedURLs
 
 			oidc, _ := setupTestOIDCMiddleware(t, config)
+			defer oidc.Close() // Ensure proper cleanup of background goroutines
 
 			result := oidc.determineExcludedURL(tt.requestPath)
 			assert.Equal(t, tt.shouldMatch, result)
@@ -221,6 +222,7 @@ func TestExcludedURLsBypassesAuthentication(t *testing.T) {
 
 			oidc, server := setupTestOIDCMiddleware(t, config)
 			defer server.Close()
+			defer oidc.Close() // Ensure proper cleanup of background goroutines
 			oidc.next = nextHandler
 
 			req := httptest.NewRequest("GET", tt.requestPath, nil)
@@ -250,6 +252,7 @@ func TestDefaultExcludedURLs(t *testing.T) {
 	// Don't set any ExcludedURLs to test defaults
 
 	oidc, _ := setupTestOIDCMiddleware(t, config)
+	defer oidc.Close() // Ensure proper cleanup of background goroutines
 
 	// Check if /favicon is excluded by default
 	assert.True(t, oidc.determineExcludedURL("/favicon"))
@@ -272,6 +275,7 @@ func TestExcludedURLsWithAuthentication(t *testing.T) {
 	config.ExcludedURLs = []string{"/public", "/health"}
 
 	oidc, _ := setupTestOIDCMiddleware(t, config)
+	defer oidc.Close() // Ensure proper cleanup of background goroutines
 	oidc.next = nextHandler
 
 	// Mock the token verifier to avoid JWKS lookup
@@ -400,6 +404,7 @@ func TestExcludedURLsEdgeCases(t *testing.T) {
 			config.ExcludedURLs = tt.excludedURLs
 
 			oidc, _ := setupTestOIDCMiddleware(t, config)
+			defer oidc.Close() // Ensure proper cleanup of background goroutines
 
 			result := oidc.determineExcludedURL(tt.requestPath)
 			assert.Equal(t, tt.shouldMatch, result, tt.description)
@@ -418,6 +423,7 @@ func TestExcludedURLsPerformance(t *testing.T) {
 	config.ExcludedURLs = excludedURLs
 
 	oidc, _ := setupTestOIDCMiddleware(t, config)
+	defer oidc.Close() // Ensure proper cleanup of background goroutines
 
 	// Suppress debug logs for performance test
 	oldLogger := oidc.logger
@@ -457,6 +463,7 @@ func TestExcludedURLsIntegration(t *testing.T) {
 	}
 
 	oidc, _ := setupTestOIDCMiddleware(t, config)
+	defer oidc.Close() // Ensure proper cleanup of background goroutines
 	oidc.next = publicHandler
 
 	// Test various scenarios

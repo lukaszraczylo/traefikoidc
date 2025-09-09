@@ -78,6 +78,8 @@ testData:
   oidcEndSessionURL: https://accounts.google.com/logout # Provider's end session endpoint
   enablePKCE: false # Enables PKCE (Proof Key for Code Exchange) for additional security
   cookieDomain: "" # Explicit domain for session cookies (e.g., ".example.com" for multi-subdomain setups)
+  overrideScopes: false # When true, replaces default scopes instead of appending (default: false)
+  refreshGracePeriodSeconds: 60 # Seconds before token expiry to attempt proactive refresh (default: 60)
 
 # --- Provider Specific Configuration Examples ---
 #
@@ -397,6 +399,33 @@ configuration:
       - "app.example.com" - Restricts cookies to this specific host
       
       Default: "" (auto-detected from request headers)
+    required: false
+
+  overrideScopes:
+    type: boolean
+    description: |
+      When set to true, the scopes you provide will completely replace the default scopes
+      (openid, profile, email) instead of being appended to them.
+      
+      This is useful when you need precise control over the scopes sent to the OIDC provider,
+      such as when a provider requires specific scopes or when you want to minimize the
+      requested permissions.
+      
+      Default: false (appends user scopes to defaults)
+    required: false
+
+  refreshGracePeriodSeconds:
+    type: integer
+    description: |
+      The number of seconds before a token expires to attempt proactive refresh.
+      
+      When a request is made and the access token will expire within this grace period,
+      the middleware will attempt to refresh the token proactively. This helps prevent
+      authentication interruptions for active users.
+      
+      Setting this to 0 disables proactive refresh (tokens are only refreshed after expiry).
+      
+      Default: 60 (1 minute before expiry)
     required: false
 
   headers:

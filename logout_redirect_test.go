@@ -50,6 +50,11 @@ func TestPostLogoutRedirectURIConfiguration(t *testing.T) {
 			config.PostLogoutRedirectURI = tt.postLogoutRedirectURI
 
 			oidc, _ := setupTestOIDCMiddleware(t, config)
+			defer func() {
+				if oidc != nil {
+					oidc.Close()
+				}
+			}()
 
 			// Check the configured value
 			if tt.expectDefault {
@@ -110,6 +115,11 @@ func TestLogoutWithPostLogoutRedirect(t *testing.T) {
 			config.LogoutURL = "/logout"
 
 			oidc, _ := setupTestOIDCMiddleware(t, config)
+			defer func() {
+				if oidc != nil {
+					oidc.Close()
+				}
+			}()
 			oidc.endSessionURL = tt.oidcEndSessionURL
 
 			// Create authenticated session
@@ -258,6 +268,11 @@ func TestLogoutFlowIntegration(t *testing.T) {
 	config.OIDCEndSessionURL = providerServer.URL + "/endsession"
 
 	oidc, _ := setupTestOIDCMiddleware(t, config)
+	defer func() {
+		if oidc != nil {
+			oidc.Close()
+		}
+	}()
 	oidc.endSessionURL = config.OIDCEndSessionURL
 	oidc.postLogoutRedirectURI = config.PostLogoutRedirectURI
 
@@ -302,6 +317,11 @@ func TestLogoutWithoutSession(t *testing.T) {
 	config.PostLogoutRedirectURI = "/goodbye"
 
 	oidc, _ := setupTestOIDCMiddleware(t, config)
+	defer func() {
+		if oidc != nil {
+			oidc.Close()
+		}
+	}()
 
 	// Logout request without session
 	req := httptest.NewRequest("GET", "/logout", nil)
@@ -359,6 +379,11 @@ func TestPostLogoutRedirectEdgeCases(t *testing.T) {
 			config.PostLogoutRedirectURI = tt.postLogoutRedirectURI
 
 			oidc, _ := setupTestOIDCMiddleware(t, config)
+			defer func() {
+				if oidc != nil {
+					oidc.Close()
+				}
+			}()
 
 			req := httptest.NewRequest("GET", tt.requestURL, nil)
 			rec := httptest.NewRecorder()
@@ -429,6 +454,11 @@ func TestLogoutURLConfiguration(t *testing.T) {
 			config.CallbackURL = tt.callbackURL
 
 			oidc, _ := setupTestOIDCMiddleware(t, config)
+			defer func() {
+				if oidc != nil {
+					oidc.Close()
+				}
+			}()
 
 			// The logout URL should be set correctly
 			assert.Equal(t, tt.expectedLogoutURL, oidc.logoutURLPath)

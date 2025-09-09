@@ -250,6 +250,9 @@ func TestSimpleMemoryLeakDetection(t *testing.T) {
 					return fmt.Errorf("chunk manager session map not initialized")
 				}
 
+				// Properly shut down to prevent goroutine leaks
+				cm.Shutdown()
+
 				return nil
 			},
 			Iterations:         15,

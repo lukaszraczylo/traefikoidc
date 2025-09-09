@@ -1,11 +1,14 @@
 package traefikoidc
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/sessions"
@@ -72,18 +75,27 @@ type TokenRetrievalResult struct {
 type ChunkManager struct {
 	logger *Logger
 	mutex  *sync.RWMutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup // WaitGroup to track background goroutine completion
 	// sessionMap provides bounded session storage to prevent memory leaks
-	sessionMap  map[string]*SessionEntry
-	maxSessions int
-	sessionTTL  time.Duration
-	lastCleanup time.Time
+	sessionMap     map[string]*SessionEntry
+	maxSessions    int
+	sessionTTL     time.Duration
+	lastCleanup    time.Time
+	cleanupRunning int32 // atomic flag to prevent concurrent cleanups
+	// Memory usage tracking
+	bytesAllocated int64
+	peakSessions   int64
+	cleanupCount   int64
 }
 
 // SessionEntry represents a session with expiration tracking
 type SessionEntry struct {
-	Session   *sessions.Session
-	ExpiresAt time.Time
-	LastUsed  time.Time
+	Session      *sessions.Session
+	ExpiresAt    time.Time
+	LastUsed     time.Time
+	SizeEstimate int64 // Estimated memory usage
 }
 
 // NewChunkManager creates a new ChunkManager instance with proper initialization.
@@ -98,13 +110,100 @@ func NewChunkManager(logger *Logger) *ChunkManager {
 		logger = GetSingletonNoOpLogger()
 	}
 
-	return &ChunkManager{
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cm := &ChunkManager{
 		logger:      logger,
 		mutex:       &sync.RWMutex{},
+		ctx:         ctx,
+		cancel:      cancel,
 		sessionMap:  make(map[string]*SessionEntry),
 		maxSessions: 1000,           // Prevent unbounded growth
 		sessionTTL:  24 * time.Hour, // Auto-expire old sessions
 		lastCleanup: time.Now(),
+	}
+
+	// Start background cleanup routine
+	cm.wg.Add(1)
+	go cm.backgroundCleanupRoutine()
+
+	return cm
+}
+
+// Shutdown gracefully shuts down the ChunkManager
+func (cm *ChunkManager) Shutdown() {
+	if cm.cancel != nil {
+		cm.cancel()
+	}
+
+	// Wait for background cleanup routine to actually finish
+	cm.wg.Wait()
+
+	// Final cleanup
+	cm.mutex.Lock()
+	sessionCount := len(cm.sessionMap)
+	for key, entry := range cm.sessionMap {
+		atomic.AddInt64(&cm.bytesAllocated, -entry.SizeEstimate)
+		delete(cm.sessionMap, key)
+	}
+	cm.mutex.Unlock()
+
+	if sessionCount > 0 && cm.logger != nil {
+		cm.logger.Infof("ChunkManager shutdown: cleared %d sessions", sessionCount)
+	}
+}
+
+// backgroundCleanupRoutine runs periodic cleanup tasks
+func (cm *ChunkManager) backgroundCleanupRoutine() {
+	defer cm.wg.Done()                         // Signal completion when this goroutine exits
+	ticker := time.NewTicker(10 * time.Minute) // Cleanup every 10 minutes
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-cm.ctx.Done():
+			if cm.logger != nil {
+				cm.logger.Debug("ChunkManager background cleanup terminated")
+			}
+			return
+		case <-ticker.C:
+			cm.performPeriodicCleanup()
+		}
+	}
+}
+
+// performPeriodicCleanup executes regular maintenance
+func (cm *ChunkManager) performPeriodicCleanup() {
+	// Only run one cleanup at a time
+	if !atomic.CompareAndSwapInt32(&cm.cleanupRunning, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&cm.cleanupRunning, 0)
+
+	startTime := time.Now()
+
+	cm.CleanupExpiredSessions()
+
+	// Force garbage collection if memory usage is high
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	currentSessions := atomic.LoadInt64(&cm.peakSessions)
+	allocatedBytes := atomic.LoadInt64(&cm.bytesAllocated)
+
+	if allocatedBytes > 10*1024*1024 || currentSessions > int64(cm.maxSessions/2) {
+		runtime.GC()
+		if cm.logger != nil {
+			cm.logger.Debugf("Forced GC: sessions=%d, allocated=%d bytes",
+				currentSessions, allocatedBytes)
+		}
+	}
+
+	duration := time.Since(startTime)
+	atomic.AddInt64(&cm.cleanupCount, 1)
+
+	if cm.logger != nil && duration > 100*time.Millisecond {
+		cm.logger.Debugf("Chunk manager cleanup took %v", duration)
 	}
 }
 
@@ -1008,15 +1107,21 @@ func (cm *ChunkManager) CleanupExpiredSessions(force ...bool) {
 		}
 	}
 
-	// Remove expired sessions
+	// Remove expired sessions and track memory
+	totalBytesFreed := int64(0)
 	for _, key := range expiredKeys {
+		if entry, exists := cm.sessionMap[key]; exists {
+			totalBytesFreed += entry.SizeEstimate
+			atomic.AddInt64(&cm.bytesAllocated, -entry.SizeEstimate)
+		}
 		delete(cm.sessionMap, key)
 	}
 
 	cm.lastCleanup = now
 
 	if len(expiredKeys) > 0 {
-		cm.logger.Debug("Cleaned up %d expired sessions", len(expiredKeys))
+		cm.logger.Debugf("Cleaned up %d expired sessions, freed %d bytes",
+			len(expiredKeys), totalBytesFreed)
 	}
 
 	// Enforce max sessions limit
@@ -1051,13 +1156,20 @@ func (cm *ChunkManager) enforceSessionLimit() {
 		}
 	}
 
-	// Remove excess sessions
+	// Remove excess sessions and track memory
 	excessCount := len(cm.sessionMap) - cm.maxSessions
+	totalBytesFreed := int64(0)
 	for i := 0; i < excessCount && i < len(sessions); i++ {
-		delete(cm.sessionMap, sessions[i].key)
+		key := sessions[i].key
+		if entry, exists := cm.sessionMap[key]; exists {
+			totalBytesFreed += entry.SizeEstimate
+			atomic.AddInt64(&cm.bytesAllocated, -entry.SizeEstimate)
+		}
+		delete(cm.sessionMap, key)
 	}
 
-	cm.logger.Info("Enforced session limit: removed %d excess sessions", excessCount)
+	cm.logger.Infof("Enforced session limit: removed %d excess sessions, freed %d bytes",
+		excessCount, totalBytesFreed)
 }
 
 // CanCreateSession checks if a new session can be created within limits
@@ -1109,6 +1221,9 @@ func (cm *ChunkManager) EmergencyCleanup() {
 	}
 
 	for _, key := range expiredKeys {
+		if entry, exists := cm.sessionMap[key]; exists {
+			atomic.AddInt64(&cm.bytesAllocated, -entry.SizeEstimate)
+		}
 		delete(cm.sessionMap, key)
 		removed++
 	}
@@ -1138,21 +1253,24 @@ func (cm *ChunkManager) EmergencyCleanup() {
 		// Remove sessions until we reach target capacity
 		excessCount := len(cm.sessionMap) - targetCapacity
 		for i := 0; i < excessCount && i < len(sessions); i++ {
-			delete(cm.sessionMap, sessions[i].key)
+			key := sessions[i].key
+			if entry, exists := cm.sessionMap[key]; exists {
+				atomic.AddInt64(&cm.bytesAllocated, -entry.SizeEstimate)
+			}
+			delete(cm.sessionMap, key)
 			removed++
 		}
 	}
 
 	cm.lastCleanup = now
-	cm.logger.Info("Emergency cleanup completed: removed %d sessions, %d remaining",
+	cm.logger.Infof("Emergency cleanup completed: removed %d sessions, %d remaining",
 		removed, len(cm.sessionMap))
 
 	// Log memory stats after emergency cleanup
-	memMonitor := GetGlobalMemoryMonitor()
-	if stats := memMonitor.GetCurrentStats(); stats != nil {
-		cm.logger.Info("Memory after emergency cleanup - Heap: %.1fMB, Pressure: %s",
-			float64(stats.HeapAllocBytes)/(1024*1024), stats.MemoryPressure.String())
-	}
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	cm.logger.Infof("Memory after emergency cleanup - Heap: %.1fMB, Sessions: %d, Tracked bytes: %d",
+		float64(m.HeapAlloc)/(1024*1024), len(cm.sessionMap), atomic.LoadInt64(&cm.bytesAllocated))
 }
 
 // GetSessionCount returns the current number of active sessions (for monitoring)
@@ -1160,4 +1278,26 @@ func (cm *ChunkManager) GetSessionCount() int {
 	cm.mutex.RLock()
 	defer cm.mutex.RUnlock()
 	return len(cm.sessionMap)
+}
+
+// GetMemoryStats returns memory usage statistics for monitoring
+func (cm *ChunkManager) GetMemoryStats() map[string]interface{} {
+	cm.mutex.RLock()
+	sessionCount := len(cm.sessionMap)
+	cm.mutex.RUnlock()
+
+	stats := make(map[string]interface{})
+	stats["active_sessions"] = sessionCount
+	stats["max_sessions"] = cm.maxSessions
+	stats["bytes_allocated"] = atomic.LoadInt64(&cm.bytesAllocated)
+	stats["peak_sessions"] = atomic.LoadInt64(&cm.peakSessions)
+	stats["cleanup_count"] = atomic.LoadInt64(&cm.cleanupCount)
+	stats["session_ttl_hours"] = cm.sessionTTL.Hours()
+
+	// Update peak sessions
+	if int64(sessionCount) > atomic.LoadInt64(&cm.peakSessions) {
+		atomic.StoreInt64(&cm.peakSessions, int64(sessionCount))
+	}
+
+	return stats
 }
