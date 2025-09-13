@@ -874,12 +874,21 @@ func (gd *GracefulDegradation) executeFallback(serviceName string) (interface{},
 
 // startHealthCheckRoutine starts the background health check routine
 func (gd *GracefulDegradation) startHealthCheckRoutine() {
-	task := NewBackgroundTask(
+	// Use singleton task registry to prevent multiple instances
+	registry := GetGlobalTaskRegistry()
+
+	task, err := registry.CreateSingletonTask(
 		"graceful-degradation-health-check",
 		gd.config.HealthCheckInterval,
 		gd.performHealthChecks,
 		gd.BaseRecoveryMechanism.logger,
+		nil, // No specific wait group
 	)
+
+	if err != nil {
+		gd.BaseRecoveryMechanism.logger.Errorf("Failed to create health check task: %v", err)
+		return
+	}
 
 	gd.mutex.Lock()
 	gd.healthCheckTask = task

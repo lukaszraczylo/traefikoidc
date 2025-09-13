@@ -108,10 +108,12 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 
 	client := t.tokenHTTPClient
 	if client == nil {
+		// Use shared transport pool to prevent memory leaks
 		jar, _ := cookiejar.New(nil)
+		pooledClient := CreateTokenHTTPClient()
 		client = &http.Client{
-			Transport: t.httpClient.Transport,
-			Timeout:   t.httpClient.Timeout,
+			Transport: pooledClient.Transport,
+			Timeout:   pooledClient.Timeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 50 {
 					return fmt.Errorf("stopped after 50 redirects")
@@ -153,6 +155,7 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 
 // getNewTokenWithRefreshToken refreshes access and ID tokens using a refresh token.
 // This is used when the current tokens are expired but the refresh token is still valid.
+// It now uses the TokenResilienceManager for circuit breaker and retry logic.
 // Parameters:
 //   - refreshToken: The refresh token to exchange for new tokens
 //
@@ -161,6 +164,13 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 //   - An error if the refresh operation fails
 func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error) {
 	ctx := context.Background()
+
+	// Use token resilience manager if available, otherwise fall back to direct call
+	if t.tokenResilienceManager != nil {
+		return t.tokenResilienceManager.ExecuteTokenRefresh(ctx, t, refreshToken)
+	}
+
+	// Fallback for backward compatibility
 	tokenResponse, err := t.exchangeTokens(ctx, "refresh_token", refreshToken, "", "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to refresh token: %w", err)
@@ -199,29 +209,18 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 }
 
 // TokenCache provides a specialized cache for JWT tokens and their parsed claims.
-// It wraps the base Cache with token-specific prefixing to prevent
-// key collisions and provides a clean interface for token caching operations.
+// It wraps the UniversalCache with token-specific operations.
 type TokenCache struct {
-	// cache is the underlying generic cache implementation
-	cache CacheInterface
+	// cache is the underlying universal cache implementation
+	cache *UniversalCache
 }
 
-// Default configuration constants for the token cache.
-const (
-	// defaultTokenCacheMaxSize limits the number of cached tokens
-	defaultTokenCacheMaxSize = 1000
-)
-
-// NewTokenCache creates and initializes a new TokenCache with default settings.
-// The cache is configured with a maximum size and automatic cleanup of expired entries.
+// NewTokenCache creates and initializes a new TokenCache.
+// It uses the global cache manager to ensure singleton behavior.
 func NewTokenCache() *TokenCache {
-	config := DefaultUnifiedCacheConfig()
-	config.MaxSize = defaultTokenCacheMaxSize
-	unifiedCache := NewUnifiedCache(config)
-	cacheAdapter := NewCacheAdapter(unifiedCache)
-
+	manager := GetUniversalCacheManager(nil)
 	return &TokenCache{
-		cache: cacheAdapter,
+		cache: manager.GetTokenCache(),
 	}
 }
 
@@ -262,22 +261,25 @@ func (tc *TokenCache) Delete(token string) {
 }
 
 // Cleanup removes expired entries from the token cache.
-// This is typically called automatically but can be invoked manually for
-// removing expired token entries.
+// This is a no-op as cleanup is handled internally by UniversalCache.
 func (tc *TokenCache) Cleanup() {
-	if tc != nil && tc.cache != nil {
-		tc.cache.Cleanup()
-	}
+	// Cleanup is handled internally by UniversalCache
 }
 
 // Close stops the cleanup goroutine and releases resources.
-// Should be called when the token cache is no longer needed.
+// This is a no-op as the cache is managed globally.
 func (tc *TokenCache) Close() {
-	tc.cache.Close()
+	// Cache is managed globally by UniversalCacheManager
+}
+
+// Clear removes all items from the cache
+func (tc *TokenCache) Clear() {
+	tc.cache.Clear()
 }
 
 // exchangeCodeForToken exchanges an authorization code for tokens.
 // This implements the OAuth 2.0 authorization code flow with optional PKCE support.
+// It now uses the TokenResilienceManager for circuit breaker and retry logic.
 // Parameters:
 //   - code: The authorization code received from the authorization server
 //   - redirectURL: The redirect URI used in the authorization request
@@ -294,6 +296,12 @@ func (t *TraefikOidc) exchangeCodeForToken(code string, redirectURL string, code
 		effectiveCodeVerifier = codeVerifier
 	}
 
+	// Use token resilience manager if available, otherwise fall back to direct call
+	if t.tokenResilienceManager != nil {
+		return t.tokenResilienceManager.ExecuteTokenExchange(ctx, t, "authorization_code", code, redirectURL, effectiveCodeVerifier)
+	}
+
+	// Fallback for backward compatibility
 	tokenResponse, err := t.exchangeTokens(ctx, "authorization_code", code, redirectURL, effectiveCodeVerifier)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code for token: %w", err)

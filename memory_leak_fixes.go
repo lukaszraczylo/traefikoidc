@@ -52,22 +52,21 @@ func (lt *LazyBackgroundTask) Stop() {
 // NewLazyCacheWithLogger creates a cache that doesn't start cleanup until first use.
 // This reduces memory overhead by avoiding unnecessary cleanup goroutines
 // for caches that may remain empty or be used infrequently.
-func NewLazyCacheWithLogger(logger *Logger) *Cache {
+func NewLazyCacheWithLogger(logger *Logger) CacheInterface {
 	if logger == nil {
 		logger = GetSingletonNoOpLogger()
 	}
 
 	config := DefaultUnifiedCacheConfig()
 	config.Logger = logger
-	config.EnableAutoCleanup = false // Lazy initialization
 	config.CleanupInterval = 10 * time.Minute
-	unifiedCache := NewUnifiedCache(config)
+	unifiedCache := NewUniversalCache(config)
 	return NewCacheAdapter(unifiedCache)
 }
 
 // NewLazyCache creates a cache with delayed cleanup initialization.
 // Uses the default no-op logger and defers cleanup task creation.
-func NewLazyCache() *Cache {
+func NewLazyCache() CacheInterface {
 	return NewLazyCacheWithLogger(nil)
 }
 

@@ -513,12 +513,12 @@ func (spp *SessionPoolProfiler) AnalyzeLeaks(baseline, current *MemorySnapshot) 
 
 // CacheMemoryProfiler monitors cache memory usage
 type CacheMemoryProfiler struct {
-	cache  *Cache
+	cache  CacheInterface
 	logger *Logger
 }
 
 // NewCacheMemoryProfiler creates a new cache memory profiler
-func NewCacheMemoryProfiler(cache *Cache, logger *Logger) *CacheMemoryProfiler {
+func NewCacheMemoryProfiler(cache CacheInterface, logger *Logger) *CacheMemoryProfiler {
 	if logger == nil {
 		logger = GetSingletonNoOpLogger()
 	}

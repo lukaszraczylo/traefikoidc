@@ -439,6 +439,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger)
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
+
+	// Initialize token resilience manager with default configuration
+	tokenResilienceConfig := DefaultTokenResilienceConfig()
+	t.tokenResilienceManager = NewTokenResilienceManager(tokenResilienceConfig, t.logger)
+
 	t.extractClaimsFunc = extractClaims
 	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)

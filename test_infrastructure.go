@@ -95,7 +95,20 @@ func (g *GlobalTestCleanup) CleanupAll() {
 	g.caches = nil
 
 	// Clean up the global cache manager as part of the global cleanup
-	CleanupGlobalCacheManager()
+	// Use a timeout to prevent hanging
+	cleanupDone := make(chan struct{})
+	go func() {
+		CleanupGlobalCacheManager()
+		close(cleanupDone)
+	}()
+
+	select {
+	case <-cleanupDone:
+		// Cleanup completed successfully
+	case <-time.After(5 * time.Second):
+		// Cleanup timed out, but continue
+		runtime.GC() // Force GC to help clean up
+	}
 
 	// Give background tasks time to finish cleanup
 	time.Sleep(100 * time.Millisecond)

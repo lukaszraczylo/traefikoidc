@@ -245,10 +245,12 @@ func CreateHTTPClientWithConfig(config HTTPClientConfig) *http.Client {
 
 // CreateDefaultHTTPClient creates a default HTTP client using the global factory
 func CreateDefaultHTTPClient() *http.Client {
-	return globalHTTPClientFactory.CreateDefaultClient()
+	// Use pooled client to prevent connection exhaustion
+	return CreatePooledHTTPClient(DefaultHTTPClientConfig())
 }
 
 // CreateTokenHTTPClient creates a token HTTP client using the global factory
 func CreateTokenHTTPClient() *http.Client {
-	return globalHTTPClientFactory.CreateTokenClient()
+	// Use pooled client to prevent connection exhaustion
+	return CreatePooledHTTPClient(TokenHTTPClientConfig())
 }

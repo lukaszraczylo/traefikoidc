@@ -111,7 +111,17 @@ func TestRefreshGracePeriodConfiguration(t *testing.T) {
 			config := createTestConfig()
 			config.RefreshGracePeriodSeconds = tt.refreshGracePeriodSeconds
 
-			oidc, _ := setupTestOIDCMiddleware(t, config)
+			oidc, server := setupTestOIDCMiddleware(t, config)
+			defer server.Close()
+			defer func() {
+				// Clean up OIDC resources
+				if oidc.cancelFunc != nil {
+					oidc.cancelFunc()
+				}
+				if oidc.goroutineWG != nil {
+					oidc.goroutineWG.Wait()
+				}
+			}()
 
 			// Check the configured value
 			assert.Equal(t, time.Duration(tt.expectedValue)*time.Second, oidc.refreshGracePeriod)
@@ -336,7 +346,10 @@ func TestGracePeriodWithProviderSpecificBehavior(t *testing.T) {
 			config.RefreshGracePeriodSeconds = provider.gracePeriodSeconds
 			config.ProviderURL = "https://" + provider.providerType + ".example.com"
 
-			oidc, _ := setupTestOIDCMiddleware(t, config)
+			oidc, server := setupTestOIDCMiddleware(t, config)
+			defer server.Close()
+			defer oidc.Close()
+
 			oidc.refreshGracePeriod = time.Duration(provider.gracePeriodSeconds) * time.Second
 
 			// This test only verifies configuration, not actual refresh behavior

@@ -17,8 +17,11 @@ type CacheInterface interface {
 	Get(key string) (interface{}, bool)
 	Delete(key string)
 	SetMaxSize(size int)
+	Size() int
+	Clear()
 	Cleanup()
 	Close()
+	GetStats() map[string]interface{} // For testing and monitoring
 }
 
 // TokenVerifier interface defines token verification capabilities.
@@ -85,6 +88,7 @@ type TraefikOidc struct {
 	metadataRefreshStopChan    chan struct{}
 	cancelFunc                 context.CancelFunc
 	errorRecoveryManager       *ErrorRecoveryManager
+	tokenResilienceManager     *TokenResilienceManager
 	goroutineWG                *sync.WaitGroup
 	clientSecret               string
 	clientID                   string

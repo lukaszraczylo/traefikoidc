@@ -452,7 +452,8 @@ func testConcurrentHTTPClientOps() {
 }
 
 func testConcurrentCacheOps() {
-	cache := NewUnifiedCacheSimple()
+	config := DefaultUnifiedCacheConfig()
+	cache := NewUnifiedCache(config)
 	defer cache.Close()
 
 	key := generateTestToken(10)

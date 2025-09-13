@@ -109,6 +109,17 @@ func (ts *TestSuite) Setup() {
 	// Create WaitGroup for the OIDC instance
 	goroutineWG := &sync.WaitGroup{}
 
+	// Initialize caches properly
+	tokenBlacklist := NewCache()
+	tokenCacheInternal := NewCache()
+	tokenCache := &TokenCache{}
+	if tokenCache.cache == nil {
+		// Type assert to get the underlying UniversalCache
+		if wrapper, ok := tokenCacheInternal.(*CacheInterfaceWrapper); ok {
+			tokenCache.cache = wrapper.cache
+		}
+	}
+
 	// Common TraefikOidc instance
 	ts.tOidc = &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
@@ -118,11 +129,11 @@ func (ts *TestSuite) Setup() {
 		jwksURL:            "https://test-jwks-url.com",
 		revocationURL:      "https://revocation-endpoint.com",
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
-		tokenBlacklist:     NewCache(),
-		tokenCache:         &TokenCache{cache: NewCache()},
+		tokenBlacklist:     tokenBlacklist,
+		tokenCache:         tokenCache,
 		logger:             logger,
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
-		excludedURLs:       map[string]struct{}{"/favicon": {}},
+		excludedURLs:       map[string]struct{}{"/favicon": {}, "/health": {}},
 		httpClient:         &http.Client{Timeout: 10 * time.Second},
 		// Explicitly set paths as New() is bypassed
 		redirURLPath:            "/callback",                     // Assume default callback path for tests
@@ -162,12 +173,23 @@ func (ts *TestSuite) Setup() {
 	}
 
 	// OIDC instance created
+
+	// Register cleanup
+	ts.t.Cleanup(func() {
+		if ts.tOidc.tokenBlacklist != nil {
+			ts.tOidc.tokenBlacklist.Close()
+		}
+		if ts.tOidc.tokenCache != nil && ts.tOidc.tokenCache.cache != nil {
+			ts.tOidc.tokenCache.cache.Close()
+		}
+	})
 }
 
 // Helper function exchangeCodeForTokenFunc removed as it's unused after refactoring to TokenExchanger interface.
 
 // MockJWKCache implements JWKCacheInterface
 type MockJWKCache struct {
+	mu   sync.RWMutex
 	JWKS *JWKSet
 	Err  error
 }
@@ -178,11 +200,15 @@ func (m *MockJWKCache) Close() {
 }
 
 func (m *MockJWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.JWKS, m.Err
 }
 
 func (m *MockJWKCache) Cleanup() {
 	// Mock cleanup implementation
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.JWKS = nil
 	m.Err = nil
 }
@@ -383,7 +409,9 @@ func TestVerifyToken(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset token blacklist and cache for each test
 			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
+			// Clear the token cache instead of creating a new one (it's a singleton)
 			ts.tOidc.tokenCache = NewTokenCache()
+			ts.tOidc.tokenCache.Clear()
 			ts.tOidc.limiter = rate.NewLimiter(rate.Every(time.Second), 10)
 
 			// Set up the test case

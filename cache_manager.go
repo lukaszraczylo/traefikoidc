@@ -1,4 +1,3 @@
-// Package traefikoidc provides OIDC authentication middleware for Traefik.
 package traefikoidc
 
 import (
@@ -8,144 +7,131 @@ import (
 
 const (
 	defaultBlacklistDuration = 24 * time.Hour
-	defaultMaxBlacklistSize  = 10000
 )
+
+// CacheManager manages all caching components using the universal cache
+type CacheManager struct {
+	manager *UniversalCacheManager
+	mu      sync.RWMutex
+}
 
 var (
-	globalCacheManager *CacheManager
-	cacheManagerOnce   sync.Once
-	cacheManagerMutex  sync.RWMutex
+	globalCacheManagerInstance *CacheManager
+	cacheManagerInitOnce       sync.Once
 )
 
-// CacheManager manages all caching components for the OIDC middleware.
-// It provides thread-safe access to token blacklist, token cache, metadata cache,
-// and JWK cache. This centralizes cache management to ensure efficient memory
-// usage and consistent cache behavior across the application.
-type CacheManager struct {
-	tokenBlacklist CacheInterface
-	tokenCache     *TokenCache
-	metadataCache  *MetadataCache
-	jwkCache       JWKCacheInterface
-	mu             sync.RWMutex
-}
-
-// GetGlobalCacheManager returns a singleton instance of CacheManager.
-// It initializes all cache components on first call and reuses the same instance
-// for subsequent calls. This ensures consistent cache state and efficient memory
-// usage across the entire application lifecycle.
-// Parameters:
-//   - wg: WaitGroup for coordinating cache cleanup during shutdown.
-//
-// Returns:
-//   - The global CacheManager instance.
+// GetGlobalCacheManager returns a singleton CacheManager instance
 func GetGlobalCacheManager(wg *sync.WaitGroup) *CacheManager {
-	cacheManagerOnce.Do(func() {
-		globalCacheManager = &CacheManager{
-			tokenBlacklist: func() CacheInterface {
-				config := DefaultUnifiedCacheConfig()
-				config.MaxSize = defaultMaxBlacklistSize
-				c := NewUnifiedCache(config)
-				return NewCacheAdapter(c)
-			}(),
-			tokenCache:    NewTokenCache(),
-			metadataCache: NewMetadataCache(wg),
-			jwkCache:      &JWKCache{},
+	cacheManagerInitOnce.Do(func() {
+		globalCacheManagerInstance = &CacheManager{
+			manager: GetUniversalCacheManager(nil),
 		}
 	})
-	return globalCacheManager
+	return globalCacheManagerInstance
 }
 
-// GetSharedTokenBlacklist returns the shared token blacklist cache.
-// This cache stores revoked or expired tokens to prevent replay attacks.
-// Access is protected by read lock to ensure thread safety.
-// Returns:
-//   - The shared token blacklist CacheInterface instance.
+// GetSharedTokenBlacklist returns the shared token blacklist cache
 func (cm *CacheManager) GetSharedTokenBlacklist() CacheInterface {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return cm.tokenBlacklist
+	return &CacheInterfaceWrapper{cache: cm.manager.GetBlacklistCache()}
 }
 
-// GetSharedTokenCache returns the shared token cache for verified tokens.
-// This cache stores claims from successfully verified tokens to avoid
-// repeated verification of the same tokens.
-// Access is protected by read lock to ensure thread safety.
-// Returns:
-//   - The shared TokenCache instance.
+// GetSharedTokenCache returns the shared token cache
 func (cm *CacheManager) GetSharedTokenCache() *TokenCache {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return cm.tokenCache
+	return &TokenCache{cache: cm.manager.GetTokenCache()}
 }
 
-// GetSharedMetadataCache returns the shared metadata cache.
-// This cache stores OIDC provider metadata (endpoints, keys) to avoid
-// repeated requests to the provider's .well-known configuration endpoint.
-// Access is protected by read lock to ensure thread safety.
-// Returns:
-//   - The shared MetadataCache instance.
+// GetSharedMetadataCache returns the shared metadata cache
 func (cm *CacheManager) GetSharedMetadataCache() *MetadataCache {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return cm.metadataCache
+	return &MetadataCache{
+		cache:  cm.manager.GetMetadataCache(),
+		logger: cm.manager.logger,
+	}
 }
 
-// GetSharedJWKCache returns the shared JWK (JSON Web Key) cache.
-// This cache stores public keys from the provider's JWKS endpoint
-// for token signature verification.
-// Access is protected by read lock to ensure thread safety.
-// Returns:
-//   - The shared JWKCacheInterface instance.
+// GetSharedJWKCache returns the shared JWK cache
 func (cm *CacheManager) GetSharedJWKCache() JWKCacheInterface {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return cm.jwkCache
+	return &JWKCache{cache: cm.manager.GetJWKCache()}
 }
 
-// Close gracefully shuts down all cache components and releases resources.
-// It closes all individual caches and cleans up their associated goroutines.
-// This method should be called when the middleware is shutting down.
-// Safe to call multiple times.
-// Returns:
-//   - An error if any cache fails to close properly, nil otherwise.
+// Close gracefully shuts down all cache components
 func (cm *CacheManager) Close() error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+	return cm.manager.Close()
+}
 
-	if cm.tokenBlacklist != nil {
-		cm.tokenBlacklist.Close()
-		cm.tokenBlacklist = nil
+// CleanupGlobalCacheManager cleans up the global cache manager
+func CleanupGlobalCacheManager() error {
+	if globalCacheManagerInstance != nil {
+		return globalCacheManagerInstance.Close()
 	}
-	if cm.tokenCache != nil {
-		cm.tokenCache.Close()
-		cm.tokenCache = nil
-	}
-	if cm.metadataCache != nil {
-		cm.metadataCache.Close()
-		cm.metadataCache = nil
-	}
-	if cm.jwkCache != nil {
-		cm.jwkCache.Close()
-		cm.jwkCache = nil
-	}
-
 	return nil
 }
 
-// CleanupGlobalCacheManager cleans up the global cache manager instance.
-// It closes all cache components but does NOT reset the singleton for re-initialization
-// to avoid race conditions with sync.Once. It's safe to call multiple times.
-// Returns:
-//   - An error if cache cleanup fails, nil otherwise.
-func CleanupGlobalCacheManager() error {
-	cacheManagerMutex.Lock()
-	defer cacheManagerMutex.Unlock()
+// CacheInterfaceWrapper wraps UniversalCache to implement CacheInterface
+type CacheInterfaceWrapper struct {
+	cache *UniversalCache
+}
 
-	if globalCacheManager != nil {
-		err := globalCacheManager.Close()
-		// Don't reset globalCacheManager to nil or cacheManagerOnce to avoid race conditions
-		// The cache manager remains closed and the Close() method handles multiple calls
-		return err
+// Set stores a value
+func (c *CacheInterfaceWrapper) Set(key string, value interface{}, ttl time.Duration) {
+	c.cache.Set(key, value, ttl)
+}
+
+// Get retrieves a value
+func (c *CacheInterfaceWrapper) Get(key string) (interface{}, bool) {
+	return c.cache.Get(key)
+}
+
+// Delete removes a key
+func (c *CacheInterfaceWrapper) Delete(key string) {
+	c.cache.Delete(key)
+}
+
+// SetMaxSize updates the max size
+func (c *CacheInterfaceWrapper) SetMaxSize(size int) {
+	c.cache.SetMaxSize(size)
+}
+
+// Cleanup triggers immediate cleanup of expired items
+func (c *CacheInterfaceWrapper) Cleanup() {
+	c.cache.Cleanup()
+}
+
+// Close shuts down the cache
+func (c *CacheInterfaceWrapper) Close() {
+	// Close the underlying cache to stop goroutines
+	if c.cache != nil {
+		c.cache.Close()
 	}
-	return nil
+}
+
+// Size returns the number of items
+func (c *CacheInterfaceWrapper) Size() int {
+	return c.cache.Size()
+}
+
+// Clear removes all items
+func (c *CacheInterfaceWrapper) Clear() {
+	c.cache.Clear()
+}
+
+// GetStats returns cache statistics
+func (c *CacheInterfaceWrapper) GetStats() map[string]interface{} {
+	return c.cache.GetMetrics()
+}
+
+// SetMaxMemory sets the maximum memory limit
+func (c *CacheInterfaceWrapper) SetMaxMemory(bytes int64) {
+	c.cache.mu.Lock()
+	defer c.cache.mu.Unlock()
+	c.cache.config.MaxMemoryBytes = bytes
 }

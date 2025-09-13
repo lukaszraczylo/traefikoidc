@@ -22,7 +22,7 @@ var (
 	// replayCacheMu protects access to the replay cache instance
 	replayCacheMu sync.RWMutex
 	// replayCache stores JWT IDs with expiration to prevent replay attacks
-	replayCache *Cache
+	replayCache CacheInterface
 	// replayCacheOnce ensures the replay cache is initialized only once
 	replayCacheOnce sync.Once
 	// replayCacheCleanupWG waits for cleanup goroutine to finish
@@ -48,13 +48,17 @@ func initReplayCache() {
 // and properly closes the cache to ensure proper cleanup during shutdown.
 func cleanupReplayCache() {
 	replayCacheCleanupMu.Lock()
+	shouldWait := replayCacheCancel != nil
 	if replayCacheCancel != nil {
 		replayCacheCancel()
 		replayCacheCancel = nil
 	}
 	replayCacheCleanupMu.Unlock()
 
-	replayCacheCleanupWG.Wait()
+	// Only wait if there was a cleanup routine running
+	if shouldWait {
+		replayCacheCleanupWG.Wait()
+	}
 
 	replayCacheMu.Lock()
 	defer replayCacheMu.Unlock()

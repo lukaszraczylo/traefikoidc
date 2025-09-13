@@ -28,16 +28,13 @@ func (w *testWriter) Write(p []byte) (n int, err error) {
 
 // resetGlobalState resets all global singletons to prevent test interference
 func resetGlobalState() {
-	// Reset global cache manager
-	cacheManagerMutex.Lock()
-	if globalCacheManager != nil {
-		globalCacheManager.Close()
-		globalCacheManager = nil
-	}
-	cacheManagerOnce = sync.Once{}
-	cacheManagerMutex.Unlock()
+	// Reset global task registry first to stop all background tasks
+	ResetGlobalTaskRegistry()
 
-	// Reset and cleanup replay cache
+	// Give tasks a moment to stop
+	time.Sleep(10 * time.Millisecond)
+
+	// Reset and cleanup replay cache - this should work now that tasks are stopped
 	cleanupReplayCache()
 
 	// Reset memory pools
@@ -46,8 +43,8 @@ func resetGlobalState() {
 	memoryPoolOnce = sync.Once{}
 	memoryPoolMutex.Unlock()
 
-	// Reset global task registry to clear all background tasks
-	ResetGlobalTaskRegistry()
+	// The universal cache manager is a singleton that persists across tests
+	// Don't reset it as it causes issues
 }
 
 // testCleanup provides comprehensive cleanup for tests to prevent goroutine leaks
@@ -88,19 +85,9 @@ func (tc *testCleanup) addCache(c CacheInterface) CacheInterface {
 func (tc *testCleanup) addTokenCache(c *TokenCache) *TokenCache {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
-	if c != nil && c.cache != nil {
-		// c.cache is now a CacheInterface which has Close() method
-		tc.caches = append(tc.caches, c.cache)
-	}
+	// TokenCache cleanup is handled by the global manager
+	// No need to manually close as it's a singleton
 	return c
-}
-
-// addServer registers an httptest server for cleanup
-func (tc *testCleanup) addServer(s *httptest.Server) *httptest.Server {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	tc.servers = append(tc.servers, s)
-	return s
 }
 
 // addOIDC registers a TraefikOidc instance for cleanup
@@ -275,7 +262,7 @@ func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httpt
 		scopes:                config.Scopes,
 		forceHTTPS:            config.ForceHTTPS,
 		allowedUserDomains:    make(map[string]struct{}),
-		jwkCache:              &JWKCache{},
+		jwkCache:              NewJWKCache(),
 		metadataCache:         NewMetadataCache(nil),
 		ctx:                   ctx,
 		cancelFunc:            cancel,

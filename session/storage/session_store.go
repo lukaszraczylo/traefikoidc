@@ -28,6 +28,11 @@ type SessionData struct {
 	inUse              bool
 }
 
+// ChunkCleaner interface for chunk cleanup operations
+type ChunkCleaner interface {
+	CleanupChunks(chunks map[int]*sessions.Session, w http.ResponseWriter)
+}
+
 // SessionManager interface for session management operations
 type SessionManager interface {
 	GetSessionOptions(isSecure bool) *sessions.Options
