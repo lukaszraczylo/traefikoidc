@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/sessions"
@@ -26,6 +27,12 @@ type TokenConfig struct {
 	AllowOpaqueTokens bool
 	RequireJWTFormat  bool
 }
+
+// Global session tracking to prevent memory leaks across all instances
+var (
+	globalSessionCount int64 = 0
+	globalMaxSessions  int64 = 5000 // CRITICAL FIX: Global limit of 5000 total sessions
+)
 
 // Predefined configurations for each token type
 var (
@@ -108,8 +115,8 @@ func NewChunkManager(logger Logger) *ChunkManager {
 		logger:      logger,
 		mutex:       &sync.RWMutex{},
 		sessionMap:  make(map[string]*SessionEntry),
-		maxSessions: 1000, // Reasonable limit to prevent memory leaks
-		sessionTTL:  24 * time.Hour,
+		maxSessions: 200,              // CRITICAL FIX: Reduced from 1000 to 200 per instance
+		sessionTTL:  15 * time.Minute, // CRITICAL FIX: Reduced from 24h to 15 minutes
 		lastCleanup: time.Now(),
 	}
 }
@@ -327,21 +334,60 @@ func (cm *ChunkManager) StoreSession(key string, session *sessions.Session) {
 	cm.mutex.Lock()
 	defer cm.mutex.Unlock()
 
-	// Enforce maximum session limit
-	if len(cm.sessionMap) >= cm.maxSessions {
-		// Remove oldest entry
-		var oldestKey string
-		var oldestTime time.Time = time.Now()
+	// CRITICAL FIX: Aggressive session limit enforcement
+	currentLocal := len(cm.sessionMap)
+	currentGlobal := atomic.LoadInt64(&globalSessionCount)
 
+	shouldEvict := false
+	targetCapacity := cm.maxSessions
+
+	// Check global limit first (more critical)
+	if currentGlobal >= globalMaxSessions {
+		shouldEvict = true
+		targetCapacity = cm.maxSessions / 4 // Aggressive reduction to 25%
+	} else if currentGlobal >= globalMaxSessions*8/10 { // 80% of global
+		shouldEvict = true
+		targetCapacity = cm.maxSessions / 2 // Reduce to 50%
+	} else if currentLocal >= cm.maxSessions {
+		shouldEvict = true
+		targetCapacity = cm.maxSessions * 3 / 4 // Reduce to 75%
+	}
+
+	if shouldEvict {
+		// Find oldest sessions to remove
+		type sessionAge struct {
+			key      string
+			lastUsed time.Time
+		}
+
+		sessions := make([]sessionAge, 0, currentLocal)
 		for k, entry := range cm.sessionMap {
-			if entry.LastUsed.Before(oldestTime) {
-				oldestTime = entry.LastUsed
-				oldestKey = k
+			sessions = append(sessions, sessionAge{key: k, lastUsed: entry.LastUsed})
+		}
+
+		// Sort by last used time (oldest first)
+		for i := 0; i < len(sessions)-1; i++ {
+			for j := i + 1; j < len(sessions); j++ {
+				if sessions[i].lastUsed.After(sessions[j].lastUsed) {
+					sessions[i], sessions[j] = sessions[j], sessions[i]
+				}
 			}
 		}
 
-		if oldestKey != "" {
-			delete(cm.sessionMap, oldestKey)
+		// Remove excess sessions
+		excessCount := currentLocal - targetCapacity
+		if excessCount < 0 {
+			excessCount = 0
+		}
+
+		removedCount := int64(0)
+		for i := 0; i < excessCount && i < len(sessions); i++ {
+			delete(cm.sessionMap, sessions[i].key)
+			removedCount++
+		}
+
+		if removedCount > 0 {
+			atomic.AddInt64(&globalSessionCount, -removedCount)
 		}
 	}
 
@@ -350,6 +396,7 @@ func (cm *ChunkManager) StoreSession(key string, session *sessions.Session) {
 		ExpiresAt: time.Now().Add(cm.sessionTTL),
 		LastUsed:  time.Now(),
 	}
+	atomic.AddInt64(&globalSessionCount, 1) // CRITICAL FIX: Track addition
 }
 
 // GetSession retrieves a session from the session map

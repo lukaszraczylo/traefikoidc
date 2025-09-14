@@ -253,7 +253,7 @@ type TaskCircuitBreaker struct {
 // NewTaskCircuitBreaker creates a new circuit breaker for background tasks
 // with concurrency limiting capability
 func NewTaskCircuitBreaker(failureThreshold int32, timeout time.Duration, logger *Logger) *TaskCircuitBreaker {
-	maxConcurrent := int32(50) // Default reasonable limit
+	maxConcurrent := int32(20) // CRITICAL FIX: Reduced from 50 to 20 for memory safety
 	return &TaskCircuitBreaker{
 		state:            int32(CircuitBreakerClosed),
 		failureThreshold: failureThreshold,
@@ -830,4 +830,46 @@ func (mm *TaskMemoryMonitor) ForceGC() (before, after TaskMemoryStats, err error
 	}
 
 	return before, after, nil
+}
+
+// ShutdownAllTasks gracefully shuts down all background tasks
+// CRITICAL FIX: Ensures proper termination of all goroutines in production
+func ShutdownAllTasks() {
+	registry := GetGlobalTaskRegistry()
+
+	registry.mu.Lock()
+	tasks := make([]*BackgroundTask, 0, len(registry.tasks))
+	for _, task := range registry.tasks {
+		tasks = append(tasks, task)
+	}
+	registry.mu.Unlock()
+
+	// Stop all tasks in parallel
+	var wg sync.WaitGroup
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(t *BackgroundTask) {
+			defer wg.Done()
+			if t != nil {
+				t.Stop()
+			}
+		}(task)
+	}
+
+	// Wait with timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All tasks stopped successfully
+	case <-time.After(10 * time.Second):
+		// Timeout - tasks may still be running
+		if registry.logger != nil {
+			registry.logger.Errorf("Timeout waiting for all background tasks to stop")
+		}
+	}
 }

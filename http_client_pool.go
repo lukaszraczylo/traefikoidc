@@ -13,6 +13,8 @@ type SharedTransportPool struct {
 	mu         sync.RWMutex
 	transports map[string]*sharedTransport
 	maxConns   int
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 type sharedTransport struct {
@@ -29,12 +31,15 @@ var (
 // GetGlobalTransportPool returns the singleton transport pool instance
 func GetGlobalTransportPool() *SharedTransportPool {
 	globalTransportPoolOnce.Do(func() {
+		ctx, cancel := context.WithCancel(context.Background())
 		globalTransportPool = &SharedTransportPool{
 			transports: make(map[string]*sharedTransport),
 			maxConns:   100, // Total connection limit across all transports
+			ctx:        ctx,
+			cancel:     cancel,
 		}
-		// Start cleanup goroutine
-		go globalTransportPool.cleanupIdleTransports()
+		// Start cleanup goroutine with context cancellation
+		go globalTransportPool.cleanupIdleTransports(ctx)
 	})
 	return globalTransportPool
 }
@@ -103,21 +108,26 @@ func (p *SharedTransportPool) ReleaseTransport(transport *http.Transport) {
 }
 
 // cleanupIdleTransports periodically cleans up unused transports
-func (p *SharedTransportPool) cleanupIdleTransports() {
+func (p *SharedTransportPool) cleanupIdleTransports(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		p.mu.Lock()
-		now := time.Now()
-		for transportKey, shared := range p.transports {
-			// Clean up transports not used for 2 minutes with no references
-			if shared.refCount <= 0 && now.Sub(shared.lastUsed) > 2*time.Minute {
-				shared.transport.CloseIdleConnections()
-				delete(p.transports, transportKey)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			now := time.Now()
+			for transportKey, shared := range p.transports {
+				// Clean up transports not used for 2 minutes with no references
+				if shared.refCount <= 0 && now.Sub(shared.lastUsed) > 2*time.Minute {
+					shared.transport.CloseIdleConnections()
+					delete(p.transports, transportKey)
+				}
 			}
+			p.mu.Unlock()
 		}
-		p.mu.Unlock()
 	}
 }
 
@@ -131,6 +141,11 @@ func (p *SharedTransportPool) configKey(config HTTPClientConfig) string {
 func (p *SharedTransportPool) Cleanup() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// Stop the cleanup goroutine
+	if p.cancel != nil {
+		p.cancel()
+	}
 
 	for _, shared := range p.transports {
 		shared.transport.CloseIdleConnections()

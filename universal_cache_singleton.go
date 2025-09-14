@@ -32,12 +32,13 @@ func GetUniversalCacheManager(logger *Logger) *UniversalCacheManager {
 			logger: logger,
 		}
 
-		// Initialize token cache
+		// Initialize token cache - CRITICAL FIX: Reduced from 5000 to 1000
 		universalCacheManager.tokenCache = NewUniversalCache(UniversalCacheConfig{
-			Type:       CacheTypeToken,
-			MaxSize:    5000,
-			DefaultTTL: 1 * time.Hour,
-			Logger:     logger,
+			Type:           CacheTypeToken,
+			MaxSize:        1000,            // CRITICAL FIX: Reduced from 5000 to 1000 items
+			MaxMemoryBytes: 5 * 1024 * 1024, // CRITICAL FIX: Added 5MB memory limit
+			DefaultTTL:     1 * time.Hour,
+			Logger:         logger,
 		})
 
 		// Initialize blacklist cache
@@ -76,12 +77,13 @@ func GetUniversalCacheManager(logger *Logger) *UniversalCacheManager {
 			Logger:     logger,
 		})
 
-		// Initialize session cache
+		// Initialize session cache - CRITICAL FIX: Reduced from 10000 to 2000
 		universalCacheManager.sessionCache = NewUniversalCache(UniversalCacheConfig{
-			Type:       CacheTypeSession,
-			MaxSize:    10000,
-			DefaultTTL: 30 * time.Minute,
-			Logger:     logger,
+			Type:           CacheTypeSession,
+			MaxSize:        2000,            // CRITICAL FIX: Reduced from 10000 to 2000 items
+			MaxMemoryBytes: 5 * 1024 * 1024, // CRITICAL FIX: Added 5MB memory limit
+			DefaultTTL:     30 * time.Minute,
+			Logger:         logger,
 		})
 	})
 

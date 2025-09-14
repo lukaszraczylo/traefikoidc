@@ -449,3 +449,25 @@ func GetGlobalMemoryMonitor() *MemoryMonitor {
 	})
 	return globalMemoryMonitor
 }
+
+// ResetGlobalMemoryMonitor resets the global memory monitor for testing
+// This should only be used in tests to prevent state pollution between tests
+func ResetGlobalMemoryMonitor() {
+	globalMonitoringMutex.Lock()
+	defer globalMonitoringMutex.Unlock()
+
+	if globalMemoryMonitor != nil {
+		// Stop monitoring if it's active
+		if globalMonitoringStarted {
+			registry := GetGlobalTaskRegistry()
+			if task, exists := registry.GetTask("memory-monitor"); exists {
+				task.Stop()
+			}
+		}
+		globalMemoryMonitor = nil
+	}
+
+	// Reset the singleton state
+	globalMemoryMonitorOnce = sync.Once{}
+	globalMonitoringStarted = false
+}

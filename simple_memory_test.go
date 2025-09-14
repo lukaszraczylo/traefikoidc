@@ -144,8 +144,8 @@ func TestChunkManagerInitialization(t *testing.T) {
 			Description: "Verify chunk manager can be created with proper defaults",
 			Input:       nil, // No specific input needed
 			Expected: map[string]interface{}{
-				"maxSessions": 1000,
-				"sessionTTL":  24 * time.Hour,
+				"maxSessions": 200,
+				"sessionTTL":  15 * time.Minute,
 				"notNil":      true,
 			},
 			Timeout: 5 * time.Second,
@@ -164,8 +164,8 @@ func TestChunkManagerInitialization(t *testing.T) {
 			Input:       "singleton_logger",
 			Expected: map[string]interface{}{
 				"hasLogger":   true,
-				"maxSessions": 1000,
-				"sessionTTL":  24 * time.Hour,
+				"maxSessions": 200,
+				"sessionTTL":  15 * time.Minute,
 			},
 			Timeout: 5 * time.Second,
 		},

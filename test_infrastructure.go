@@ -110,6 +110,10 @@ func (g *GlobalTestCleanup) CleanupAll() {
 		runtime.GC() // Force GC to help clean up
 	}
 
+	// Reset all global singletons to prevent state pollution between tests
+	ResetGlobalMemoryMonitor()
+	ResetGlobalTaskRegistry()
+
 	// Give background tasks time to finish cleanup
 	time.Sleep(100 * time.Millisecond)
 	runtime.GC()

@@ -27,6 +27,12 @@ type TokenConfig struct {
 	RequireJWTFormat  bool
 }
 
+// Global session tracking to prevent memory leaks across all instances
+var (
+	globalSessionCount int64 = 0
+	globalMaxSessions  int64 = 5000 // CRITICAL FIX: Global limit of 5000 total sessions
+)
+
 // Predefined configurations for each token type
 var (
 	AccessTokenConfig = TokenConfig{
@@ -118,8 +124,8 @@ func NewChunkManager(logger *Logger) *ChunkManager {
 		ctx:         ctx,
 		cancel:      cancel,
 		sessionMap:  make(map[string]*SessionEntry),
-		maxSessions: 1000,           // Prevent unbounded growth
-		sessionTTL:  24 * time.Hour, // Auto-expire old sessions
+		maxSessions: 200,              // CRITICAL FIX: Reduced from 1000 to 200 per instance
+		sessionTTL:  15 * time.Minute, // CRITICAL FIX: Reduced from 24h to 15 minutes
 		lastCleanup: time.Now(),
 	}
 
@@ -1132,7 +1138,26 @@ func (cm *ChunkManager) CleanupExpiredSessions(force ...bool) {
 
 // enforceSessionLimit removes oldest sessions when limit is exceeded
 func (cm *ChunkManager) enforceSessionLimit() {
-	if len(cm.sessionMap) <= cm.maxSessions {
+	currentLocal := len(cm.sessionMap)
+	currentGlobal := atomic.LoadInt64(&globalSessionCount)
+
+	// CRITICAL FIX: Aggressive eviction when approaching limits
+	shouldEvict := false
+	targetCapacity := cm.maxSessions
+
+	// Check global limit first (more critical)
+	if currentGlobal >= globalMaxSessions {
+		shouldEvict = true
+		targetCapacity = cm.maxSessions / 4 // Aggressive reduction to 25%
+	} else if currentGlobal >= globalMaxSessions*8/10 { // 80% of global
+		shouldEvict = true
+		targetCapacity = cm.maxSessions / 2 // Reduce to 50%
+	} else if currentLocal >= cm.maxSessions {
+		shouldEvict = true
+		targetCapacity = cm.maxSessions * 3 / 4 // Reduce to 75%
+	}
+
+	if !shouldEvict {
 		return
 	}
 
@@ -1156,16 +1181,28 @@ func (cm *ChunkManager) enforceSessionLimit() {
 		}
 	}
 
-	// Remove excess sessions and track memory
-	excessCount := len(cm.sessionMap) - cm.maxSessions
+	// Remove excess sessions and track memory - CRITICAL FIX: More aggressive
+	excessCount := currentLocal - targetCapacity
+	if excessCount < 0 {
+		excessCount = 0
+	}
+
 	totalBytesFreed := int64(0)
+	removedCount := int64(0)
+
 	for i := 0; i < excessCount && i < len(sessions); i++ {
 		key := sessions[i].key
 		if entry, exists := cm.sessionMap[key]; exists {
 			totalBytesFreed += entry.SizeEstimate
 			atomic.AddInt64(&cm.bytesAllocated, -entry.SizeEstimate)
+			removedCount++
 		}
 		delete(cm.sessionMap, key)
+	}
+
+	// Update global count
+	if removedCount > 0 {
+		atomic.AddInt64(&globalSessionCount, -removedCount)
 	}
 
 	cm.logger.Infof("Enforced session limit: removed %d excess sessions, freed %d bytes",

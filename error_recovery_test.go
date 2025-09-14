@@ -652,15 +652,15 @@ func TestRetryExecutorBackoffAndJitter(t *testing.T) {
 	t.Run("Retry with timeout context", func(t *testing.T) {
 		config := RetryConfig{
 			MaxAttempts:     5,
-			InitialDelay:    50 * time.Millisecond,
-			MaxDelay:        200 * time.Millisecond,
+			InitialDelay:    30 * time.Millisecond,  // Reduced from 50ms
+			MaxDelay:        100 * time.Millisecond, // Reduced from 200ms
 			BackoffFactor:   2.0,
 			EnableJitter:    false,
 			RetryableErrors: []string{"timeout", "temporary failure"},
 		}
 		re := NewRetryExecutor(config, logger)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond) // Reduced from 150ms
 		defer cancel()
 
 		attempts := 0
@@ -681,9 +681,15 @@ func TestRetryExecutorBackoffAndJitter(t *testing.T) {
 			t.Errorf("Expected fewer than %d attempts due to context timeout, got %d", config.MaxAttempts, attempts)
 		}
 
-		// Should have respected context timeout
-		if duration > 200*time.Millisecond {
-			t.Errorf("Operation took too long: %v", duration)
+		// Should have respected context timeout with some buffer for processing
+		maxAllowedDuration := 150 * time.Millisecond // Increased buffer from 200ms to 150ms
+		if duration > maxAllowedDuration {
+			t.Errorf("Operation took too long: %v (max allowed: %v)", duration, maxAllowedDuration)
+		}
+
+		// But should be close to the context timeout
+		if duration < 80*time.Millisecond {
+			t.Errorf("Operation completed too quickly: %v (should be close to context timeout of 100ms)", duration)
 		}
 	})
 

@@ -9,14 +9,22 @@ import (
 )
 
 func TestMemoryMonitorSingleton(t *testing.T) {
-	// Reset global state
-	globalMonitoringMutex.Lock()
-	globalMonitoringStarted = false
-	globalMonitoringMutex.Unlock()
+	// Use proper cleanup helper
+	TestCleanupHelper(t)
+
+	// Reset global state before test
+	ResetGlobalTaskRegistry()
+	ResetGlobalMemoryMonitor()
 
 	// Clear task registry for clean test
 	registry := GetGlobalTaskRegistry()
 	registry.StopAllTasks()
+
+	// Add cleanup at the end of test
+	defer func() {
+		ResetGlobalMemoryMonitor()
+		ResetGlobalTaskRegistry()
+	}()
 
 	// Test that multiple StartMonitoring calls don't create multiple monitors
 	monitor := GetGlobalMemoryMonitor()
@@ -81,13 +89,21 @@ func TestMemoryMonitorSingleton(t *testing.T) {
 }
 
 func TestMemoryMonitorSingletonTaskCreation(t *testing.T) {
-	// Reset global state
-	globalMonitoringMutex.Lock()
-	globalMonitoringStarted = false
-	globalMonitoringMutex.Unlock()
+	// Use proper cleanup helper
+	TestCleanupHelper(t)
+
+	// Reset global state before test
+	ResetGlobalTaskRegistry()
+	ResetGlobalMemoryMonitor()
 
 	registry := GetGlobalTaskRegistry()
 	registry.StopAllTasks()
+
+	// Add cleanup at the end of test
+	defer func() {
+		ResetGlobalMemoryMonitor()
+		ResetGlobalTaskRegistry()
+	}()
 
 	monitor1 := GetGlobalMemoryMonitor()
 	monitor2 := GetGlobalMemoryMonitor()
@@ -122,13 +138,21 @@ func TestMemoryMonitorSingletonTaskCreation(t *testing.T) {
 }
 
 func TestMemoryMonitorTaskRegistryEnforcement(t *testing.T) {
-	// Reset global state
-	globalMonitoringMutex.Lock()
-	globalMonitoringStarted = false
-	globalMonitoringMutex.Unlock()
+	// Use proper cleanup helper
+	TestCleanupHelper(t)
+
+	// Reset global state before test
+	ResetGlobalTaskRegistry()
+	ResetGlobalMemoryMonitor()
 
 	registry := GetGlobalTaskRegistry()
 	registry.StopAllTasks()
+
+	// Add cleanup at the end of test
+	defer func() {
+		ResetGlobalMemoryMonitor()
+		ResetGlobalTaskRegistry()
+	}()
 
 	// Try to create memory-monitor task directly through registry
 	task1, err1 := registry.CreateSingletonTask("memory-monitor", 50*time.Millisecond,
