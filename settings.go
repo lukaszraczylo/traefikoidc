@@ -574,6 +574,8 @@ func newNoOpLogger() *Logger {
 //
 // handleError writes an HTTP error response with the specified status code and message.
 // It logs the error and sets appropriate headers before writing the response.
+//
+//lint:ignore U1000 Kept for potential future error handling
 func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
 	logger.Error(message)
 	http.Error(w, message, code)

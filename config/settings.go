@@ -93,6 +93,8 @@ func CreateConfig() *Config {
 		EnablePKCE:                true,
 		RateLimit:                 10,
 		RefreshGracePeriodSeconds: 60,
+		Scopes:                    []string{"openid", "profile", "email"},
+		Headers:                   []HeaderConfig{},
 	}
 }
 

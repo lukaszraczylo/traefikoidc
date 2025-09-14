@@ -219,21 +219,6 @@ func (bt *BackgroundTask) run() {
 	}
 }
 
-// autoCleanupRoutine is a legacy function for running periodic cleanup tasks.
-// Deprecated: Use BackgroundTask instead for better lifecycle management and logging.
-func autoCleanupRoutine(interval time.Duration, stop <-chan struct{}, cleanup func()) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			cleanup()
-		case <-stop:
-			return
-		}
-	}
-}
-
 // TaskCircuitBreaker implements circuit breaker pattern for background task creation
 // It limits concurrent task execution and tracks failures to prevent system overload
 type TaskCircuitBreaker struct {
