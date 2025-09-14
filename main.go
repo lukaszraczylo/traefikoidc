@@ -350,6 +350,12 @@ func mergeScopes(defaultScopes, userScopes []string) []string {
 //   - The configured TraefikOidc handler ready to process requests.
 //   - An error if essential configuration is missing or invalid (e.g., short encryption key).
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+	return NewWithContext(ctx, config, next, name)
+}
+
+// NewWithContext creates a new TraefikOidc middleware instance with proper context handling.
+// This is the preferred constructor that ensures proper goroutine lifecycle management.
+func NewWithContext(ctx context.Context, config *Config, next http.Handler, name string) (*TraefikOidc, error) {
 	if config == nil {
 		config = CreateConfig()
 	}
@@ -377,7 +383,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	goroutineWG := &sync.WaitGroup{}
 	cacheManager := GetGlobalCacheManager(goroutineWG)
 
-	pluginCtx, cancelFunc := context.WithCancel(context.Background())
+	// Use provided context instead of creating new one
+	var pluginCtx context.Context
+	var cancelFunc context.CancelFunc
+	if ctx != nil {
+		pluginCtx, cancelFunc = context.WithCancel(ctx)
+	} else {
+		pluginCtx, cancelFunc = context.WithCancel(context.Background())
+	}
 
 	t := &TraefikOidc{
 		next:         next,
@@ -503,7 +516,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	logger.Debugf("TraefikOidc.New: Final t.scopes initialized to: %v", t.scopes)
 
 	t.providerURL = config.ProviderURL
-	// Initialize metadata in background but track the goroutine
+
+	// Use singleton resource manager for metadata initialization
+	rm := GetResourceManager()
+
+	// Add reference for this instance
+	rm.AddReference(name)
+
+	// Initialize metadata in a goroutine with proper tracking
 	if t.goroutineWG != nil {
 		t.goroutineWG.Add(1)
 	}
@@ -519,6 +539,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		}()
 		t.initializeMetadata(config.ProviderURL)
 	}()
+
+	// Setup cleanup hook for when context is cancelled
+	if pluginCtx != nil {
+		go func() {
+			<-pluginCtx.Done()
+			t.Close()
+		}()
+	}
 
 	return t, nil
 }
@@ -575,91 +603,42 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 // Parameters:
 //   - providerURL: The base URL of the OIDC provider, used for subsequent refresh attempts.
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
-	ticker := time.NewTicker(2 * time.Hour)
+	// Use singleton resource manager for metadata refresh
+	rm := GetResourceManager()
+	taskName := "singleton-metadata-refresh"
 
-	// Track this goroutine for proper cleanup
-	if t.goroutineWG != nil {
-		t.goroutineWG.Add(1)
+	// Create refresh function
+	refreshFunc := func() {
+		if t.metadataCache == nil || t.httpClient == nil {
+			return
+		}
+
+		metadata, err := t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
+		if err != nil {
+			t.safeLogErrorf("Failed to refresh provider metadata: %v", err)
+			return
+		}
+
+		if metadata != nil {
+			t.updateMetadataEndpoints(metadata)
+			t.safeLogDebug("Successfully refreshed provider metadata")
+		}
 	}
 
-	go func() {
-		defer func() {
-			// Ensure ticker is always stopped
-			ticker.Stop()
+	// Register as singleton task - will return existing if already registered
+	err := rm.RegisterBackgroundTask(taskName, 2*time.Hour, refreshFunc)
+	if err != nil {
+		t.logger.Errorf("Failed to register metadata refresh task: %v", err)
+		return
+	}
 
-			// Always call Done() even if panic occurs
-			if t.goroutineWG != nil {
-				t.goroutineWG.Done()
-			}
-
-			// Recover from panics to prevent goroutine leaks
-			if r := recover(); r != nil {
-				t.logger.Errorf("Metadata refresh goroutine panic recovered: %v", r)
-			}
-		}()
-
-		consecutiveFailures := 0
-		for {
-			select {
-			case <-ticker.C:
-				// Add timeout for metadata refresh operations
-				refreshCtx, cancel := context.WithTimeout(t.ctx, 30*time.Second)
-
-				func() {
-					defer cancel() // Ensure context is always canceled
-
-					if consecutiveFailures >= 3 {
-						t.safeLogDebug("Skipping metadata refresh due to consecutive failures")
-						consecutiveFailures++
-						if consecutiveFailures > 10 {
-							consecutiveFailures = 3
-						}
-						return
-					}
-
-					t.safeLogDebug("Refreshing OIDC metadata")
-					var metadata *ProviderMetadata
-					var err error
-					if t.errorRecoveryManager != nil {
-						metadata, err = t.metadataCache.GetMetadataWithRecovery(providerURL, t.httpClient, t.logger, t.errorRecoveryManager)
-					} else {
-						metadata, err = t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
-					}
-
-					// Check for context cancellation
-					select {
-					case <-refreshCtx.Done():
-						t.safeLogDebug("Metadata refresh timeout or cancellation")
-						consecutiveFailures++
-						return
-					default:
-					}
-
-					if err != nil {
-						consecutiveFailures++
-						t.safeLogErrorf("Failed to refresh metadata (attempt %d): %v", consecutiveFailures, err)
-						return
-					}
-
-					if metadata != nil {
-						t.updateMetadataEndpoints(metadata)
-						t.logger.Debug("Successfully refreshed metadata")
-						consecutiveFailures = 0
-					} else {
-						consecutiveFailures++
-						t.logger.Error("Received nil metadata during refresh")
-					}
-				}()
-
-			case <-t.metadataRefreshStopChan:
-				t.logger.Debug("Metadata refresh goroutine stopped.")
-				return
-			case <-t.ctx.Done():
-				t.logger.Debug("Metadata refresh goroutine stopped due to context cancellation.")
-				return
-			}
-		}
-	}()
+	// Start the task if not already running
+	if !rm.IsTaskRunning(taskName) {
+		rm.StartBackgroundTask(taskName)
+		t.logger.Debug("Started singleton metadata refresh task")
+	} else {
+		t.logger.Debug("Metadata refresh task already running, skipping duplicate")
+	}
 }
 
 // ServeHTTP implements the main middleware logic for processing HTTP requests.
@@ -684,21 +663,8 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 			if !t.metadataRefreshStarted && t.providerURL != "" {
 				t.metadataRefreshStarted = true
-				if t.goroutineWG != nil {
-					t.goroutineWG.Add(1)
-				}
-				go func() {
-					defer func() {
-						if t.goroutineWG != nil {
-							t.goroutineWG.Done()
-						}
-						// Recover from panics to prevent goroutine leaks
-						if r := recover(); r != nil {
-							t.logger.Errorf("Start metadata refresh goroutine panic recovered: %v", r)
-						}
-					}()
-					t.startMetadataRefresh(t.providerURL)
-				}()
+				// Metadata refresh is handled by singleton resource manager
+				t.startMetadataRefresh(t.providerURL)
 			}
 		}
 		t.firstRequestMutex.Unlock()
@@ -1645,160 +1611,54 @@ func (t *TraefikOidc) startTokenCleanup() {
 		return
 	}
 
-	// Capture values to avoid race conditions
+	// Use singleton resource manager for token cleanup
+	rm := GetResourceManager()
+	taskName := "singleton-token-cleanup"
+
+	// Capture values for the cleanup function
 	tokenCache := t.tokenCache
 	jwkCache := t.jwkCache
 	sessionManager := t.sessionManager
 	logger := t.logger
-	goroutineWG := t.goroutineWG
-	stopChan := t.tokenCleanupStopChan
-	ctx := t.ctx
 
 	cleanupInterval := 1 * time.Minute
 	if isTestMode() {
 		cleanupInterval = 50 * time.Millisecond // Fast interval for tests
 	}
-	ticker := time.NewTicker(cleanupInterval)
 
-	if goroutineWG != nil {
-		goroutineWG.Add(1)
+	// Create cleanup function
+	cleanupFunc := func() {
+		if logger != nil && !isTestMode() {
+			logger.Debug("Starting token cleanup cycle")
+		}
+		if tokenCache != nil {
+			tokenCache.Cleanup()
+		}
+		if jwkCache != nil {
+			jwkCache.Cleanup()
+		}
+		if sessionManager != nil {
+			sessionManager.PeriodicChunkCleanup()
+			if logger != nil && !isTestMode() {
+				logger.Debug("Running session health monitoring")
+			}
+		}
 	}
 
-	// Ensure cleanup channels are available
-	if stopChan == nil && ctx == nil {
-		if logger != nil && !isTestMode() {
-			logger.Debug("No cleanup mechanism available for token cleanup goroutine, skipping")
-		}
+	// Register as singleton task - will return existing if already registered
+	err := rm.RegisterBackgroundTask(taskName, cleanupInterval, cleanupFunc)
+	if err != nil {
+		logger.Errorf("Failed to register token cleanup task: %v", err)
 		return
 	}
 
-	go func() {
-		defer func() {
-			if goroutineWG != nil {
-				goroutineWG.Done()
-			}
-			ticker.Stop()
-
-			if r := recover(); r != nil {
-				// Only log if context is valid and not cancelled to prevent logging after test completion
-				if logger != nil && ctx != nil && ctx.Err() == nil && !isTestMode() {
-					logger.Errorf("Token cleanup goroutine panic recovered: %v", r)
-				}
-			}
-		}()
-
-		// Build dynamic select cases
-		for {
-			if stopChan != nil && ctx != nil {
-				// Both channels available
-				select {
-				case <-ticker.C:
-					if logger != nil && !isTestMode() {
-						logger.Debug("Starting token cleanup cycle")
-					}
-					if tokenCache != nil {
-						tokenCache.Cleanup()
-					}
-					if jwkCache != nil {
-						jwkCache.Cleanup()
-					}
-					if sessionManager != nil {
-						// Check if context is cancelled before calling session cleanup to prevent logging after test completion
-						if ctx == nil || ctx.Err() == nil {
-							sessionManager.PeriodicChunkCleanup()
-						}
-						if logger != nil && !isTestMode() && ctx != nil && ctx.Err() == nil {
-							logger.Debug("Running session health monitoring")
-						}
-					}
-				case <-stopChan:
-					if logger != nil {
-						logger.Debug("Token cleanup goroutine stopped.")
-					}
-					return
-				case <-ctx.Done():
-					if logger != nil {
-						logger.Debug("Token cleanup goroutine stopped due to context cancellation.")
-					}
-					return
-				}
-			} else if stopChan != nil {
-				// Only stopChan available
-				select {
-				case <-ticker.C:
-					if logger != nil && !isTestMode() {
-						logger.Debug("Starting token cleanup cycle")
-					}
-					if tokenCache != nil {
-						tokenCache.Cleanup()
-					}
-					if jwkCache != nil {
-						jwkCache.Cleanup()
-					}
-					if sessionManager != nil {
-						// Check if context is cancelled before calling session cleanup to prevent logging after test completion
-						if ctx == nil || ctx.Err() == nil {
-							sessionManager.PeriodicChunkCleanup()
-						}
-						if logger != nil && !isTestMode() && ctx != nil && ctx.Err() == nil {
-							logger.Debug("Running session health monitoring")
-						}
-					}
-				case <-stopChan:
-					if logger != nil {
-						logger.Debug("Token cleanup goroutine stopped.")
-					}
-					return
-				}
-			} else if ctx != nil {
-				// Only ctx available
-				select {
-				case <-ticker.C:
-					if logger != nil && !isTestMode() {
-						logger.Debug("Starting token cleanup cycle")
-					}
-					if tokenCache != nil {
-						tokenCache.Cleanup()
-					}
-					if jwkCache != nil {
-						jwkCache.Cleanup()
-					}
-					if sessionManager != nil {
-						// Check if context is cancelled before calling session cleanup to prevent logging after test completion
-						if ctx == nil || ctx.Err() == nil {
-							sessionManager.PeriodicChunkCleanup()
-						}
-						if logger != nil && !isTestMode() && ctx != nil && ctx.Err() == nil {
-							logger.Debug("Running session health monitoring")
-						}
-					}
-				case <-ctx.Done():
-					if logger != nil {
-						logger.Debug("Token cleanup goroutine stopped due to context cancellation.")
-					}
-					return
-				}
-			} else {
-				// Neither available - just use ticker (this should not happen due to the check above)
-				<-ticker.C
-				if logger != nil && !isTestMode() {
-					logger.Debug("Starting token cleanup cycle")
-				}
-				if tokenCache != nil {
-					tokenCache.Cleanup()
-				}
-				if jwkCache != nil {
-					jwkCache.Cleanup()
-				}
-				if sessionManager != nil {
-					sessionManager.PeriodicChunkCleanup()
-					if logger != nil {
-						logger.Debug("Running session health monitoring")
-					}
-				}
-			}
-		}
-	}()
+	// Start the task if not already running
+	if !rm.IsTaskRunning(taskName) {
+		rm.StartBackgroundTask(taskName)
+		logger.Debug("Started singleton token cleanup task")
+	} else {
+		logger.Debug("Token cleanup task already running, skipping duplicate")
+	}
 }
 
 // RevokeToken revokes a token locally by adding it to the blacklist cache.
@@ -2551,11 +2411,22 @@ func (t *TraefikOidc) Close() error {
 	t.shutdownOnce.Do(func() {
 		t.safeLogDebug("Closing TraefikOidc plugin instance")
 
+		// Get resource manager for cleanup
+		rm := GetResourceManager()
+
+		// Stop singleton tasks related to this instance
+		rm.StopBackgroundTask("singleton-token-cleanup")
+		rm.StopBackgroundTask("singleton-metadata-refresh")
+
+		// Remove reference for this instance
+		rm.RemoveReference(t.name)
+
 		if t.cancelFunc != nil {
 			t.cancelFunc()
 			t.safeLogDebug("Context cancellation signaled to all goroutines")
 		}
 
+		// Clean up legacy stop channels if they exist
 		if t.tokenCleanupStopChan != nil {
 			close(t.tokenCleanupStopChan)
 			t.safeLogDebug("tokenCleanupStopChan closed")

@@ -521,53 +521,22 @@ func (tr *TaskRegistry) GetTaskCount() int {
 func (tr *TaskRegistry) CreateSingletonTask(name string, interval time.Duration,
 	taskFunc func(), logger *Logger, wg *sync.WaitGroup) (*BackgroundTask, error) {
 
-	tr.mu.Lock()
-	defer tr.mu.Unlock()
-
-	// Strict singleton enforcement: check if ANY task with similar name pattern exists
-	for taskName := range tr.tasks {
-		if strings.Contains(taskName, "cleanup") && strings.Contains(name, "cleanup") {
-			if tr.logger != nil {
-				tr.logger.Debug("Singleton enforcement: cleanup task %s already exists, rejecting %s", taskName, name)
-			}
-			return nil, fmt.Errorf("singleton cleanup task already exists: %s (requested: %s)", taskName, name)
-		}
-		if strings.Contains(taskName, "singleton") && strings.Contains(name, "singleton") {
-			if tr.logger != nil {
-				tr.logger.Debug("Singleton enforcement: singleton task %s already exists, rejecting %s", taskName, name)
-			}
-			return nil, fmt.Errorf("singleton task already exists: %s (requested: %s)", taskName, name)
-		}
-		if strings.Contains(taskName, "memory-monitor") && strings.Contains(name, "memory-monitor") {
-			if tr.logger != nil {
-				tr.logger.Debug("Singleton enforcement: memory-monitor task %s already exists, rejecting %s", taskName, name)
-			}
-			return nil, fmt.Errorf("singleton memory-monitor task already exists: %s (requested: %s)", taskName, name)
-		}
+	// Delegate to the singleton resource manager instead
+	rm := GetResourceManager()
+	err := rm.RegisterBackgroundTask(name, interval, taskFunc)
+	if err != nil {
+		return nil, err
 	}
 
-	// Check if exact task already exists
-	if existing, exists := tr.tasks[name]; exists {
-		if tr.logger != nil {
-			tr.logger.Debug("Singleton task %s already exists, returning existing task", name)
-		}
-		return existing, nil
+	// Start the task if not already running
+	if !rm.IsTaskRunning(name) {
+		rm.StartBackgroundTask(name)
 	}
 
-	// Check circuit breaker
-	if err := tr.cb.CanCreateTask(name); err != nil {
-		tr.cb.OnTaskFailure(name, err)
-		return nil, fmt.Errorf("circuit breaker prevented singleton task creation: %w", err)
-	}
-
-	// Create new task (execution tracking handled in run() method)
-	task := NewBackgroundTask(name, interval, taskFunc, logger, wg)
-	tr.tasks[name] = task
-	tr.cb.OnTaskSuccess(name)
-
-	if tr.logger != nil {
-		tr.logger.Info("Created singleton background task: %s", name)
-	}
+	// Get the task from resource manager's internal registry
+	rm.tasksMu.RLock()
+	task := rm.tasks[name]
+	rm.tasksMu.RUnlock()
 
 	return task, nil
 }

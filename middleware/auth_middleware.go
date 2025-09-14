@@ -163,21 +163,9 @@ func (m *AuthMiddleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 			if !m.metadataRefreshStarted && m.providerURL != "" {
 				m.metadataRefreshStarted = true
-				if m.goroutineWG != nil {
-					m.goroutineWG.Add(1)
-				}
-				go func() {
-					defer func() {
-						if m.goroutineWG != nil {
-							m.goroutineWG.Done()
-						}
-						// Recover from panics to prevent goroutine leaks
-						if r := recover(); r != nil {
-							m.logger.Errorf("Start metadata refresh goroutine panic recovered: %v", r)
-						}
-					}()
-					m.startMetadataRefreshFunc(m.providerURL)
-				}()
+				// Metadata refresh is now handled by singleton resource manager
+				// Just call the function directly - it will use the singleton internally
+				m.startMetadataRefreshFunc(m.providerURL)
 			}
 		}
 		m.firstRequestMutex.Unlock()
