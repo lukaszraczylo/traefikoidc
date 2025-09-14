@@ -599,6 +599,12 @@ type TaskMemoryStats struct {
 	ActiveTasks  int
 }
 
+// Global memory monitor singleton
+var (
+	globalTaskMemoryMonitor     *TaskMemoryMonitor
+	globalTaskMemoryMonitorOnce sync.Once
+)
+
 // TaskMemoryMonitor provides system memory monitoring and leak detection capabilities for task registry
 type TaskMemoryMonitor struct {
 	ctx          context.Context
@@ -609,22 +615,45 @@ type TaskMemoryMonitor struct {
 	statsHistory []TaskMemoryStats
 	mu           sync.RWMutex
 	maxHistory   int
+	started      bool
+}
+
+// GetGlobalTaskMemoryMonitor returns the global singleton TaskMemoryMonitor instance
+func GetGlobalTaskMemoryMonitor(logger *Logger) *TaskMemoryMonitor {
+	globalTaskMemoryMonitorOnce.Do(func() {
+		registry := GetGlobalTaskRegistry()
+		ctx, cancel := context.WithCancel(context.Background())
+		globalTaskMemoryMonitor = &TaskMemoryMonitor{
+			ctx:        ctx,
+			cancel:     cancel,
+			logger:     logger,
+			registry:   registry,
+			maxHistory: 100, // Keep last 100 snapshots
+			started:    false,
+		}
+	})
+	return globalTaskMemoryMonitor
 }
 
 // NewTaskMemoryMonitor creates a new memory monitor for task registry
+// Deprecated: Use GetGlobalTaskMemoryMonitor instead for singleton behavior
 func NewTaskMemoryMonitor(logger *Logger, registry *TaskRegistry) *TaskMemoryMonitor {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &TaskMemoryMonitor{
-		ctx:        ctx,
-		cancel:     cancel,
-		logger:     logger,
-		registry:   registry,
-		maxHistory: 100, // Keep last 100 snapshots
-	}
+	return GetGlobalTaskMemoryMonitor(logger)
 }
 
 // Start begins memory monitoring
 func (mm *TaskMemoryMonitor) Start(interval time.Duration) error {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	// Check if already started
+	if mm.started {
+		if mm.logger != nil && !isTestMode() {
+			mm.logger.Debug("TaskMemoryMonitor already started, skipping duplicate start")
+		}
+		return nil
+	}
+
 	task := NewBackgroundTask(
 		"memory-monitor",
 		interval,
@@ -635,15 +664,32 @@ func (mm *TaskMemoryMonitor) Start(interval time.Duration) error {
 	mm.task = task
 
 	if err := mm.registry.RegisterTask("memory-monitor", task); err != nil {
+		// Check if error is because task already exists
+		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "already registered") {
+			mm.started = true // Mark as started since monitor is already running
+			if mm.logger != nil && !isTestMode() {
+				mm.logger.Debug("Memory monitor task already registered, marking as started")
+			}
+			return nil
+		}
 		return fmt.Errorf("failed to register memory monitor: %w", err)
 	}
 
 	task.Start()
+	mm.started = true
+
+	if mm.logger != nil && !isTestMode() {
+		mm.logger.Info("Started global task memory monitoring with %v interval", interval)
+	}
+
 	return nil
 }
 
 // Stop stops memory monitoring
 func (mm *TaskMemoryMonitor) Stop() {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
 	if mm.cancel != nil {
 		mm.cancel()
 	}
@@ -653,6 +699,7 @@ func (mm *TaskMemoryMonitor) Stop() {
 	if mm.registry != nil {
 		mm.registry.UnregisterTask("memory-monitor")
 	}
+	mm.started = false
 }
 
 // collectStats collects current memory statistics

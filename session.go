@@ -267,11 +267,10 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 		cancel:       cancel,
 	}
 
-	// Initialize memory monitoring
-	registry := GetGlobalTaskRegistry()
-	sm.memoryMonitor = NewTaskMemoryMonitor(logger, registry)
+	// Initialize global memory monitoring (singleton)
+	sm.memoryMonitor = GetGlobalTaskMemoryMonitor(logger)
 
-	// Start memory monitoring every 30 seconds
+	// Start memory monitoring every 30 seconds (will skip if already started)
 	if err := sm.memoryMonitor.Start(30 * time.Second); err != nil {
 		logger.Infof("Failed to start memory monitoring: %v", err)
 	}
