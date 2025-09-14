@@ -553,6 +553,12 @@ func (tr *TaskRegistry) CreateSingletonTask(name string, interval time.Duration,
 			}
 			return nil, fmt.Errorf("singleton task already exists: %s (requested: %s)", taskName, name)
 		}
+		if strings.Contains(taskName, "memory-monitor") && strings.Contains(name, "memory-monitor") {
+			if tr.logger != nil {
+				tr.logger.Debug("Singleton enforcement: memory-monitor task %s already exists, rejecting %s", taskName, name)
+			}
+			return nil, fmt.Errorf("singleton memory-monitor task already exists: %s (requested: %s)", taskName, name)
+		}
 	}
 
 	// Check if exact task already exists

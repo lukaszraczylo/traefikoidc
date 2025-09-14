@@ -304,8 +304,25 @@ func (mm *MemoryMonitor) LogMemoryStats(stats *MemoryStats) {
 		stats.SessionCount, stats.TaskCount, stats.CacheSize, stats.ConnectionPools)
 }
 
-// StartMonitoring starts continuous memory monitoring
+// Global monitoring state
+var (
+	globalMonitoringStarted bool
+	globalMonitoringMutex   sync.Mutex
+)
+
+// StartMonitoring starts continuous memory monitoring as a global singleton
 func (mm *MemoryMonitor) StartMonitoring(ctx context.Context, interval time.Duration) {
+	globalMonitoringMutex.Lock()
+	defer globalMonitoringMutex.Unlock()
+
+	// Check if monitoring is already started
+	if globalMonitoringStarted {
+		if !isTestMode() {
+			mm.logger.Debug("Memory monitoring already started, skipping duplicate start")
+		}
+		return
+	}
+
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -329,9 +346,12 @@ func (mm *MemoryMonitor) StartMonitoring(ctx context.Context, interval time.Dura
 		return
 	}
 
+	// Only start if task was newly created or we're sure it's not already running
 	task.Start()
+	globalMonitoringStarted = true
+
 	if !isTestMode() {
-		mm.logger.Info("Started memory monitoring with %v interval", interval)
+		mm.logger.Info("Started global memory monitoring with %v interval", interval)
 	}
 }
 
@@ -384,6 +404,34 @@ func (mm *MemoryMonitor) GetMemoryPressure() MemoryPressureLevel {
 		return mm.lastStats.MemoryPressure
 	}
 	return MemoryPressureNone
+}
+
+// StopMonitoring stops the global memory monitoring if it's running
+func (mm *MemoryMonitor) StopMonitoring() {
+	globalMonitoringMutex.Lock()
+	defer globalMonitoringMutex.Unlock()
+
+	if !globalMonitoringStarted {
+		return
+	}
+
+	registry := GetGlobalTaskRegistry()
+	if task, exists := registry.GetTask("memory-monitor"); exists {
+		task.Stop()
+		globalMonitoringStarted = false
+		if !isTestMode() {
+			mm.logger.Info("Stopped global memory monitoring")
+		}
+	} else {
+		mm.logger.Errorf("Failed to find memory monitoring task to stop")
+	}
+}
+
+// IsMonitoringActive returns true if global memory monitoring is currently active
+func (mm *MemoryMonitor) IsMonitoringActive() bool {
+	globalMonitoringMutex.Lock()
+	defer globalMonitoringMutex.Unlock()
+	return globalMonitoringStarted
 }
 
 // Global memory monitor instance
