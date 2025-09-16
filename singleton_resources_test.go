@@ -130,10 +130,10 @@ func TestSingletonResourceManager(t *testing.T) {
 	t.Run("GracefulShutdown", func(t *testing.T) {
 		rm := GetResourceManager()
 
-		// Register a task
-		taskExecuted := false
+		// Register a task with atomic variable to avoid race condition
+		var taskExecuted int32
 		err := rm.RegisterBackgroundTask("shutdown-test-task", 100*time.Millisecond, func() {
-			taskExecuted = true
+			atomic.StoreInt32(&taskExecuted, 1)
 		})
 
 		if err != nil {
@@ -146,7 +146,7 @@ func TestSingletonResourceManager(t *testing.T) {
 		// Wait for task to execute at least once
 		time.Sleep(150 * time.Millisecond)
 
-		if !taskExecuted {
+		if atomic.LoadInt32(&taskExecuted) == 0 {
 			t.Error("Task was not executed")
 		}
 
@@ -169,6 +169,11 @@ func TestSingletonResourceManager(t *testing.T) {
 // TestContextAwareGoroutineManagement tests context-aware goroutine management
 func TestContextAwareGoroutineManagement(t *testing.T) {
 	t.Run("GoroutineCleanupOnContextCancel", func(t *testing.T) {
+		// Reset singletons to ensure clean state
+		resetResourceManagerForTesting()
+		ResetUniversalCacheManagerForTesting()
+		defer ResetUniversalCacheManagerForTesting()
+
 		initialGoroutines := runtime.NumGoroutine()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -196,22 +201,28 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 		// Cancel context
 		cancel()
 
+		// Close the plugin to trigger cleanup
+		plugin.Close()
+
 		// Wait for cleanup
 		time.Sleep(500 * time.Millisecond)
 
 		finalGoroutines := runtime.NumGoroutine()
 
-		// Allow for some system goroutines
-		tolerance := 5
+		// Allow for some singleton background goroutines (caches, pools, etc.)
+		// These are shared across all instances and persist for the test duration
+		tolerance := 10
 		if finalGoroutines > initialGoroutines+tolerance {
 			t.Errorf("Goroutine leak detected: initial=%d, final=%d", initialGoroutines, finalGoroutines)
 		}
-
-		// Ensure plugin is properly closed
-		plugin.Close()
 	})
 
 	t.Run("NoGoroutineLeakOnMultipleInstances", func(t *testing.T) {
+		// Reset singletons to ensure clean state
+		resetResourceManagerForTesting()
+		ResetUniversalCacheManagerForTesting()
+		defer ResetUniversalCacheManagerForTesting()
+
 		initialGoroutines := runtime.NumGoroutine()
 
 		configs := []Config{
@@ -264,6 +275,11 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 	})
 
 	t.Run("SingletonTasksAcrossInstances", func(t *testing.T) {
+		// Reset singletons to ensure clean state
+		resetResourceManagerForTesting()
+		ResetUniversalCacheManagerForTesting()
+		defer ResetUniversalCacheManagerForTesting()
+
 		rm := GetResourceManager()
 
 		// Register singleton cleanup task

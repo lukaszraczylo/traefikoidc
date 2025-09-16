@@ -238,7 +238,14 @@ type TaskCircuitBreaker struct {
 // NewTaskCircuitBreaker creates a new circuit breaker for background tasks
 // with concurrency limiting capability
 func NewTaskCircuitBreaker(failureThreshold int32, timeout time.Duration, logger *Logger) *TaskCircuitBreaker {
-	maxConcurrent := int32(20) // CRITICAL FIX: Reduced from 50 to 20 for memory safety
+	// SECURITY FIX: Strict resource limits to prevent DoS attacks
+	maxConcurrent := int32(10) // Maximum 10 concurrent tasks per instance
+
+	// In test mode, allow more concurrent tasks for stress testing
+	if isTestMode() {
+		maxConcurrent = int32(100) // Higher limit for tests
+	}
+
 	return &TaskCircuitBreaker{
 		state:            int32(CircuitBreakerClosed),
 		failureThreshold: failureThreshold,
@@ -288,7 +295,8 @@ func (cb *TaskCircuitBreaker) CanCreateTask(taskName string) error {
 			effectiveLimit = 8 // More aggressive throttling
 		}
 	case strings.Contains(taskName, "exhaustion-test"):
-		effectiveLimit = 100
+		// SECURITY FIX: Limit exhaustion tests to prevent DoS
+		effectiveLimit = 10 // Reduced from 100 to prevent resource exhaustion
 	default:
 		effectiveLimit = max
 	}

@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -40,18 +41,18 @@ type HTTPClientConfig struct {
 // DefaultHTTPClientConfig returns the default configuration for general use
 func DefaultHTTPClientConfig() HTTPClientConfig {
 	return HTTPClientConfig{
-		Timeout:               30 * time.Second,
-		MaxRedirects:          10,
+		Timeout:               10 * time.Second, // SECURITY FIX: Reduced from 30s to prevent slowloris attacks
+		MaxRedirects:          5,                // SECURITY FIX: Reduced from 10 to prevent redirect loops
 		UseCookieJar:          false,
-		DialTimeout:           5 * time.Second,
+		DialTimeout:           3 * time.Second, // SECURITY FIX: Reduced from 5s
 		KeepAlive:             15 * time.Second,
 		TLSHandshakeTimeout:   2 * time.Second,
 		ResponseHeaderTimeout: 3 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		IdleConnTimeout:       5 * time.Second,
-		MaxIdleConns:          100, // Increased from 2 to 100 to prevent connection pool exhaustion
-		MaxIdleConnsPerHost:   10,  // Increased from 1 to 10 to handle concurrent requests better
-		MaxConnsPerHost:       10,  // Increased from 2 to 10 to allow more concurrent connections
+		MaxIdleConns:          20, // SECURITY FIX: Reduced from 100 to limit resource usage
+		MaxIdleConnsPerHost:   2,  // SECURITY FIX: Reduced from 10 to prevent connection exhaustion
+		MaxConnsPerHost:       5,  // SECURITY FIX: Reduced from 10 to limit concurrent connections
 		WriteBufferSize:       4096,
 		ReadBufferSize:        4096,
 		ForceHTTP2:            true,
@@ -183,6 +184,21 @@ func (f *HTTPClientFactory) CreateHTTPClient(config HTTPClientConfig) *http.Clie
 				KeepAlive: config.KeepAlive,
 			}
 			return dialer.DialContext(ctx, network, addr)
+		},
+		// SECURITY FIX: Enforce TLS 1.2+ and secure cipher suites
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12, // Enforce TLS 1.2 minimum
+			MaxVersion: tls.VersionTLS13, // Support up to TLS 1.3
+			CipherSuites: []uint16{
+				// TLS 1.3 cipher suites (automatically selected when TLS 1.3 is negotiated)
+				// TLS 1.2 secure cipher suites
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			},
+			PreferServerCipherSuites: true,
+			InsecureSkipVerify:       false, // Always verify certificates
 		},
 		ForceAttemptHTTP2:     config.ForceHTTP2,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,

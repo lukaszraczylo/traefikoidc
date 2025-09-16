@@ -141,3 +141,13 @@ func (m *UniversalCacheManager) Close() error {
 	m.logger.Info("UniversalCacheManager: Closed all caches")
 	return nil
 }
+
+// ResetUniversalCacheManagerForTesting resets the singleton for testing purposes only
+// This should only be called in test code to ensure proper cleanup between tests
+func ResetUniversalCacheManagerForTesting() {
+	if universalCacheManager != nil {
+		universalCacheManager.Close()
+	}
+	universalCacheManagerOnce = sync.Once{}
+	universalCacheManager = nil
+}

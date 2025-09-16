@@ -2,19 +2,23 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // SharedTransportPool manages a pool of shared HTTP transports to prevent connection exhaustion
 type SharedTransportPool struct {
-	mu         sync.RWMutex
-	transports map[string]*sharedTransport
-	maxConns   int
-	ctx        context.Context
-	cancel     context.CancelFunc
+	mu          sync.RWMutex
+	transports  map[string]*sharedTransport
+	maxConns    int
+	ctx         context.Context
+	cancel      context.CancelFunc
+	clientCount int32 // SECURITY FIX: Track total HTTP clients
+	maxClients  int32 // SECURITY FIX: Limit total clients to 5
 }
 
 type sharedTransport struct {
@@ -33,10 +37,12 @@ func GetGlobalTransportPool() *SharedTransportPool {
 	globalTransportPoolOnce.Do(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		globalTransportPool = &SharedTransportPool{
-			transports: make(map[string]*sharedTransport),
-			maxConns:   100, // Total connection limit across all transports
-			ctx:        ctx,
-			cancel:     cancel,
+			transports:  make(map[string]*sharedTransport),
+			maxConns:    20, // SECURITY FIX: Reduced from 100 to prevent resource exhaustion
+			ctx:         ctx,
+			cancel:      cancel,
+			clientCount: 0,
+			maxClients:  5, // SECURITY FIX: Maximum 5 HTTP clients
 		}
 		// Start cleanup goroutine with context cancellation
 		go globalTransportPool.cleanupIdleTransports(ctx)
@@ -46,6 +52,22 @@ func GetGlobalTransportPool() *SharedTransportPool {
 
 // GetOrCreateTransport gets or creates a shared transport with the given config
 func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *http.Transport {
+	// SECURITY FIX: Check client limit before creating new transport
+	if atomic.LoadInt32(&p.clientCount) >= p.maxClients {
+		// Return existing transport if limit reached
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		for _, shared := range p.transports {
+			if shared != nil && shared.transport != nil {
+				shared.refCount++
+				shared.lastUsed = time.Now()
+				return shared.transport
+			}
+		}
+		// If no transport available, return nil (caller should handle)
+		return nil
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -57,6 +79,9 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 		return shared.transport
 	}
 
+	// Increment client count
+	atomic.AddInt32(&p.clientCount, 1)
+
 	// Create new transport with conservative limits
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -67,14 +92,27 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 			}
 			return dialer.DialContext(ctx, network, addr)
 		},
+		// SECURITY FIX: Enforce TLS 1.2+ and secure cipher suites
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			MaxVersion: tls.VersionTLS13,
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			},
+			PreferServerCipherSuites: true,
+			InsecureSkipVerify:       false,
+		},
 		ForceAttemptHTTP2:     config.ForceHTTP2,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 		ExpectContinueTimeout: config.ExpectContinueTimeout,
-		MaxIdleConns:          20,               // Reduced from 100
-		MaxIdleConnsPerHost:   2,                // Reduced from 10
+		MaxIdleConns:          10,               // SECURITY FIX: Further reduced
+		MaxIdleConnsPerHost:   2,                // SECURITY FIX: Limited connections
 		IdleConnTimeout:       30 * time.Second, // Reduced from 5 minutes
 		DisableKeepAlives:     config.DisableKeepAlives,
-		MaxConnsPerHost:       5, // Reduced from 10
+		MaxConnsPerHost:       5, // SECURITY FIX: Strict limit
 		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
 		DisableCompression:    config.DisableCompression,
 		WriteBufferSize:       config.WriteBufferSize,
@@ -124,6 +162,8 @@ func (p *SharedTransportPool) cleanupIdleTransports(ctx context.Context) {
 				if shared.refCount <= 0 && now.Sub(shared.lastUsed) > 2*time.Minute {
 					shared.transport.CloseIdleConnections()
 					delete(p.transports, transportKey)
+					// SECURITY FIX: Decrement client count when removing transport
+					atomic.AddInt32(&p.clientCount, -1)
 				}
 			}
 			p.mu.Unlock()

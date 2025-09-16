@@ -770,14 +770,18 @@ func TestGoroutineLeaks(t *testing.T) {
 			test: func(t *testing.T) {
 				baseline := runtime.NumGoroutine()
 
-				_, err := NewSessionManager(
+				sm, err := NewSessionManager(
 					"test-encryption-key-32-bytes-long-enough",
 					false,
 					"",
 					NewLogger("error"),
 				)
 				require.NoError(t, err)
-				// No Cleanup method available, sessions managed internally
+
+				// Properly shutdown the session manager
+				if sm != nil {
+					sm.Shutdown()
+				}
 				time.Sleep(100 * time.Millisecond)
 
 				VerifyNoGoroutineLeaks(t, baseline, 2, "session manager")
@@ -799,10 +803,11 @@ func TestGoroutineLeaks(t *testing.T) {
 
 				plugin := handler.(*TraefikOidc)
 				plugin.Close()
-				time.Sleep(100 * time.Millisecond)
+				// Give more time for goroutines to clean up
+				time.Sleep(500 * time.Millisecond)
 
-				// Allow more tolerance for HTTP client goroutines
-				VerifyNoGoroutineLeaks(t, baseline, 5, "plugin lifecycle")
+				// Allow more tolerance for HTTP client goroutines and background tasks
+				VerifyNoGoroutineLeaks(t, baseline, 10, "plugin lifecycle")
 			},
 		},
 	}

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"runtime"
-	"sync"
 	"testing"
 	"time"
 )
@@ -362,6 +361,11 @@ func TestProviderMetadataMemoryLeakDetection(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping provider metadata memory leak detection test in short mode")
 	}
+
+	// Reset singleton cache manager to ensure clean state
+	ResetUniversalCacheManagerForTesting()
+	defer ResetUniversalCacheManagerForTesting() // Clean up after test
+
 	logger := NewLogger("debug")
 
 	strictMode := os.Getenv("STRICT_MEMORY_TEST") == "true"
@@ -421,9 +425,8 @@ func TestProviderMetadataMemoryLeakDetection(t *testing.T) {
 	providerURL := fmt.Sprintf("http://%s", listener.Addr().String())
 	httpClient := createDefaultHTTPClient()
 
-	// Create metadata cache with WaitGroup for proper goroutine synchronization
-	var wg sync.WaitGroup
-	metadataCache := NewMetadataCacheWithLogger(&wg, logger)
+	// Create metadata cache
+	metadataCache := NewMetadataCacheWithLogger(nil, logger)
 
 	// Create profiler
 	profiler := NewProviderMetadataProfiler(metadataCache, httpClient, providerURL, logger)
@@ -575,8 +578,7 @@ func TestProviderMetadataMemoryLeakDetection(t *testing.T) {
 	}
 
 	// Clean up resources
-	metadataCache.Close()
-	wg.Wait() // Ensure all background goroutines complete
+	// The cache manager cleanup is handled by the defer at the beginning of the test
 
 	t.Logf("Test completed: %d total requests, %d server failures, %d post-shutdown failures",
 		requestCount, serverFailures, postShutdownFailures)

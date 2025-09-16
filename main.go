@@ -559,6 +559,16 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.safeLogDebug("Starting provider metadata discovery")
 
+	// Ensure initComplete is always closed, even on failure
+	defer func() {
+		select {
+		case <-t.initComplete:
+			// Already closed, do nothing
+		default:
+			close(t.initComplete)
+		}
+	}()
+
 	// Get metadata from cache or fetch it with error recovery if available
 	var metadata *ProviderMetadata
 	var err error
@@ -575,8 +585,6 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	if metadata != nil {
 		t.safeLogDebug("Successfully initialized provider metadata")
 		t.updateMetadataEndpoints(metadata)
-
-		close(t.initComplete)
 		return
 	}
 

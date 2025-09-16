@@ -81,16 +81,10 @@ func (rm *ResourceManager) GetHTTPClient(key string) *http.Client {
 		return client
 	}
 
-	// Create new HTTP client with reasonable defaults
-	client = &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-			DisableKeepAlives:   false,
-		},
-	}
+	// SECURITY FIX: Use secure HTTP client configuration with limits
+	config := DefaultHTTPClientConfig()
+	factory := NewHTTPClientFactory()
+	client = factory.CreateHTTPClient(config)
 
 	rm.httpClients[key] = client
 	return client
