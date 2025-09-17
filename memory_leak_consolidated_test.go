@@ -840,7 +840,15 @@ func TestMemoryThresholds(t *testing.T) {
 		runtime.ReadMemStats(&after)
 		cache.Close()
 
-		memUsed := after.Alloc - before.Alloc
+		// Handle potential underflow when after.Alloc < before.Alloc (can happen after GC)
+		var memUsed uint64
+		if after.Alloc >= before.Alloc {
+			memUsed = after.Alloc - before.Alloc
+		} else {
+			// Memory decreased after GC, which is acceptable - set to 0
+			memUsed = 0
+		}
+
 		threshold := thresholds["cache_1000_items"]
 		assert.LessOrEqual(t, memUsed, threshold,
 			"Cache memory usage %d exceeds threshold %d", memUsed, threshold)
@@ -868,7 +876,15 @@ func TestMemoryThresholds(t *testing.T) {
 		runtime.ReadMemStats(&after)
 		// No Cleanup method available
 
-		memUsed := after.Alloc - before.Alloc
+		// Handle potential underflow when after.Alloc < before.Alloc (can happen after GC)
+		var memUsed uint64
+		if after.Alloc >= before.Alloc {
+			memUsed = after.Alloc - before.Alloc
+		} else {
+			// Memory decreased after GC, which is acceptable - set to 0
+			memUsed = 0
+		}
+
 		threshold := thresholds["session_100_sessions"]
 		assert.LessOrEqual(t, memUsed, threshold,
 			"Session memory usage %d exceeds threshold %d", memUsed, threshold)

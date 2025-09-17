@@ -67,7 +67,7 @@ func (f *Factory) GetLogger(name string) Logger {
 // createLogger creates a new logger instance
 func (f *Factory) createLogger(name string) Logger {
 	if name == "noop" || name == "no-op" || name == "discard" {
-		return f.GetNoOpLogger()
+		return GetNoOpLogger()
 	}
 
 	// Create logger with appropriate outputs based on environment
