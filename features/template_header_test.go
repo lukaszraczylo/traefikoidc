@@ -486,8 +486,7 @@ func testTemplateExecutionContext(t *testing.T) {
 
 // testTemplateIntegrationWithPlugin tests template processing in the actual plugin
 func testTemplateIntegrationWithPlugin(t *testing.T) {
-	// This test is temporarily disabled due to missing plugin integration
-	t.Skip("Skipping test until proper plugin integration is available")
+	// Test template integration using mock plugin components
 
 	// Set up test OIDC server
 	var testServerURL string
