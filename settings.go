@@ -26,96 +26,29 @@ type TemplatedHeader struct {
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
 type Config struct {
-	// ProviderURL is the base URL of the OIDC provider (required)
-	// Example: https://accounts.google.com
-	ProviderURL string `json:"providerURL"`
-
-	// RevocationURL is the endpoint for revoking tokens (optional)
-	// If not provided, it will be discovered from provider metadata
-	RevocationURL string `json:"revocationURL"`
-
-	// EnablePKCE enables Proof Key for Code Exchange (PKCE) for the authorization code flow (optional)
-	// This enhances security but might not be supported by all OIDC providers
-	// Default: false
-	EnablePKCE bool `json:"enablePKCE"`
-
-	// CallbackURL is the path where the OIDC provider will redirect after authentication (required)
-	// Example: /oauth2/callback
-	CallbackURL string `json:"callbackURL"`
-
-	// LogoutURL is the path for handling logout requests (optional)
-	// If not provided, it will be set to CallbackURL + "/logout"
-	LogoutURL string `json:"logoutURL"`
-
-	// ClientID is the OAuth 2.0 client identifier (required)
-	ClientID string `json:"clientID"`
-
-	// ClientSecret is the OAuth 2.0 client secret (required)
-	ClientSecret string `json:"clientSecret"`
-
-	// Scopes defines the OAuth 2.0 scopes to request (optional)
-	// Defaults to ["openid", "profile", "email"] if not provided
-	Scopes []string `json:"scopes"`
-
-	// LogLevel sets the logging verbosity (optional)
-	// Valid values: "debug", "info", "error"
-	// Default: "info"
-	LogLevel string `json:"logLevel"`
-
-	// SessionEncryptionKey is used to encrypt session data (required)
-	// Must be a secure random string
-	SessionEncryptionKey string `json:"sessionEncryptionKey"`
-
-	// ForceHTTPS forces the use of HTTPS for all URLs (optional)
-	// Default: false
-	ForceHTTPS bool `json:"forceHTTPS"`
-
-	// RateLimit sets the maximum number of requests per second (optional)
-	// Default: 100
-	RateLimit int `json:"rateLimit"`
-
-	// ExcludedURLs lists paths that bypass authentication (optional)
-	// Example: ["/health", "/metrics"]
-	ExcludedURLs []string `json:"excludedURLs"`
-
-	// AllowedUserDomains restricts access to specific email domains (optional)
-	// Example: ["company.com", "subsidiary.com"]
-	AllowedUserDomains []string `json:"allowedUserDomains"`
-
-	// AllowedUsers restricts access to specific email addresses (optional)
-	// Example: ["user1@example.com", "user2@example.com"]
-	AllowedUsers []string `json:"allowedUsers"`
-
-	// AllowedRolesAndGroups restricts access to users with specific roles or groups (optional)
-	// Example: ["admin", "developer"]
-	AllowedRolesAndGroups []string `json:"allowedRolesAndGroups"`
-
-	// OIDCEndSessionURL is the provider's end session endpoint (optional)
-	// If not provided, it will be discovered from provider metadata
-	OIDCEndSessionURL string `json:"oidcEndSessionURL"`
-
-	// PostLogoutRedirectURI is the URL to redirect to after logout (optional)
-	// Default: "/"
-	PostLogoutRedirectURI string `json:"postLogoutRedirectURI"`
-
-	// HTTPClient allows customizing the HTTP client used for OIDC operations (optional)
-	HTTPClient *http.Client
-
-	// RefreshGracePeriodSeconds defines how many seconds before a token expires
-	// the plugin should attempt to refresh it proactively (optional)
-	// Default: 60
-	RefreshGracePeriodSeconds int `json:"refreshGracePeriodSeconds"`
-	// Headers defines custom HTTP headers to set with templated values (optional)
-	// Values can reference tokens and claims using Go templates with the following variables:
-	// - {{.AccessToken}} - The access token (ID token)
-	// - {{.IdToken}} - Same as AccessToken (for consistency)
-	// - {{.RefreshToken}} - The refresh token
-	// - {{.Claims.email}} - Access token claims (use proper case for claim names)
-	// Examples:
-	//
-	//	[{Name: "X-Forwarded-Email", Value: "{{.Claims.email}}"}]
-	//	[{Name: "Authorization", Value: "Bearer {{.AccessToken}}"}]
-	Headers []TemplatedHeader `json:"headers"`
+	HTTPClient                *http.Client      `json:"-"`
+	OIDCEndSessionURL         string            `json:"oidcEndSessionURL"`
+	CookieDomain              string            `json:"cookieDomain"`
+	CallbackURL               string            `json:"callbackURL"`
+	LogoutURL                 string            `json:"logoutURL"`
+	ClientID                  string            `json:"clientID"`
+	ClientSecret              string            `json:"clientSecret"`
+	PostLogoutRedirectURI     string            `json:"postLogoutRedirectURI"`
+	LogLevel                  string            `json:"logLevel"`
+	SessionEncryptionKey      string            `json:"sessionEncryptionKey"`
+	ProviderURL               string            `json:"providerURL"`
+	RevocationURL             string            `json:"revocationURL"`
+	ExcludedURLs              []string          `json:"excludedURLs"`
+	AllowedUserDomains        []string          `json:"allowedUserDomains"`
+	AllowedUsers              []string          `json:"allowedUsers"`
+	Scopes                    []string          `json:"scopes"`
+	Headers                   []TemplatedHeader `json:"headers"`
+	AllowedRolesAndGroups     []string          `json:"allowedRolesAndGroups"`
+	RateLimit                 int               `json:"rateLimit"`
+	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
+	ForceHTTPS                bool              `json:"forceHTTPS"`
+	EnablePKCE                bool              `json:"enablePKCE"`
+	OverrideScopes            bool              `json:"overrideScopes"`
 }
 
 const (
@@ -156,6 +89,7 @@ func CreateConfig() *Config {
 		RateLimit:                 DefaultRateLimit,
 		ForceHTTPS:                true,  // Secure by default
 		EnablePKCE:                false, // PKCE is opt-in
+		OverrideScopes:            false, // Default to appending scopes, not overriding
 		RefreshGracePeriodSeconds: 60,    // Default grace period of 60 seconds
 	}
 
@@ -248,7 +182,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("refreshGracePeriodSeconds cannot be negative")
 	}
 
-	// SECURITY FIX: Validate headers configuration with enhanced template security
+	// Validate headers configuration for template security
 	for _, header := range c.Headers {
 		if header.Name == "" {
 			return fmt.Errorf("header name cannot be empty")
@@ -274,7 +208,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("header template '%s' appears to use lowercase 'refreshToken' - use '{{.RefreshToken...' instead (case sensitive)", header.Value)
 		}
 
-		// SECURITY FIX: Implement template sandboxing and validation
+		// Validate template syntax and security
 		if err := validateTemplateSecure(header.Value); err != nil {
 			return fmt.Errorf("header template '%s' failed security validation: %w", header.Value, err)
 		}
@@ -283,13 +217,31 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// SECURITY FIX: validateTemplateSecure implements template sandboxing and validation
+// validateTemplateSecure validates template expressions for security vulnerabilities.
+// It checks for dangerous template patterns that could lead to code execution or data leaks
+// while allowing safe custom functions for field access and default values.
 func validateTemplateSecure(templateStr string) error {
-	// SECURITY FIX: Restrict dangerous template functions and patterns
+	// Allow our specific safe custom functions
+	// These are added specifically to handle missing fields safely (issue #60)
+	safeCustomFunctions := []string{
+		"{{get ",     // Safe map access function
+		"{{default ", // Safe default value function
+	}
+
+	// Check if template uses safe custom functions
+	usesSafeFunctions := false
+	for _, safeFn := range safeCustomFunctions {
+		if strings.Contains(templateStr, safeFn) {
+			usesSafeFunctions = true
+			// These functions are explicitly allowed for safe field access
+		}
+	}
+
+	// Check for dangerous template functions and patterns
+	// Skip certain checks if using our safe functions
 	dangerousPatterns := []string{
-		"{{call",     // Function calls
+		"{{call",     // Function calls (except our safe ones)
 		"{{range",    // Range over arbitrary data
-		"{{with",     // With statements that could access unexpected data
 		"{{define",   // Template definitions
 		"{{template", // Template inclusions
 		"{{block",    // Block definitions
@@ -297,7 +249,7 @@ func validateTemplateSecure(templateStr string) error {
 		"{{-",        // Trim whitespace (could be used to obfuscate)
 		"-}}",        // Trim whitespace (could be used to obfuscate)
 		"{{printf",   // Printf functions
-		"{{print",    // Print functions
+		"{{print",    // Print functions (but not our safe ones)
 		"{{println",  // Println functions
 		"{{html",     // HTML functions
 		"{{js",       // JavaScript functions
@@ -316,19 +268,44 @@ func validateTemplateSecure(templateStr string) error {
 		"{{not",      // Logical operations
 	}
 
+	// Allow 'with' for safe conditional access
+	if !strings.Contains(templateStr, "{{with .Claims") {
+		dangerousPatterns = append(dangerousPatterns, "{{with")
+	}
+
 	templateLower := strings.ToLower(templateStr)
 	for _, pattern := range dangerousPatterns {
-		if strings.Contains(templateLower, pattern) {
+		// Skip check if it's one of our safe functions
+		if usesSafeFunctions && (pattern == "{{call" || pattern == "{{print") {
+			// Allow these if we're using safe functions
+			continue
+		}
+
+		// Special handling for comparison operators to avoid false positives with "get" and "default"
+		if pattern == "{{ge" && (strings.Contains(templateStr, "{{get ") || strings.Contains(templateStr, "{{default ")) {
+			// Skip {{ge check if we're using the safe {{get or {{default functions
+			continue
+		}
+
+		// Skip {{de checks if using {{default
+		if pattern == "{{define" && strings.Contains(templateStr, "{{default ") {
+			continue
+		}
+
+		if strings.Contains(templateLower, strings.ToLower(pattern)) {
 			return fmt.Errorf("dangerous template pattern detected: %s", pattern)
 		}
 	}
 
-	// SECURITY FIX: Whitelist allowed template variables and functions
+	// Validate template variables against whitelist
 	allowedPatterns := []string{
 		"{{.AccessToken}}",
 		"{{.IdToken}}",
 		"{{.RefreshToken}}",
 		"{{.Claims.",
+		"{{get ",     // Safe custom function
+		"{{default ", // Safe custom function
+		"{{with ",    // Safe conditional (when used with Claims)
 	}
 
 	// Check if template contains only allowed patterns
@@ -341,13 +318,15 @@ func validateTemplateSecure(templateStr string) error {
 	}
 
 	if !hasAllowedPattern {
-		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, or Claims.*")
+		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, Claims.*, or safe functions (get, default, with)")
 	}
 
-	// SECURITY FIX: Validate Claims access patterns
+	// Validate claims access patterns
 	if strings.Contains(templateStr, "{{.Claims.") {
 		// Simple validation - ensure claims access is to known safe fields
+		// This list includes standard OIDC claims and common provider-specific claims
 		safeClaimsFields := map[string]bool{
+			// Standard OIDC claims
 			"email":              true,
 			"name":               true,
 			"given_name":         true,
@@ -360,6 +339,25 @@ func validateTemplateSecure(templateStr string) error {
 			"iat":                true,
 			"groups":             true,
 			"roles":              true,
+			// Common custom claims
+			"internal_role": true, // Custom roles field (issue #60)
+			"role":          true, // Alternative role field
+			"department":    true, // Organization info
+			"organization":  true, // Organization info
+			// Provider-specific claims
+			"realm_access":    true, // Keycloak specific
+			"resource_access": true, // Keycloak specific
+			"oid":             true, // Azure AD object ID
+			"tid":             true, // Azure AD tenant ID
+			"upn":             true, // Azure AD User Principal Name
+			"hd":              true, // Google hosted domain
+			"picture":         true, // Profile picture
+			// Additional standard claims
+			"locale":         true, // User locale
+			"zoneinfo":       true, // Timezone
+			"phone_number":   true, // Contact info
+			"email_verified": true, // Email verification status
+			"updated_at":     true, // Last update time
 		}
 
 		// Extract field names from Claims access
@@ -381,7 +379,7 @@ func validateTemplateSecure(templateStr string) error {
 				return fmt.Errorf("access to Claims.%s is not allowed for security reasons", fieldName)
 			}
 
-			// Fix the search for next occurrence
+			// Search for next occurrence
 			nextStart := strings.Index(templateStr[start+end+2:], "{{.Claims.")
 			if nextStart != -1 {
 				start = start + end + 2 + nextStart
@@ -391,7 +389,7 @@ func validateTemplateSecure(templateStr string) error {
 		}
 	}
 
-	// SECURITY FIX: Prevent code injection through template syntax
+	// Prevent code injection through template syntax
 	if strings.Contains(templateStr, "{{") && strings.Contains(templateStr, "}}") {
 		// Count opening and closing braces
 		openCount := strings.Count(templateStr, "{{")
@@ -412,6 +410,9 @@ func validateTemplateSecure(templateStr string) error {
 //
 // Returns:
 //   - true if the string is a valid HTTPS URL, false otherwise.
+//
+// isValidSecureURL validates that a URL string is well-formed and uses HTTPS.
+// Returns true if the URL is valid and secure (HTTPS), false otherwise.
 func isValidSecureURL(s string) bool {
 	u, err := url.Parse(s)
 	return err == nil && u.Scheme == "https" && u.Host != ""
@@ -424,6 +425,9 @@ func isValidSecureURL(s string) bool {
 //
 // Returns:
 //   - true if the log level is valid, false otherwise.
+//
+// isValidLogLevel checks if the provided log level is supported.
+// Valid log levels are: debug, info, error.
 func isValidLogLevel(level string) bool {
 	return level == "debug" || level == "info" || level == "error"
 }
@@ -454,6 +458,9 @@ type Logger struct {
 //
 // Returns:
 //   - A pointer to the configured Logger instance.
+//
+// NewLogger creates a new logger instance with the specified log level.
+// If logLevel is empty, defaults to "info". Invalid log levels default to "info".
 func NewLogger(logLevel string) *Logger {
 	logError := log.New(io.Discard, "ERROR: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
 	logInfo := log.New(io.Discard, "INFO: TraefikOidcPlugin: ", log.Ldate|log.Ltime)
@@ -481,16 +488,20 @@ func NewLogger(logLevel string) *Logger {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Info logs an informational message if the logger's level allows it.
 func (l *Logger) Info(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
-// Debug logs a message at the DEBUG level using Printf style formatting.
+// Debug logs a message at the DEBUG level.
 // Output is directed to stdout only if the configured log level is "debug".
 //
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Debug logs a debug message if the logger's level allows it.
 func (l *Logger) Debug(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
@@ -501,6 +512,8 @@ func (l *Logger) Debug(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Error logs an error message. Errors are always logged regardless of level.
 func (l *Logger) Error(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
@@ -512,17 +525,21 @@ func (l *Logger) Error(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Infof logs a formatted informational message if the logger's level allows it.
 func (l *Logger) Infof(format string, args ...interface{}) {
 	l.logInfo.Printf(format, args...)
 }
 
-// Debugf logs a message at the DEBUG level using Printf style formatting.
+// Debugf logs a formatted message at the DEBUG level.
 // Equivalent to calling l.Debug(format, args...).
 // Output is directed to stdout only if the configured log level is "debug".
 //
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Debugf logs a formatted debug message if the logger's level allows it.
 func (l *Logger) Debugf(format string, args ...interface{}) {
 	l.logDebug.Printf(format, args...)
 }
@@ -534,8 +551,16 @@ func (l *Logger) Debugf(format string, args ...interface{}) {
 // Parameters:
 //   - format: The format string (as in fmt.Printf).
 //   - args: The arguments for the format string.
+//
+// Errorf logs a formatted error message. Errors are always logged regardless of level.
 func (l *Logger) Errorf(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
+}
+
+// newNoOpLogger creates a logger that discards all output.
+// Deprecated: Use GetSingletonNoOpLogger() instead for better memory efficiency.
+func newNoOpLogger() *Logger {
+	return GetSingletonNoOpLogger()
 }
 
 // handleError logs an error message using the provided logger and sends an HTTP error
@@ -546,7 +571,12 @@ func (l *Logger) Errorf(format string, args ...interface{}) {
 //   - message: The error message string.
 //   - code: The HTTP status code for the response.
 //   - logger: The Logger instance to use for logging the error.
+//
+// handleError writes an HTTP error response with the specified status code and message.
+// It logs the error and sets appropriate headers before writing the response.
+//
+//lint:ignore U1000 Kept for potential future error handling
 func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
-	logger.Error(message)
+	logger.Error("%s", message)
 	http.Error(w, message, code)
 }

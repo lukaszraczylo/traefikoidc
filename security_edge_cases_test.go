@@ -21,7 +21,7 @@ import (
 // TestJWTAlgorithmConfusionAttack tests if the plugin is vulnerable to JWT algorithm confusion attacks
 // where an attacker might try to switch from an asymmetric algorithm (RS256) to a symmetric one (HS256)
 func TestJWTAlgorithmConfusionAttack(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a standard JWT with RS256 algorithm
@@ -86,7 +86,7 @@ func TestJWTAlgorithmConfusionAttack(t *testing.T) {
 // TestJWTNoneAlgorithmAttack tests the plugin's resistance to the "none" algorithm attack
 // where an attacker removes the signature and sets the algorithm to "none"
 func TestJWTNoneAlgorithmAttack(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a standard JWT
@@ -150,7 +150,7 @@ func TestJWTNoneAlgorithmAttack(t *testing.T) {
 
 // TestJWTTokenTampering tests the plugin's ability to detect modifications to the JWT payload
 func TestJWTTokenTampering(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a standard JWT
@@ -215,7 +215,7 @@ func TestJWTTokenTampering(t *testing.T) {
 
 // TestJWTExpiredToken tests the plugin's handling of expired tokens
 func TestJWTExpiredToken(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a JWT that is already expired
@@ -248,7 +248,7 @@ func TestJWTExpiredToken(t *testing.T) {
 
 // TestJWTFutureToken tests the plugin's handling of tokens issued in the future
 func TestJWTFutureToken(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a JWT with a future issuance time
@@ -281,10 +281,13 @@ func TestJWTFutureToken(t *testing.T) {
 
 // TestJWTReplayAttack tests the plugin's protection against token replay attacks
 func TestJWTReplayAttack(t *testing.T) {
+	// Create cleanup helper
+	tc := newTestCleanup(t)
+
 	// Create a new instance for this test to avoid interference from global state
 	logger := NewLogger("debug")
-	tokenBlacklist := NewCache()
-	tokenCache := NewTokenCache()
+	tokenBlacklist := tc.addCache(NewCache())
+	tokenCache := tc.addTokenCache(NewTokenCache())
 
 	// Create keys
 	rsaPrivateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -383,14 +386,14 @@ func TestJWTReplayAttack(t *testing.T) {
 
 // TestMissingClaims tests validation of tokens with missing required claims
 func TestMissingClaims(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Test cases for missing claims
 	testCases := []struct {
 		name          string
-		omittedClaims []string
 		expectedError string
+		omittedClaims []string
 	}{
 		{
 			name:          "Missing Issuer",
@@ -460,8 +463,11 @@ func TestMissingClaims(t *testing.T) {
 
 // TestSessionFixationAttack tests the plugin's resistance to session fixation attacks
 func TestSessionFixationAttack(t *testing.T) {
+	// Create cleanup helper
+	tc := newTestCleanup(t)
+
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+	sm, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -479,8 +485,8 @@ func TestSessionFixationAttack(t *testing.T) {
 	// Set up the attacker's session with malicious data
 	attackerSession.SetAuthenticated(true)
 	attackerSession.SetEmail("attacker@evil.com")
-	attackerSession.SetIDToken("fake-id-token")
-	attackerSession.SetAccessToken("fake-access-token")
+	attackerSession.SetIDToken(ValidIDToken)
+	attackerSession.SetAccessToken(ValidAccessToken)
 
 	// Save the session to get cookies
 	if err := attackerSession.Save(req, resp); err != nil {
@@ -510,7 +516,34 @@ func TestSessionFixationAttack(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
+	// Create keys for JWT verification
+	rsaPrivateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+	rsaPublicKey := &rsaPrivateKey.PublicKey
+
+	// Create JWK
+	jwk := JWK{
+		Kty: "RSA",
+		Kid: "test-key-id",
+		Alg: "RS256",
+		N:   base64.RawURLEncoding.EncodeToString(rsaPublicKey.N.Bytes()),
+		E:   base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}), // 65537 in bytes
+	}
+	jwks := &JWKSet{
+		Keys: []JWK{jwk},
+	}
+
+	// Create mock JWK cache
+	mockJWKCache := &MockJWKCache{
+		JWKS: jwks,
+		Err:  nil,
+	}
+
 	// Create the TraefikOidc middleware
+	tokenBlacklist := tc.addCache(NewCache())
+	tokenCache := tc.addTokenCache(NewTokenCache())
 	tOidc := &TraefikOidc{
 		next:               nextHandler,
 		name:               "test",
@@ -519,8 +552,10 @@ func TestSessionFixationAttack(t *testing.T) {
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
 		clientSecret:       "test-client-secret",
-		tokenBlacklist:     NewCache(),
-		tokenCache:         NewTokenCache(),
+		jwkCache:           mockJWKCache,
+		jwksURL:            "https://test-jwks-url.com",
+		tokenBlacklist:     tokenBlacklist,
+		tokenCache:         tokenCache,
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
 		logger:             logger,
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
@@ -528,7 +563,13 @@ func TestSessionFixationAttack(t *testing.T) {
 		httpClient:         &http.Client{},
 		initComplete:       make(chan struct{}),
 		sessionManager:     sm,
+		extractClaimsFunc:  extractClaims,
 	}
+
+	// Set up the token verifier and JWT verifier
+	tOidc.jwtVerifier = tOidc
+	tOidc.tokenVerifier = tOidc
+
 	close(tOidc.initComplete)
 
 	// Now create a victim's request with the attacker's cookies
@@ -582,7 +623,7 @@ func TestSessionFixationAttack(t *testing.T) {
 // TestCSRFProtection tests CSRF protection in POST requests
 func TestCSRFProtection(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, logger)
+	sm, err := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -765,10 +806,13 @@ func TestCSRFProtection(t *testing.T) {
 
 // TestTokenBlacklisting tests the token blacklisting mechanism
 func TestTokenBlacklisting(t *testing.T) {
+	// Create cleanup helper
+	tc := newTestCleanup(t)
+
 	// Create a new instance for this test to avoid interference from global state
 	logger := NewLogger("debug")
-	tokenBlacklist := NewCache()
-	tokenCache := NewTokenCache()
+	tokenBlacklist := tc.addCache(NewCache())
+	tokenCache := tc.addTokenCache(NewTokenCache())
 
 	// Create keys
 	rsaPrivateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -853,7 +897,7 @@ func TestTokenBlacklisting(t *testing.T) {
 
 // TestDifferentSigningAlgorithms tests that the plugin properly handles different signing algorithms
 func TestDifferentSigningAlgorithms(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Test cases for different algorithms - the implementation actually supports multiple algorithms
@@ -1154,7 +1198,7 @@ func createECJWK(privateKey *ecdsa.PrivateKey, alg, kid string) JWK {
 
 // TestMalformedTokens tests the plugin's handling of malformed tokens
 func TestMalformedTokens(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	testCases := []struct {
@@ -1217,23 +1261,28 @@ func TestMalformedTokens(t *testing.T) {
 
 // TestRateLimiting tests the rate limiting functionality to prevent brute force attacks
 func TestRateLimiting(t *testing.T) {
+	// Create cleanup helper
+	tc := newTestCleanup(t)
+
 	// Create a fresh instance for this test to avoid affecting other tests with rate limiting
 	logger := NewLogger("debug")
 
 	// Create a new test suite for this test only
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a separate TraefikOidc instance with a very restrictive rate limiter
 	// This prevents the global instance from being rate-limited
+	tokenBlacklist := tc.addCache(NewCache())
+	tokenCache := tc.addTokenCache(NewTokenCache())
 	tOidc := &TraefikOidc{
 		issuerURL:      "https://test-issuer.com",
 		clientID:       "test-client-id",
 		clientSecret:   "test-client-secret",
 		jwkCache:       ts.mockJWKCache,
 		jwksURL:        "https://test-jwks-url.com",
-		tokenBlacklist: NewCache(),
-		tokenCache:     NewTokenCache(),
+		tokenBlacklist: tokenBlacklist,
+		tokenCache:     tokenCache,
 		// Allow only 2 requests per 10 seconds
 		limiter:            rate.NewLimiter(rate.Every(10*time.Second), 2),
 		logger:             logger,
@@ -1314,7 +1363,10 @@ func TestRateLimiting(t *testing.T) {
 // TestAuthorizationHeaderBypass tests that the plugin correctly handles attempts to bypass
 // authorization by directly providing an Authorization header
 func TestAuthorizationHeaderBypass(t *testing.T) {
-	ts := &TestSuite{t: t}
+	// Create cleanup helper
+	tc := newTestCleanup(t)
+
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a test next handler that would indicate successful authentication
@@ -1324,6 +1376,8 @@ func TestAuthorizationHeaderBypass(t *testing.T) {
 	})
 
 	// Create the TraefikOidc instance
+	tokenBlacklist := tc.addCache(NewCache())
+	tokenCache := tc.addTokenCache(NewTokenCache())
 	tOidc := &TraefikOidc{
 		next:               nextHandler,
 		name:               "test",
@@ -1334,8 +1388,8 @@ func TestAuthorizationHeaderBypass(t *testing.T) {
 		clientSecret:       "test-client-secret",
 		jwkCache:           ts.mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
-		tokenBlacklist:     NewCache(),
-		tokenCache:         NewTokenCache(),
+		tokenBlacklist:     tokenBlacklist,
+		tokenCache:         tokenCache,
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
 		logger:             NewLogger("debug"),
 		allowedUserDomains: map[string]struct{}{"example.com": {}},
@@ -1386,7 +1440,7 @@ func TestAuthorizationHeaderBypass(t *testing.T) {
 
 // TestEmptyAudience tests tokens with empty audience claim
 func TestEmptyAudience(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a JWT with empty audience
@@ -1419,7 +1473,7 @@ func TestEmptyAudience(t *testing.T) {
 
 // TestEmptyIssuer tests tokens with empty issuer claim
 func TestEmptyIssuer(t *testing.T) {
-	ts := &TestSuite{t: t}
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a JWT with empty issuer
@@ -1452,7 +1506,10 @@ func TestEmptyIssuer(t *testing.T) {
 
 // TestInvalidRedirectURI tests the plugin's handling of invalid redirect URIs
 func TestInvalidRedirectURI(t *testing.T) {
-	ts := &TestSuite{t: t}
+	// Create cleanup helper
+	tc := newTestCleanup(t)
+
+	ts := NewTestSuite(t)
 	ts.Setup()
 
 	// Create a test request with an invalid redirect URI
@@ -1494,6 +1551,8 @@ func TestInvalidRedirectURI(t *testing.T) {
 	})
 
 	// Create the TraefikOidc instance
+	tokenBlacklist := tc.addCache(NewCache())
+	tokenCache := tc.addTokenCache(NewTokenCache())
 	tOidc := &TraefikOidc{
 		next:               nextHandler,
 		name:               "test",
@@ -1504,8 +1563,8 @@ func TestInvalidRedirectURI(t *testing.T) {
 		clientSecret:       "test-client-secret",
 		jwkCache:           ts.mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
-		tokenBlacklist:     NewCache(),
-		tokenCache:         NewTokenCache(),
+		tokenBlacklist:     tokenBlacklist,
+		tokenCache:         tokenCache,
 		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
 		logger:             NewLogger("debug"),
 		allowedUserDomains: map[string]struct{}{"example.com": {}},

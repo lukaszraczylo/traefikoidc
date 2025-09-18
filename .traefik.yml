@@ -35,11 +35,8 @@ testData:
   logoutURL: /oauth2/logout # Path for handling logout requests (if not provided, it will be set to callbackURL + "/logout")
   postLogoutRedirectURI: /oidc/different-logout # URL to redirect to after logout (default: "/")
 
-  scopes: # OAuth 2.0 scopes to request (default: ["openid", "email", "profile"])
-    - openid
-    - email
-    - profile
-    - roles # Include this to get role information from the provider
+  scopes: # Additional scopes to append to defaults ["openid", "profile", "email"]
+    - roles # Result: ["openid", "profile", "email", "roles"]
 
   allowedUserDomains: # Restricts access to specific email domains (if not provided, relies on OIDC provider)
     - company.com
@@ -65,6 +62,8 @@ testData:
     - /metrics
     
   headers: # Custom headers to set with templated values from claims and tokens
+    # NOTE: If you encounter "can't evaluate field AccessToken in type bool" errors,
+    # you may need to escape the templates. See the headers section in configuration below.
     - name: "X-User-Email"
       value: "{{.Claims.email}}"
     - name: "X-User-ID"
@@ -78,6 +77,102 @@ testData:
   revocationURL: https://accounts.google.com/revoke # Endpoint for revoking tokens
   oidcEndSessionURL: https://accounts.google.com/logout # Provider's end session endpoint
   enablePKCE: false # Enables PKCE (Proof Key for Code Exchange) for additional security
+  cookieDomain: "" # Explicit domain for session cookies (e.g., ".example.com" for multi-subdomain setups)
+  overrideScopes: false # When true, replaces default scopes instead of appending (default: false)
+  refreshGracePeriodSeconds: 60 # Seconds before token expiry to attempt proactive refresh (default: 60)
+
+# --- Provider Specific Configuration Examples ---
+#
+# Below are example configurations tailored for specific OIDC providers.
+# Uncomment and adapt the relevant section for your provider.
+# Remember to replace placeholder values (like client IDs, secrets, domains)
+# with your actual credentials and settings.
+#
+# For all providers, ensure claims like email, roles, and groups are
+# configured to be included in the ID TOKEN. This plugin validates ID tokens.
+
+# --- Keycloak Example ---
+# testDataKeycloak:
+#   providerURL: https://your-keycloak-domain/realms/your-realm # e.g., http://localhost:8080/realms/master
+#   clientID: your-keycloak-client-id
+#   clientSecret: your-keycloak-client-secret # Store securely, e.g., urn:k8s:secret:namespace:secret-name:key
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-keycloak"
+#   scopes: # Default ["openid", "profile", "email"] are usually sufficient. Add others if mappers depend on them.
+#     - roles # Example: if you mapped Keycloak roles to a 'roles' claim in the ID token
+#     - groups # Example: if you mapped Keycloak groups to a 'groups' claim in the ID token
+#   allowedRolesAndGroups: # Corresponds to 'Token Claim Name' in Keycloak mappers
+#     - admin
+#     - editor
+#   # Ensure Keycloak client mappers add 'email', 'roles', 'groups' etc. to the ID Token.
+#   # See README.md "Provider Configuration Recommendations" for Keycloak.
+
+# --- Azure AD (Microsoft Entra ID) Example ---
+# testDataAzureAD:
+#   providerURL: https://login.microsoftonline.com/your-tenant-id/v2.0 # Replace your-tenant-id
+#   clientID: your-azure-ad-client-id
+#   clientSecret: your-azure-ad-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-azure"
+#   scopes: # Defaults ["openid", "profile", "email"] are good.
+#     # Azure AD may require specific scopes for certain graph API permissions if you were to use the access token,
+#     # but for ID token claims, defaults are often enough.
+#     # Group claims need to be configured in Azure AD App Registration -> Token Configuration -> Add groups claim.
+#   allowedUserDomains:
+#     - yourcompany.com
+#   allowedRolesAndGroups: # If you configured group claims (typically 'groups') or app roles in Azure AD
+#     - "group-object-id-1" # Azure AD group claims can be Object IDs by default
+#     - "AppRoleName"
+#   # See README.md "Provider Configuration Recommendations" for Azure AD.
+
+# --- Google Workspace / Google Cloud Identity Example ---
+# testDataGoogle:
+#   providerURL: https://accounts.google.com # This is standard for Google
+#   clientID: your-google-client-id.apps.googleusercontent.com
+#   clientSecret: your-google-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-google"
+#   scopes: # Defaults ["openid", "profile", "email"] are handled. Plugin manages Google-specifics.
+#     # Do NOT add 'offline_access' - plugin handles this.
+#   allowedUserDomains: # Useful for Google Workspace users
+#     - your-gsuite-domain.com
+#   # Google includes 'hd' (hosted domain) claim which can be used with allowedUserDomains.
+#   # Other claims like 'email', 'sub', 'name' are standard.
+#   # See README.md "Provider Configuration Recommendations" for Google.
+
+# --- Auth0 Example ---
+# testDataAuth0:
+#   providerURL: https://your-auth0-domain.auth0.com # Replace with your Auth0 domain
+#   clientID: your-auth0-client-id
+#   clientSecret: your-auth0-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-auth0"
+#   scopes: # Defaults ["openid", "profile", "email"]. Add custom scopes if your Auth0 Rules/Actions require them.
+#     - read:custom_data # Example custom scope
+#   allowedRolesAndGroups: # Based on claims added via Auth0 Rules or Actions (e.g. namespaced claims)
+#     - "https://your-app.com/roles:admin"
+#     - editor
+#   # Use Auth0 Rules or Actions to add custom claims (roles, permissions) to the ID Token.
+#   # Ensure postLogoutRedirectURI is in Auth0 app's "Allowed Logout URLs".
+#   # See README.md "Provider Configuration Recommendations" for Auth0.
+
+# --- Generic OIDC Provider Example ---
+# testDataGenericOIDC:
+#   providerURL: https://your-generic-oidc-provider.com/oidc # Issuer URL for your provider
+#   clientID: your-generic-client-id
+#   clientSecret: your-generic-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-generic"
+#   scopes: # Must include "openid". "profile" and "email" are common.
+#     - openid
+#     - profile
+#     - email
+#     - custom_scope_for_claims # If your provider needs specific scopes for ID token claims
+#   allowedRolesAndGroups:
+#     - user_role_from_id_token
+#   # Consult your provider's documentation on how to map attributes/roles/groups to ID Token claims.
+#   # Verify ID Token contents (e.g. jwt.io) to see available claims.
+#   # See README.md "Provider Configuration Recommendations" for Generic OIDC.
 
 # Configuration documentation
 configuration:
@@ -153,11 +248,15 @@ configuration:
   scopes:
     type: array
     description: |
-      The OAuth 2.0 scopes to request from the OIDC provider.
-      Default: ["openid", "profile", "email"]
+      Additional OAuth 2.0 scopes to append to the default scopes.
+      Default scopes are always included: ["openid", "profile", "email"]
+      
+      User-provided scopes are appended to defaults with automatic deduplication.
+      For example, specifying ["roles", "custom_scope"] results in:
+      ["openid", "profile", "email", "roles", "custom_scope"]
 
       Include "roles" or similar scope if you need role/group information.
-      Note: For Google OAuth, the middleware automatically handles the 
+      Note: For Google OAuth, the middleware automatically handles the
       proper authentication parameters and does NOT require the "offline_access"
       scope (which Google rejects as invalid). See documentation for details.
     required: false
@@ -277,6 +376,58 @@ configuration:
       Default: false
     required: false
 
+  cookieDomain:
+    type: string
+    description: |
+      Explicit domain for session cookies. This is important for multi-subdomain setups 
+      and reverse proxy deployments to ensure consistent cookie handling.
+      
+      When set, all session cookies will use this domain. When not set, the domain
+      is auto-detected from the request headers (X-Forwarded-Host or Host).
+      
+      Use a leading dot for subdomain-wide cookies (e.g., ".example.com" allows
+      cookies to be shared between app.example.com, api.example.com, etc.).
+      
+      Use a specific domain for host-only cookies (e.g., "app.example.com" restricts
+      cookies to that exact domain).
+      
+      This setting is crucial to prevent authentication issues like "CSRF token missing
+      in session" errors that can occur when cookies are created with inconsistent domains.
+      
+      Examples:
+      - ".example.com" - Allows all subdomains to share cookies
+      - "app.example.com" - Restricts cookies to this specific host
+      
+      Default: "" (auto-detected from request headers)
+    required: false
+
+  overrideScopes:
+    type: boolean
+    description: |
+      When set to true, the scopes you provide will completely replace the default scopes
+      (openid, profile, email) instead of being appended to them.
+      
+      This is useful when you need precise control over the scopes sent to the OIDC provider,
+      such as when a provider requires specific scopes or when you want to minimize the
+      requested permissions.
+      
+      Default: false (appends user scopes to defaults)
+    required: false
+
+  refreshGracePeriodSeconds:
+    type: integer
+    description: |
+      The number of seconds before a token expires to attempt proactive refresh.
+      
+      When a request is made and the access token will expire within this grace period,
+      the middleware will attempt to refresh the token proactively. This helps prevent
+      authentication interruptions for active users.
+      
+      Setting this to 0 disables proactive refresh (tokens are only refreshed after expiry).
+      
+      Default: 60 (1 minute before expiry)
+    required: false
+
   headers:
     type: array
     description: |
@@ -289,6 +440,28 @@ configuration:
 
       Templates support Go template syntax including conditionals and iteration.
       Variable names are case-sensitive - use .Claims not .claims.
+
+      IMPORTANT: Template Escaping
+      If you encounter the error "can't evaluate field AccessToken in type bool" when
+      starting Traefik, this means Traefik is trying to evaluate the template expressions
+      before passing them to the plugin. To fix this, you need to escape the templates
+      using one of these methods:
+
+      1. Use YAML literal style (recommended):
+         headers:
+           - name: "Authorization"
+             value: |
+               Bearer {{.AccessToken}}
+
+      2. Use single quotes:
+         headers:
+           - name: "Authorization"
+             value: 'Bearer {{.AccessToken}}'
+
+      3. For inline double quotes, escape the braces:
+         headers:
+           - name: "Authorization"
+             value: "Bearer {{"{{.AccessToken}}"}}"
 
       Examples:
       - name: "X-User-Email", value: "{{.Claims.email}}"

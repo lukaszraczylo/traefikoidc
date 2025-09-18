@@ -6,14 +6,26 @@ This middleware replaces the need for forward-auth and oauth2-proxy when using T
 
 The Traefik OIDC middleware provides a complete OIDC authentication solution with features like:
 - Token validation and verification
-- Session management
+- Session management with automatic cleanup
 - Domain restrictions
 - Role-based access control
 - Token caching and blacklisting
 - Rate limiting
 - Excluded paths (public URLs)
+- Memory-efficient operation with bounded resource usage
+
+**Important Note on Token Validation:** This middleware performs authentication and claim extraction based on the **ID Token** provided by the OIDC provider. It does not primarily use the Access Token for these purposes (though the Access Token is available for templated headers if needed). Therefore, ensure that all necessary claims (e.g., email, roles, custom attributes) are included in the ID Token by your OIDC provider's configuration.
 
 The middleware has been tested with Auth0, Logto, Google and other standard OIDC providers. It includes special handling for Google's OAuth implementation.
+
+### Performance and Memory Management
+
+This middleware includes advanced memory management features to ensure stable operation under high load:
+- **Bounded caches**: All internal caches (metadata, sessions, tokens) have configurable size limits with LRU eviction
+- **Automatic cleanup**: Background goroutines periodically clean up expired sessions and tokens
+- **Memory monitoring**: Built-in memory leak detection and prevention
+- **Graceful degradation**: Continues operating safely even under memory pressure
+- **Zero goroutine leaks**: All background tasks are properly managed and terminated on shutdown
 
 ## Traefik Version Compatibility
 
@@ -67,7 +79,8 @@ The middleware supports the following configuration options:
 |-----------|-------------|---------|---------|
 | `logoutURL` | The path for handling logout requests | `callbackURL + "/logout"` | `/oauth2/logout` |
 | `postLogoutRedirectURI` | The URL to redirect to after logout | `/` | `/logged-out-page` |
-| `scopes` | The OAuth 2.0 scopes to request | `["openid", "profile", "email"]` | `["openid", "email", "profile", "roles"]` |
+| `scopes` | OAuth 2.0 scopes to use for authentication | `["openid", "profile", "email"]` (always included by default) | `["roles", "custom_scope"]` (appended to defaults) |
+| `overrideScopes` | When true, replaces default scopes with provided scopes instead of appending | `false` | `true` (use only the scopes explicitly provided) |
 | `logLevel` | Sets the logging verbosity | `info` | `debug`, `info`, `error` |
 | `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
 | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
@@ -79,7 +92,81 @@ The middleware supports the following configuration options:
 | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
+| `cookieDomain` | Explicit domain for session cookies (important for multi-subdomain setups) | auto-detected | `.example.com`, `app.example.com` |
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
+
+## Scope Configuration
+
+### Scope Behavior
+
+The middleware supports two modes for handling OAuth 2.0 scopes, controlled by the `overrideScopes` parameter:
+
+#### Default Append Mode (`overrideScopes: false`)
+
+By default, the middleware uses an **append** behavior for OAuth 2.0 scopes:
+
+- **Default scopes** are always included: `["openid", "profile", "email"]`
+- **User-provided scopes** are appended to the defaults with automatic deduplication
+- The final scope list maintains the order: defaults first, then user scopes
+
+#### Override Mode (`overrideScopes: true`)
+
+When `overrideScopes` is set to `true`, the middleware uses **replacement** behavior:
+
+- Default scopes are **not** automatically included
+- Only the scopes explicitly provided in the `scopes` field are used
+- You must include all required scopes explicitly, including `openid` if needed
+
+### Examples:
+
+**Default behavior (no custom scopes):**
+```yaml
+# No scopes field specified
+# Result: ["openid", "profile", "email"]
+```
+
+**Default append behavior:**
+```yaml
+scopes:
+  - roles
+  - custom_scope
+# Result: ["openid", "profile", "email", "roles", "custom_scope"]
+```
+
+**Overlapping scopes with append (automatic deduplication):**
+```yaml
+scopes:
+  - openid      # Duplicate - will be deduplicated
+  - roles
+  - profile     # Duplicate - will be deduplicated
+  - permissions
+# Result: ["openid", "profile", "email", "roles", "permissions"]
+```
+
+**Using override mode:**
+```yaml
+overrideScopes: true
+scopes:
+  - openid
+  - profile
+  - custom_scope
+# Result: ["openid", "profile", "custom_scope"]
+```
+
+**Empty scopes list with default behavior:**
+```yaml
+scopes: []
+# Result: ["openid", "profile", "email"]
+```
+
+**Empty scopes list with override mode:**
+```yaml
+overrideScopes: true
+scopes: []
+# Result: [] (Warning: empty scopes may cause authentication to fail)
+```
+
+The default append behavior ensures essential OIDC scopes are always present, while the override mode gives you complete control over the exact scopes requested from the provider.
 
 ## Usage Examples
 
@@ -101,9 +188,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 ### With Excluded URLs (Public Access Paths)
@@ -124,9 +209,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       excludedURLs:
         - /login        # covers /login, /login/me, /login/reminder etc.
         - /public-data
@@ -152,9 +235,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       allowedUserDomains:
         - company.com
         - subsidiary.com
@@ -178,9 +259,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       allowedUsers:
         - user1@example.com
         - user2@another.org
@@ -204,9 +283,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       allowedUserDomains:
         - company.com
       allowedUsers:
@@ -239,14 +316,35 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
-        - roles     # Include this to get role information from the provider
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       allowedRolesAndGroups:
         - admin
         - developer
 ```
+
+### With Cookie Domain Configuration (Multi-Subdomain Setup)
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-multi-subdomain
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: 1234567890.apps.googleusercontent.com
+      clientSecret: your-client-secret
+      sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      cookieDomain: .example.com  # Allows cookies to be shared across all subdomains
+      scopes:
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
+```
+
+**Important**: The `cookieDomain` parameter is crucial when running behind a reverse proxy or when your application serves multiple subdomains. Without it, cookies may be created with inconsistent domains, leading to authentication issues like "CSRF token missing in session" errors.
 
 ### With Custom Logging and Rate Limiting
 
@@ -269,9 +367,7 @@ spec:
       rateLimit: 500     # Requests per second (default: 100)
       forceHTTPS: false  # Default is true for security
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 ### With Custom Post-Logout Redirect
@@ -293,9 +389,7 @@ spec:
       logoutURL: /oauth2/logout
       postLogoutRedirectURI: /logged-out-page  # Where to redirect after logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 ### With Templated Headers
@@ -316,21 +410,19 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
-        - roles
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
       headers:
+        # Using double curly braces to escape template expressions
         - name: "X-User-Email"
-          value: "{{.Claims.email}}"
+          value: "{{{{.Claims.email}}}}"
         - name: "X-User-ID"
-          value: "{{.Claims.sub}}"
+          value: "{{{{.Claims.sub}}}}"
         - name: "Authorization"
-          value: "Bearer {{.AccessToken}}"
+          value: "Bearer {{{{.AccessToken}}}}"
         - name: "X-User-Roles"
-          value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+          value: "{{{{range $i, $e := .Claims.roles}}}}{{{{if $i}}}},{{{{end}}}}{{{{$e}}}}{{{{end}}}}"
         - name: "X-Is-Admin"
-          value: "{{if eq .Claims.role \"admin\"}}true{{else}}false{{end}}"
+          value: "{{{{if eq .Claims.role \"admin\"}}}}true{{{{else}}}}false{{{{end}}}}"
 ```
 
 ### With PKCE Enabled
@@ -352,9 +444,7 @@ spec:
       logoutURL: /oauth2/logout
       enablePKCE: true  # Enables PKCE for added security
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 ### Google OIDC Configuration Example
@@ -377,9 +467,7 @@ spec:
       callbackURL: /oauth2/callback                             # Adjust if needed
       logoutURL: /oauth2/logout                                 # Optional: Adjust if needed
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
         # Note: DO NOT manually add offline_access scope for Google
         # The middleware automatically handles Google-specific requirements
       refreshGracePeriodSeconds: 300  # Optional: Start refresh 5 min before expiry (default 60)
@@ -408,9 +496,7 @@ spec:
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
       scopes:
-        - openid
-        - email
-        - profile
+        - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
 Don't forget to create the secret:
@@ -509,9 +595,7 @@ http:
           postLogoutRedirectURI: /logged-out-page
           sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
           scopes:
-            - openid
-            - email
-            - profile
+            - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
           allowedUserDomains:
             - company.com
           allowedUsers:
@@ -529,14 +613,19 @@ http:
             - /health
             - /metrics
           headers:
+            # Using YAML literal style to prevent Traefik from pre-evaluating templates
             - name: "X-User-Email"
-              value: "{{.Claims.email}}"
+              value: |
+                {{.Claims.email}}
             - name: "X-User-ID"
-              value: "{{.Claims.sub}}"
+              value: |
+                {{.Claims.sub}}
             - name: "Authorization"
-              value: "Bearer {{.AccessToken}}"
+              value: |
+                Bearer {{.AccessToken}}
             - name: "X-User-Roles"
-              value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+              value: |
+                {{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}
 ```
 
 ## Advanced Configuration
@@ -601,17 +690,39 @@ Templates can access the following variables:
 - `{{.IdToken}}` - The raw ID token string (same as AccessToken in most configurations)
 - `{{.RefreshToken}}` - The raw refresh token string
 
-**Example configuration:**
+**⚠️ Important: Template Escaping**
+
+If you encounter the error `can't evaluate field AccessToken in type bool` when starting Traefik, this indicates that Traefik is attempting to evaluate the template expressions before passing them to the plugin. This is a known issue when using template syntax in Traefik plugin configurations.
+
+**Solution:** You must escape the template expressions using double curly braces:
+
+```yaml
+headers:
+  - name: "Authorization"
+    value: "Bearer {{{{.AccessToken}}}}"
+```
+
+This is the only reliable method that works consistently. Here's why:
+
+- **Double curly braces (`{{{{.AccessToken}}}}`)** ✅
+  - The YAML parser converts `{{{{` → `{{` and `}}}}` → `}}`
+  - Result: `Bearer {{.AccessToken}}` reaches the Go template engine correctly
+
+- **Other methods (YAML literal style, single quotes) do NOT work** ❌
+  - These methods don't prevent Traefik's YAML parser from interpreting the curly braces
+  - The template syntax gets processed incorrectly before reaching the plugin
+
+**Working example configuration:**
 ```yaml
 headers:
   - name: "X-User-Email"
-    value: "{{.Claims.email}}"
+    value: "{{{{.Claims.email}}}}"
   - name: "X-User-ID"
-    value: "{{.Claims.sub}}"
+    value: "{{{{.Claims.sub}}}}"
   - name: "Authorization"
-    value: "Bearer {{.AccessToken}}"
+    value: "Bearer {{{{.AccessToken}}}}"
   - name: "X-User-Name"
-    value: "{{.Claims.given_name}} {{.Claims.family_name}}"
+    value: "{{{{.Claims.given_name}}}} {{{{.Claims.family_name}}}}"
 ```
 
 **Advanced template examples:**
@@ -620,20 +731,21 @@ Conditional logic:
 ```yaml
 headers:
   - name: "X-Is-Admin"
-    value: "{{if eq .Claims.role \"admin\"}}true{{else}}false{{end}}"
+    value: "{{{{if eq .Claims.role \"admin\"}}}}true{{{{else}}}}false{{{{end}}}}"
 ```
 
 Array handling:
 ```yaml
 headers:
   - name: "X-User-Roles"
-    value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+    value: "{{{{range $i, $e := .Claims.roles}}}}{{{{if $i}}}},{{{{end}}}}{{{{$e}}}}{{{{end}}}}"
 ```
 
 **Notes:**
 - Variable names are case-sensitive (use `.Claims`, not `.claims`)
 - Missing claims will result in `<no value>` in the header value
 - The middleware validates templates during startup and logs errors for invalid templates
+- Always use double curly braces (`{{{{` and `}}}}`) to escape template expressions in YAML configuration files
 
 ### Default Headers Set for Downstream Services
 
@@ -656,6 +768,89 @@ The middleware also sets the following security headers:
 - `X-XSS-Protection: 1; mode=block`
 - `Referrer-Policy: strict-origin-when-cross-origin`
 
+## Provider Configuration Recommendations
+
+**Important: ID Token Validation**
+
+This Traefik OIDC plugin performs authentication and extracts user claims (like email, roles, groups) exclusively from the **ID Token** provided by your OIDC provider. It does not primarily use the Access Token for these critical functions. Therefore, it is crucial to ensure that all necessary claims are included in the ID Token itself. A common issue is that some OIDC providers might, by default, place certain claims only in the Access Token or UserInfo endpoint.
+
+This section provides guidance on configuring popular OIDC providers to work optimally with this plugin.
+
+### Keycloak
+
+Keycloak is highly configurable, which means you need to ensure your client mappers are set up correctly to include necessary claims in the ID Token.
+
+*   **Ensure Claims in ID Token**:
+    *   **Email**: Navigate to your Keycloak realm -> Clients -> Your Client ID -> Mappers. Ensure there's a mapper for 'email' (e.g., a "User Property" mapper for the `email` property) and that "Add to ID token" is **ON**.
+    *   **Roles**: For client roles or realm roles, create or edit mappers (e.g., "User Client Role" or "User Realm Role"). Ensure "Add to ID token" is **ON**. You might want to customize the "Token Claim Name" (e.g., to `roles` or `groups`).
+    *   **Groups**: Similarly, for group membership, use a "Group Membership" mapper and ensure "Add to ID token" is **ON**. Customize the "Token Claim Name" as needed (e.g., `groups`).
+*   **Scopes**: Ensure your client requests appropriate scopes that trigger the inclusion of these claims if your mappers are scope-dependent. The default `openid`, `profile`, `email` scopes are a good starting point.
+*   **Troubleshooting**: If claims are missing, double-check the "Mappers" tab for your client in Keycloak. The "Token Claim Name" you define here is what you'll use in the `allowedRolesAndGroups` or `headers` configuration in this plugin. (See also the [Troubleshooting](#troubleshooting) section for Keycloak).
+
+### Azure AD (Microsoft Entra ID)
+
+Azure AD generally works well with standard OIDC configurations.
+
+*   **ID Token Claims**: Azure AD typically includes standard claims like `email`, `name`, `preferred_username`, and `oid` (Object ID) in the ID Token by default when `openid profile email` scopes are requested.
+*   **Group Claims**: To include group claims in the ID Token, you need to configure this in the Azure AD application registration:
+    *   Go to your App Registration -> Token configuration -> Add groups claim.
+    *   You can choose which types of groups (Security groups, Directory roles, All groups) to include.
+    *   Be aware of the "overage" issue: If a user is a member of too many groups, Azure AD will send a link to fetch groups instead of embedding them. This plugin currently expects group claims to be directly in the ID token. For users with many groups, consider alternative role/permission management strategies.
+    *   The claim name for groups is typically `groups`.
+*   **Optional Claims**: You can add other optional claims via the "Token configuration" section of your App Registration. Ensure these are configured for the ID token.
+*   **Endpoints**: The `providerURL` should be `https://login.microsoftonline.com/{your-tenant-id}/v2.0`. The plugin will auto-discover the necessary endpoints.
+*   **Optimization**: Ensure your application manifest in Azure AD is configured for the desired token version (v1.0 or v2.0). This plugin works with v2.0 endpoints.
+
+### Google Workspace / Google Cloud Identity
+
+Google's OIDC implementation is well-supported.
+
+*   **Optimal Configuration**: The plugin automatically handles Google-specific requirements, such as using `access_type=offline` and `prompt=consent` to ensure refresh tokens are issued for long-lived sessions. You do not need to add `offline_access` to scopes.
+*   **ID Token Claims**: Google includes standard claims like `email`, `sub`, `name`, `given_name`, `family_name`, `picture` in the ID Token by default with `openid profile email` scopes.
+*   **Hosted Domain (hd claim)**: If you are using Google Workspace and want to restrict access to users within your organization's domain, Google includes an `hd` (hosted domain) claim in the ID Token. You can use this with the `allowedUserDomains` setting or for custom header logic.
+*   **Best Practices**:
+    *   Use the `providerURL`: `https://accounts.google.com`.
+    *   Ensure your OAuth consent screen in Google Cloud Console is configured correctly and published. For production, it should be "External" and in "Production" status. "Testing" status limits refresh token lifetime.
+    *   Refer to the [Google OAuth Compatibility Fix](#google-oauth-compatibility-fix) section for more details on how the plugin handles Google's specifics.
+
+### Auth0
+
+Auth0 is generally OIDC compliant and works well.
+
+*   **ID Token Claims**:
+    *   To add custom claims or standard claims not included by default (like roles or permissions) to the ID Token, you'll need to use Auth0 Rules or Actions.
+    *   **Using Actions (Recommended)**: Create a custom Action that runs after login to add claims to the ID Token. Example:
+        ```javascript
+        // Auth0 Action to add email and roles to ID Token
+        exports.onExecutePostLogin = async (event, api) => {
+          const namespace = 'https://your-app.com/'; // Or your custom namespace
+          if (event.authorization) {
+            api.idToken.setCustomClaim(namespace + 'roles', event.authorization.roles);
+            api.idToken.setCustomClaim('email', event.user.email); // Standard claim, ensure it's there
+            // Add other claims as needed
+          }
+        };
+        ```
+    *   Ensure the claims you add (e.g., `https://your-app.com/roles`) are then used in the plugin's `allowedRolesAndGroups` or `headers` configuration.
+*   **Scopes**: Request appropriate scopes. You might need custom scopes if your Actions/Rules depend on them to add specific claims.
+*   **Endpoints**: Your `providerURL` will be `https://your-auth0-domain.auth0.com`.
+*   **Logout**: Ensure `postLogoutRedirectURI` is registered in your Auth0 application settings under "Allowed Logout URLs".
+
+### Generic OIDC Providers
+
+For other OIDC providers (e.g., Okta, Zitadel, self-hosted solutions):
+
+*   **ID Token is Key**: The primary requirement is that all claims needed for authentication decisions (email, roles, groups, custom attributes for headers) **must** be included in the ID Token.
+*   **Check Provider Documentation**: Consult your OIDC provider's documentation on how to:
+    *   Configure client applications.
+    *   Map user attributes, roles, or group memberships to claims in the ID Token.
+    *   Define custom scopes if they are necessary to include certain claims.
+*   **Standard Endpoints**: Ensure your provider exposes a standard OIDC discovery document (`.well-known/openid-configuration`) at the `providerURL`. The plugin uses this to find authorization, token, JWKS, and end_session endpoints.
+*   **Scopes**: Always include `openid` in your scopes. `profile` and `email` are generally recommended. Add other scopes as required by your provider to release specific claims to the ID Token.
+*   **Troubleshooting**: If the plugin isn't working as expected (e.g., access denied, claims missing), the first step is to decode the ID Token received from your provider (e.g., using jwt.io) to verify its contents. This will show you exactly what claims the plugin is seeing.
+
+For common issues and general troubleshooting, please refer to the [Troubleshooting](#troubleshooting) section.
+
 ## Troubleshooting
 
 ### Logging
@@ -673,13 +868,71 @@ logLevel: debug
 3. **No matching public key found**: The JWKS endpoint might be unavailable or the token's key ID (kid) doesn't match any key in the JWKS.
 4. **Access denied: Your email domain is not allowed**: The user's email domain is not in the `allowedUserDomains` list.
 5. **Access denied: You do not have any of the allowed roles or groups**: The user doesn't have any of the roles or groups specified in `allowedRolesAndGroups`.
-6. **Google sessions expire after ~1 hour**: If using Google as the OIDC provider and sessions expire prematurely (around 1 hour instead of longer), ensure:
+6. **"can't evaluate field AccessToken in type bool" error**: This error occurs when Traefik attempts to evaluate template expressions in the headers configuration before passing them to the plugin. To fix this:
+   - Use double curly braces to escape template expressions: `value: "Bearer {{{{.AccessToken}}}}"`
+   - This is the only reliable method that works with Traefik's YAML parsing
+   - See the [Templated Headers](#templated-headers) section for complete examples
+7. **Google sessions expire after ~1 hour**: If using Google as the OIDC provider and sessions expire prematurely (around 1 hour instead of longer), ensure:
    - Do NOT manually add the `offline_access` scope. Google rejects this scope as invalid.
    - The middleware automatically applies the required Google parameters (`access_type=offline` and `prompt=consent`).
    - Your Google Cloud OAuth consent screen is set to "External" and "Production" mode. "Testing" mode often limits refresh token validity.
    - Verify you're using a version of the middleware that includes the Google OAuth compatibility fix.
    - For more details, see the [Google OAuth Compatibility Fix](#google-oauth-compatibility-fix) section or the [detailed documentation](docs/google-oauth-fix.md).
 
+8.  **Keycloak: Claims Missing from ID Token (e.g., email, roles)**
+
+    If you are using Keycloak and claims like `email`, `roles`, or `groups` are missing from the ID Token, this plugin may not function as expected (e.g., for domain restrictions or RBAC).
+    *   **Solution**: This plugin validates the **ID Token**. You **must** configure Keycloak client mappers to add all necessary claims (email, roles, groups, etc.) to the ID Token.
+    *   For detailed instructions, please see the [Keycloak](#keycloak) section under [Provider Configuration Recommendations](#provider-configuration-recommendations).
+
+## Recent Improvements
+
+### Memory Management (v0.3.0+)
+
+The middleware has undergone significant improvements to memory management and resource utilization:
+
+- **Memory Leak Prevention**: All background goroutines are properly managed with context cancellation
+- **Bounded Resource Usage**: Session storage, metadata cache, and token cache all have size limits with LRU eviction
+- **Automatic Cleanup**: Expired sessions and tokens are automatically cleaned up by background tasks
+- **Graceful Shutdown**: All resources are properly released when the middleware is stopped
+- **Performance Monitoring**: Built-in monitoring for goroutine leaks and memory growth
+
+These improvements ensure the middleware operates efficiently even under high load and long-running deployments.
+
+### Enhanced Test Coverage
+
+- Comprehensive test suite with race condition detection
+- Memory leak detection tests
+- Goroutine leak prevention tests
+- Test coverage increased to 67%+ for main package, 87-99% for subpackages
+
+## Architecture and Internal Improvements
+
+### Internal Components
+
+The middleware uses several internal components for efficient operation:
+
+1. **SessionManager**: Manages user sessions with automatic cleanup and pool-based allocation
+2. **ChunkManager**: Handles large session data by splitting it into manageable chunks
+3. **MetadataCache**: Caches OIDC provider metadata with LRU eviction and size limits
+4. **TaskRegistry**: Manages background tasks with proper lifecycle management
+5. **MemoryMonitor**: Monitors memory usage and detects potential leaks
+
+### Key Design Decisions
+
+- **Context-based cancellation**: All background operations use context for clean shutdown
+- **Bounded queues and caches**: Prevents unbounded memory growth
+- **LRU eviction policies**: Ensures most frequently used data stays in cache
+- **Atomic operations**: Uses atomic counters for statistics to avoid lock contention
+- **Test-friendly design**: Special handling for test environments to ensure clean test execution
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Development Guidelines
+
+1. **Memory Management**: Ensure all goroutines can be cancelled and resources are bounded
+2. **Testing**: Add tests for new features, including memory leak tests where appropriate
+3. **Race Conditions**: Run tests with `-race` flag to detect race conditions
+4. **Documentation**: Update README and .traefik.yml for any new configuration options
