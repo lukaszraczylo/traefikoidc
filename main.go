@@ -1344,7 +1344,7 @@ func (t *TraefikOidc) verifyToken(token string) error {
 // safeLog provides nil-safe logging helpers
 func (t *TraefikOidc) safeLogDebug(msg string) {
 	if t.logger != nil {
-		t.logger.Debug(msg)
+		t.logger.Debug("%s", msg)
 	}
 }
 
@@ -1356,7 +1356,7 @@ func (t *TraefikOidc) safeLogDebugf(format string, args ...interface{}) {
 
 func (t *TraefikOidc) safeLogError(msg string) {
 	if t.logger != nil {
-		t.logger.Error(msg)
+		t.logger.Error("%s", msg)
 	}
 }
 
@@ -1368,7 +1368,7 @@ func (t *TraefikOidc) safeLogErrorf(format string, args ...interface{}) {
 
 func (t *TraefikOidc) safeLogInfo(msg string) {
 	if t.logger != nil {
-		t.logger.Info(msg)
+		t.logger.Info("%s", msg)
 	}
 }
 

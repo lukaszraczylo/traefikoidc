@@ -942,7 +942,7 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 		}
 		if err := s.Save(r, w); err != nil {
 			errMsg := fmt.Errorf("failed to save %s session: %w", name, err)
-			sd.manager.logger.Error(errMsg.Error())
+			sd.manager.logger.Error("%s", errMsg.Error())
 			if firstErr == nil {
 				firstErr = errMsg
 			}

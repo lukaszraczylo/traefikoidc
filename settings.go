@@ -577,6 +577,6 @@ func newNoOpLogger() *Logger {
 //
 //lint:ignore U1000 Kept for potential future error handling
 func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
-	logger.Error(message)
+	logger.Error("%s", message)
 	http.Error(w, message, code)
 }
