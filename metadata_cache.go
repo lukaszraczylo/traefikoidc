@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -95,7 +96,8 @@ func (mc *MetadataCache) GetProviderMetadata(ctx context.Context, providerURL st
 	}
 
 	// Fetch from provider
-	metadataURL := providerURL + "/.well-known/openid-configuration"
+	// Ensure no double slashes by trimming trailing slash from provider URL
+	metadataURL := strings.TrimRight(providerURL, "/") + "/.well-known/openid-configuration"
 	mc.logger.Infof("Fetching provider metadata from: %s", metadataURL)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
