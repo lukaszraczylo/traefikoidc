@@ -637,12 +637,13 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 			options.Secure = true
 		}
 
-		if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
-			options.SameSite = http.SameSiteStrictMode
-		}
+		// Keep SameSite=Lax consistently for OAuth flows
+		// Removed dynamic switching based on XMLHttpRequest header to prevent redirect loop
+		options.SameSite = http.SameSiteLaxMode
 	}
 
 	options.HttpOnly = true
+	options.Path = "/" // Ensure cookies are available on all paths for OAuth flow
 
 	if sm.cookieDomain != "" {
 		options.Domain = sm.cookieDomain
@@ -930,6 +931,7 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	sd.mainSession.Options = options
 	sd.accessSession.Options = options
 	sd.refreshSession.Options = options
+	sd.idTokenSession.Options = options
 
 	var firstErr error
 	saveOrLogError := func(s *sessions.Session, name string) {

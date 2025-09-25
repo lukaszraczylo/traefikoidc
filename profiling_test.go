@@ -7,9 +7,26 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"testing"
 	"time"
 )
+
+// isRaceDetectorEnabled returns true if the Go race detector is enabled.
+// This is determined by checking the build info for the race build tag.
+func isRaceDetectorEnabled() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "-race" && setting.Value == "true" {
+			return true
+		}
+	}
+	// Alternative method: check if GORACE environment variable is set
+	return os.Getenv("GORACE") != ""
+}
 
 func TestProfilingManager(t *testing.T) {
 	logger := NewLogger("debug")
@@ -462,13 +479,27 @@ func TestProviderMetadataMemoryLeakDetection(t *testing.T) {
 	}
 
 	// Phase 2: Continue with more fetches to test sustained operation
-	t.Log("Phase 2: Testing sustained operation with 1000 iterations...")
-	for i := 20; i < 1020; i++ {
+	// Adjust iterations based on race detector presence to avoid timeouts
+	var phase2Iterations int
+	var sleepDuration time.Duration
+	if isRaceDetectorEnabled() {
+		// With race detector: reduce iterations significantly to stay well within timeout
+		phase2Iterations = 100
+		sleepDuration = 100 * time.Millisecond // Slightly longer sleep to reduce CPU contention
+		t.Log("Phase 2: Testing sustained operation with 100 iterations (race detector enabled)...")
+	} else {
+		// Without race detector: use original values for thorough testing
+		phase2Iterations = 1000
+		sleepDuration = 50 * time.Millisecond
+		t.Log("Phase 2: Testing sustained operation with 1000 iterations...")
+	}
+
+	for i := 20; i < 20+phase2Iterations; i++ {
 		_, err := metadataCache.GetMetadata(providerURL, httpClient, logger)
 		if err != nil {
 			t.Logf("Metadata fetch %d failed: %v", i+1, err)
 		}
-		time.Sleep(50 * time.Millisecond) // Reduced sleep for faster execution
+		time.Sleep(sleepDuration)
 	}
 
 	// Take final snapshot
