@@ -648,6 +648,13 @@ func (s *MockSession) SetEmail(email string) {
 	s.values["email"] = email
 }
 
+func (s *MockSession) GetEmail() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	email, _ := s.values["email"].(string)
+	return email
+}
+
 func (s *MockSession) SetCSRF(csrf string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

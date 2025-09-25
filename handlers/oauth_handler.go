@@ -39,6 +39,10 @@ type SessionData interface {
 	GetCodeVerifier() string
 	GetIncomingPath() string
 	GetAuthenticated() bool
+	GetAccessToken() string
+	GetRefreshToken() string
+	GetIDToken() string
+	GetEmail() string
 	SetAuthenticated(bool) error
 	SetEmail(string)
 	SetIDToken(string)
@@ -100,6 +104,20 @@ func (h *OAuthHandler) HandleCallback(rw http.ResponseWriter, req *http.Request,
 
 	h.logger.Debugf("Handling callback, URL: %s", req.URL.String())
 
+	// Debug logging for cookie configuration
+	h.logger.Debugf("Callback request headers - Host: %s, X-Forwarded-Host: %s, X-Forwarded-Proto: %s",
+		req.Host, req.Header.Get("X-Forwarded-Host"), req.Header.Get("X-Forwarded-Proto"))
+
+	// Log all cookies in the request for debugging
+	cookies := req.Cookies()
+	h.logger.Debugf("Total cookies in callback request: %d", len(cookies))
+	for _, cookie := range cookies {
+		if strings.HasPrefix(cookie.Name, "_oidc_") {
+			h.logger.Debugf("Cookie found - Name: %s, Domain: %s, Path: %s, SameSite: %v, Secure: %v, HttpOnly: %v, Value length: %d",
+				cookie.Name, cookie.Domain, cookie.Path, cookie.SameSite, cookie.Secure, cookie.HttpOnly, len(cookie.Value))
+		}
+	}
+
 	if req.URL.Query().Get("error") != "" {
 		errorDescription := req.URL.Query().Get("error_description")
 		if errorDescription == "" {
@@ -117,21 +135,35 @@ func (h *OAuthHandler) HandleCallback(rw http.ResponseWriter, req *http.Request,
 		return
 	}
 
+	// Debug log the state parameter received
+	h.logger.Debugf("State parameter received in callback: %s (length: %d)", state, len(state))
+
 	csrfToken := session.GetCSRF()
 	if csrfToken == "" {
 		h.logger.Errorf("CSRF token missing in session during callback. Authenticated: %v, Request URL: %s",
 			session.GetAuthenticated(), req.URL.String())
 
+		// Enhanced debugging for missing CSRF token
 		cookie, err := req.Cookie("_oidc_raczylo_m")
 		if err != nil {
 			h.logger.Errorf("Main session cookie not found in request: %v", err)
+			h.logger.Debugf("Available cookies: %v", req.Header.Get("Cookie"))
 		} else {
 			h.logger.Errorf("Main session cookie exists but CSRF token is empty. Cookie value length: %d", len(cookie.Value))
+			h.logger.Debugf("Cookie details - Domain: %s, Path: %s, Secure: %v, HttpOnly: %v, SameSite: %v",
+				cookie.Domain, cookie.Path, cookie.Secure, cookie.HttpOnly, cookie.SameSite)
 		}
+
+		// Log session state for debugging
+		h.logger.Debugf("Session state during CSRF check - Authenticated: %v, Has AccessToken: %v",
+			session.GetAuthenticated(), session.GetAccessToken() != "")
 
 		h.sendErrorResponseFunc(rw, req, "CSRF token missing in session", http.StatusBadRequest)
 		return
 	}
+
+	// Debug log successful CSRF token retrieval
+	h.logger.Debugf("CSRF token retrieved from session: %s (length: %d)", csrfToken, len(csrfToken))
 
 	if state != csrfToken {
 		h.logger.Error("State parameter does not match CSRF token in session during callback")
