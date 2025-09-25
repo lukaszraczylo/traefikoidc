@@ -313,17 +313,27 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 		return TokenRetrievalResult{Token: "", Error: freshnessErr}
 	}
 
+	// Determine if token is opaque or JWT based on format
+	// JWT tokens have exactly 2 dots (3 parts: header.payload.signature)
+	dotCount := strings.Count(token, ".")
+	isJWT := dotCount == 2
+
 	if config.RequireJWTFormat && !config.AllowOpaqueTokens {
+		// Only accept JWT format tokens
 		if validationErr := cm.validateJWTFormat(token, config.Type); validationErr != nil {
 			return TokenRetrievalResult{Token: "", Error: validationErr}
 		}
-	} else if config.RequireJWTFormat && config.AllowOpaqueTokens {
-		dotCount := strings.Count(token, ".")
-		if dotCount > 0 {
+	} else if config.AllowOpaqueTokens {
+		// Accept both JWT and opaque tokens
+		if isJWT {
+			// Token looks like JWT, validate as JWT
 			if validationErr := cm.validateJWTFormat(token, config.Type); validationErr != nil {
+				// If JWT validation fails but opaque tokens are allowed,
+				// still return an error as the token claims to be JWT but is malformed
 				return TokenRetrievalResult{Token: "", Error: validationErr}
 			}
 		} else {
+			// Token is opaque, validate as opaque
 			if validationErr := cm.validateOpaqueToken(token, config.Type); validationErr != nil {
 				return TokenRetrievalResult{Token: "", Error: validationErr}
 			}
