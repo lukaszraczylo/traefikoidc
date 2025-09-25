@@ -34,6 +34,11 @@ var (
 	globalMaxSessions  int64 = 5000 // CRITICAL FIX: Global limit of 5000 total sessions
 )
 
+// ResetGlobalSessionCounters resets global session tracking for testing
+func ResetGlobalSessionCounters() {
+	atomic.StoreInt64(&globalSessionCount, 0)
+}
+
 // Predefined configurations for each token type
 var (
 	AccessTokenConfig = TokenConfig{

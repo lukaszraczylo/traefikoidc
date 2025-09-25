@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lukaszraczylo/traefikoidc/session/chunking"
 )
 
 // GlobalTestCleanup tracks and cleans up test resources
@@ -113,6 +115,15 @@ func (g *GlobalTestCleanup) CleanupAll() {
 	// Reset all global singletons to prevent state pollution between tests
 	ResetGlobalMemoryMonitor()
 	ResetGlobalTaskRegistry()
+	ResetGlobalMemoryOptimizations()
+	ResetSingletonNoOpLogger()
+
+	// Reset global session counters to prevent overflow in memory calculations
+	ResetGlobalSessionCounters()
+
+	// Reset global session counters in chunking package as well
+	// Note: This calls the function in session/chunking package
+	resetChunkingGlobalSessionCounters()
 
 	// Give background tasks time to finish cleanup
 	time.Sleep(100 * time.Millisecond)
@@ -948,4 +959,10 @@ func (h *PerformanceTestHelper) Reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.samples = h.samples[:0]
+}
+
+// resetChunkingGlobalSessionCounters resets the global session counters
+// in the chunking package to prevent test interference
+func resetChunkingGlobalSessionCounters() {
+	chunking.ResetGlobalSessionCounters()
 }

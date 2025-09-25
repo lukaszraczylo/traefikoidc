@@ -32,6 +32,12 @@ func GetMemoryOptimizations() *MemoryOptimizations {
 	return globalMemoryOpts
 }
 
+// ResetGlobalMemoryOptimizations resets the global memory optimizations for testing
+func ResetGlobalMemoryOptimizations() {
+	globalMemoryOptsOnce = sync.Once{}
+	globalMemoryOpts = nil
+}
+
 // BufferPool manages a pool of byte buffers
 type BufferPool struct {
 	pool    sync.Pool
