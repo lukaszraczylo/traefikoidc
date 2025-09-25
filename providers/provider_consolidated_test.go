@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -509,10 +510,10 @@ func TestProviderFactory(t *testing.T) {
 				errorSubstr: "issuer URL cannot be empty",
 			},
 			{
-				name:      "Invalid URL format",
-				issuerURL: "not-a-valid-url",
-				wantType:  internalproviders.ProviderTypeGeneric,
-				wantError: false,
+				name:        "Invalid URL format",
+				issuerURL:   "not-a-valid-url",
+				wantError:   true,
+				errorSubstr: "invalid issuer URL format",
 			},
 			{
 				name:      "URL with invalid scheme",
@@ -531,7 +532,7 @@ func TestProviderFactory(t *testing.T) {
 						t.Errorf("expected error but got none")
 						return
 					}
-					if tt.errorSubstr != "" && err.Error() != tt.errorSubstr {
+					if tt.errorSubstr != "" && !strings.Contains(err.Error(), tt.errorSubstr) {
 						t.Errorf("expected error to contain %q, got %q", tt.errorSubstr, err.Error())
 					}
 					return
@@ -662,7 +663,7 @@ func TestProviderRegistry(t *testing.T) {
 			{"Azure login.microsoftonline.com", "https://login.microsoftonline.com/tenant/v2.0", internalproviders.ProviderTypeAzure},
 			{"Azure sts.windows.net", "https://sts.windows.net/tenant/", internalproviders.ProviderTypeAzure},
 			{"Generic provider", "https://auth.example.com/realms/test", internalproviders.ProviderTypeGeneric},
-			{"Empty URL", "", internalproviders.ProviderTypeGeneric},
+			// Empty URL should return nil, not a provider
 		}
 
 		for _, tt := range tests {
@@ -677,6 +678,14 @@ func TestProviderRegistry(t *testing.T) {
 				}
 			})
 		}
+
+		// Test empty URL separately - it should return nil
+		t.Run("Empty URL", func(t *testing.T) {
+			provider := registry.DetectProvider("")
+			if provider != nil {
+				t.Errorf("expected nil provider for empty URL, got %v", provider)
+			}
+		})
 	})
 
 	t.Run("ConcurrentAccess", func(t *testing.T) {

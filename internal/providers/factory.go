@@ -31,8 +31,14 @@ func (f *ProviderFactory) CreateProvider(issuerURL string) (OIDCProvider, error)
 		return nil, fmt.Errorf("issuer URL cannot be empty")
 	}
 
-	if _, err := url.Parse(issuerURL); err != nil {
+	parsedURL, err := url.Parse(issuerURL)
+	if err != nil {
 		return nil, fmt.Errorf("invalid issuer URL format: %w", err)
+	}
+
+	// Check if the URL has a valid scheme and host
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return nil, fmt.Errorf("invalid issuer URL format: URL must have a valid scheme and host")
 	}
 
 	provider := f.registry.DetectProvider(issuerURL)
@@ -97,6 +103,11 @@ func (f *ProviderFactory) IsProviderSupported(issuerURL string) bool {
 
 	normalizedURL, err := url.Parse(issuerURL)
 	if err != nil {
+		return false
+	}
+
+	// Check if the URL has a valid scheme and host
+	if normalizedURL.Scheme == "" || normalizedURL.Host == "" {
 		return false
 	}
 

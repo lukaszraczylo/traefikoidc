@@ -115,7 +115,14 @@ func (r *ProviderRegistry) detectProviderUnsafe(issuerURL string) OIDCProvider {
 	if err != nil {
 		return nil
 	}
-	host := normalizedURL.Host
+
+	// Check if the URL has a valid scheme and host
+	if normalizedURL.Scheme == "" || normalizedURL.Host == "" {
+		return nil
+	}
+
+	// Convert host to lowercase for case-insensitive matching
+	host := strings.ToLower(normalizedURL.Host)
 
 	for _, p := range r.providers {
 		switch p.GetType() {
