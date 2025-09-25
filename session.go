@@ -1275,6 +1275,23 @@ func (sd *SessionData) getAccessTokenUnsafe() string {
 	)
 
 	if result.Error != nil {
+		// Check if we have a raw token available
+		// This handles cases where the token exists but doesn't validate as JWT
+		if token != "" && !compressed && len(sd.accessTokenChunks) == 0 {
+			// We have a non-chunked, non-compressed token that failed validation
+			// Check if it's an opaque token (doesn't have JWT structure)
+			dotCount := strings.Count(token, ".")
+			if dotCount != 2 {
+				// This is likely an opaque token that failed JWT validation
+				// Return the raw token as-is since opaque tokens are valid
+				if sd.manager != nil && sd.manager.logger != nil {
+					sd.manager.logger.Debugf("Returning opaque access token (dots: %d) despite validation error: %v", dotCount, result.Error)
+				}
+				return token
+			}
+		}
+
+		// For JWT validation errors or other issues, log and return empty
 		if sd.manager != nil && sd.manager.logger != nil {
 			sd.manager.logger.Debugf("ChunkManager.GetToken error: %v", result.Error)
 		}
@@ -1295,18 +1312,22 @@ func (sd *SessionData) SetAccessToken(token string) {
 
 	if token != "" {
 		dotCount := strings.Count(token, ".")
+		// Reject tokens with exactly 1 dot (invalid format - neither JWT nor opaque)
 		if dotCount == 1 {
 			if sd.manager != nil && sd.manager.logger != nil {
 				sd.manager.logger.Debug("Invalid token format during storage (dots: %d) - rejecting", dotCount)
 			}
 			return
 		}
+		// For opaque tokens (no dots), ensure minimum length for security
 		if dotCount == 0 && len(token) < 20 {
 			if sd.manager != nil && sd.manager.logger != nil {
 				sd.manager.logger.Debug("Token too short for opaque token (length: %d) - rejecting", len(token))
 			}
 			return
 		}
+		// Tokens with 2 dots are JWTs, tokens with 0 dots are opaque
+		// Both are valid formats
 	}
 
 	currentAccessToken := sd.getAccessTokenUnsafe()
@@ -1456,6 +1477,25 @@ func (sd *SessionData) GetRefreshToken() string {
 	)
 
 	if result.Error != nil {
+		// Check if we have a raw token available
+		// This handles cases where the token exists but doesn't validate as JWT
+		if token != "" && !compressed && len(sd.refreshTokenChunks) == 0 {
+			// We have a non-chunked, non-compressed token that failed validation
+			// Check if it's an opaque token (doesn't have JWT structure)
+			dotCount := strings.Count(token, ".")
+			if dotCount != 2 {
+				// This is likely an opaque token that failed JWT validation
+				// Return the raw token as-is since opaque tokens are valid
+				if sd.manager != nil && sd.manager.logger != nil {
+					sd.manager.logger.Debugf("Returning opaque refresh token (dots: %d) despite validation error: %v", dotCount, result.Error)
+				}
+				return token
+			}
+		}
+		// For JWT validation errors or other issues, log and return empty
+		if sd.manager != nil && sd.manager.logger != nil {
+			sd.manager.logger.Debugf("ChunkManager.GetToken error for refresh token: %v", result.Error)
+		}
 		return ""
 	}
 

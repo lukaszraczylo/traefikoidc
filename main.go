@@ -1250,6 +1250,8 @@ func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, boo
 	} else if t.isGoogleProvider() {
 		return t.validateGoogleTokens(session)
 	}
+	// Auth0 and other providers can now use standard validation
+	// which handles opaque tokens generically
 	return t.validateStandardTokens(session)
 }
 
@@ -2293,6 +2295,49 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 			return false, true, false
 		}
 		return false, false, true
+	}
+
+	// Check if access token is opaque (doesn't have JWT structure)
+	dotCount := strings.Count(accessToken, ".")
+	isOpaqueToken := dotCount != 2
+
+	// For opaque access tokens, rely on ID token for session validation
+	if isOpaqueToken {
+		t.logger.Debugf("Access token appears to be opaque (dots: %d), validating session via ID token", dotCount)
+
+		// For opaque access tokens, check ID token for authentication status
+		idToken := session.GetIDToken()
+		if idToken == "" {
+			t.logger.Debug("Opaque access token present but no ID token found")
+			if session.GetRefreshToken() != "" {
+				t.logger.Debug("ID token missing but refresh token exists. Signaling need for refresh.")
+				return false, true, false
+			}
+			// Accept session with opaque access token even without ID token
+			// The OAuth provider validated it when issued
+			t.logger.Debug("Accepting session with opaque access token")
+			return true, false, false
+		}
+
+		// Validate ID token if present
+		if err := t.verifyToken(idToken); err != nil {
+			if strings.Contains(err.Error(), "token has expired") {
+				t.logger.Debugf("ID token expired with opaque access token, needs refresh")
+				if session.GetRefreshToken() != "" {
+					return false, true, false
+				}
+				return false, false, true
+			}
+
+			t.logger.Errorf("ID token verification failed with opaque access token: %v", err)
+			if session.GetRefreshToken() != "" {
+				return false, true, false
+			}
+			return false, false, true
+		}
+
+		// Use ID token for expiry validation
+		return t.validateTokenExpiry(session, idToken)
 	}
 
 	idToken := session.GetIDToken()
