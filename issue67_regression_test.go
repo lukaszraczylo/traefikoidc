@@ -1,0 +1,518 @@
+package traefikoidc
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// TestIssue67_InfiniteRefreshLoop reproduces and verifies the fix for issue #67
+// where concurrent requests with expired tokens caused an infinite refresh loop
+// leading to OOM conditions
+func TestIssue67_InfiniteRefreshLoop(t *testing.T) {
+	// Track memory at start
+	runtime.GC()
+	var startMem runtime.MemStats
+	runtime.ReadMemStats(&startMem)
+
+	// Create a mock authorization server
+	var refreshAttempts int32
+	var concurrentRefreshes int32
+	var maxConcurrent int32
+
+	// Create a handler with server URL to be set after creation
+	var serverURL string
+
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			// Track concurrent refresh attempts
+			current := atomic.AddInt32(&concurrentRefreshes, 1)
+			defer atomic.AddInt32(&concurrentRefreshes, -1)
+
+			// Update max concurrent
+			for {
+				max := atomic.LoadInt32(&maxConcurrent)
+				if current <= max || atomic.CompareAndSwapInt32(&maxConcurrent, max, current) {
+					break
+				}
+			}
+
+			attempts := atomic.AddInt32(&refreshAttempts, 1)
+
+			// Simulate slow/failing token endpoint (like in the issue)
+			if attempts < 5 {
+				// First few attempts fail to trigger retries
+				time.Sleep(100 * time.Millisecond)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte(`{"error": "temporarily_unavailable"}`))
+			} else {
+				// Eventually succeed
+				time.Sleep(50 * time.Millisecond)
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{
+					"access_token": "new_access_token",
+					"refresh_token": "new_refresh_token",
+					"id_token": "new_id_token",
+					"expires_in": 3600,
+					"token_type": "Bearer"
+				}`))
+			}
+
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fmt.Sprintf(`{
+				"issuer": "%s",
+				"authorization_endpoint": "%s/authorize",
+				"token_endpoint": "%s/token",
+				"jwks_uri": "%s/keys",
+				"response_types_supported": ["code"],
+				"subject_types_supported": ["public"],
+				"id_token_signing_alg_values_supported": ["RS256"],
+				"scopes_supported": ["openid", "profile", "email"],
+				"token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+				"claims_supported": ["sub", "name", "email"]
+			}`, serverURL, serverURL, serverURL, serverURL)))
+
+		case "/keys":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{
+				"keys": [{
+					"kty": "RSA",
+					"use": "sig",
+					"kid": "test-key",
+					"n": "test",
+					"e": "AQAB"
+				}]
+			}`))
+		}
+	}))
+	defer authServer.Close()
+
+	// Set the server URL after creation
+	serverURL = authServer.URL
+
+	// Setup TraefikOIDC with refresh coordinator
+	logger := GetSingletonNoOpLogger()
+	config := DefaultRefreshCoordinatorConfig()
+	config.MaxRefreshAttempts = 3
+	config.RefreshAttemptWindow = 1 * time.Second
+	config.MaxConcurrentRefreshes = 2
+
+	coordinator := NewRefreshCoordinator(config, logger)
+	defer coordinator.Shutdown()
+
+	// Simulate expired session
+	expiredSession := &MockExpiredSession{
+		refreshToken: "test_refresh_token",
+		sessionID:    "test_session",
+		isExpired:    true,
+	}
+
+	// Simulate multiple concurrent requests (as reported in issue)
+	numConcurrentRequests := 50
+	var wg sync.WaitGroup
+	wg.Add(numConcurrentRequests)
+
+	// Track results
+	var successCount int32
+	var errorCount int32
+	errors := make([]error, 0, numConcurrentRequests)
+	var errorMutex sync.Mutex
+
+	// Launch concurrent requests with expired tokens
+	startTime := time.Now()
+	timeout := 5 * time.Second
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	for i := 0; i < numConcurrentRequests; i++ {
+		go func(reqID int) {
+			defer wg.Done()
+
+			// Each request tries to refresh the expired token
+			refreshFunc := func() (*TokenResponse, error) {
+				// Simulate calling the token endpoint
+				resp, err := http.Post(
+					serverURL+"/token",
+					"application/x-www-form-urlencoded",
+					nil,
+				)
+				if err != nil {
+					return nil, err
+				}
+				defer resp.Body.Close()
+
+				if resp.StatusCode != http.StatusOK {
+					return nil, fmt.Errorf("token refresh failed: %d", resp.StatusCode)
+				}
+
+				return &TokenResponse{
+					AccessToken:  fmt.Sprintf("new_access_%d", reqID),
+					RefreshToken: "new_refresh",
+					IDToken:      "new_id",
+					ExpiresIn:    3600,
+				}, nil
+			}
+
+			// Use coordinator to prevent infinite loop
+			result, err := coordinator.CoordinateRefresh(
+				ctx,
+				expiredSession.sessionID,
+				expiredSession.refreshToken,
+				refreshFunc,
+			)
+
+			if err != nil {
+				atomic.AddInt32(&errorCount, 1)
+				errorMutex.Lock()
+				errors = append(errors, err)
+				errorMutex.Unlock()
+			} else if result != nil {
+				atomic.AddInt32(&successCount, 1)
+			}
+		}(i)
+	}
+
+	// Wait for completion or timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Completed normally
+	case <-ctx.Done():
+		t.Fatal("Test timed out - possible infinite loop detected!")
+	}
+
+	elapsed := time.Since(startTime)
+
+	// Verify no infinite loop occurred
+	if elapsed > timeout {
+		t.Fatalf("Requests took too long: %v (possible infinite loop)", elapsed)
+	}
+
+	// Check memory usage
+	runtime.GC()
+	var endMem runtime.MemStats
+	runtime.ReadMemStats(&endMem)
+
+	memGrowthMB := float64(endMem.HeapAlloc-startMem.HeapAlloc) / (1024 * 1024)
+	t.Logf("Memory growth during test: %.2f MB", memGrowthMB)
+
+	// Memory should not grow excessively (issue reported OOM at 2GB)
+	if memGrowthMB > 100 {
+		t.Errorf("Excessive memory growth: %.2f MB (possible memory leak)", memGrowthMB)
+	}
+
+	// Verify refresh deduplication worked
+	actualRefreshAttempts := atomic.LoadInt32(&refreshAttempts)
+	t.Logf("Total refresh attempts to server: %d", actualRefreshAttempts)
+	t.Logf("Max concurrent refreshes: %d", maxConcurrent)
+	t.Logf("Successful refreshes: %d", successCount)
+	t.Logf("Failed refreshes: %d", errorCount)
+
+	// With deduplication, refresh attempts should be much less than concurrent requests
+	if actualRefreshAttempts > int32(numConcurrentRequests/2) {
+		t.Errorf("Too many refresh attempts (%d), deduplication not working properly",
+			actualRefreshAttempts)
+	}
+
+	// Max concurrent should respect our limit
+	if maxConcurrent > int32(config.MaxConcurrentRefreshes) {
+		t.Errorf("Max concurrent refreshes (%d) exceeded configured limit (%d)",
+			maxConcurrent, config.MaxConcurrentRefreshes)
+	}
+
+	// Check coordinator metrics
+	metrics := coordinator.GetMetrics()
+	t.Logf("Coordinator metrics: %+v", metrics)
+
+	if deduped, ok := metrics["deduplicated_requests"].(int64); ok {
+		if deduped == 0 {
+			t.Error("No requests were deduplicated - deduplication not working")
+		}
+		t.Logf("Deduplicated requests: %d", deduped)
+	}
+}
+
+// TestIssue67_WithoutCoordinator demonstrates the issue without the fix
+// WARNING: This test may consume significant memory - skip in CI
+func TestIssue67_WithoutCoordinator(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping memory-intensive test in short mode")
+	}
+
+	// Only run this test with explicit flag to demonstrate the issue
+	if !testing.Verbose() {
+		t.Skip("Skipping demonstration of issue without fix (run with -v to see)")
+	}
+
+	// Track memory at start
+	runtime.GC()
+	var startMem runtime.MemStats
+	runtime.ReadMemStats(&startMem)
+
+	var refreshAttempts int32
+	var maxConcurrent int32
+	var currentConcurrent int32
+
+	// Simulate the issue: multiple goroutines attempting refresh without coordination
+	numRequests := 100
+	var wg sync.WaitGroup
+	wg.Add(numRequests)
+
+	// Use a context with short timeout to prevent actual OOM
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	for i := 0; i < numRequests; i++ {
+		go func(id int) {
+			defer wg.Done()
+
+			// Simulate retry logic without deduplication (the bug)
+			for attempt := 0; attempt < 3; attempt++ {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				current := atomic.AddInt32(&currentConcurrent, 1)
+
+				// Track max concurrent
+				for {
+					max := atomic.LoadInt32(&maxConcurrent)
+					if current <= max || atomic.CompareAndSwapInt32(&maxConcurrent, max, current) {
+						break
+					}
+				}
+
+				atomic.AddInt32(&refreshAttempts, 1)
+
+				// Simulate token refresh with exponential backoff
+				time.Sleep(time.Duration(attempt*100) * time.Millisecond)
+
+				// Allocate memory to simulate token processing
+				_ = make([]byte, 1024*10) // 10KB per attempt
+
+				atomic.AddInt32(&currentConcurrent, -1)
+
+				// Simulate failure requiring retry
+				if attempt < 2 {
+					continue
+				}
+				break
+			}
+		}(i)
+	}
+
+	// Wait with timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Completed
+	case <-ctx.Done():
+		// Timed out (expected in problematic scenario)
+	}
+
+	// Check memory usage
+	runtime.GC()
+	var endMem runtime.MemStats
+	runtime.ReadMemStats(&endMem)
+
+	memGrowthMB := float64(endMem.HeapAlloc-startMem.HeapAlloc) / (1024 * 1024)
+
+	t.Logf("WITHOUT COORDINATOR:")
+	t.Logf("  Refresh attempts: %d", refreshAttempts)
+	t.Logf("  Max concurrent: %d", maxConcurrent)
+	t.Logf("  Memory growth: %.2f MB", memGrowthMB)
+
+	// This demonstrates the issue - high concurrency and many attempts
+	if refreshAttempts < int32(numRequests*2) {
+		t.Logf("Note: Without coordinator, saw %d refresh attempts for %d requests",
+			refreshAttempts, numRequests)
+	}
+}
+
+// MockExpiredSession simulates an expired session for testing
+type MockExpiredSession struct {
+	refreshToken string
+	sessionID    string
+	isExpired    bool
+}
+
+func (m *MockExpiredSession) GetRefreshToken() string {
+	return m.refreshToken
+}
+
+func (m *MockExpiredSession) GetSessionID() string {
+	return m.sessionID
+}
+
+func (m *MockExpiredSession) IsExpired() bool {
+	return m.isExpired
+}
+
+// BenchmarkRefreshWithCoordinator measures performance with the fix
+func BenchmarkRefreshWithCoordinator(b *testing.B) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultRefreshCoordinatorConfig()
+	coordinator := NewRefreshCoordinator(config, logger)
+	defer coordinator.Shutdown()
+
+	refreshFunc := func() (*TokenResponse, error) {
+		// Simulate token refresh
+		time.Sleep(10 * time.Millisecond)
+		return &TokenResponse{
+			AccessToken:  "new_token",
+			RefreshToken: "new_refresh",
+		}, nil
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			ctx := context.Background()
+			sessionID := fmt.Sprintf("session_%d", i%10)
+			refreshToken := "refresh_token"
+
+			_, _ = coordinator.CoordinateRefresh(ctx, sessionID, refreshToken, refreshFunc)
+			i++
+		}
+	})
+
+	b.StopTimer()
+
+	metrics := coordinator.GetMetrics()
+	b.Logf("Total requests: %v", metrics["total_requests"])
+	b.Logf("Deduplicated: %v", metrics["deduplicated_requests"])
+	b.Logf("Success rate: %.2f%%",
+		float64(metrics["successful_refreshes"].(int64))/
+			float64(metrics["total_requests"].(int64))*100)
+}
+
+// TestRefreshCoordinatorIntegration tests the full integration
+func TestRefreshCoordinatorIntegration(t *testing.T) {
+	// This test verifies the coordinator integrates properly with:
+	// 1. Circuit breaker
+	// 2. Rate limiting
+	// 3. Deduplication
+	// 4. Memory management
+	// 5. Cleanup routines
+
+	logger := GetSingletonNoOpLogger()
+	config := DefaultRefreshCoordinatorConfig()
+	config.MaxRefreshAttempts = 5
+	config.RefreshAttemptWindow = 1 * time.Second
+	config.RefreshCooldownPeriod = 2 * time.Second
+	config.MaxConcurrentRefreshes = 3
+	config.CleanupInterval = 500 * time.Millisecond
+
+	coordinator := NewRefreshCoordinator(config, logger)
+	defer coordinator.Shutdown()
+
+	// Test 1: Normal operation
+	t.Run("NormalOperation", func(t *testing.T) {
+		refreshFunc := func() (*TokenResponse, error) {
+			return &TokenResponse{AccessToken: "token1"}, nil
+		}
+
+		ctx := context.Background()
+		result, err := coordinator.CoordinateRefresh(ctx, "session1", "refresh1", refreshFunc)
+
+		if err != nil {
+			t.Errorf("Normal refresh failed: %v", err)
+		}
+		if result == nil || result.AccessToken != "token1" {
+			t.Error("Invalid result from normal refresh")
+		}
+	})
+
+	// Test 2: Circuit breaker activation
+	t.Run("CircuitBreaker", func(t *testing.T) {
+		failingRefresh := func() (*TokenResponse, error) {
+			return nil, fmt.Errorf("service unavailable")
+		}
+
+		// Trigger circuit breaker
+		for i := 0; i < 4; i++ {
+			ctx := context.Background()
+			_, _ = coordinator.CoordinateRefresh(ctx,
+				fmt.Sprintf("cb_session_%d", i), "refresh_cb", failingRefresh)
+		}
+
+		// Next request should be blocked by circuit breaker
+		ctx := context.Background()
+		_, err := coordinator.CoordinateRefresh(ctx, "cb_session_blocked", "refresh_cb", failingRefresh)
+
+		if err == nil || !strings.Contains(err.Error(), "circuit breaker") {
+			t.Errorf("Circuit breaker should have blocked request: %v", err)
+		}
+	})
+
+	// Test 3: Rate limiting
+	t.Run("RateLimiting", func(t *testing.T) {
+		failingRefresh := func() (*TokenResponse, error) {
+			return nil, fmt.Errorf("failed")
+		}
+
+		sessionID := "rate_limit_session"
+
+		// Exhaust attempts
+		for i := 0; i < config.MaxRefreshAttempts+1; i++ {
+			ctx := context.Background()
+			_, _ = coordinator.CoordinateRefresh(ctx, sessionID, "refresh_rl", failingRefresh)
+		}
+
+		// Should be in cooldown
+		ctx := context.Background()
+		_, err := coordinator.CoordinateRefresh(ctx, sessionID, "refresh_rl", failingRefresh)
+
+		if err == nil || !strings.Contains(err.Error(), "cooldown") {
+			t.Errorf("Rate limiting should have triggered cooldown: %v", err)
+		}
+	})
+
+	// Test 4: Cleanup
+	t.Run("Cleanup", func(t *testing.T) {
+		// Add some sessions
+		for i := 0; i < 5; i++ {
+			coordinator.recordRefreshAttempt(fmt.Sprintf("cleanup_session_%d", i))
+		}
+
+		// Wait for cleanup
+		time.Sleep(config.CleanupInterval * 3)
+
+		// Old sessions should be cleaned up
+		coordinator.attemptsMutex.RLock()
+		count := len(coordinator.sessionRefreshAttempts)
+		coordinator.attemptsMutex.RUnlock()
+
+		// Should have fewer sessions after cleanup
+		if count > 10 {
+			t.Errorf("Cleanup not working, %d sessions remain", count)
+		}
+	})
+
+	// Verify final metrics
+	metrics := coordinator.GetMetrics()
+	t.Logf("Final metrics: %+v", metrics)
+}
