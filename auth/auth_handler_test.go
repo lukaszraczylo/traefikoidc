@@ -34,7 +34,6 @@ type mockSessionData struct {
 	incomingPath  string
 	redirectCount int
 	saveError     error
-	setAuthError  error
 	dirty         bool
 }
 

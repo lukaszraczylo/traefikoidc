@@ -172,10 +172,8 @@ func TestCacheInterfaceWrapper_GetStats(t *testing.T) {
 		t.Error("Expected non-nil stats")
 	}
 
-	// Stats should be a map
-	if len(stats) < 0 { // Just verify it's accessible
-		t.Error("Stats map should be accessible")
-	}
+	// Stats should be accessible (len() never returns negative values)
+	// Just verify it's accessible by checking it's not nil (already done above)
 }
 
 // TestCacheInterfaceWrapper_Cleanup tests cleanup functionality

@@ -304,14 +304,13 @@ func TestTransportPoolMaxClientsLimit(t *testing.T) {
 		{Timeout: 30 * time.Second}, // This should not create a new transport
 	}
 
-	var transports []*http.Transport
 	for i, config := range configs {
 		transport := pool.GetOrCreateTransport(config)
 		if i < 2 {
 			if transport == nil {
 				t.Fatalf("Expected transport %d to be created", i)
 			}
-			transports = append(transports, transport)
+			// Transport created successfully within limit
 		} else {
 			// When limit is reached, should return existing transport or nil
 			if transport == nil {
