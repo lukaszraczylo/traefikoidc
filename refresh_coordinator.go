@@ -60,6 +60,9 @@ type RefreshCoordinatorConfig struct {
 	MemoryPressureThresholdMB uint64
 	// Cleanup interval for stale entries
 	CleanupInterval time.Duration
+	// Delay before cleaning up completed refresh operations from deduplication map
+	// Set to 0 for immediate cleanup (useful for tests)
+	DeduplicationCleanupDelay time.Duration
 }
 
 // DefaultRefreshCoordinatorConfig returns production-ready configuration
@@ -73,6 +76,7 @@ func DefaultRefreshCoordinatorConfig() RefreshCoordinatorConfig {
 		EnableMemoryPressureDetection: true,
 		MemoryPressureThresholdMB:     500, // 500MB threshold
 		CleanupInterval:               1 * time.Minute,
+		DeduplicationCleanupDelay:     100 * time.Millisecond, // Default 100ms for production
 	}
 }
 
@@ -80,12 +84,16 @@ func DefaultRefreshCoordinatorConfig() RefreshCoordinatorConfig {
 type refreshOperation struct {
 	// refreshToken being refreshed (for validation)
 	refreshToken string
-	// result channel broadcasts the result to all waiting goroutines
-	resultChan chan *refreshResult
+	// result stores the final result
+	result *refreshResult
+	// done signals when the operation is complete
+	done chan struct{}
 	// startTime tracks when the operation started
 	startTime time.Time
 	// waiterCount tracks number of goroutines waiting
 	waiterCount int32
+	// mutex protects the result field
+	mutex sync.RWMutex
 }
 
 // refreshResult contains the result of a refresh operation
@@ -177,137 +185,45 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 	refreshToken string,
 	refreshFunc func() (*TokenResponse, error),
 ) (*TokenResponse, error) {
+	// Increment total request count
+	atomic.AddInt64(&rc.metrics.totalRefreshRequests, 1)
+
 	// Check circuit breaker first
 	if !rc.circuitBreaker.AllowRequest() {
 		atomic.AddInt64(&rc.metrics.circuitBreakerTrips, 1)
 		return nil, fmt.Errorf("refresh circuit breaker is open due to repeated failures")
 	}
 
-	// Check session-level rate limiting
-	if !rc.canAttemptRefresh(sessionID) {
-		atomic.AddInt64(&rc.metrics.cooldownsTriggered, 1)
-		return nil, fmt.Errorf("refresh attempts exceeded for session, in cooldown period")
-	}
-
-	// Check memory pressure
-	if rc.config.EnableMemoryPressureDetection && rc.isUnderMemoryPressure() {
-		atomic.AddInt64(&rc.metrics.memoryPressureEvents, 1)
-		return nil, fmt.Errorf("system under memory pressure, refresh denied")
-	}
-
 	// Create hash of refresh token for deduplication
 	tokenHash := rc.hashRefreshToken(refreshToken)
 
-	// Try to join existing refresh operation
-	if result := rc.joinExistingRefresh(ctx, tokenHash, refreshToken); result != nil {
-		if result.fromCache {
-			atomic.AddInt64(&rc.metrics.deduplicatedRequests, 1)
-		}
-		return result.tokenResponse, result.err
+	// CRITICAL FIX: Atomically check for existing operation OR create new one
+	// This prevents the race where multiple goroutines check, find nothing, then all create
+	operation, isNew, err := rc.getOrCreateOperation(ctx, sessionID, tokenHash, refreshToken)
+
+	if err != nil {
+		// Operation creation was rejected (rate limit, memory pressure, concurrent limit)
+		return nil, err
 	}
 
-	// Start new refresh operation
-	return rc.executeRefresh(ctx, sessionID, tokenHash, refreshToken, refreshFunc)
-}
-
-// joinExistingRefresh attempts to join an in-flight refresh operation
-func (rc *RefreshCoordinator) joinExistingRefresh(
-	ctx context.Context,
-	tokenHash string,
-	refreshToken string,
-) *refreshResult {
-	rc.refreshMutex.RLock()
-	operation, exists := rc.inFlightRefreshes[tokenHash]
-	if exists && operation.refreshToken == refreshToken {
-		// Increment waiter count
-		atomic.AddInt32(&operation.waiterCount, 1)
-		resultChan := operation.resultChan
-		rc.refreshMutex.RUnlock()
-
-		// Wait for result or context cancellation
-		select {
-		case result := <-resultChan:
-			if result != nil {
-				result.fromCache = true
-			}
-			return result
-		case <-ctx.Done():
-			return &refreshResult{nil, ctx.Err(), false}
-		}
-	}
-	rc.refreshMutex.RUnlock()
-	return nil
-}
-
-// executeRefresh performs a new refresh operation with deduplication
-func (rc *RefreshCoordinator) executeRefresh(
-	ctx context.Context,
-	sessionID string,
-	tokenHash string,
-	refreshToken string,
-	refreshFunc func() (*TokenResponse, error),
-) (*TokenResponse, error) {
-	// Check concurrent refresh limit
-	currentInFlight := atomic.LoadInt32(&rc.metrics.currentInFlightRefreshes)
-	if int(currentInFlight) >= rc.config.MaxConcurrentRefreshes {
-		return nil, fmt.Errorf("maximum concurrent refresh operations reached")
+	if isNew {
+		// We created a new operation, so we need to execute it
+		go rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc)
+	} else {
+		// Joined existing operation - this is a deduplicated request
+		atomic.AddInt64(&rc.metrics.deduplicatedRequests, 1)
 	}
 
-	// Create new operation
-	operation := &refreshOperation{
-		refreshToken: refreshToken,
-		resultChan:   make(chan *refreshResult, 1),
-		startTime:    time.Now(),
-		waiterCount:  1,
-	}
+	// Wait for the operation to complete
+	select {
+	case <-operation.done:
+		// Get the result
+		operation.mutex.RLock()
+		result := operation.result
+		operation.mutex.RUnlock()
 
-	// Register operation
-	rc.refreshMutex.Lock()
-	rc.inFlightRefreshes[tokenHash] = operation
-	rc.refreshMutex.Unlock()
-
-	atomic.AddInt32(&rc.metrics.currentInFlightRefreshes, 1)
-	atomic.AddInt64(&rc.metrics.totalRefreshRequests, 1)
-
-	// Track attempt
-	rc.recordRefreshAttempt(sessionID)
-
-	// Execute refresh with timeout
-	go func() {
-		defer func() {
-			// Clean up operation
-			rc.refreshMutex.Lock()
-			delete(rc.inFlightRefreshes, tokenHash)
-			rc.refreshMutex.Unlock()
-
-			atomic.AddInt32(&rc.metrics.currentInFlightRefreshes, -1)
-			close(operation.resultChan)
-		}()
-
-		// Create timeout context
-		refreshCtx, cancel := context.WithTimeout(ctx, rc.config.RefreshTimeout)
-		defer cancel()
-
-		// Execute refresh in goroutine to respect timeout
-		resultChan := make(chan struct {
-			resp *TokenResponse
-			err  error
-		}, 1)
-
-		go func() {
-			resp, err := refreshFunc()
-			select {
-			case resultChan <- struct {
-				resp *TokenResponse
-				err  error
-			}{resp, err}:
-			case <-refreshCtx.Done():
-			}
-		}()
-
-		select {
-		case result := <-resultChan:
-			// Update circuit breaker
+		if result != nil {
+			// Record metrics based on result
 			if result.err != nil {
 				rc.circuitBreaker.RecordFailure()
 				rc.recordRefreshFailure(sessionID)
@@ -317,86 +233,186 @@ func (rc *RefreshCoordinator) executeRefresh(
 				rc.recordRefreshSuccess(sessionID)
 				atomic.AddInt64(&rc.metrics.successfulRefreshes, 1)
 			}
-
-			// Broadcast result to all waiters
-			operation.resultChan <- &refreshResult{
-				tokenResponse: result.resp,
-				err:           result.err,
-				fromCache:     false,
-			}
-
-		case <-refreshCtx.Done():
-			// Timeout occurred
-			err := fmt.Errorf("refresh operation timed out after %v", rc.config.RefreshTimeout)
-			rc.circuitBreaker.RecordFailure()
-			rc.recordRefreshFailure(sessionID)
-			atomic.AddInt64(&rc.metrics.failedRefreshes, 1)
-
-			operation.resultChan <- &refreshResult{
-				tokenResponse: nil,
-				err:           err,
-				fromCache:     false,
-			}
+			return result.tokenResponse, result.err
 		}
-	}()
-
-	// Wait for result
-	select {
-	case result := <-operation.resultChan:
-		return result.tokenResponse, result.err
+		return nil, fmt.Errorf("refresh operation completed without result")
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-// canAttemptRefresh checks if a session can attempt refresh based on rate limiting
-func (rc *RefreshCoordinator) canAttemptRefresh(sessionID string) bool {
+// getOrCreateOperation atomically checks for an existing operation or creates a new one
+// Returns (operation, true, nil) if a new operation was created
+// Returns (operation, false, nil) if joined an existing operation
+// Returns (nil, false, error) if the operation was rejected
+func (rc *RefreshCoordinator) getOrCreateOperation(
+	ctx context.Context,
+	sessionID string,
+	tokenHash string,
+	refreshToken string,
+) (*refreshOperation, bool, error) {
+	rc.refreshMutex.Lock()
+	defer rc.refreshMutex.Unlock()
+
+	// Check for existing operation while holding the lock
+	if existingOp, exists := rc.inFlightRefreshes[tokenHash]; exists {
+		if existingOp.refreshToken == refreshToken {
+			// Join existing operation
+			atomic.AddInt32(&existingOp.waiterCount, 1)
+			return existingOp, false, nil
+		}
+		// Different refresh token for same hash - should not happen
+		return nil, false, fmt.Errorf("refresh token mismatch")
+	}
+
+	// No existing operation - check if we can create a new one
+	// All checks happen while holding the lock to prevent races
+
+	// Check and record refresh attempt for rate limiting
+	rc.recordRefreshAttempt(sessionID)
+	if rc.isInCooldown(sessionID) {
+		atomic.AddInt64(&rc.metrics.cooldownsTriggered, 1)
+		return nil, false, fmt.Errorf("refresh attempts exceeded for session, in cooldown period")
+	}
+
+	// Check memory pressure
+	if rc.config.EnableMemoryPressureDetection && rc.isUnderMemoryPressure() {
+		atomic.AddInt64(&rc.metrics.memoryPressureEvents, 1)
+		return nil, false, fmt.Errorf("system under memory pressure, refresh denied")
+	}
+
+	// Check and reserve concurrent refresh slot atomically
+	current := atomic.LoadInt32(&rc.metrics.currentInFlightRefreshes)
+	if int(current) >= rc.config.MaxConcurrentRefreshes {
+		return nil, false, fmt.Errorf("maximum concurrent refresh operations reached")
+	}
+
+	// Reserve the slot - we're still holding the lock so this is safe
+	atomic.AddInt32(&rc.metrics.currentInFlightRefreshes, 1)
+
+	// Create and register new operation
+	operation := &refreshOperation{
+		refreshToken: refreshToken,
+		done:         make(chan struct{}),
+		startTime:    time.Now(),
+		waiterCount:  1,
+	}
+	rc.inFlightRefreshes[tokenHash] = operation
+
+	return operation, true, nil
+}
+
+// executeRefreshAsync performs the actual refresh operation asynchronously
+func (rc *RefreshCoordinator) executeRefreshAsync(
+	operation *refreshOperation,
+	sessionID string,
+	tokenHash string,
+	refreshFunc func() (*TokenResponse, error),
+) {
+	defer func() {
+		// Signal completion to all waiters
+		close(operation.done)
+
+		// Clean up operation after a configurable delay to allow waiters to read result
+		go func() {
+			if rc.config.DeduplicationCleanupDelay > 0 {
+				time.Sleep(rc.config.DeduplicationCleanupDelay)
+			}
+			rc.refreshMutex.Lock()
+			delete(rc.inFlightRefreshes, tokenHash)
+			rc.refreshMutex.Unlock()
+			atomic.AddInt32(&rc.metrics.currentInFlightRefreshes, -1)
+		}()
+	}()
+
+	// Create timeout context
+	refreshCtx, cancel := context.WithTimeout(context.Background(), rc.config.RefreshTimeout)
+	defer cancel()
+
+	// Execute refresh in goroutine to respect timeout
+	resultChan := make(chan struct {
+		resp *TokenResponse
+		err  error
+	}, 1)
+
+	go func() {
+		resp, err := refreshFunc()
+		select {
+		case resultChan <- struct {
+			resp *TokenResponse
+			err  error
+		}{resp, err}:
+		case <-refreshCtx.Done():
+		}
+	}()
+
+	select {
+	case result := <-resultChan:
+		// Store result for all waiters
+		operation.mutex.Lock()
+		operation.result = &refreshResult{
+			tokenResponse: result.resp,
+			err:           result.err,
+			fromCache:     false,
+		}
+		operation.mutex.Unlock()
+	case <-refreshCtx.Done():
+		// Timeout occurred
+		timeoutErr := fmt.Errorf("refresh operation timed out after %v", rc.config.RefreshTimeout)
+		operation.mutex.Lock()
+		operation.result = &refreshResult{
+			tokenResponse: nil,
+			err:           timeoutErr,
+			fromCache:     false,
+		}
+		operation.mutex.Unlock()
+	}
+}
+
+// isInCooldown checks if a session is in cooldown after recording an attempt
+func (rc *RefreshCoordinator) isInCooldown(sessionID string) bool {
 	rc.attemptsMutex.Lock()
 	defer rc.attemptsMutex.Unlock()
 
 	tracker, exists := rc.sessionRefreshAttempts[sessionID]
 	if !exists {
-		// First attempt for this session
-		rc.sessionRefreshAttempts[sessionID] = &refreshAttemptTracker{
-			windowStartTime: time.Now(),
-		}
-		return true
+		return false // No tracker means first attempt, not in cooldown
 	}
 
 	now := time.Now()
 
-	// Check if in cooldown
+	// Check if already in cooldown
 	if tracker.inCooldown {
 		if now.After(tracker.cooldownEndTime) {
 			// Cooldown expired, reset tracker
 			tracker.inCooldown = false
-			tracker.attempts = 0
+			tracker.attempts = 1 // Already recorded one attempt
 			tracker.consecutiveFailures = 0
 			tracker.windowStartTime = now
-			return true
+			return false
 		}
-		return false // Still in cooldown
+		return true // Still in cooldown
 	}
 
 	// Check if window expired
 	if now.Sub(tracker.windowStartTime) > rc.config.RefreshAttemptWindow {
 		// Reset window
-		tracker.attempts = 0
+		tracker.attempts = 1 // Already recorded one attempt
 		tracker.windowStartTime = now
-		return true
+		return false
 	}
 
-	// Check attempt limit
+	// Check if just exceeded attempt limit
 	if int(tracker.attempts) >= rc.config.MaxRefreshAttempts {
-		// Enter cooldown
+		// Enter cooldown now
 		tracker.inCooldown = true
 		tracker.cooldownEndTime = now.Add(rc.config.RefreshCooldownPeriod)
 		rc.logger.Infof("Session %s entering refresh cooldown after %d attempts",
 			sessionID, tracker.attempts)
-		return false
+		return true
 	}
 
-	return true
+	return false
 }
 
 // recordRefreshAttempt records a refresh attempt for rate limiting

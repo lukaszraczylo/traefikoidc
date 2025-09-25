@@ -208,8 +208,16 @@ func TestIssue67_InfiniteRefreshLoop(t *testing.T) {
 	var endMem runtime.MemStats
 	runtime.ReadMemStats(&endMem)
 
-	memGrowthMB := float64(endMem.HeapAlloc-startMem.HeapAlloc) / (1024 * 1024)
-	t.Logf("Memory growth during test: %.2f MB", memGrowthMB)
+	// Calculate memory growth safely to prevent underflow
+	var memGrowthMB float64
+	if endMem.HeapAlloc >= startMem.HeapAlloc {
+		memGrowthMB = float64(endMem.HeapAlloc-startMem.HeapAlloc) / (1024 * 1024)
+	} else {
+		// Memory decreased (GC occurred), treat as 0 growth
+		memGrowthMB = 0
+	}
+	t.Logf("Memory stats: start=%d bytes, end=%d bytes, growth=%.2f MB",
+		startMem.HeapAlloc, endMem.HeapAlloc, memGrowthMB)
 
 	// Memory should not grow excessively (issue reported OOM at 2GB)
 	if memGrowthMB > 100 {
@@ -470,6 +478,19 @@ func TestRefreshCoordinatorIntegration(t *testing.T) {
 
 	// Test 3: Rate limiting
 	t.Run("RateLimiting", func(t *testing.T) {
+		// Reset circuit breaker to closed state for this test
+		coordinator.circuitBreaker.mutex.Lock()
+		atomic.StoreInt32(&coordinator.circuitBreaker.state, 0) // closed
+		atomic.StoreInt32(&coordinator.circuitBreaker.failures, 0)
+		coordinator.circuitBreaker.mutex.Unlock()
+
+		// Temporarily increase circuit breaker threshold to not interfere
+		oldMaxFailures := coordinator.circuitBreaker.config.MaxFailures
+		coordinator.circuitBreaker.config.MaxFailures = 20
+		defer func() {
+			coordinator.circuitBreaker.config.MaxFailures = oldMaxFailures
+		}()
+
 		failingRefresh := func() (*TokenResponse, error) {
 			return nil, fmt.Errorf("failed")
 		}
@@ -480,6 +501,8 @@ func TestRefreshCoordinatorIntegration(t *testing.T) {
 		for i := 0; i < config.MaxRefreshAttempts+1; i++ {
 			ctx := context.Background()
 			_, _ = coordinator.CoordinateRefresh(ctx, sessionID, "refresh_rl", failingRefresh)
+			// Add delay to ensure operations complete and aren't deduplicated
+			time.Sleep(150 * time.Millisecond)
 		}
 
 		// Should be in cooldown
