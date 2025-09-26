@@ -2521,7 +2521,7 @@ func (t *TraefikOidc) Close() error {
 		runtime.GC()
 		t.safeLogDebug("Forced garbage collection after shutdown")
 
-		t.safeLogInfo("TraefikOidc plugin instance closed successfully.")
+		t.safeLogDebug("TraefikOidc plugin instance closed successfully.")
 	})
 	return closeErr
 }

@@ -272,7 +272,7 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 
 	// Start memory monitoring every 30 seconds (will skip if already started)
 	if err := sm.memoryMonitor.Start(30 * time.Second); err != nil {
-		logger.Infof("Failed to start memory monitoring: %v", err)
+		logger.Debugf("Failed to start memory monitoring: %v", err)
 	}
 
 	sm.sessionPool.New = func() interface{} {
@@ -302,7 +302,7 @@ func (sm *SessionManager) Shutdown() error {
 	var shutdownErr error
 	sm.shutdownOnce.Do(func() {
 		if sm.logger != nil {
-			sm.logger.Info("SessionManager shutdown initiated")
+			sm.logger.Debug("SessionManager shutdown initiated")
 		}
 
 		// Cancel context to stop all background operations
@@ -324,7 +324,7 @@ func (sm *SessionManager) Shutdown() error {
 		runtime.GC()
 
 		if sm.logger != nil {
-			sm.logger.Info("SessionManager shutdown completed")
+			sm.logger.Debug("SessionManager shutdown completed")
 		}
 	})
 	return shutdownErr

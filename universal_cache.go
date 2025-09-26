@@ -431,13 +431,13 @@ func (c *UniversalCache) Close() error {
 		// Cleanup routine finished normally
 	case <-time.After(2 * time.Second):
 		// Timeout waiting for cleanup routine
-		c.logger.Info("UniversalCache[%s]: Timeout waiting for cleanup routine", c.config.Type)
+		c.logger.Debug("UniversalCache[%s]: Timeout waiting for cleanup routine", c.config.Type)
 	}
 
 	// Clear all items
 	c.Clear()
 
-	c.logger.Infof("UniversalCache[%s]: Closed", c.config.Type)
+	c.logger.Debugf("UniversalCache[%s]: Closed", c.config.Type)
 	return nil
 }
 

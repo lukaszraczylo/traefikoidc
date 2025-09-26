@@ -173,7 +173,7 @@ func (bt *BackgroundTask) run() {
 
 	if bt.logger != nil {
 		if !isTestMode() {
-			bt.logger.Info("Starting background task: %s", bt.name)
+			bt.logger.Debug("Starting background task: %s", bt.name)
 		}
 	}
 
@@ -182,7 +182,7 @@ func (bt *BackgroundTask) run() {
 	case <-bt.stopChan:
 		if bt.logger != nil {
 			if !isTestMode() {
-				bt.logger.Info("Stopping background task: %s (before initial execution)", bt.name)
+				bt.logger.Debug("Stopping background task: %s (before initial execution)", bt.name)
 			}
 		}
 		return
@@ -201,7 +201,7 @@ func (bt *BackgroundTask) run() {
 			case <-bt.stopChan:
 				if bt.logger != nil {
 					if !isTestMode() {
-						bt.logger.Info("Stopping background task: %s (during periodic execution)", bt.name)
+						bt.logger.Debug("Stopping background task: %s (during periodic execution)", bt.name)
 					}
 				}
 				return
@@ -211,7 +211,7 @@ func (bt *BackgroundTask) run() {
 		case <-bt.stopChan:
 			if bt.logger != nil {
 				if !isTestMode() {
-					bt.logger.Info("Stopping background task: %s (direct stop signal)", bt.name)
+					bt.logger.Debug("Stopping background task: %s (direct stop signal)", bt.name)
 				}
 			}
 			return
@@ -315,7 +315,7 @@ func (cb *TaskCircuitBreaker) CanCreateTask(taskName string) error {
 		if time.Now().Unix()-lastFailure > int64(cb.timeout.Seconds()) {
 			atomic.StoreInt32(&cb.state, int32(CircuitBreakerHalfOpen))
 			if cb.logger != nil {
-				cb.logger.Info("Circuit breaker transitioning to half-open for task: %s", taskName)
+				cb.logger.Debug("Circuit breaker transitioning to half-open for task: %s", taskName)
 			}
 			return nil
 		}
@@ -467,7 +467,7 @@ func (tr *TaskRegistry) RegisterTask(name string, task *BackgroundTask) error {
 	tr.cb.OnTaskSuccess(name)
 
 	if tr.logger != nil {
-		tr.logger.Info("Registered background task: %s", name)
+		tr.logger.Debug("Registered background task: %s", name)
 	}
 
 	return nil
@@ -483,7 +483,7 @@ func (tr *TaskRegistry) UnregisterTask(name string) {
 		delete(tr.tasks, name)
 
 		if tr.logger != nil {
-			tr.logger.Info("Unregistered background task: %s", name)
+			tr.logger.Debug("Unregistered background task: %s", name)
 		}
 	}
 }
@@ -513,7 +513,7 @@ func (tr *TaskRegistry) StopAllTasks() {
 	for name, task := range tasksCopy {
 		task.Stop()
 		if tr.logger != nil {
-			tr.logger.Info("Stopped background task during shutdown: %s", name)
+			tr.logger.Debug("Stopped background task during shutdown: %s", name)
 		}
 	}
 }
@@ -641,7 +641,7 @@ func (mm *TaskMemoryMonitor) Start(interval time.Duration) error {
 	mm.started = true
 
 	if mm.logger != nil && !isTestMode() {
-		mm.logger.Info("Started global task memory monitoring with %v interval", interval)
+		mm.logger.Debug("Started global task memory monitoring with %v interval", interval)
 	}
 
 	return nil
