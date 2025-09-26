@@ -139,7 +139,7 @@ func TestComponentProfilers(t *testing.T) {
 	}
 
 	// Test HTTP Client Profiler
-	httpClient := createDefaultHTTPClient()
+	httpClient := CreateDefaultHTTPClient()
 	hcp := NewHTTPClientProfiler(httpClient, logger)
 	snapshot, err = hcp.TakeSnapshot()
 	if err != nil {
@@ -440,7 +440,7 @@ func TestProviderMetadataMemoryLeakDetection(t *testing.T) {
 	defer mockServer.Close()
 
 	providerURL := fmt.Sprintf("http://%s", listener.Addr().String())
-	httpClient := createDefaultHTTPClient()
+	httpClient := CreateDefaultHTTPClient()
 
 	// Create metadata cache
 	metadataCache := NewMetadataCacheWithLogger(nil, logger)

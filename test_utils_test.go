@@ -324,9 +324,9 @@ func TestTraefikOidcHelperMethods(t *testing.T) {
 	traefikNilLogger.safeLogInfo("test info with nil logger")
 }
 
-// Test createDefaultHTTPClient function
+// Test CreateDefaultHTTPClient function
 func TestCreateDefaultHTTPClient(t *testing.T) {
-	client := createDefaultHTTPClient()
+	client := CreateDefaultHTTPClient()
 
 	if client == nil {
 		t.Fatal("createDefaultHTTPClient() returned nil")

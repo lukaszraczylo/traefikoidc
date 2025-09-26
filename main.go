@@ -24,22 +24,11 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Deprecated: Use CreateDefaultHTTPClient from http_client_factory.go instead
-// createDefaultHTTPClient is kept for backward compatibility
-func createDefaultHTTPClient() *http.Client {
-	return CreateDefaultHTTPClient()
-}
-
 const (
 	ConstSessionTimeout = 86400
 )
 
 // isTestMode detects if the code is running in a test environment.
-// It checks various indicators including environment variables, command-line arguments,
-// and runtime compiler information to determine test context.
-// This helps suppress diagnostic logs during testing to keep test output clean.
-// Returns:
-//   - true if running in test mode, false otherwise.
 func isTestMode() bool {
 	if os.Getenv("SUPPRESS_DIAGNOSTIC_LOGS") == "1" {
 		return true
@@ -58,33 +47,33 @@ func isTestMode() bool {
 		}
 	}
 
-	if runtime.Compiler == "gc" {
-		progName := os.Args[0]
-		if strings.Contains(progName, "test") ||
-			strings.HasSuffix(progName, ".test") ||
-			strings.Contains(progName, "__debug_bin") {
-			return true
-		}
-	}
-
-	// Only use runtime stack check as fallback when no explicit test conditions are being controlled
-	// This prevents interference with unit tests that want to test false conditions
-	// Skip runtime stack check if explicitly disabled for testing
-	if os.Getenv("DISABLE_RUNTIME_STACK_CHECK") != "1" &&
-		os.Getenv("SUPPRESS_DIAGNOSTIC_LOGS") == "" &&
-		os.Getenv("GO_TEST") == "" {
-		// Check runtime stack for test functions only as last resort
-		buf := make([]byte, 2048)
-		n := runtime.Stack(buf, false)
-		stack := string(buf[:n])
-		if strings.Contains(stack, "testing.tRunner") ||
-			strings.Contains(stack, "testing.(*T)") ||
-			strings.Contains(stack, ".test.") {
-			return true
-		}
-	}
-
 	return false
+}
+
+// mergeScopes combines default scopes with user-provided scopes, removing duplicates.
+func mergeScopes(defaultScopes, userScopes []string) []string {
+	if len(userScopes) == 0 {
+		return append([]string(nil), defaultScopes...)
+	}
+
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, scope := range defaultScopes {
+		if !seen[scope] {
+			seen[scope] = true
+			result = append(result, scope)
+		}
+	}
+
+	for _, scope := range userScopes {
+		if !seen[scope] {
+			seen[scope] = true
+			result = append(result, scope)
+		}
+	}
+
+	return result
 }
 
 // defaultExcludedURLs are the paths that are excluded from authentication
@@ -302,39 +291,6 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	}
 
 	return nil
-}
-
-// mergeScopes combines default scopes with user-provided scopes, removing duplicates.
-// Default scopes are placed first, followed by user scopes not already present.
-// Parameters:
-//   - defaultScopes: The default scopes required by the application.
-//   - userScopes: Additional scopes specified by the user.
-//
-// Returns:
-//   - A slice containing merged scopes with defaults first, then user scopes, with duplicates removed.
-func mergeScopes(defaultScopes, userScopes []string) []string {
-	if len(userScopes) == 0 {
-		return append([]string(nil), defaultScopes...)
-	}
-
-	seen := make(map[string]bool)
-	var result []string
-
-	for _, scope := range defaultScopes {
-		if !seen[scope] {
-			seen[scope] = true
-			result = append(result, scope)
-		}
-	}
-
-	for _, scope := range userScopes {
-		if !seen[scope] {
-			seen[scope] = true
-			result = append(result, scope)
-		}
-	}
-
-	return result
 }
 
 // New creates a new TraefikOidc middleware instance.
