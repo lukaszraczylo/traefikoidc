@@ -25,6 +25,12 @@ const (
 	ProviderTypeGeneric ProviderType = iota
 	ProviderTypeGoogle
 	ProviderTypeAzure
+	ProviderTypeGitHub
+	ProviderTypeAuth0
+	ProviderTypeOkta
+	ProviderTypeKeycloak
+	ProviderTypeAWSCognito
+	ProviderTypeGitLab
 )
 
 // ProviderCapabilities defines the specific features and behaviors of an OIDC provider.

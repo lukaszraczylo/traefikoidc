@@ -134,6 +134,30 @@ func (r *ProviderRegistry) detectProviderUnsafe(issuerURL string) OIDCProvider {
 			if strings.Contains(host, "login.microsoftonline.com") || strings.Contains(host, "sts.windows.net") {
 				return p
 			}
+		case ProviderTypeGitHub:
+			if strings.Contains(host, "github.com") {
+				return p
+			}
+		case ProviderTypeAuth0:
+			if strings.Contains(host, ".auth0.com") {
+				return p
+			}
+		case ProviderTypeOkta:
+			if strings.Contains(host, ".okta.com") || strings.Contains(host, ".oktapreview.com") || strings.Contains(host, ".okta-emea.com") {
+				return p
+			}
+		case ProviderTypeKeycloak:
+			if strings.Contains(host, "keycloak") || strings.Contains(normalizedURL.Path, "/auth/realms/") {
+				return p
+			}
+		case ProviderTypeAWSCognito:
+			if strings.Contains(host, "cognito-idp") && strings.Contains(host, ".amazonaws.com") {
+				return p
+			}
+		case ProviderTypeGitLab:
+			if strings.Contains(host, "gitlab.com") {
+				return p
+			}
 		}
 	}
 

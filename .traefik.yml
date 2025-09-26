@@ -4,14 +4,28 @@ type: middleware
 import: github.com/lukaszraczylo/traefikoidc
 
 summary: |
-  Middleware adding OpenID Connect (OIDC) authentication to Traefik routes.
+  Universal OpenID Connect (OIDC) authentication middleware for Traefik.
 
   This middleware replaces the need for forward-auth and oauth2-proxy when using Traefik as a reverse proxy.
   It provides a complete OIDC authentication solution with features like domain restrictions,
-  role-based access control, token caching, and more.
+  role-based access control, token caching, session management, and memory-efficient operation.
 
-  The middleware has been tested with Auth0, Logto, Google, and other standard OIDC providers.
-  It includes special handling for Google's OAuth implementation to ensure compatibility.
+  🎯 SUPPORTED PROVIDERS (Auto-Detection):
+  ✅ Google          - Full OIDC, auto-configured for Workspace
+  ✅ Azure AD        - Enterprise OIDC with tenant/group support  
+  ✅ Auth0           - Flexible OIDC with custom claims
+  ✅ Okta            - Enterprise SSO with MFA support
+  ✅ Keycloak        - Self-hosted OIDC with full customization
+  ✅ AWS Cognito     - Managed OIDC with regional endpoints
+  ✅ GitLab          - Both GitLab.com and self-hosted instances
+  ⚠️  GitHub         - OAuth 2.0 only (limited: API access, no user claims)
+  ✅ Generic OIDC    - Any RFC-compliant OIDC provider
+
+  🔧 KEY FEATURES:
+  - Automatic provider detection and configuration
+  - Built-in warnings for provider limitations
+  - Memory-efficient with bounded resource usage
+  - Comprehensive test coverage and security monitoring
   It supports various authentication scenarios including:
 
   - Basic authentication with customizable callback and logout URLs
@@ -83,13 +97,21 @@ testData:
 
 # --- Provider Specific Configuration Examples ---
 #
-# Below are example configurations tailored for specific OIDC providers.
-# Uncomment and adapt the relevant section for your provider.
-# Remember to replace placeholder values (like client IDs, secrets, domains)
-# with your actual credentials and settings.
+# This middleware supports 9+ OIDC providers with automatic detection:
+# ✅ Google          - Full OIDC with auto-configuration
+# ✅ Azure AD        - Enterprise OIDC with tenant support  
+# ✅ Auth0           - Flexible OIDC with custom claims
+# ✅ Okta            - Enterprise OIDC with MFA support
+# ✅ Keycloak        - Self-hosted OIDC with full customization
+# ✅ AWS Cognito     - Managed OIDC with regional endpoints
+# ✅ GitLab          - Both GitLab.com and self-hosted
+# ⚠️  GitHub         - OAuth 2.0 only (not OIDC, limited functionality)
+# ✅ Generic OIDC    - Any RFC-compliant OIDC provider
 #
+# Uncomment and adapt the relevant section for your provider.
+# Remember to replace placeholder values with your actual credentials.
 # For all providers, ensure claims like email, roles, and groups are
-# configured to be included in the ID TOKEN. This plugin validates ID tokens.
+# configured to be included in the ID TOKEN (this plugin validates ID tokens).
 
 # --- Keycloak Example ---
 # testDataKeycloak:
@@ -127,18 +149,81 @@ testData:
 
 # --- Google Workspace / Google Cloud Identity Example ---
 # testDataGoogle:
-#   providerURL: https://accounts.google.com # This is standard for Google
+#   providerURL: https://accounts.google.com # Standard Google OIDC endpoint
 #   clientID: your-google-client-id.apps.googleusercontent.com
 #   clientSecret: your-google-client-secret # Store securely
 #   callbackURL: /oauth2/callback
 #   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-google"
-#   scopes: # Defaults ["openid", "profile", "email"] are handled. Plugin manages Google-specifics.
-#     # Do NOT add 'offline_access' - plugin handles this.
-#   allowedUserDomains: # Useful for Google Workspace users
+#   scopes: # Auto-detects Google and applies proper configuration
+#     # Do NOT add 'offline_access' - plugin automatically handles Google-specific parameters
+#   allowedUserDomains: # Useful for Google Workspace domain restriction
 #     - your-gsuite-domain.com
-#   # Google includes 'hd' (hosted domain) claim which can be used with allowedUserDomains.
-#   # Other claims like 'email', 'sub', 'name' are standard.
-#   # See README.md "Provider Configuration Recommendations" for Google.
+#   refreshGracePeriodSeconds: 300 # Optional: Refresh 5 min before expiry
+#   # Google auto-config: Uses access_type=offline, prompt=consent, filters unsupported scopes
+#   # Available claims: email, sub, name, given_name, family_name, picture, hd (hosted domain)
+
+# --- Okta Example ---
+# testDataOkta:
+#   providerURL: https://your-tenant.okta.com/oauth2/default # Use your Okta domain and auth server
+#   clientID: your-okta-client-id
+#   clientSecret: your-okta-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-okta"
+#   scopes:
+#     - groups # Include for group-based access control
+#   allowedRolesAndGroups:
+#     - admin
+#     - developer
+#     - "Everyone" # Default Okta group
+#   # Okta config: Create OIDC Web App in admin console, configure Groups claim
+#   # Available claims: email, sub, name, groups, custom attributes
+
+# --- AWS Cognito Example ---
+# testDataCognito:
+#   providerURL: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_YourUserPool # Regional endpoint
+#   clientID: your-cognito-client-id
+#   clientSecret: your-cognito-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-cognito"
+#   scopes:
+#     - aws.cognito.signin.user.admin # Cognito-specific scope
+#   allowedRolesAndGroups:
+#     - admin
+#     - user
+#   # Cognito config: Create User Pool, App Client with authorization code grant
+#   # Available claims: email, sub, cognito:username, cognito:groups, custom attributes
+
+# --- GitLab Example ---
+# testDataGitLab:
+#   providerURL: https://gitlab.com # For GitLab.com, or use your self-hosted URL
+#   clientID: your-gitlab-client-id
+#   clientSecret: your-gitlab-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-gitlab"
+#   scopes:
+#     - read_user
+#     - read_api # For GitLab API access
+#   allowedUserDomains:
+#     - yourcompany.com # Optional domain restriction
+#   # GitLab config: Create application in GitLab Admin Area > Applications
+#   # Available claims: email, sub, name, nickname, preferred_username
+
+# --- GitHub OAuth 2.0 Example (⚠️ Limited Functionality) ---
+# testDataGitHub:
+#   providerURL: https://github.com/login/oauth # GitHub OAuth endpoint (NOT OIDC)
+#   clientID: your-github-client-id
+#   clientSecret: your-github-client-secret # Store securely
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-github"
+#   scopes:
+#     - user:email
+#     - read:user
+#   # ⚠️ IMPORTANT: GitHub uses OAuth 2.0, NOT OpenID Connect
+#   # - No ID tokens available (access tokens only)
+#   # - No refresh tokens (users must re-authenticate when tokens expire)
+#   # - No standard OIDC claims
+#   # - Use only for GitHub API access, not for user authentication with claims
+#   # GitHub config: Create OAuth App in GitHub Settings > Developer settings
 
 # --- Auth0 Example ---
 # testDataAuth0:
@@ -182,11 +267,16 @@ configuration:
       The base URL of the OIDC provider. This is the issuer URL that will be used to discover
       OIDC endpoints like authorization, token, and JWKS URIs.
 
-      Examples:
-      - https://accounts.google.com
-      - https://login.microsoftonline.com/tenant-id/v2.0
-      - https://your-auth0-domain.auth0.com
-      - https://your-logto-instance.com/oidc
+      Supported providers (auto-detected from URL):
+      - https://accounts.google.com (Google)
+      - https://login.microsoftonline.com/tenant-id/v2.0 (Azure AD)
+      - https://your-auth0-domain.auth0.com (Auth0)
+      - https://your-tenant.okta.com/oauth2/default (Okta)
+      - https://your-keycloak/auth/realms/your-realm (Keycloak)
+      - https://cognito-idp.region.amazonaws.com/pool-id (AWS Cognito)
+      - https://gitlab.com (GitLab)
+      - https://github.com/login/oauth (GitHub - OAuth 2.0 only)
+      - Any RFC-compliant OIDC provider (Generic)
     required: true
 
   clientID:

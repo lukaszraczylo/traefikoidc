@@ -54,6 +54,48 @@ func TestProviderFactory_CreateProvider(t *testing.T) {
 			wantErr:      false,
 		},
 		{
+			name:         "GitHub provider",
+			issuerURL:    "https://github.com/login/oauth",
+			expectedType: ProviderTypeGitHub,
+			wantErr:      false,
+		},
+		{
+			name:         "Auth0 provider",
+			issuerURL:    "https://tenant.auth0.com",
+			expectedType: ProviderTypeAuth0,
+			wantErr:      false,
+		},
+		{
+			name:         "Okta provider",
+			issuerURL:    "https://tenant.okta.com",
+			expectedType: ProviderTypeOkta,
+			wantErr:      false,
+		},
+		{
+			name:         "Okta preview provider",
+			issuerURL:    "https://tenant.oktapreview.com",
+			expectedType: ProviderTypeOkta,
+			wantErr:      false,
+		},
+		{
+			name:         "Keycloak provider",
+			issuerURL:    "https://auth.example.com/auth/realms/master",
+			expectedType: ProviderTypeKeycloak,
+			wantErr:      false,
+		},
+		{
+			name:         "AWS Cognito provider",
+			issuerURL:    "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example",
+			expectedType: ProviderTypeAWSCognito,
+			wantErr:      false,
+		},
+		{
+			name:         "GitLab provider",
+			issuerURL:    "https://gitlab.com/oauth",
+			expectedType: ProviderTypeGitLab,
+			wantErr:      false,
+		},
+		{
 			name:         "Generic provider",
 			issuerURL:    "https://auth.example.com",
 			expectedType: ProviderTypeGeneric,
