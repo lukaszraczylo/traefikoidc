@@ -51,7 +51,7 @@ func (p *GitHubProvider) BuildAuthParams(baseParams url.Values, scopes []string)
 
 	return &AuthParams{
 		URLValues: baseParams,
-		Scopes:    filteredScopes,
+		Scopes:    deduplicateScopes(filteredScopes),
 	}, nil
 }
 

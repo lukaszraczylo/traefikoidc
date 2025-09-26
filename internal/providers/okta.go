@@ -62,7 +62,7 @@ func (p *OktaProvider) BuildAuthParams(baseParams url.Values, scopes []string) (
 
 	return &AuthParams{
 		URLValues: baseParams,
-		Scopes:    scopes,
+		Scopes:    deduplicateScopes(scopes),
 	}, nil
 }
 

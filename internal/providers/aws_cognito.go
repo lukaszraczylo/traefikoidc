@@ -2,6 +2,7 @@ package providers
 
 import (
 	"net/url"
+	"strings"
 )
 
 // AWSCognitoProvider encapsulates AWS Cognito-specific OIDC logic.
@@ -36,10 +37,10 @@ func (p *AWSCognitoProvider) BuildAuthParams(baseParams url.Values, scopes []str
 	// AWS Cognito supports standard OIDC parameters
 	baseParams.Set("response_type", "code")
 
-	// Remove offline_access scope as Cognito doesn't use it
+	// Remove offline_access scope as Cognito doesn't use it (case-insensitive)
 	var filteredScopes []string
 	for _, scope := range scopes {
-		if scope != "offline_access" {
+		if strings.ToLower(scope) != "offline_access" {
 			filteredScopes = append(filteredScopes, scope)
 		}
 	}
@@ -63,7 +64,7 @@ func (p *AWSCognitoProvider) BuildAuthParams(baseParams url.Values, scopes []str
 
 	return &AuthParams{
 		URLValues: baseParams,
-		Scopes:    filteredScopes,
+		Scopes:    deduplicateScopes(filteredScopes),
 	}, nil
 }
 

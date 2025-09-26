@@ -182,6 +182,42 @@ func TestProviderFactory_CreateProviderByType(t *testing.T) {
 			wantErr:      false,
 		},
 		{
+			name:         "GitHub provider",
+			providerType: ProviderTypeGitHub,
+			expectedType: ProviderTypeGitHub,
+			wantErr:      false,
+		},
+		{
+			name:         "Auth0 provider",
+			providerType: ProviderTypeAuth0,
+			expectedType: ProviderTypeAuth0,
+			wantErr:      false,
+		},
+		{
+			name:         "Okta provider",
+			providerType: ProviderTypeOkta,
+			expectedType: ProviderTypeOkta,
+			wantErr:      false,
+		},
+		{
+			name:         "Keycloak provider",
+			providerType: ProviderTypeKeycloak,
+			expectedType: ProviderTypeKeycloak,
+			wantErr:      false,
+		},
+		{
+			name:         "AWS Cognito provider",
+			providerType: ProviderTypeAWSCognito,
+			expectedType: ProviderTypeAWSCognito,
+			wantErr:      false,
+		},
+		{
+			name:         "GitLab provider",
+			providerType: ProviderTypeGitLab,
+			expectedType: ProviderTypeGitLab,
+			wantErr:      false,
+		},
+		{
 			name:         "Invalid provider type",
 			providerType: ProviderType(999),
 			wantErr:      true,

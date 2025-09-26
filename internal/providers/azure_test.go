@@ -386,10 +386,10 @@ func TestAzureProvider_OfflineAccessHandling(t *testing.T) {
 			description:   "Should preserve existing offline_access",
 		},
 		{
-			name:          "Multiple offline_access - should preserve all",
+			name:          "Multiple offline_access - should deduplicate",
 			inputScopes:   []string{"openid", "offline_access", "profile", "offline_access"},
-			expectedCount: 2,
-			description:   "Should preserve all offline_access scopes if multiple exist",
+			expectedCount: 1,
+			description:   "Should deduplicate multiple offline_access scopes",
 		},
 		{
 			name:          "Only offline_access",

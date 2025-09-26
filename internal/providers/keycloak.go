@@ -62,7 +62,7 @@ func (p *KeycloakProvider) BuildAuthParams(baseParams url.Values, scopes []strin
 
 	return &AuthParams{
 		URLValues: baseParams,
-		Scopes:    scopes,
+		Scopes:    deduplicateScopes(scopes),
 	}, nil
 }
 

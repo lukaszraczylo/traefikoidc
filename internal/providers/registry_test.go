@@ -161,10 +161,22 @@ func TestProviderRegistry_DetectProvider(t *testing.T) {
 	genericProvider := NewGenericProvider()
 	googleProvider := NewGoogleProvider()
 	azureProvider := NewAzureProvider()
+	githubProvider := NewGitHubProvider()
+	auth0Provider := NewAuth0Provider()
+	oktaProvider := NewOktaProvider()
+	keycloakProvider := NewKeycloakProvider()
+	cognitoProvider := NewAWSCognitoProvider()
+	gitlabProvider := NewGitLabProvider()
 
 	registry.RegisterProvider(genericProvider)
 	registry.RegisterProvider(googleProvider)
 	registry.RegisterProvider(azureProvider)
+	registry.RegisterProvider(githubProvider)
+	registry.RegisterProvider(auth0Provider)
+	registry.RegisterProvider(oktaProvider)
+	registry.RegisterProvider(keycloakProvider)
+	registry.RegisterProvider(cognitoProvider)
+	registry.RegisterProvider(gitlabProvider)
 
 	tests := []struct {
 		name      string
@@ -190,6 +202,41 @@ func TestProviderRegistry_DetectProvider(t *testing.T) {
 			name:      "Azure provider detection - sts.windows.net",
 			issuerURL: "https://sts.windows.net/tenant",
 			expected:  azureProvider,
+		},
+		{
+			name:      "GitHub provider detection",
+			issuerURL: "https://github.com/login/oauth",
+			expected:  githubProvider,
+		},
+		{
+			name:      "Auth0 provider detection",
+			issuerURL: "https://tenant.auth0.com",
+			expected:  auth0Provider,
+		},
+		{
+			name:      "Okta provider detection",
+			issuerURL: "https://tenant.okta.com",
+			expected:  oktaProvider,
+		},
+		{
+			name:      "Okta preview provider detection",
+			issuerURL: "https://tenant.oktapreview.com",
+			expected:  oktaProvider,
+		},
+		{
+			name:      "Keycloak provider detection",
+			issuerURL: "https://auth.example.com/auth/realms/master",
+			expected:  keycloakProvider,
+		},
+		{
+			name:      "AWS Cognito provider detection",
+			issuerURL: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example",
+			expected:  cognitoProvider,
+		},
+		{
+			name:      "GitLab provider detection",
+			issuerURL: "https://gitlab.com/oauth",
+			expected:  gitlabProvider,
 		},
 		{
 			name:      "Generic provider fallback",
