@@ -404,6 +404,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		ctx:                     pluginCtx,
 		cancelFunc:              cancelFunc,
 		suppressDiagnosticLogs:  isTestMode(),
+		securityHeadersApplier:  config.GetSecurityHeadersApplier(),
 	}
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger)
@@ -940,22 +941,15 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		t.logger.Debug("Session not dirty, skipping save in processAuthorizedRequest")
 	}
 
-	rw.Header().Set("X-Frame-Options", "DENY")
-	rw.Header().Set("X-Content-Type-Options", "nosniff")
-	rw.Header().Set("X-XSS-Protection", "1; mode=block")
-	rw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-
-	origin := req.Header.Get("Origin")
-	if origin != "" {
-		rw.Header().Set("Access-Control-Allow-Origin", origin)
-		rw.Header().Set("Access-Control-Allow-Credentials", "true")
-		rw.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		rw.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-
-		if req.Method == "OPTIONS" {
-			rw.WriteHeader(http.StatusOK)
-			return
-		}
+	// Apply security headers if configured
+	if t.securityHeadersApplier != nil {
+		t.securityHeadersApplier(rw, req)
+	} else {
+		// Fallback to basic security headers
+		rw.Header().Set("X-Frame-Options", "DENY")
+		rw.Header().Set("X-Content-Type-Options", "nosniff")
+		rw.Header().Set("X-XSS-Protection", "1; mode=block")
+		rw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	}
 
 	t.logger.Debugf("Request authorized for user %s, forwarding to next handler", email)

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -26,29 +27,83 @@ type TemplatedHeader struct {
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
 type Config struct {
-	HTTPClient                *http.Client      `json:"-"`
-	OIDCEndSessionURL         string            `json:"oidcEndSessionURL"`
-	CookieDomain              string            `json:"cookieDomain"`
-	CallbackURL               string            `json:"callbackURL"`
-	LogoutURL                 string            `json:"logoutURL"`
-	ClientID                  string            `json:"clientID"`
-	ClientSecret              string            `json:"clientSecret"`
-	PostLogoutRedirectURI     string            `json:"postLogoutRedirectURI"`
-	LogLevel                  string            `json:"logLevel"`
-	SessionEncryptionKey      string            `json:"sessionEncryptionKey"`
-	ProviderURL               string            `json:"providerURL"`
-	RevocationURL             string            `json:"revocationURL"`
-	ExcludedURLs              []string          `json:"excludedURLs"`
-	AllowedUserDomains        []string          `json:"allowedUserDomains"`
-	AllowedUsers              []string          `json:"allowedUsers"`
-	Scopes                    []string          `json:"scopes"`
-	Headers                   []TemplatedHeader `json:"headers"`
-	AllowedRolesAndGroups     []string          `json:"allowedRolesAndGroups"`
-	RateLimit                 int               `json:"rateLimit"`
-	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
-	ForceHTTPS                bool              `json:"forceHTTPS"`
-	EnablePKCE                bool              `json:"enablePKCE"`
-	OverrideScopes            bool              `json:"overrideScopes"`
+	HTTPClient                *http.Client           `json:"-"`
+	OIDCEndSessionURL         string                 `json:"oidcEndSessionURL"`
+	CookieDomain              string                 `json:"cookieDomain"`
+	CallbackURL               string                 `json:"callbackURL"`
+	LogoutURL                 string                 `json:"logoutURL"`
+	ClientID                  string                 `json:"clientID"`
+	ClientSecret              string                 `json:"clientSecret"`
+	PostLogoutRedirectURI     string                 `json:"postLogoutRedirectURI"`
+	LogLevel                  string                 `json:"logLevel"`
+	SessionEncryptionKey      string                 `json:"sessionEncryptionKey"`
+	ProviderURL               string                 `json:"providerURL"`
+	RevocationURL             string                 `json:"revocationURL"`
+	ExcludedURLs              []string               `json:"excludedURLs"`
+	AllowedUserDomains        []string               `json:"allowedUserDomains"`
+	AllowedUsers              []string               `json:"allowedUsers"`
+	Scopes                    []string               `json:"scopes"`
+	Headers                   []TemplatedHeader      `json:"headers"`
+	AllowedRolesAndGroups     []string               `json:"allowedRolesAndGroups"`
+	RateLimit                 int                    `json:"rateLimit"`
+	RefreshGracePeriodSeconds int                    `json:"refreshGracePeriodSeconds"`
+	ForceHTTPS                bool                   `json:"forceHTTPS"`
+	EnablePKCE                bool                   `json:"enablePKCE"`
+	OverrideScopes            bool                   `json:"overrideScopes"`
+	SecurityHeaders           *SecurityHeadersConfig `json:"securityHeaders,omitempty"`
+}
+
+// SecurityHeadersConfig configures security headers for the plugin
+type SecurityHeadersConfig struct {
+	// Enable security headers (default: true)
+	Enabled bool `json:"enabled"`
+
+	// Security profile: "default", "strict", "development", "api", or "custom"
+	Profile string `json:"profile"`
+
+	// Content Security Policy
+	ContentSecurityPolicy string `json:"contentSecurityPolicy,omitempty"`
+
+	// HSTS settings
+	StrictTransportSecurity           bool `json:"strictTransportSecurity"`
+	StrictTransportSecurityMaxAge     int  `json:"strictTransportSecurityMaxAge"` // seconds
+	StrictTransportSecuritySubdomains bool `json:"strictTransportSecuritySubdomains"`
+	StrictTransportSecurityPreload    bool `json:"strictTransportSecurityPreload"`
+
+	// Frame options: "DENY", "SAMEORIGIN", or "ALLOW-FROM uri"
+	FrameOptions string `json:"frameOptions,omitempty"`
+
+	// Content type options (default: "nosniff")
+	ContentTypeOptions string `json:"contentTypeOptions,omitempty"`
+
+	// XSS protection (default: "1; mode=block")
+	XSSProtection string `json:"xssProtection,omitempty"`
+
+	// Referrer policy
+	ReferrerPolicy string `json:"referrerPolicy,omitempty"`
+
+	// Permissions policy
+	PermissionsPolicy string `json:"permissionsPolicy,omitempty"`
+
+	// Cross-origin settings
+	CrossOriginEmbedderPolicy string `json:"crossOriginEmbedderPolicy,omitempty"`
+	CrossOriginOpenerPolicy   string `json:"crossOriginOpenerPolicy,omitempty"`
+	CrossOriginResourcePolicy string `json:"crossOriginResourcePolicy,omitempty"`
+
+	// CORS settings
+	CORSEnabled          bool     `json:"corsEnabled"`
+	CORSAllowedOrigins   []string `json:"corsAllowedOrigins,omitempty"`
+	CORSAllowedMethods   []string `json:"corsAllowedMethods,omitempty"`
+	CORSAllowedHeaders   []string `json:"corsAllowedHeaders,omitempty"`
+	CORSAllowCredentials bool     `json:"corsAllowCredentials"`
+	CORSMaxAge           int      `json:"corsMaxAge"` // seconds
+
+	// Custom headers (in addition to standard security headers)
+	CustomHeaders map[string]string `json:"customHeaders,omitempty"`
+
+	// Security features
+	DisableServerHeader    bool `json:"disableServerHeader"`
+	DisablePoweredByHeader bool `json:"disablePoweredByHeader"`
 }
 
 const (
@@ -91,9 +146,40 @@ func CreateConfig() *Config {
 		EnablePKCE:                false, // PKCE is opt-in
 		OverrideScopes:            false, // Default to appending scopes, not overriding
 		RefreshGracePeriodSeconds: 60,    // Default grace period of 60 seconds
+		SecurityHeaders:           createDefaultSecurityConfig(),
 	}
 
 	return c
+}
+
+// createDefaultSecurityConfig creates a default security headers configuration
+func createDefaultSecurityConfig() *SecurityHeadersConfig {
+	return &SecurityHeadersConfig{
+		Enabled: true,
+		Profile: "default",
+
+		// Default security headers
+		StrictTransportSecurity:           true,
+		StrictTransportSecurityMaxAge:     31536000, // 1 year
+		StrictTransportSecuritySubdomains: true,
+		StrictTransportSecurityPreload:    true,
+
+		FrameOptions:       "DENY",
+		ContentTypeOptions: "nosniff",
+		XSSProtection:      "1; mode=block",
+		ReferrerPolicy:     "strict-origin-when-cross-origin",
+
+		// CORS disabled by default
+		CORSEnabled:          false,
+		CORSAllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		CORSAllowedHeaders:   []string{"Authorization", "Content-Type"},
+		CORSAllowCredentials: false,
+		CORSMaxAge:           86400, // 24 hours
+
+		// Security features
+		DisableServerHeader:    true,
+		DisablePoweredByHeader: true,
+	}
 }
 
 // Validate checks the configuration settings for validity.
@@ -579,4 +665,103 @@ func newNoOpLogger() *Logger {
 func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
 	logger.Error("%s", message)
 	http.Error(w, message, code)
+}
+
+// GetSecurityHeadersApplier returns a function that applies security headers
+func (c *Config) GetSecurityHeadersApplier() func(http.ResponseWriter, *http.Request) {
+	if c.SecurityHeaders == nil || !c.SecurityHeaders.Enabled {
+		return nil
+	}
+
+	return func(rw http.ResponseWriter, req *http.Request) {
+		headers := rw.Header()
+
+		// Apply basic security headers based on configuration
+		if c.SecurityHeaders.FrameOptions != "" {
+			headers.Set("X-Frame-Options", c.SecurityHeaders.FrameOptions)
+		}
+		if c.SecurityHeaders.ContentTypeOptions != "" {
+			headers.Set("X-Content-Type-Options", c.SecurityHeaders.ContentTypeOptions)
+		}
+		if c.SecurityHeaders.XSSProtection != "" {
+			headers.Set("X-XSS-Protection", c.SecurityHeaders.XSSProtection)
+		}
+		if c.SecurityHeaders.ReferrerPolicy != "" {
+			headers.Set("Referrer-Policy", c.SecurityHeaders.ReferrerPolicy)
+		}
+		if c.SecurityHeaders.ContentSecurityPolicy != "" {
+			headers.Set("Content-Security-Policy", c.SecurityHeaders.ContentSecurityPolicy)
+		}
+
+		// HSTS for HTTPS
+		if (req.TLS != nil || req.Header.Get("X-Forwarded-Proto") == "https") && c.SecurityHeaders.StrictTransportSecurity {
+			hstsValue := fmt.Sprintf("max-age=%d", c.SecurityHeaders.StrictTransportSecurityMaxAge)
+			if c.SecurityHeaders.StrictTransportSecuritySubdomains {
+				hstsValue += "; includeSubDomains"
+			}
+			if c.SecurityHeaders.StrictTransportSecurityPreload {
+				hstsValue += "; preload"
+			}
+			headers.Set("Strict-Transport-Security", hstsValue)
+		}
+
+		// CORS headers
+		if c.SecurityHeaders.CORSEnabled {
+			origin := req.Header.Get("Origin")
+			if origin != "" && isOriginAllowed(origin, c.SecurityHeaders.CORSAllowedOrigins) {
+				headers.Set("Access-Control-Allow-Origin", origin)
+			}
+
+			if len(c.SecurityHeaders.CORSAllowedMethods) > 0 {
+				headers.Set("Access-Control-Allow-Methods", strings.Join(c.SecurityHeaders.CORSAllowedMethods, ", "))
+			}
+			if len(c.SecurityHeaders.CORSAllowedHeaders) > 0 {
+				headers.Set("Access-Control-Allow-Headers", strings.Join(c.SecurityHeaders.CORSAllowedHeaders, ", "))
+			}
+			if c.SecurityHeaders.CORSAllowCredentials {
+				headers.Set("Access-Control-Allow-Credentials", "true")
+			}
+			if c.SecurityHeaders.CORSMaxAge > 0 {
+				headers.Set("Access-Control-Max-Age", strconv.Itoa(c.SecurityHeaders.CORSMaxAge))
+			}
+		}
+
+		// Custom headers
+		for name, value := range c.SecurityHeaders.CustomHeaders {
+			headers.Set(name, value)
+		}
+
+		// Remove server headers
+		if c.SecurityHeaders.DisableServerHeader {
+			headers.Del("Server")
+		}
+		if c.SecurityHeaders.DisablePoweredByHeader {
+			headers.Del("X-Powered-By")
+		}
+	}
+}
+
+// isOriginAllowed checks if an origin is in the allowed list
+func isOriginAllowed(origin string, allowedOrigins []string) bool {
+	for _, allowed := range allowedOrigins {
+		if origin == allowed || allowed == "*" {
+			return true
+		}
+		// Simple wildcard matching for subdomains
+		if strings.Contains(allowed, "*") {
+			if strings.HasPrefix(allowed, "https://*.") {
+				domain := strings.TrimPrefix(allowed, "https://*.")
+				if strings.HasSuffix(origin, "."+domain) || origin == "https://"+domain {
+					return true
+				}
+			}
+			if strings.HasPrefix(allowed, "http://*.") {
+				domain := strings.TrimPrefix(allowed, "http://*.")
+				if strings.HasSuffix(origin, "."+domain) || origin == "http://"+domain {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

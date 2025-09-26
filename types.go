@@ -13,15 +13,15 @@ import (
 
 // CacheInterface defines the common cache operations
 type CacheInterface interface {
-	Set(key string, value interface{}, ttl time.Duration)
-	Get(key string) (interface{}, bool)
+	Set(key string, value any, ttl time.Duration)
+	Get(key string) (any, bool)
 	Delete(key string)
 	SetMaxSize(size int)
 	Size() int
 	Clear()
 	Cleanup()
 	Close()
-	GetStats() map[string]interface{} // For testing and monitoring
+	GetStats() map[string]any // For testing and monitoring
 }
 
 // TokenVerifier interface defines token verification capabilities.
@@ -75,7 +75,7 @@ type TraefikOidc struct {
 	sessionManager             *SessionManager
 	tokenCleanupStopChan       chan struct{}
 	excludedURLs               map[string]struct{}
-	extractClaimsFunc          func(tokenString string) (map[string]interface{}, error)
+	extractClaimsFunc          func(tokenString string) (map[string]any, error)
 	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
 	metadataCache              *MetadataCache
 	allowedRolesAndGroups      map[string]struct{}
@@ -114,4 +114,5 @@ type TraefikOidc struct {
 	suppressDiagnosticLogs     bool
 	firstRequestReceived       bool
 	metadataRefreshStarted     bool
+	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
 }

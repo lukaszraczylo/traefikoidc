@@ -4,17 +4,18 @@ This middleware replaces the need for forward-auth and oauth2-proxy when using T
 
 ## Overview
 
-The Traefik OIDC middleware provides a complete OIDC authentication solution with features like:
+The Traefik OIDC middleware provides a complete OIDC authentication solution with these key features:
+
 - **Universal provider support**: Works with 9+ OIDC providers including Google, Azure AD, Auth0, Okta, Keycloak, AWS Cognito, GitLab, and more
 - **Automatic provider detection**: Automatically detects and configures provider-specific settings
-- Token validation and verification
-- Session management with automatic cleanup
-- Domain restrictions
-- Role-based access control
-- Token caching and blacklisting
-- Rate limiting
-- Excluded paths (public URLs)
-- Memory-efficient operation with bounded resource usage
+- **Security headers**: Comprehensive security headers with CORS, CSP, HSTS, and custom profiles
+- **Domain restrictions**: Limit access to specific email domains or individual users
+- **Role-based access control**: Restrict access based on roles and groups from OIDC claims
+- **Session management**: Secure session handling with automatic token refresh
+- **Rate limiting**: Protection against brute force attacks
+- **Excluded paths**: Configure public URLs that bypass authentication
+- **Custom headers**: Template-based headers using OIDC claims and tokens
+- **Comprehensive logging**: Configurable log levels for debugging and monitoring
 
 ## Supported OIDC Providers
 
@@ -36,6 +37,7 @@ The Traefik OIDC middleware provides a complete OIDC authentication solution wit
 |---------|--------|----------|-------|------|----------|---------|--------|--------|---------|
 | **ID Tokens** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | **Refresh Tokens** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Auto-Configuration** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Custom Claims** | Limited | ✅ | ✅ | ✅ | ✅ | ✅ | Limited | ❌ | Varies |
 | **Group/Role Claims** | Limited | ✅ | ✅ | ✅ | ✅ | ✅ | Limited | ❌ | Varies |
 | **Domain Restriction** | ✅ (hd claim) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Varies |
@@ -124,6 +126,7 @@ The middleware supports the following configuration options:
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
 | `cookieDomain` | Explicit domain for session cookies (important for multi-subdomain setups) | auto-detected | `.example.com`, `app.example.com` |
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
+| `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
 
 ## Scope Configuration
 
@@ -197,6 +200,195 @@ scopes: []
 ```
 
 The default append behavior ensures essential OIDC scopes are always present, while the override mode gives you complete control over the exact scopes requested from the provider.
+
+## Security Headers Configuration
+
+The middleware includes comprehensive security headers support to protect your applications against common web vulnerabilities. Security headers are applied to all authenticated responses.
+
+### Security Features
+
+- **Content Security Policy (CSP)** - Prevents XSS and code injection
+- **HTTP Strict Transport Security (HSTS)** - Forces HTTPS connections
+- **Frame Options** - Protects against clickjacking attacks
+- **XSS Protection** - Browser-level XSS filtering
+- **Content Type Options** - Prevents MIME type sniffing
+- **Referrer Policy** - Controls referrer information sharing
+- **CORS Headers** - Complete Cross-Origin Resource Sharing support
+- **Custom Headers** - Add any additional security headers
+
+### Security Profiles
+
+Choose from predefined security profiles or create custom configurations:
+
+| Profile | Use Case | Security Level | CORS Enabled |
+|---------|----------|----------------|--------------|
+| `default` | Standard web applications | High | Disabled |
+| `strict` | Maximum security applications | Very High | Disabled |
+| `development` | Local development | Medium | Enabled (localhost) |
+| `api` | API endpoints | High | Configurable |
+| `custom` | Custom requirements | Configurable | Configurable |
+
+### Configuration Examples
+
+#### Default Security (Recommended)
+```yaml
+securityHeaders:
+  enabled: true
+  profile: "default"
+```
+
+#### Strict Security
+```yaml
+securityHeaders:
+  enabled: true
+  profile: "strict"
+```
+
+#### API with CORS
+```yaml
+securityHeaders:
+  enabled: true
+  profile: "api"
+  corsEnabled: true
+  corsAllowedOrigins: 
+    - "https://your-frontend.com"
+    - "https://*.example.com"
+  corsAllowCredentials: true
+```
+
+#### Custom Configuration
+```yaml
+securityHeaders:
+  enabled: true
+  profile: "custom"
+  
+  # Content Security Policy
+  contentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline'"
+  
+  # HSTS Settings
+  strictTransportSecurity: true
+  strictTransportSecurityMaxAge: 31536000  # 1 year
+  strictTransportSecuritySubdomains: true
+  strictTransportSecurityPreload: true
+  
+  # Frame and Content Protection
+  frameOptions: "DENY"
+  contentTypeOptions: "nosniff"
+  xssProtection: "1; mode=block"
+  referrerPolicy: "strict-origin-when-cross-origin"
+  
+  # CORS Configuration
+  corsEnabled: true
+  corsAllowedOrigins: ["https://app.example.com"]
+  corsAllowedMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+  corsAllowedHeaders: ["Authorization", "Content-Type", "X-Requested-With"]
+  corsAllowCredentials: true
+  corsMaxAge: 86400
+  
+  # Custom Headers
+  customHeaders:
+    X-Custom-Header: "custom-value"
+    X-API-Version: "v1"
+  
+  # Server Identification
+  disableServerHeader: true
+  disablePoweredByHeader: true
+```
+
+### Security Headers Parameters
+
+| Parameter | Description | Default | Example |
+|-----------|-------------|---------|---------|
+| `enabled` | Enable/disable security headers | `true` | `true`, `false` |
+| `profile` | Security profile to use | `default` | `default`, `strict`, `development`, `api`, `custom` |
+| `contentSecurityPolicy` | CSP header value | Profile-based | `"default-src 'self'"` |
+| `strictTransportSecurity` | Enable HSTS | `true` | `true`, `false` |
+| `strictTransportSecurityMaxAge` | HSTS max age in seconds | `31536000` | `86400` |
+| `strictTransportSecuritySubdomains` | Include subdomains in HSTS | `true` | `true`, `false` |
+| `strictTransportSecurityPreload` | Enable HSTS preload | `true` | `true`, `false` |
+| `frameOptions` | X-Frame-Options header | `DENY` | `DENY`, `SAMEORIGIN`, `ALLOW-FROM uri` |
+| `contentTypeOptions` | X-Content-Type-Options header | `nosniff` | `nosniff` |
+| `xssProtection` | X-XSS-Protection header | `1; mode=block` | `1; mode=block` |
+| `referrerPolicy` | Referrer-Policy header | `strict-origin-when-cross-origin` | `no-referrer` |
+| `corsEnabled` | Enable CORS headers | `false` | `true`, `false` |
+| `corsAllowedOrigins` | Allowed CORS origins | `[]` | `["https://app.com", "https://*.example.com"]` |
+| `corsAllowedMethods` | Allowed CORS methods | `["GET", "POST", "OPTIONS"]` | `["GET", "POST", "PUT", "DELETE"]` |
+| `corsAllowedHeaders` | Allowed CORS headers | `["Authorization", "Content-Type"]` | `["X-Custom-Header"]` |
+| `corsAllowCredentials` | Allow credentials in CORS | `false` | `true`, `false` |
+| `corsMaxAge` | CORS preflight cache time | `86400` | `3600` |
+| `customHeaders` | Additional custom headers | `{}` | `{"X-Custom": "value"}` |
+| `disableServerHeader` | Remove Server header | `true` | `true`, `false` |
+| `disablePoweredByHeader` | Remove X-Powered-By header | `true` | `true`, `false` |
+
+### CORS Wildcard Support
+
+The middleware supports flexible CORS origin patterns:
+
+```yaml
+corsAllowedOrigins:
+  - "https://example.com"              # Exact match
+  - "https://*.example.com"            # Subdomain wildcard
+  - "http://localhost:*"               # Port wildcard (development)
+  - "*"                                # Allow all (not recommended)
+```
+
+## Advanced Configuration
+
+The middleware provides several advanced configuration options for production environments.
+
+### Provider-Specific Optimizations
+
+The middleware automatically optimizes for each OIDC provider:
+- **Google**: Automatically configures `access_type=offline` and `prompt=consent` for refresh tokens
+- **Azure AD**: Optimized multi-tenant support and group claim handling
+- **Auth0**: Enhanced custom claim processing and namespace support
+- **Keycloak**: Self-hosted deployment optimizations
+- **AWS Cognito**: Regional endpoint handling and user pool integration
+
+### Token Management
+
+- **Automatic token refresh**: Proactively refreshes tokens before expiration
+- **Token validation**: Comprehensive JWT validation with security checks
+- **Grace period**: Configurable time window for token refresh
+- **Session handling**: Secure session management with encrypted storage
+
+### Configuration Examples
+
+#### High-Throughput Configuration
+```yaml
+# Optimized for high-traffic environments
+rateLimit: 1000
+refreshGracePeriodSeconds: 300
+securityHeaders:
+  enabled: true
+  profile: "api"
+  corsEnabled: true
+  corsMaxAge: 86400
+```
+
+#### High-Security Configuration
+```yaml
+# Maximum security for sensitive environments
+rateLimit: 50
+allowedUserDomains: ["company.com"]
+allowedRolesAndGroups: ["admin", "developer"]
+securityHeaders:
+  enabled: true
+  profile: "strict"
+  corsEnabled: false
+```
+
+#### Development Configuration
+```yaml
+# Development-friendly settings
+logLevel: "debug"
+forceHTTPS: false
+securityHeaders:
+  enabled: true
+  profile: "development"
+  corsEnabled: true
+  corsAllowedOrigins: ["http://localhost:*"]
+```
 
 ## Usage Examples
 
@@ -1232,44 +1424,46 @@ For detailed provider-specific guidance, see the [Provider-Specific Configuratio
 
 ## Recent Improvements
 
-### Memory Management (v0.3.0+)
+### Security Features (v0.4.0+)
 
-The middleware has undergone significant improvements to memory management and resource utilization:
+- **Security Headers**: Complete security headers system with CSP, HSTS, CORS, and XSS protection
+- **Multiple Security Profiles**: Choose from default, strict, development, API, or custom security configurations
+- **Enhanced Token Validation**: Improved JWT validation with comprehensive security checks
+- **Advanced Rate Limiting**: Configurable rate limiting to prevent abuse
 
-- **Memory Leak Prevention**: All background goroutines are properly managed with context cancellation
-- **Bounded Resource Usage**: Session storage, metadata cache, and token cache all have size limits with LRU eviction
-- **Automatic Cleanup**: Expired sessions and tokens are automatically cleaned up by background tasks
-- **Graceful Shutdown**: All resources are properly released when the middleware is stopped
-- **Performance Monitoring**: Built-in monitoring for goroutine leaks and memory growth
+### User Experience (v0.4.0+)
 
-These improvements ensure the middleware operates efficiently even under high load and long-running deployments.
+- **Automatic Provider Detection**: Seamless configuration for major OIDC providers
+- **Improved Error Handling**: Better error messages and graceful degradation
+- **Enhanced Session Management**: More reliable session handling with automatic cleanup
+- **Flexible Configuration**: Expanded configuration options for different deployment scenarios
 
-### Enhanced Test Coverage
+### Reliability (v0.4.0+)
 
-- Comprehensive test suite with race condition detection
-- Memory leak detection tests
-- Goroutine leak prevention tests
-- Test coverage increased to 67%+ for main package, 87-99% for subpackages
+- **Automatic Token Refresh**: Proactive token refresh to prevent authentication interruptions
+- **Memory Management**: Improved memory efficiency and automatic resource cleanup
+- **Better Provider Support**: Enhanced compatibility with provider-specific features
+- **Comprehensive Testing**: Extensive test coverage ensures reliability in production
 
-## Architecture and Internal Improvements
+## Architecture Overview
 
-### Internal Components
+### Design Principles
 
-The middleware uses several internal components for efficient operation:
+The middleware is designed with the following principles:
 
-1. **SessionManager**: Manages user sessions with automatic cleanup and pool-based allocation
-2. **ChunkManager**: Handles large session data by splitting it into manageable chunks
-3. **MetadataCache**: Caches OIDC provider metadata with LRU eviction and size limits
-4. **TaskRegistry**: Manages background tasks with proper lifecycle management
-5. **MemoryMonitor**: Monitors memory usage and detects potential leaks
+- **Reliability**: Automatic error recovery and graceful degradation
+- **Security**: Comprehensive security measures and validation
+- **Performance**: Efficient resource usage and caching
+- **Flexibility**: Extensive configuration options for different use cases
+- **Compatibility**: Support for all major OIDC providers with automatic detection
 
-### Key Design Decisions
+### Key Features
 
-- **Context-based cancellation**: All background operations use context for clean shutdown
-- **Bounded queues and caches**: Prevents unbounded memory growth
-- **LRU eviction policies**: Ensures most frequently used data stays in cache
-- **Atomic operations**: Uses atomic counters for statistics to avoid lock contention
-- **Test-friendly design**: Special handling for test environments to ensure clean test execution
+- **Automatic Session Management**: Handles session lifecycle, cleanup, and security
+- **Provider Integration**: Seamless integration with OIDC providers including auto-discovery
+- **Security Integration**: Built-in security headers and protection mechanisms
+- **Resource Management**: Efficient memory usage and automatic cleanup
+- **Error Handling**: Comprehensive error recovery and user-friendly error messages
 
 ## Contributing
 

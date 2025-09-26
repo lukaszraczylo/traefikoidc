@@ -7,8 +7,9 @@ summary: |
   Universal OpenID Connect (OIDC) authentication middleware for Traefik.
 
   This middleware replaces the need for forward-auth and oauth2-proxy when using Traefik as a reverse proxy.
-  It provides a complete OIDC authentication solution with features like domain restrictions,
-  role-based access control, token caching, session management, and memory-efficient operation.
+  It provides a complete OIDC authentication solution with features including domain restrictions,
+  role-based access control, session management, comprehensive security headers, automatic token refresh,
+  and support for all major OIDC providers with automatic configuration.
 
   🎯 SUPPORTED PROVIDERS (Auto-Detection):
   ✅ Google          - Full OIDC, auto-configured for Workspace
@@ -23,19 +24,26 @@ summary: |
 
   🔧 KEY FEATURES:
   - Automatic provider detection and configuration
-  - Built-in warnings for provider limitations
-  - Memory-efficient with bounded resource usage
-  - Comprehensive test coverage and security monitoring
+  - Comprehensive security headers (CSP, HSTS, CORS, custom profiles)
+  - Domain restrictions and role-based access control
+  - Automatic token refresh and session management
+  - Rate limiting and brute force protection
+  - Flexible configuration with multiple deployment scenarios
+  - Memory-efficient operation with automatic cleanup
+  - Extensive logging and debugging capabilities
   It supports various authentication scenarios including:
 
   - Basic authentication with customizable callback and logout URLs
   - Email domain restrictions to limit access to specific organizations
-  - Role and group-based access control
-  - Public URLs that bypass authentication
-  - Rate limiting to prevent brute force attacks
-  - Custom post-logout redirect behavior
+  - Role and group-based access control based on OIDC claims
+  - Public URLs that bypass authentication (excluded paths)
   - Secure session management with encrypted cookies
   - Automatic token validation and refresh
+  - Comprehensive security headers with multiple security profiles
+  - Rate limiting to prevent brute force attacks
+  - Custom headers using templated values from OIDC claims
+  - Flexible CORS configuration for API endpoints
+  - Configurable logging levels for debugging and monitoring
 
 testData:
   # Required parameters
@@ -94,6 +102,78 @@ testData:
   cookieDomain: "" # Explicit domain for session cookies (e.g., ".example.com" for multi-subdomain setups)
   overrideScopes: false # When true, replaces default scopes instead of appending (default: false)
   refreshGracePeriodSeconds: 60 # Seconds before token expiry to attempt proactive refresh (default: 60)
+  
+  # Security Headers Configuration (enabled by default with 'default' profile)
+  securityHeaders:
+    enabled: true
+    profile: "default" # Options: default, strict, development, api, custom
+    
+    # CORS configuration for API endpoints
+    corsEnabled: false
+    corsAllowedOrigins:
+      - "https://your-frontend.com"
+      - "https://*.example.com"
+    corsAllowCredentials: true
+    
+    # Custom headers
+    customHeaders:
+      X-Custom-Header: "production"
+      X-API-Version: "v1"
+
+# --- Common Configuration Examples ---
+#
+# 🔒 HIGH-SECURITY CONFIGURATION
+# testDataHighSecurity:
+#   providerURL: https://login.microsoftonline.com/your-tenant-id/v2.0
+#   clientID: your-azure-client-id
+#   clientSecret: your-azure-client-secret
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "maximum-security-key-at-least-32-bytes-long"
+#   rateLimit: 50  # Restrictive rate limiting
+#   allowedUserDomains: ["company.com"]  # Domain restriction
+#   allowedRolesAndGroups: ["admin", "security-team"]  # Role restriction
+#   securityHeaders:
+#     enabled: true
+#     profile: "strict"  # Maximum security headers
+#     corsEnabled: false  # No CORS in high-security mode
+#   logLevel: info
+
+# 🧑‍💻 DEVELOPMENT CONFIGURATION
+# testDataDevelopment:
+#   providerURL: https://your-dev-provider.com
+#   clientID: dev-client-id
+#   clientSecret: dev-client-secret
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "development-key-at-least-32-bytes-long"
+#   forceHTTPS: false  # Allow HTTP in development
+#   excludedURLs: ["/health", "/metrics", "/debug"]
+#   securityHeaders:
+#     enabled: true
+#     profile: "development"  # Relaxed security for development
+#     corsEnabled: true
+#     corsAllowedOrigins: ["http://localhost:*", "http://127.0.0.1:*"]
+#   logLevel: debug
+
+# 🌐 API CONFIGURATION
+# testDataAPI:
+#   providerURL: https://your-auth0-domain.auth0.com
+#   clientID: api-client-id
+#   clientSecret: api-client-secret
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "api-gateway-key-at-least-32-bytes-long"
+#   refreshGracePeriodSeconds: 120
+#   securityHeaders:
+#     enabled: true
+#     profile: "api"
+#     corsEnabled: true
+#     corsAllowedOrigins: ["https://app.example.com"]
+#     corsAllowedMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+#     corsAllowedHeaders: ["Authorization", "Content-Type", "X-API-Key"]
+#   headers:  # Custom headers with OIDC claims
+#     - name: "X-User-Email"
+#       value: "{{.Claims.email}}"
+#     - name: "X-User-ID"
+#       value: "{{.Claims.sub}}"
 
 # --- Provider Specific Configuration Examples ---
 #
@@ -567,3 +647,255 @@ configuration:
         value:
           type: string
           description: Template string for the header value
+
+  securityHeaders:
+    type: object
+    description: |
+      Configuration for security headers to protect against common web vulnerabilities.
+      Security headers are applied to all authenticated responses.
+
+      The middleware includes comprehensive security headers support with multiple profiles:
+      - default: Balanced security for standard web applications
+      - strict: Maximum security for high-security applications
+      - development: Relaxed policies for local development
+      - api: API-friendly configuration with CORS support
+      - custom: Full control over all security header settings
+
+      Security features include:
+      - Content Security Policy (CSP) to prevent XSS attacks
+      - HTTP Strict Transport Security (HSTS) to enforce HTTPS
+      - Frame Options to prevent clickjacking
+      - XSS Protection for browser-level filtering
+      - Content Type Options to prevent MIME sniffing
+      - CORS headers for cross-origin resource sharing
+      - Custom headers for additional security requirements
+
+      Example configurations:
+
+      Basic security (recommended):
+      securityHeaders:
+        enabled: true
+        profile: "default"
+
+      API with CORS:
+      securityHeaders:
+        enabled: true
+        profile: "api"
+        corsEnabled: true
+        corsAllowedOrigins: ["https://app.example.com"]
+
+      Custom configuration:
+      securityHeaders:
+        enabled: true
+        profile: "custom"
+        contentSecurityPolicy: "default-src 'self'"
+        corsEnabled: true
+        corsAllowedOrigins: ["https://*.example.com"]
+        customHeaders:
+          X-Security-Level: "high"
+    required: false
+    properties:
+      enabled:
+        type: boolean
+        description: |
+          Enable or disable security headers.
+          When disabled, only basic fallback headers are applied.
+          Default: true
+        required: false
+
+      profile:
+        type: string
+        description: |
+          Security profile to use. Each profile provides a different balance of security and functionality:
+          
+          - default: Balanced security suitable for most web applications
+          - strict: Maximum security with very restrictive policies
+          - development: Relaxed policies for local development (enables localhost CORS)
+          - api: API-friendly configuration with configurable CORS
+          - custom: No defaults, use only explicitly configured settings
+          
+          Default: "default"
+        required: false
+        enum:
+          - default
+          - strict
+          - development
+          - api
+          - custom
+
+      contentSecurityPolicy:
+        type: string
+        description: |
+          Content Security Policy header value to prevent XSS and code injection attacks.
+          Only applied when using "custom" profile or to override profile defaults.
+          
+          Examples:
+          - "default-src 'self'" (strict)
+          - "default-src 'self'; script-src 'self' 'unsafe-inline'" (moderate)
+          - "default-src 'self' 'unsafe-inline' 'unsafe-eval'" (permissive)
+        required: false
+
+      strictTransportSecurity:
+        type: boolean
+        description: |
+          Enable HTTP Strict Transport Security (HSTS) to force HTTPS connections.
+          Only applied when HTTPS is detected (via TLS or X-Forwarded-Proto header).
+          Default: true
+        required: false
+
+      strictTransportSecurityMaxAge:
+        type: integer
+        description: |
+          HSTS max-age value in seconds. Determines how long browsers should enforce HTTPS.
+          Common values:
+          - 31536000 (1 year) - recommended for production
+          - 86400 (1 day) - for testing
+          Default: 31536000
+        required: false
+
+      strictTransportSecuritySubdomains:
+        type: boolean
+        description: |
+          Include subdomains in HSTS policy.
+          When true, HSTS applies to all subdomains of the current domain.
+          Default: true
+        required: false
+
+      strictTransportSecurityPreload:
+        type: boolean
+        description: |
+          Enable HSTS preload list eligibility.
+          Allows the domain to be included in browser HSTS preload lists.
+          Default: true
+        required: false
+
+      frameOptions:
+        type: string
+        description: |
+          X-Frame-Options header value to prevent clickjacking attacks.
+          
+          Options:
+          - DENY: Prevents framing completely
+          - SAMEORIGIN: Allows framing only from the same origin
+          - ALLOW-FROM uri: Allows framing from specific URI
+          
+          Default: "DENY"
+        required: false
+
+      contentTypeOptions:
+        type: string
+        description: |
+          X-Content-Type-Options header value to prevent MIME type sniffing.
+          Should typically be set to "nosniff".
+          Default: "nosniff"
+        required: false
+
+      xssProtection:
+        type: string
+        description: |
+          X-XSS-Protection header value for browser XSS filtering.
+          Recommended value: "1; mode=block"
+          Default: "1; mode=block"
+        required: false
+
+      referrerPolicy:
+        type: string
+        description: |
+          Referrer-Policy header value to control referrer information sharing.
+          
+          Common values:
+          - strict-origin-when-cross-origin (recommended)
+          - no-referrer (most restrictive)
+          - same-origin (moderate)
+          
+          Default: "strict-origin-when-cross-origin"
+        required: false
+
+      corsEnabled:
+        type: boolean
+        description: |
+          Enable Cross-Origin Resource Sharing (CORS) headers.
+          Essential for API endpoints that need to be accessed from web browsers.
+          Default: false
+        required: false
+
+      corsAllowedOrigins:
+        type: array
+        description: |
+          List of allowed origins for CORS requests.
+          Supports wildcards for flexible origin matching:
+          
+          - "https://example.com" (exact match)
+          - "https://*.example.com" (subdomain wildcard)
+          - "http://localhost:*" (port wildcard, useful for development)
+          - "*" (allow all origins - not recommended for production)
+          
+          Examples: ["https://app.example.com", "https://*.api.example.com"]
+        required: false
+        items:
+          type: string
+
+      corsAllowedMethods:
+        type: array
+        description: |
+          HTTP methods allowed for CORS requests.
+          Default: ["GET", "POST", "OPTIONS"]
+          
+          Common additions: ["PUT", "DELETE", "PATCH"]
+        required: false
+        items:
+          type: string
+
+      corsAllowedHeaders:
+        type: array
+        description: |
+          HTTP headers allowed for CORS requests.
+          Default: ["Authorization", "Content-Type"]
+          
+          Common additions: ["X-Requested-With", "X-API-Key"]
+        required: false
+        items:
+          type: string
+
+      corsAllowCredentials:
+        type: boolean
+        description: |
+          Allow credentials (cookies, authorization headers) in CORS requests.
+          Required for authenticated API requests from browsers.
+          Default: false
+        required: false
+
+      corsMaxAge:
+        type: integer
+        description: |
+          Maximum age in seconds for CORS preflight cache.
+          Reduces preflight request frequency for better performance.
+          Default: 86400 (24 hours)
+        required: false
+
+      customHeaders:
+        type: object
+        description: |
+          Additional custom headers to include in responses.
+          Useful for application-specific security requirements.
+          
+          Examples:
+          X-Security-Level: "high"
+          X-API-Version: "v1"
+          X-Environment: "production"
+        required: false
+
+      disableServerHeader:
+        type: boolean
+        description: |
+          Remove the Server header to hide server information.
+          Recommended for security through obscurity.
+          Default: true
+        required: false
+
+      disablePoweredByHeader:
+        type: boolean
+        description: |
+          Remove the X-Powered-By header to hide technology stack information.
+          Default: true
+        required: false
