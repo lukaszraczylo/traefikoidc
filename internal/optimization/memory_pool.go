@@ -30,7 +30,7 @@ func (p *StringBuilderPool) Get() []byte {
 
 // Put returns a string builder to the pool
 func (p *StringBuilderPool) Put(buf []byte) {
-	if cap(buf) < 4096 { // Don't pool overly large buffers
+	if buf != nil && cap(buf) < 4096 { // Don't pool overly large buffers or nil buffers
 		buf = buf[:0] // Reset length but keep capacity
 		p.pool.Put(&buf)
 	}
@@ -63,7 +63,7 @@ func (p *ByteSlicePool) Get() []byte {
 
 // Put returns a byte slice to the pool
 func (p *ByteSlicePool) Put(buf []byte) {
-	if len(buf) == p.size {
+	if buf != nil && len(buf) == p.size {
 		p.pool.Put(&buf)
 	}
 }

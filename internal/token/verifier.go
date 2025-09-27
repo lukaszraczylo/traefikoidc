@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	traefikoidc "github.com/lukaszraczylo/traefikoidc"
 )
 
 // Verifier handles token verification operations
@@ -30,7 +32,7 @@ type TokenCache interface {
 
 // JWKCache interface for key management
 type JWKCache interface {
-	GetJWKS(providerURL string) (*JWKS, error)
+	GetJWKS(providerURL string) (*traefikoidc.JWKSet, error)
 }
 
 // RateLimiter interface for request limiting
@@ -42,20 +44,6 @@ type RateLimiter interface {
 type Logger interface {
 	Debugf(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
-}
-
-// JWKS represents JSON Web Key Set
-type JWKS struct {
-	Keys []JWK `json:"keys"`
-}
-
-// JWK represents a JSON Web Key
-type JWK struct {
-	Kid string `json:"kid"`
-	Kty string `json:"kty"`
-	Use string `json:"use"`
-	N   string `json:"n"`
-	E   string `json:"e"`
 }
 
 // JWT represents a parsed JWT token
