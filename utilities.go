@@ -1,0 +1,299 @@
+// Package traefikoidc provides OIDC authentication middleware for Traefik.
+// This file contains utility/helper methods extracted from main.go for better code organization.
+package traefikoidc
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"runtime"
+	"strings"
+	"time"
+)
+
+// =============================================================================
+// LOGGING UTILITIES
+// =============================================================================
+
+// safeLogDebug provides nil-safe logging for debug messages
+func (t *TraefikOidc) safeLogDebug(msg string) {
+	if t.logger != nil {
+		t.logger.Debug("%s", msg)
+	}
+}
+
+// safeLogDebugf provides nil-safe logging for formatted debug messages
+func (t *TraefikOidc) safeLogDebugf(format string, args ...interface{}) {
+	if t.logger != nil {
+		t.logger.Debugf(format, args...)
+	}
+}
+
+// safeLogError provides nil-safe logging for error messages
+func (t *TraefikOidc) safeLogError(msg string) {
+	if t.logger != nil {
+		t.logger.Error("%s", msg)
+	}
+}
+
+// safeLogErrorf provides nil-safe logging for formatted error messages
+func (t *TraefikOidc) safeLogErrorf(format string, args ...interface{}) {
+	if t.logger != nil {
+		t.logger.Errorf(format, args...)
+	}
+}
+
+// safeLogInfo provides nil-safe logging for info messages
+func (t *TraefikOidc) safeLogInfo(msg string) {
+	if t.logger != nil {
+		t.logger.Info("%s", msg)
+	}
+}
+
+// =============================================================================
+// DOMAIN VALIDATION
+// =============================================================================
+
+// isAllowedDomain checks if an email address is authorized based on domain or user whitelist.
+// It validates against both allowed user domains and specific allowed users.
+// Parameters:
+//   - email: The email address to validate.
+//
+// Returns:
+//   - true if the email is authorized (domain or user allowed), false if not authorized
+//     or if the email format is invalid.
+func (t *TraefikOidc) isAllowedDomain(email string) bool {
+	if len(t.allowedUserDomains) == 0 && len(t.allowedUsers) == 0 {
+		return true
+	}
+
+	if len(t.allowedUsers) > 0 {
+		_, userAllowed := t.allowedUsers[strings.ToLower(email)]
+		if userAllowed {
+			t.logger.Debugf("Email %s is explicitly allowed in allowedUsers", email)
+			return true
+		}
+	}
+
+	if len(t.allowedUserDomains) > 0 {
+		parts := strings.Split(email, "@")
+		if len(parts) != 2 {
+			t.logger.Errorf("Invalid email format encountered: %s", email)
+			return false
+		}
+
+		domain := parts[1]
+		_, domainAllowed := t.allowedUserDomains[domain]
+
+		if domainAllowed {
+			t.logger.Debugf("Email domain %s is allowed", domain)
+			return true
+		} else {
+			t.logger.Debugf("Email domain %s is NOT allowed. Allowed domains: %v",
+				domain, keysFromMap(t.allowedUserDomains))
+		}
+	} else if len(t.allowedUsers) > 0 {
+		t.logger.Debugf("Email %s is not in the allowed users list: %v",
+			email, keysFromMap(t.allowedUsers))
+	}
+
+	return false
+}
+
+// keysFromMap extracts string keys from a map for logging purposes.
+// Helper function to get keys from a map for logging.
+// Parameters:
+//   - m: The map to extract keys from.
+//
+// Returns:
+//   - A slice of string keys.
+func keysFromMap(m map[string]struct{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// =============================================================================
+// ERROR HANDLING
+// =============================================================================
+
+// sendErrorResponse sends an appropriate error response based on the request's Accept header.
+// It sends JSON responses for clients that accept JSON, otherwise sends HTML error pages.
+// Parameters:
+//   - rw: The HTTP response writer.
+//   - req: The HTTP request (used to check Accept header).
+//   - message: The error message to display.
+//   - code: The HTTP status code to set for the response.
+func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Request, message string, code int) {
+	acceptHeader := req.Header.Get("Accept")
+
+	if strings.Contains(acceptHeader, "application/json") {
+		t.logger.Debugf("Sending JSON error response (code %d): %s", code, message)
+		rw.Header().Set("Content-Type", "application/json")
+		rw.WriteHeader(code)
+		json.NewEncoder(rw).Encode(map[string]interface{}{
+			"error":             http.StatusText(code),
+			"error_description": message,
+			"status_code":       code,
+		})
+		return
+	}
+
+	t.logger.Debugf("Sending HTML error response (code %d): %s", code, message)
+
+	returnURL := "/"
+
+	htmlBody := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Authentication Error</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background-color: #f8f9fa; color: #343a40; }
+        h1 { color: #dc3545; }
+        a { color: #007bff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .container { max-width: 600px; margin: auto; background: #fff; padding: 20px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Authentication Error</h1>
+        <p>%s</p>
+        <p><a href="%s">Return to application</a></p>
+    </div>
+</body>
+</html>`, message, returnURL)
+
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	rw.WriteHeader(code)
+	_, _ = rw.Write([]byte(htmlBody))
+}
+
+// =============================================================================
+// CLEANUP
+// =============================================================================
+
+// Close gracefully shuts down the TraefikOidc middleware instance.
+// It cancels contexts, stops background goroutines, closes HTTP connections,
+// cleans up caches, and releases all resources. Safe to call multiple times.
+// Returns:
+//   - An error if shutdown times out or resource cleanup fails.
+func (t *TraefikOidc) Close() error {
+	var closeErr error
+	t.shutdownOnce.Do(func() {
+		t.safeLogDebug("Closing TraefikOidc plugin instance")
+
+		// Get resource manager for cleanup
+		rm := GetResourceManager()
+
+		// Stop singleton tasks related to this instance
+		rm.StopBackgroundTask("singleton-token-cleanup")
+		rm.StopBackgroundTask("singleton-metadata-refresh")
+
+		// Remove reference for this instance
+		rm.RemoveReference(t.name)
+
+		if t.cancelFunc != nil {
+			t.cancelFunc()
+			t.safeLogDebug("Context cancellation signaled to all goroutines")
+		}
+
+		// Clean up legacy stop channels if they exist
+		if t.tokenCleanupStopChan != nil {
+			close(t.tokenCleanupStopChan)
+			t.safeLogDebug("tokenCleanupStopChan closed")
+		}
+		if t.metadataRefreshStopChan != nil {
+			close(t.metadataRefreshStopChan)
+			t.safeLogDebug("metadataRefreshStopChan closed")
+		}
+
+		if t.goroutineWG != nil {
+			done := make(chan struct{})
+			go func() {
+				t.goroutineWG.Wait()
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				t.safeLogDebug("All background goroutines stopped gracefully")
+			case <-time.After(10 * time.Second):
+				t.safeLogError("Timeout waiting for background goroutines to stop")
+			}
+		} else {
+			t.safeLogDebug("No goroutineWG to wait for (likely in test)")
+		}
+
+		if t.httpClient != nil {
+			if transport, ok := t.httpClient.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+				t.safeLogDebug("HTTP client idle connections closed")
+			}
+		}
+
+		if t.tokenHTTPClient != nil {
+			if transport, ok := t.tokenHTTPClient.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+				t.safeLogDebug("Token HTTP client idle connections closed")
+			}
+			if t.tokenHTTPClient.Transport != t.httpClient.Transport {
+				if transport, ok := t.tokenHTTPClient.Transport.(*http.Transport); ok {
+					transport.CloseIdleConnections()
+					t.safeLogDebug("Token HTTP client transport closed (separate from main)")
+				}
+			}
+		}
+
+		if t.tokenBlacklist != nil {
+			t.tokenBlacklist.Close()
+			t.safeLogDebug("tokenBlacklist closed")
+		}
+		if t.metadataCache != nil {
+			t.metadataCache.Close()
+			t.safeLogDebug("metadataCache closed")
+		}
+		if t.tokenCache != nil {
+			t.tokenCache.Close()
+			t.safeLogDebug("tokenCache closed")
+		}
+
+		if t.jwkCache != nil {
+			t.jwkCache.Close()
+			t.safeLogDebug("t.jwkCache.Close() called as per original instruction.")
+		}
+
+		// Shutdown session manager and its background cleanup routines
+		if t.sessionManager != nil {
+			if err := t.sessionManager.Shutdown(); err != nil {
+				t.safeLogErrorf("Error shutting down session manager: %v", err)
+			} else {
+				t.safeLogDebug("sessionManager shutdown completed")
+			}
+		}
+
+		// Clean up error recovery manager
+		if t.errorRecoveryManager != nil && t.errorRecoveryManager.gracefulDegradation != nil {
+			t.errorRecoveryManager.gracefulDegradation.Close()
+			t.safeLogDebug("Error recovery manager graceful degradation closed")
+		}
+
+		// Stop all global background tasks
+		taskRegistry := GetGlobalTaskRegistry()
+		taskRegistry.StopAllTasks()
+		t.safeLogDebug("All global background tasks stopped")
+
+		CleanupGlobalMemoryPools()
+		t.safeLogDebug("Global memory pools cleaned up")
+
+		// Force garbage collection to help with memory cleanup after shutdown
+		runtime.GC()
+		t.safeLogDebug("Forced garbage collection after shutdown")
+
+		t.safeLogDebug("TraefikOidc plugin instance closed successfully.")
+	})
+	return closeErr
+}
