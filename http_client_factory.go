@@ -49,10 +49,10 @@ func DefaultHTTPClientConfig() HTTPClientConfig {
 		TLSHandshakeTimeout:   2 * time.Second,
 		ResponseHeaderTimeout: 3 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		IdleConnTimeout:       5 * time.Second,
-		MaxIdleConns:          20, // SECURITY FIX: Reduced from 100 to limit resource usage
-		MaxIdleConnsPerHost:   2,  // SECURITY FIX: Reduced from 10 to prevent connection exhaustion
-		MaxConnsPerHost:       5,  // SECURITY FIX: Reduced from 10 to limit concurrent connections
+		IdleConnTimeout:       30 * time.Second, // OPTIMIZATION: Increased for better connection reuse
+		MaxIdleConns:          50,               // OPTIMIZATION: Increased from 20 for better connection pooling
+		MaxIdleConnsPerHost:   10,               // OPTIMIZATION: Increased from 2 for better connection reuse
+		MaxConnsPerHost:       20,               // OPTIMIZATION: Increased from 5 while maintaining security
 		WriteBufferSize:       4096,
 		ReadBufferSize:        4096,
 		ForceHTTP2:            true,
@@ -67,6 +67,18 @@ func TokenHTTPClientConfig() HTTPClientConfig {
 	config.Timeout = 10 * time.Second // Shorter timeout for token operations
 	config.MaxRedirects = 50          // Token endpoints may redirect more
 	config.UseCookieJar = true        // Enable cookie jar for token operations
+	return config
+}
+
+// OIDCProviderHTTPClientConfig returns configuration optimized for OIDC provider calls
+func OIDCProviderHTTPClientConfig() HTTPClientConfig {
+	config := DefaultHTTPClientConfig()
+	config.Timeout = 15 * time.Second         // Slightly longer for OIDC operations
+	config.MaxIdleConns = 100                 // Higher pool for frequent OIDC calls
+	config.MaxIdleConnsPerHost = 25           // More connections per OIDC provider
+	config.MaxConnsPerHost = 50               // Allow more concurrent requests to OIDC provider
+	config.IdleConnTimeout = 90 * time.Second // Keep connections alive longer for reuse
+	config.UseCookieJar = true                // Enable cookie jar for session management
 	return config
 }
 

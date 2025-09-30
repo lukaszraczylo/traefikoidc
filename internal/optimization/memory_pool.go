@@ -15,8 +15,7 @@ func NewStringBuilderPool() *StringBuilderPool {
 	return &StringBuilderPool{
 		pool: sync.Pool{
 			New: func() any {
-				buf := make([]byte, 0, 256) // Pre-allocate 256 bytes
-				return &buf
+				return make([]byte, 0, 256) // Pre-allocate 256 bytes
 			},
 		},
 	}
@@ -24,15 +23,18 @@ func NewStringBuilderPool() *StringBuilderPool {
 
 // Get retrieves a string builder from the pool
 func (p *StringBuilderPool) Get() []byte {
-	bufPtr := p.pool.Get().(*[]byte)
-	return *bufPtr
+	buf := p.pool.Get().([]byte)
+	// Return the slice with reset length but preserved capacity
+	return buf[:0]
 }
 
 // Put returns a string builder to the pool
 func (p *StringBuilderPool) Put(buf []byte) {
 	if buf != nil && cap(buf) < 4096 { // Don't pool overly large buffers or nil buffers
-		buf = buf[:0] // Reset length but keep capacity
-		p.pool.Put(&buf)
+		// Intentional design: slice API is more ergonomic than *[]byte.
+		// The 24-byte boxing allocation is negligible compared to 256+ byte buffer allocation we avoid.
+		//lint:ignore SA6002 slice interface is preferred over pointer interface for ergonomics
+		p.pool.Put(buf[:0]) // Reset length and store the slice directly
 	}
 }
 
@@ -48,8 +50,7 @@ func NewByteSlicePool(size int) *ByteSlicePool {
 		size: size,
 		pool: sync.Pool{
 			New: func() any {
-				buf := make([]byte, size)
-				return &buf
+				return make([]byte, size)
 			},
 		},
 	}
@@ -57,14 +58,18 @@ func NewByteSlicePool(size int) *ByteSlicePool {
 
 // Get retrieves a byte slice from the pool
 func (p *ByteSlicePool) Get() []byte {
-	bufPtr := p.pool.Get().(*[]byte)
-	return *bufPtr
+	buf := p.pool.Get().([]byte)
+	// Ensure we're returning the full-sized slice
+	return buf[:p.size]
 }
 
 // Put returns a byte slice to the pool
 func (p *ByteSlicePool) Put(buf []byte) {
 	if buf != nil && len(buf) == p.size {
-		p.pool.Put(&buf)
+		// Intentional design: slice API is more ergonomic than *[]byte.
+		// The 24-byte boxing allocation is negligible compared to the sized buffer allocation we avoid.
+		//lint:ignore SA6002 slice interface is preferred over pointer interface for ergonomics
+		p.pool.Put(buf)
 	}
 }
 

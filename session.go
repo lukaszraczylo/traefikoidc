@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -18,6 +19,15 @@ import (
 
 	"github.com/gorilla/sessions"
 )
+
+// constantTimeStringCompare performs a constant-time comparison of two strings
+// to prevent timing attacks. Returns true if the strings are equal.
+func constantTimeStringCompare(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
 
 // min returns the minimum of two integers.
 // This is a utility function used throughout the session management code.
@@ -1331,7 +1341,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 	}
 
 	currentAccessToken := sd.getAccessTokenUnsafe()
-	if currentAccessToken == token {
+	if constantTimeStringCompare(currentAccessToken, token) {
 		return
 	}
 	sd.dirty = true
@@ -1547,7 +1557,7 @@ func (sd *SessionData) SetRefreshToken(token string) {
 			}
 		}
 	}
-	if currentRefreshToken == token {
+	if constantTimeStringCompare(currentRefreshToken, token) {
 		return
 	}
 	sd.dirty = true
@@ -2060,7 +2070,7 @@ func (sd *SessionData) SetIDToken(token string) {
 		return
 	}
 	currentIDToken := sd.getIDTokenUnsafe()
-	if currentIDToken == token {
+	if constantTimeStringCompare(currentIDToken, token) {
 		return
 	}
 	sd.dirty = true
