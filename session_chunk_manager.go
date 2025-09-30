@@ -1,9 +1,9 @@
 package traefikoidc
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"runtime"
 	"strings"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/sessions"
+	"github.com/lukaszraczylo/traefikoidc/internal/pool"
 )
 
 // TokenConfig defines validation and storage parameters for different token types.
@@ -981,9 +982,13 @@ func (cm *ChunkManager) extractJWTExpiration(token string) (*time.Time, error) {
 		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
 	}
 
-	// Parse the JSON payload
+	// Parse the JSON payload using pooled decoder
 	var claims map[string]interface{}
-	if err := json.Unmarshal(payload, &claims); err != nil {
+	pm := pool.Get()
+	decoder := pm.GetJSONDecoder(bytes.NewReader(payload))
+	defer pm.PutJSONDecoder(decoder)
+
+	if err := decoder.Decode(&claims); err != nil {
 		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 
@@ -1067,9 +1072,13 @@ func (cm *ChunkManager) extractJWTIssuedAt(token string) (*time.Time, error) {
 		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
 	}
 
-	// Parse the JSON payload
+	// Parse the JSON payload using pooled decoder
 	var claims map[string]interface{}
-	if err := json.Unmarshal(payload, &claims); err != nil {
+	pm := pool.Get()
+	decoder := pm.GetJSONDecoder(bytes.NewReader(payload))
+	defer pm.PutJSONDecoder(decoder)
+
+	if err := decoder.Decode(&claims); err != nil {
 		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 

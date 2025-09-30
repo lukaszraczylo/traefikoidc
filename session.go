@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gorilla/sessions"
+	"github.com/lukaszraczylo/traefikoidc/internal/pool"
 )
 
 // constantTimeStringCompare performs a constant-time comparison of two strings
@@ -101,9 +102,9 @@ func compressToken(token string) string {
 		return token
 	}
 
-	pools := GetGlobalMemoryPools()
-	b := pools.GetCompressionBuffer()
-	defer pools.PutCompressionBuffer(b)
+	pm := pool.Get()
+	b := pm.GetBuffer(4096)
+	defer pm.PutBuffer(b)
 
 	gz := gzip.NewWriter(b)
 
@@ -181,9 +182,9 @@ func decompressTokenInternal(compressed string) string {
 		return compressed
 	}
 
-	pools := GetGlobalMemoryPools()
-	readerBuf := pools.GetHTTPResponseBuffer()
-	defer pools.PutHTTPResponseBuffer(readerBuf)
+	pm := pool.Get()
+	readerBuf := pm.GetHTTPResponseBuffer()
+	defer pm.PutHTTPResponseBuffer(readerBuf)
 
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {

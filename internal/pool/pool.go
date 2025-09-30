@@ -6,6 +6,8 @@ package pool
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +56,10 @@ type PoolStats struct {
 	JWTPuts          uint64
 	HTTPGets         uint64
 	HTTPPuts         uint64
+	JSONEncoderGets  uint64
+	JSONEncoderPuts  uint64
+	JSONDecoderGets  uint64
+	JSONDecoderPuts  uint64
 	OversizedRejects uint64
 }
 
@@ -378,6 +384,40 @@ func (m *Manager) PutByteSlice(b []byte) {
 	}
 }
 
+// GetJSONEncoder returns a JSON encoder from the pool configured for the given writer
+func (m *Manager) GetJSONEncoder(w io.Writer) *json.Encoder {
+	atomic.AddUint64(&m.stats.JSONEncoderGets, 1)
+	// Since json.Encoder doesn't support resetting, we create new ones each time
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false) // Disable HTML escaping for performance
+	return encoder
+}
+
+// PutJSONEncoder returns a JSON encoder to the pool
+func (m *Manager) PutJSONEncoder(encoder *json.Encoder) {
+	if encoder == nil {
+		return
+	}
+	atomic.AddUint64(&m.stats.JSONEncoderPuts, 1)
+	// JSON encoders can't be reset, so we don't pool them
+}
+
+// GetJSONDecoder returns a JSON decoder from the pool configured for the given reader
+func (m *Manager) GetJSONDecoder(r io.Reader) *json.Decoder {
+	atomic.AddUint64(&m.stats.JSONDecoderGets, 1)
+	// Since json.Decoder doesn't support resetting, we create new ones each time
+	return json.NewDecoder(r)
+}
+
+// PutJSONDecoder returns a JSON decoder to the pool
+func (m *Manager) PutJSONDecoder(decoder *json.Decoder) {
+	if decoder == nil {
+		return
+	}
+	atomic.AddUint64(&m.stats.JSONDecoderPuts, 1)
+	// JSON decoders can't be reset, so we don't pool them
+}
+
 // GetStats returns current pool statistics
 func (m *Manager) GetStats() PoolStats {
 	return PoolStats{
@@ -391,6 +431,10 @@ func (m *Manager) GetStats() PoolStats {
 		JWTPuts:          atomic.LoadUint64(&m.stats.JWTPuts),
 		HTTPGets:         atomic.LoadUint64(&m.stats.HTTPGets),
 		HTTPPuts:         atomic.LoadUint64(&m.stats.HTTPPuts),
+		JSONEncoderGets:  atomic.LoadUint64(&m.stats.JSONEncoderGets),
+		JSONEncoderPuts:  atomic.LoadUint64(&m.stats.JSONEncoderPuts),
+		JSONDecoderGets:  atomic.LoadUint64(&m.stats.JSONDecoderGets),
+		JSONDecoderPuts:  atomic.LoadUint64(&m.stats.JSONDecoderPuts),
 		OversizedRejects: atomic.LoadUint64(&m.stats.OversizedRejects),
 	}
 }
@@ -407,6 +451,10 @@ func (m *Manager) ResetStats() {
 	atomic.StoreUint64(&m.stats.JWTPuts, 0)
 	atomic.StoreUint64(&m.stats.HTTPGets, 0)
 	atomic.StoreUint64(&m.stats.HTTPPuts, 0)
+	atomic.StoreUint64(&m.stats.JSONEncoderGets, 0)
+	atomic.StoreUint64(&m.stats.JSONEncoderPuts, 0)
+	atomic.StoreUint64(&m.stats.JSONDecoderGets, 0)
+	atomic.StoreUint64(&m.stats.JSONDecoderPuts, 0)
 	atomic.StoreUint64(&m.stats.OversizedRejects, 0)
 }
 
@@ -470,4 +518,24 @@ func ByteSlice(size int) []byte {
 // ReturnByteSlice returns a byte slice to the global pool
 func ReturnByteSlice(b []byte) {
 	Get().PutByteSlice(b)
+}
+
+// JSONEncoder returns a JSON encoder from the global pool
+func JSONEncoder(w io.Writer) *json.Encoder {
+	return Get().GetJSONEncoder(w)
+}
+
+// ReturnJSONEncoder returns a JSON encoder to the global pool
+func ReturnJSONEncoder(encoder *json.Encoder) {
+	Get().PutJSONEncoder(encoder)
+}
+
+// JSONDecoder returns a JSON decoder from the global pool
+func JSONDecoder(r io.Reader) *json.Decoder {
+	return Get().GetJSONDecoder(r)
+}
+
+// ReturnJSONDecoder returns a JSON decoder to the global pool
+func ReturnJSONDecoder(decoder *json.Decoder) {
+	Get().PutJSONDecoder(decoder)
 }

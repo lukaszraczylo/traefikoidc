@@ -286,8 +286,8 @@ func (t *TraefikOidc) Close() error {
 		taskRegistry.StopAllTasks()
 		t.safeLogDebug("All global background tasks stopped")
 
-		CleanupGlobalMemoryPools()
-		t.safeLogDebug("Global memory pools cleaned up")
+		// Note: Centralized pool in internal/pool is singleton-managed and doesn't require explicit cleanup
+		t.safeLogDebug("Memory pools managed by singleton pattern")
 
 		// Force garbage collection to help with memory cleanup after shutdown
 		runtime.GC()
