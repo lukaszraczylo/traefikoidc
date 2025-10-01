@@ -18,6 +18,12 @@ func NewProviderFactory() *ProviderFactory {
 	registry.RegisterProvider(NewGenericProvider())
 	registry.RegisterProvider(NewGoogleProvider())
 	registry.RegisterProvider(NewAzureProvider())
+	registry.RegisterProvider(NewGitHubProvider())
+	registry.RegisterProvider(NewAuth0Provider())
+	registry.RegisterProvider(NewOktaProvider())
+	registry.RegisterProvider(NewKeycloakProvider())
+	registry.RegisterProvider(NewAWSCognitoProvider())
+	registry.RegisterProvider(NewGitLabProvider())
 
 	return &ProviderFactory{
 		registry: registry,
@@ -31,8 +37,14 @@ func (f *ProviderFactory) CreateProvider(issuerURL string) (OIDCProvider, error)
 		return nil, fmt.Errorf("issuer URL cannot be empty")
 	}
 
-	if _, err := url.Parse(issuerURL); err != nil {
+	parsedURL, err := url.Parse(issuerURL)
+	if err != nil {
 		return nil, fmt.Errorf("invalid issuer URL format: %w", err)
+	}
+
+	// Check if the URL has a valid scheme and host
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return nil, fmt.Errorf("invalid issuer URL format: URL must have a valid scheme and host")
 	}
 
 	provider := f.registry.DetectProvider(issuerURL)
@@ -59,6 +71,18 @@ func (f *ProviderFactory) CreateProviderByType(providerType ProviderType) (OIDCP
 		provider = NewGoogleProvider()
 	case ProviderTypeAzure:
 		provider = NewAzureProvider()
+	case ProviderTypeGitHub:
+		provider = NewGitHubProvider()
+	case ProviderTypeAuth0:
+		provider = NewAuth0Provider()
+	case ProviderTypeOkta:
+		provider = NewOktaProvider()
+	case ProviderTypeKeycloak:
+		provider = NewKeycloakProvider()
+	case ProviderTypeAWSCognito:
+		provider = NewAWSCognitoProvider()
+	case ProviderTypeGitLab:
+		provider = NewGitLabProvider()
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %d", providerType)
 	}
@@ -73,9 +97,15 @@ func (f *ProviderFactory) CreateProviderByType(providerType ProviderType) (OIDCP
 // GetSupportedProviders returns a list of all supported provider types and their detection patterns.
 func (f *ProviderFactory) GetSupportedProviders() map[ProviderType][]string {
 	return map[ProviderType][]string{
-		ProviderTypeGeneric: {"*"},
-		ProviderTypeGoogle:  {"accounts.google.com"},
-		ProviderTypeAzure:   {"login.microsoftonline.com", "sts.windows.net"},
+		ProviderTypeGeneric:    {"*"},
+		ProviderTypeGoogle:     {"accounts.google.com"},
+		ProviderTypeAzure:      {"login.microsoftonline.com", "sts.windows.net"},
+		ProviderTypeGitHub:     {"github.com"},
+		ProviderTypeAuth0:      {".auth0.com"},
+		ProviderTypeOkta:       {".okta.com", ".oktapreview.com", ".okta-emea.com"},
+		ProviderTypeKeycloak:   {"keycloak"},
+		ProviderTypeAWSCognito: {"cognito-idp", ".amazonaws.com"},
+		ProviderTypeGitLab:     {"gitlab.com"},
 	}
 }
 
@@ -97,6 +127,11 @@ func (f *ProviderFactory) IsProviderSupported(issuerURL string) bool {
 
 	normalizedURL, err := url.Parse(issuerURL)
 	if err != nil {
+		return false
+	}
+
+	// Check if the URL has a valid scheme and host
+	if normalizedURL.Scheme == "" || normalizedURL.Host == "" {
 		return false
 	}
 

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -17,7 +18,17 @@ import (
 	"time"
 
 	"github.com/gorilla/sessions"
+	"github.com/lukaszraczylo/traefikoidc/internal/pool"
 )
+
+// constantTimeStringCompare performs a constant-time comparison of two strings
+// to prevent timing attacks. Returns true if the strings are equal.
+func constantTimeStringCompare(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
 
 // min returns the minimum of two integers.
 // This is a utility function used throughout the session management code.
@@ -91,9 +102,9 @@ func compressToken(token string) string {
 		return token
 	}
 
-	pools := GetGlobalMemoryPools()
-	b := pools.GetCompressionBuffer()
-	defer pools.PutCompressionBuffer(b)
+	pm := pool.Get()
+	b := pm.GetBuffer(4096)
+	defer pm.PutBuffer(b)
 
 	gz := gzip.NewWriter(b)
 
@@ -171,9 +182,9 @@ func decompressTokenInternal(compressed string) string {
 		return compressed
 	}
 
-	pools := GetGlobalMemoryPools()
-	readerBuf := pools.GetHTTPResponseBuffer()
-	defer pools.PutHTTPResponseBuffer(readerBuf)
+	pm := pool.Get()
+	readerBuf := pm.GetHTTPResponseBuffer()
+	defer pm.PutHTTPResponseBuffer(readerBuf)
 
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
@@ -272,7 +283,7 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 
 	// Start memory monitoring every 30 seconds (will skip if already started)
 	if err := sm.memoryMonitor.Start(30 * time.Second); err != nil {
-		logger.Infof("Failed to start memory monitoring: %v", err)
+		logger.Debugf("Failed to start memory monitoring: %v", err)
 	}
 
 	sm.sessionPool.New = func() interface{} {
@@ -302,7 +313,7 @@ func (sm *SessionManager) Shutdown() error {
 	var shutdownErr error
 	sm.shutdownOnce.Do(func() {
 		if sm.logger != nil {
-			sm.logger.Info("SessionManager shutdown initiated")
+			sm.logger.Debug("SessionManager shutdown initiated")
 		}
 
 		// Cancel context to stop all background operations
@@ -324,7 +335,7 @@ func (sm *SessionManager) Shutdown() error {
 		runtime.GC()
 
 		if sm.logger != nil {
-			sm.logger.Info("SessionManager shutdown completed")
+			sm.logger.Debug("SessionManager shutdown completed")
 		}
 	})
 	return shutdownErr
@@ -1331,7 +1342,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 	}
 
 	currentAccessToken := sd.getAccessTokenUnsafe()
-	if currentAccessToken == token {
+	if constantTimeStringCompare(currentAccessToken, token) {
 		return
 	}
 	sd.dirty = true
@@ -1547,7 +1558,7 @@ func (sd *SessionData) SetRefreshToken(token string) {
 			}
 		}
 	}
-	if currentRefreshToken == token {
+	if constantTimeStringCompare(currentRefreshToken, token) {
 		return
 	}
 	sd.dirty = true
@@ -2060,7 +2071,7 @@ func (sd *SessionData) SetIDToken(token string) {
 		return
 	}
 	currentIDToken := sd.getIDTokenUnsafe()
-	if currentIDToken == token {
+	if constantTimeStringCompare(currentIDToken, token) {
 		return
 	}
 	sd.dirty = true

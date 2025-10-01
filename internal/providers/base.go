@@ -117,7 +117,7 @@ func (p *BaseProvider) BuildAuthParams(baseParams url.Values, scopes []string) (
 
 	return &AuthParams{
 		URLValues: baseParams,
-		Scopes:    scopes,
+		Scopes:    deduplicateScopes(scopes),
 	}, nil
 }
 
@@ -125,6 +125,21 @@ func (p *BaseProvider) BuildAuthParams(baseParams url.Values, scopes []string) (
 // By default, it does nothing and assumes the standard token response is sufficient.
 func (p *BaseProvider) HandleTokenRefresh(tokenData *TokenResult) error {
 	return nil
+}
+
+// deduplicateScopes removes duplicate scopes from a slice while preserving order.
+func deduplicateScopes(scopes []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(scopes))
+
+	for _, scope := range scopes {
+		if !seen[scope] {
+			seen[scope] = true
+			result = append(result, scope)
+		}
+	}
+
+	return result
 }
 
 // ValidateConfig checks provider-specific configuration requirements.

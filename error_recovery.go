@@ -963,7 +963,7 @@ func (gd *GracefulDegradation) Close() {
 			// Don't set to nil to avoid race conditions
 		}
 
-		gd.logger.Info("GracefulDegradation shut down successfully")
+		gd.logger.Debug("GracefulDegradation shut down successfully")
 	})
 }
 

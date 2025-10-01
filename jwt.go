@@ -1,19 +1,21 @@
 package traefikoidc
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lukaszraczylo/traefikoidc/internal/pool"
 )
 
 // Replay attack protection cache and synchronization primitives.
@@ -173,28 +175,30 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
-	pools := GetGlobalMemoryPools()
-	jwtBuf := pools.GetJWTParsingBuffer()
-	defer pools.PutJWTParsingBuffer(jwtBuf)
+	pm := pool.Get()
+	jwtBuf := pm.GetJWTBuffer()
+	defer pm.PutJWTBuffer(jwtBuf)
 
 	jwt := &JWT{
 		Token: tokenString,
 	}
 
 	headerLen := base64.RawURLEncoding.DecodedLen(len(parts[0]))
-	if headerLen > cap(jwtBuf.HeaderBuf) {
-		jwtBuf.HeaderBuf = make([]byte, headerLen)
+	if headerLen > cap(jwtBuf.Header) {
+		jwtBuf.Header = make([]byte, headerLen)
 	} else {
-		jwtBuf.HeaderBuf = jwtBuf.HeaderBuf[:headerLen]
+		jwtBuf.Header = jwtBuf.Header[:headerLen]
 	}
 
-	n, err := base64.RawURLEncoding.Decode(jwtBuf.HeaderBuf, []byte(parts[0]))
+	n, err := base64.RawURLEncoding.Decode(jwtBuf.Header, []byte(parts[0]))
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode header: %v", err)
 	}
-	headerBytes := jwtBuf.HeaderBuf[:n]
+	headerBytes := jwtBuf.Header[:n]
 
-	if err := json.Unmarshal(headerBytes, &jwt.Header); err != nil {
+	decoder := pm.GetJSONDecoder(bytes.NewReader(headerBytes))
+	defer pm.PutJSONDecoder(decoder)
+	if err := decoder.Decode(&jwt.Header); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal header: %v", err)
 	}
 
@@ -203,19 +207,21 @@ func parseJWT(tokenString string) (*JWT, error) {
 	}
 
 	claimsLen := base64.RawURLEncoding.DecodedLen(len(parts[1]))
-	if claimsLen > cap(jwtBuf.PayloadBuf) {
-		jwtBuf.PayloadBuf = make([]byte, claimsLen)
+	if claimsLen > cap(jwtBuf.Payload) {
+		jwtBuf.Payload = make([]byte, claimsLen)
 	} else {
-		jwtBuf.PayloadBuf = jwtBuf.PayloadBuf[:claimsLen]
+		jwtBuf.Payload = jwtBuf.Payload[:claimsLen]
 	}
 
-	n, err = base64.RawURLEncoding.Decode(jwtBuf.PayloadBuf, []byte(parts[1]))
+	n, err = base64.RawURLEncoding.Decode(jwtBuf.Payload, []byte(parts[1]))
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode claims: %v", err)
 	}
-	claimsBytes := jwtBuf.PayloadBuf[:n]
+	claimsBytes := jwtBuf.Payload[:n]
 
-	if err := json.Unmarshal(claimsBytes, &jwt.Claims); err != nil {
+	decoder2 := pm.GetJSONDecoder(bytes.NewReader(claimsBytes))
+	defer pm.PutJSONDecoder(decoder2)
+	if err := decoder2.Decode(&jwt.Claims); err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to unmarshal claims: %v", err)
 	}
 
@@ -224,19 +230,24 @@ func parseJWT(tokenString string) (*JWT, error) {
 	}
 
 	sigLen := base64.RawURLEncoding.DecodedLen(len(parts[2]))
-	if sigLen > cap(jwtBuf.SignatureBuf) {
-		jwtBuf.SignatureBuf = make([]byte, sigLen)
+	if sigLen > cap(jwtBuf.Signature) {
+		jwtBuf.Signature = make([]byte, sigLen)
 	} else {
-		jwtBuf.SignatureBuf = jwtBuf.SignatureBuf[:sigLen]
+		jwtBuf.Signature = jwtBuf.Signature[:sigLen]
 	}
 
-	n, err = base64.RawURLEncoding.Decode(jwtBuf.SignatureBuf, []byte(parts[2]))
+	n, err = base64.RawURLEncoding.Decode(jwtBuf.Signature, []byte(parts[2]))
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode signature: %v", err)
 	}
 
-	jwt.Signature = make([]byte, n)
-	copy(jwt.Signature, jwtBuf.SignatureBuf[:n])
+	// Reuse the signature buffer if it's large enough, otherwise allocate
+	if cap(jwtBuf.Signature) >= n {
+		jwt.Signature = jwtBuf.Signature[:n:n] // Use slice trick to prevent aliasing
+	} else {
+		jwt.Signature = make([]byte, n)
+		copy(jwt.Signature, jwtBuf.Signature[:n])
+	}
 
 	return jwt, nil
 }

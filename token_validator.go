@@ -1,11 +1,13 @@
 package traefikoidc
 
 import (
+	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/lukaszraczylo/traefikoidc/internal/pool"
 )
 
 // TokenValidator provides unified token validation functionality
@@ -93,7 +95,10 @@ func (v *TokenValidator) validateJWT(token string) TokenValidationResult {
 	}
 
 	var claims map[string]interface{}
-	if err := json.Unmarshal(payload, &claims); err != nil {
+	pm := pool.Get()
+	decoder := pm.GetJSONDecoder(bytes.NewReader(payload))
+	defer pm.PutJSONDecoder(decoder)
+	if err := decoder.Decode(&claims); err != nil {
 		result.Error = fmt.Errorf("failed to parse JWT claims: %w", err)
 		return result
 	}
@@ -233,7 +238,10 @@ func (v *TokenValidator) ExtractClaims(token string) (map[string]interface{}, er
 	}
 
 	var claims map[string]interface{}
-	if err := json.Unmarshal(payload, &claims); err != nil {
+	pm := pool.Get()
+	decoder := pm.GetJSONDecoder(bytes.NewReader(payload))
+	defer pm.PutJSONDecoder(decoder)
+	if err := decoder.Decode(&claims); err != nil {
 		return nil, fmt.Errorf("failed to parse claims: %w", err)
 	}
 

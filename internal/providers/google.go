@@ -24,8 +24,8 @@ func (p *GoogleProvider) GetType() ProviderType {
 // GetCapabilities returns the specific capabilities of the Google provider.
 func (p *GoogleProvider) GetCapabilities() ProviderCapabilities {
 	return ProviderCapabilities{
-		SupportsRefreshTokens:      true,
-		RequiresOfflineAccessScope: false,
+		SupportsRefreshTokens:      true,  // Google DOES support refresh tokens
+		RequiresOfflineAccessScope: false, // Google uses access_type=offline instead
 		RequiresPromptConsent:      true,
 		PreferredTokenValidation:   "id",
 	}
@@ -46,7 +46,7 @@ func (p *GoogleProvider) BuildAuthParams(baseParams url.Values, scopes []string)
 
 	return &AuthParams{
 		URLValues: baseParams,
-		Scopes:    filteredScopes,
+		Scopes:    deduplicateScopes(filteredScopes),
 	}, nil
 }
 

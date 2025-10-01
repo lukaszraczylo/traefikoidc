@@ -220,7 +220,7 @@ func (trm *TokenResilienceManager) Reset() {
 	}
 
 	if trm.logger != nil {
-		trm.logger.Infof("Token resilience manager has been reset")
+		trm.logger.Debugf("Token resilience manager has been reset")
 	}
 }
 

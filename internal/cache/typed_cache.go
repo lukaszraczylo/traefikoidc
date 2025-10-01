@@ -1,9 +1,12 @@
 package cache
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/lukaszraczylo/traefikoidc/internal/pool"
 )
 
 // TypedCache provides a type-safe wrapper around Cache for specific types
@@ -42,13 +45,24 @@ func (tc *TypedCache[T]) Get(key string) (T, bool) {
 	}
 
 	// If that fails, try JSON marshaling/unmarshaling for complex types
-	data, err := json.Marshal(value)
-	if err != nil {
+	// Use pooled buffer for encoding
+	pm := pool.Get()
+	buf := pm.GetBuffer(256)
+	defer pm.PutBuffer(buf)
+
+	encoder := pm.GetJSONEncoder(buf)
+	defer pm.PutJSONEncoder(encoder)
+
+	if err := encoder.Encode(value); err != nil {
 		return zero, false
 	}
 
+	// Decode using pooled decoder
 	var result T
-	if err := json.Unmarshal(data, &result); err != nil {
+	decoder := pm.GetJSONDecoder(bytes.NewReader(buf.Bytes()))
+	defer pm.PutJSONDecoder(decoder)
+
+	if err := decoder.Decode(&result); err != nil {
 		return zero, false
 	}
 

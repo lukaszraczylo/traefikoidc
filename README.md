@@ -4,19 +4,51 @@ This middleware replaces the need for forward-auth and oauth2-proxy when using T
 
 ## Overview
 
-The Traefik OIDC middleware provides a complete OIDC authentication solution with features like:
-- Token validation and verification
-- Session management with automatic cleanup
-- Domain restrictions
-- Role-based access control
-- Token caching and blacklisting
-- Rate limiting
-- Excluded paths (public URLs)
-- Memory-efficient operation with bounded resource usage
+The Traefik OIDC middleware provides a complete OIDC authentication solution with these key features:
+
+- **Universal provider support**: Works with 9+ OIDC providers including Google, Azure AD, Auth0, Okta, Keycloak, AWS Cognito, GitLab, and more
+- **Automatic provider detection**: Automatically detects and configures provider-specific settings
+- **Security headers**: Comprehensive security headers with CORS, CSP, HSTS, and custom profiles
+- **Domain restrictions**: Limit access to specific email domains or individual users
+- **Role-based access control**: Restrict access based on roles and groups from OIDC claims
+- **Session management**: Secure session handling with automatic token refresh
+- **Rate limiting**: Protection against brute force attacks
+- **Excluded paths**: Configure public URLs that bypass authentication
+- **Custom headers**: Template-based headers using OIDC claims and tokens
+- **Comprehensive logging**: Configurable log levels for debugging and monitoring
+
+## Supported OIDC Providers
+
+| Provider | Support Level | Refresh Tokens | Auto-Detection | Key Features |
+|----------|---------------|----------------|---------------|--------------|
+| **Google** | ✅ Full OIDC | ✅ Yes | ✅ `accounts.google.com` | Auto-config, Workspace support |
+| **Azure AD** | ✅ Full OIDC | ✅ Yes | ✅ `login.microsoftonline.com` | Multi-tenant, group claims |
+| **Auth0** | ✅ Full OIDC | ✅ Yes | ✅ `*.auth0.com` | Custom claims, flexible rules |
+| **Okta** | ✅ Full OIDC | ✅ Yes | ✅ `*.okta.com` | Enterprise SSO, MFA support |
+| **Keycloak** | ✅ Full OIDC | ✅ Yes | ✅ `/auth/realms/` path | Self-hosted, full customization |
+| **AWS Cognito** | ✅ Full OIDC | ✅ Yes | ✅ `cognito-idp.*.amazonaws.com` | Managed service, regional |
+| **GitLab** | ✅ Full OIDC | ✅ Yes | ✅ `gitlab.com` | Self-hosted support |
+| **GitHub** | ⚠️ OAuth 2.0 Only | ❌ No | ✅ `github.com` | API access only, no claims |
+| **Generic OIDC** | ✅ Full OIDC | ✅ Yes | ✅ Any endpoint | RFC-compliant providers |
+
+### Provider Capabilities Matrix
+
+| Feature | Google | Azure AD | Auth0 | Okta | Keycloak | Cognito | GitLab | GitHub | Generic |
+|---------|--------|----------|-------|------|----------|---------|--------|--------|---------|
+| **ID Tokens** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Refresh Tokens** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Auto-Configuration** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Custom Claims** | Limited | ✅ | ✅ | ✅ | ✅ | ✅ | Limited | ❌ | Varies |
+| **Group/Role Claims** | Limited | ✅ | ✅ | ✅ | ✅ | ✅ | Limited | ❌ | Varies |
+| **Domain Restriction** | ✅ (hd claim) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Varies |
+| **Self-Hosted** | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ |
+| **Enterprise Features** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Varies |
+
+> **Important**: GitHub uses OAuth 2.0 (not OpenID Connect) and only provides access tokens. Use it for API access only, not for user authentication with claims. All other providers support full OIDC with ID tokens and user claims.
 
 **Important Note on Token Validation:** This middleware performs authentication and claim extraction based on the **ID Token** provided by the OIDC provider. It does not primarily use the Access Token for these purposes (though the Access Token is available for templated headers if needed). Therefore, ensure that all necessary claims (e.g., email, roles, custom attributes) are included in the ID Token by your OIDC provider's configuration.
 
-The middleware has been tested with Auth0, Logto, Google and other standard OIDC providers. It includes special handling for Google's OAuth implementation.
+The middleware has been tested with Google, Azure AD, Auth0, Okta, Keycloak, AWS Cognito, GitLab, GitHub (OAuth 2.0), and other standard OIDC providers. It includes automatic provider detection and special handling for provider-specific requirements.
 
 ### Performance and Memory Management
 
@@ -94,6 +126,7 @@ The middleware supports the following configuration options:
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
 | `cookieDomain` | Explicit domain for session cookies (important for multi-subdomain setups) | auto-detected | `.example.com`, `app.example.com` |
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
+| `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
 
 ## Scope Configuration
 
@@ -167,6 +200,195 @@ scopes: []
 ```
 
 The default append behavior ensures essential OIDC scopes are always present, while the override mode gives you complete control over the exact scopes requested from the provider.
+
+## Security Headers Configuration
+
+The middleware includes comprehensive security headers support to protect your applications against common web vulnerabilities. Security headers are applied to all authenticated responses.
+
+### Security Features
+
+- **Content Security Policy (CSP)** - Prevents XSS and code injection
+- **HTTP Strict Transport Security (HSTS)** - Forces HTTPS connections
+- **Frame Options** - Protects against clickjacking attacks
+- **XSS Protection** - Browser-level XSS filtering
+- **Content Type Options** - Prevents MIME type sniffing
+- **Referrer Policy** - Controls referrer information sharing
+- **CORS Headers** - Complete Cross-Origin Resource Sharing support
+- **Custom Headers** - Add any additional security headers
+
+### Security Profiles
+
+Choose from predefined security profiles or create custom configurations:
+
+| Profile | Use Case | Security Level | CORS Enabled |
+|---------|----------|----------------|--------------|
+| `default` | Standard web applications | High | Disabled |
+| `strict` | Maximum security applications | Very High | Disabled |
+| `development` | Local development | Medium | Enabled (localhost) |
+| `api` | API endpoints | High | Configurable |
+| `custom` | Custom requirements | Configurable | Configurable |
+
+### Configuration Examples
+
+#### Default Security (Recommended)
+```yaml
+securityHeaders:
+  enabled: true
+  profile: "default"
+```
+
+#### Strict Security
+```yaml
+securityHeaders:
+  enabled: true
+  profile: "strict"
+```
+
+#### API with CORS
+```yaml
+securityHeaders:
+  enabled: true
+  profile: "api"
+  corsEnabled: true
+  corsAllowedOrigins: 
+    - "https://your-frontend.com"
+    - "https://*.example.com"
+  corsAllowCredentials: true
+```
+
+#### Custom Configuration
+```yaml
+securityHeaders:
+  enabled: true
+  profile: "custom"
+  
+  # Content Security Policy
+  contentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline'"
+  
+  # HSTS Settings
+  strictTransportSecurity: true
+  strictTransportSecurityMaxAge: 31536000  # 1 year
+  strictTransportSecuritySubdomains: true
+  strictTransportSecurityPreload: true
+  
+  # Frame and Content Protection
+  frameOptions: "DENY"
+  contentTypeOptions: "nosniff"
+  xssProtection: "1; mode=block"
+  referrerPolicy: "strict-origin-when-cross-origin"
+  
+  # CORS Configuration
+  corsEnabled: true
+  corsAllowedOrigins: ["https://app.example.com"]
+  corsAllowedMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+  corsAllowedHeaders: ["Authorization", "Content-Type", "X-Requested-With"]
+  corsAllowCredentials: true
+  corsMaxAge: 86400
+  
+  # Custom Headers
+  customHeaders:
+    X-Custom-Header: "custom-value"
+    X-API-Version: "v1"
+  
+  # Server Identification
+  disableServerHeader: true
+  disablePoweredByHeader: true
+```
+
+### Security Headers Parameters
+
+| Parameter | Description | Default | Example |
+|-----------|-------------|---------|---------|
+| `enabled` | Enable/disable security headers | `true` | `true`, `false` |
+| `profile` | Security profile to use | `default` | `default`, `strict`, `development`, `api`, `custom` |
+| `contentSecurityPolicy` | CSP header value | Profile-based | `"default-src 'self'"` |
+| `strictTransportSecurity` | Enable HSTS | `true` | `true`, `false` |
+| `strictTransportSecurityMaxAge` | HSTS max age in seconds | `31536000` | `86400` |
+| `strictTransportSecuritySubdomains` | Include subdomains in HSTS | `true` | `true`, `false` |
+| `strictTransportSecurityPreload` | Enable HSTS preload | `true` | `true`, `false` |
+| `frameOptions` | X-Frame-Options header | `DENY` | `DENY`, `SAMEORIGIN`, `ALLOW-FROM uri` |
+| `contentTypeOptions` | X-Content-Type-Options header | `nosniff` | `nosniff` |
+| `xssProtection` | X-XSS-Protection header | `1; mode=block` | `1; mode=block` |
+| `referrerPolicy` | Referrer-Policy header | `strict-origin-when-cross-origin` | `no-referrer` |
+| `corsEnabled` | Enable CORS headers | `false` | `true`, `false` |
+| `corsAllowedOrigins` | Allowed CORS origins | `[]` | `["https://app.com", "https://*.example.com"]` |
+| `corsAllowedMethods` | Allowed CORS methods | `["GET", "POST", "OPTIONS"]` | `["GET", "POST", "PUT", "DELETE"]` |
+| `corsAllowedHeaders` | Allowed CORS headers | `["Authorization", "Content-Type"]` | `["X-Custom-Header"]` |
+| `corsAllowCredentials` | Allow credentials in CORS | `false` | `true`, `false` |
+| `corsMaxAge` | CORS preflight cache time | `86400` | `3600` |
+| `customHeaders` | Additional custom headers | `{}` | `{"X-Custom": "value"}` |
+| `disableServerHeader` | Remove Server header | `true` | `true`, `false` |
+| `disablePoweredByHeader` | Remove X-Powered-By header | `true` | `true`, `false` |
+
+### CORS Wildcard Support
+
+The middleware supports flexible CORS origin patterns:
+
+```yaml
+corsAllowedOrigins:
+  - "https://example.com"              # Exact match
+  - "https://*.example.com"            # Subdomain wildcard
+  - "http://localhost:*"               # Port wildcard (development)
+  - "*"                                # Allow all (not recommended)
+```
+
+## Advanced Configuration
+
+The middleware provides several advanced configuration options for production environments.
+
+### Provider-Specific Optimizations
+
+The middleware automatically optimizes for each OIDC provider:
+- **Google**: Automatically configures `access_type=offline` and `prompt=consent` for refresh tokens
+- **Azure AD**: Optimized multi-tenant support and group claim handling
+- **Auth0**: Enhanced custom claim processing and namespace support
+- **Keycloak**: Self-hosted deployment optimizations
+- **AWS Cognito**: Regional endpoint handling and user pool integration
+
+### Token Management
+
+- **Automatic token refresh**: Proactively refreshes tokens before expiration
+- **Token validation**: Comprehensive JWT validation with security checks
+- **Grace period**: Configurable time window for token refresh
+- **Session handling**: Secure session management with encrypted storage
+
+### Configuration Examples
+
+#### High-Throughput Configuration
+```yaml
+# Optimized for high-traffic environments
+rateLimit: 1000
+refreshGracePeriodSeconds: 300
+securityHeaders:
+  enabled: true
+  profile: "api"
+  corsEnabled: true
+  corsMaxAge: 86400
+```
+
+#### High-Security Configuration
+```yaml
+# Maximum security for sensitive environments
+rateLimit: 50
+allowedUserDomains: ["company.com"]
+allowedRolesAndGroups: ["admin", "developer"]
+securityHeaders:
+  enabled: true
+  profile: "strict"
+  corsEnabled: false
+```
+
+#### Development Configuration
+```yaml
+# Development-friendly settings
+logLevel: "debug"
+forceHTTPS: false
+securityHeaders:
+  enabled: true
+  profile: "development"
+  corsEnabled: true
+  corsAllowedOrigins: ["http://localhost:*"]
+```
 
 ## Usage Examples
 
@@ -447,9 +669,9 @@ spec:
         - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
 
-### Google OIDC Configuration Example
+## Provider-Specific Configuration Examples
 
-This example shows a configuration specifically tailored for Google OIDC:
+### Google OIDC Configuration
 
 ```yaml
 apiVersion: traefik.io/v1alpha1
@@ -461,20 +683,197 @@ spec:
   plugin:
     traefikoidc:
       providerURL: https://accounts.google.com
-      clientID: your-google-client-id.apps.googleusercontent.com # Replace with your Client ID
-      clientSecret: your-google-client-secret                     # Replace with your Client Secret
-      sessionEncryptionKey: your-secure-encryption-key-min-32-chars # Replace with your key
-      callbackURL: /oauth2/callback                             # Adjust if needed
-      logoutURL: /oauth2/logout                                 # Optional: Adjust if needed
+      clientID: your-google-client-id.apps.googleusercontent.com
+      clientSecret: your-google-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
       scopes:
         - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
         # Note: DO NOT manually add offline_access scope for Google
         # The middleware automatically handles Google-specific requirements
-      refreshGracePeriodSeconds: 300  # Optional: Start refresh 5 min before expiry (default 60)
-      # Other optional parameters like allowedUserDomains, etc. can be added here
+      refreshGracePeriodSeconds: 300  # Optional: Start refresh 5 min before expiry
+      allowedUserDomains:
+        - your-gsuite-domain.com  # Optional: Restrict to workspace users
 ```
 
-The middleware automatically detects Google as the provider and applies the necessary adjustments to ensure proper authentication and token refresh. See the [Google OAuth Fix](#google-oauth-compatibility-fix) section for details.
+### Azure AD Configuration
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-azure
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://login.microsoftonline.com/your-tenant-id/v2.0
+      clientID: your-azure-ad-client-id
+      clientSecret: your-azure-ad-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - roles  # For group/role claims, configure in Azure AD Token Configuration
+      allowedUserDomains:
+        - yourcompany.com
+      allowedRolesAndGroups:
+        - "group-object-id-1"  # Azure AD group Object IDs
+        - "AppRoleName"        # Application role names
+```
+
+### Auth0 Configuration
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-auth0
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://your-auth0-domain.auth0.com
+      clientID: your-auth0-client-id
+      clientSecret: your-auth0-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - read:custom_data  # Custom scopes as needed
+      allowedRolesAndGroups:
+        - "https://your-app.com/roles:admin"  # Namespaced claims from Actions
+        - editor
+      postLogoutRedirectURI: /logged-out-page  # Must be in Auth0 Allowed Logout URLs
+```
+
+### Okta Configuration
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-okta
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://your-tenant.okta.com/oauth2/default
+      clientID: your-okta-client-id
+      clientSecret: your-okta-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - groups  # Include groups in token claims
+      allowedRolesAndGroups:
+        - admin
+        - developer
+        - "Everyone"  # Default Okta group
+```
+
+### Keycloak Configuration
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-keycloak
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://your-keycloak-domain/auth/realms/your-realm
+      clientID: your-keycloak-client-id
+      clientSecret: your-keycloak-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - roles
+        - groups
+      allowedRolesAndGroups:
+        - admin
+        - editor
+      # Ensure Keycloak client mappers add necessary claims to ID Token
+```
+
+### AWS Cognito Configuration
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-cognito
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_YourUserPool
+      clientID: your-cognito-client-id
+      clientSecret: your-cognito-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - aws.cognito.signin.user.admin  # Cognito-specific scope
+      allowedRolesAndGroups:
+        - admin
+        - user
+```
+
+### GitLab Configuration
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-gitlab
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://gitlab.com
+      clientID: your-gitlab-client-id
+      clientSecret: your-gitlab-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - read_user
+        - read_api
+      allowedUserDomains:
+        - yourcompany.com
+```
+
+### GitHub OAuth Configuration ⚠️
+
+**Warning**: GitHub uses OAuth 2.0, not OpenID Connect. Use only for API access, not user authentication.
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth-github
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://github.com/login/oauth
+      clientID: your-github-client-id
+      clientSecret: your-github-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      scopes:
+        - user:email
+        - read:user
+      # Note: No ID tokens available, only access tokens for GitHub API
+      # No refresh tokens - users must re-authenticate when tokens expire
+```
+
+The middleware automatically detects each provider and applies the necessary adjustments to ensure proper authentication and token refresh.
 
 ### Keeping Secrets Secret in Kubernetes
 
@@ -776,16 +1175,110 @@ This Traefik OIDC plugin performs authentication and extracts user claims (like 
 
 This section provides guidance on configuring popular OIDC providers to work optimally with this plugin.
 
+### Google Workspace / Google Cloud Identity
+
+Google's OIDC implementation is well-supported with automatic configuration.
+
+*   **Automatic Configuration**: The middleware automatically detects Google and applies required settings:
+    *   Uses `access_type=offline` and `prompt=consent` for refresh tokens
+    *   Filters out unsupported `offline_access` scope
+    *   Handles Google-specific token refresh
+*   **Setup Requirements**:
+    *   Create OAuth 2.0 credentials in Google Cloud Console
+    *   Configure OAuth consent screen (must be "Published" for production)
+    *   Add authorized redirect URIs
+*   **ID Token Claims**: Google includes standard claims like `email`, `sub`, `name`, `given_name`, `family_name`, `picture`
+*   **Hosted Domain**: For Google Workspace, the `hd` claim contains the organization domain
+*   **Best Practices**: Use `providerURL: https://accounts.google.com`
+
+### Azure AD (Microsoft Entra ID)
+
+Azure AD provides comprehensive enterprise OIDC support.
+
+*   **Tenant Configuration**: Use tenant-specific endpoint: `https://login.microsoftonline.com/{tenant-id}/v2.0`
+*   **Group Claims**: Configure in App Registration → Token Configuration → Add groups claim
+*   **ID Token Claims**: Includes `email`, `name`, `preferred_username`, `oid` by default
+*   **Group Handling**: Be aware of group "overage" - too many groups results in a groups claim link instead of embedded groups
+*   **Optional Claims**: Add custom claims via Token Configuration section
+*   **Multi-tenant**: Supports both single-tenant and multi-tenant applications
+
+### Auth0
+
+Auth0 provides flexible OIDC with custom claims support.
+
+*   **Custom Claims**: Use Auth0 Actions (recommended) or Rules to add claims to ID Token:
+    ```javascript
+    // Auth0 Action example
+    exports.onExecutePostLogin = async (event, api) => {
+      const namespace = 'https://your-app.com/';
+      if (event.authorization) {
+        api.idToken.setCustomClaim(namespace + 'roles', event.authorization.roles);
+        api.idToken.setCustomClaim('email', event.user.email);
+      }
+    };
+    ```
+*   **Logout Configuration**: Ensure `postLogoutRedirectURI` is in "Allowed Logout URLs"
+*   **Application Type**: Set to "Regular Web Application" for server-side flows
+*   **Refresh Tokens**: Automatically handled with `offline_access` scope
+
+### Okta
+
+Okta provides enterprise-grade OIDC with extensive customization.
+
+*   **Application Setup**: Create OIDC Web Application in Okta Admin Console
+*   **Authorization Server**: Use default (`/oauth2/default`) or custom authorization server
+*   **Group Claims**: Configure Groups claim in authorization server to include user groups
+*   **Scopes**: Default scopes sufficient; add `groups` scope for group information
+*   **Sign-On Policy**: Configure authentication policies and MFA requirements
+*   **Custom Claims**: Add custom attributes via user profiles and authorization server claims
+
 ### Keycloak
 
-Keycloak is highly configurable, which means you need to ensure your client mappers are set up correctly to include necessary claims in the ID Token.
+Keycloak is highly configurable, requiring proper client mapper setup.
 
-*   **Ensure Claims in ID Token**:
-    *   **Email**: Navigate to your Keycloak realm -> Clients -> Your Client ID -> Mappers. Ensure there's a mapper for 'email' (e.g., a "User Property" mapper for the `email` property) and that "Add to ID token" is **ON**.
-    *   **Roles**: For client roles or realm roles, create or edit mappers (e.g., "User Client Role" or "User Realm Role"). Ensure "Add to ID token" is **ON**. You might want to customize the "Token Claim Name" (e.g., to `roles` or `groups`).
-    *   **Groups**: Similarly, for group membership, use a "Group Membership" mapper and ensure "Add to ID token" is **ON**. Customize the "Token Claim Name" as needed (e.g., `groups`).
-*   **Scopes**: Ensure your client requests appropriate scopes that trigger the inclusion of these claims if your mappers are scope-dependent. The default `openid`, `profile`, `email` scopes are a good starting point.
-*   **Troubleshooting**: If claims are missing, double-check the "Mappers" tab for your client in Keycloak. The "Token Claim Name" you define here is what you'll use in the `allowedRolesAndGroups` or `headers` configuration in this plugin. (See also the [Troubleshooting](#troubleshooting) section for Keycloak).
+*   **Client Mappers**: Essential for including claims in ID Token:
+    *   **Email**: User Property mapper for `email` with "Add to ID token" enabled
+    *   **Roles**: User Client Role or User Realm Role mappers with "Add to ID token" enabled
+    *   **Groups**: Group Membership mapper with "Add to ID token" enabled
+*   **Token Claim Names**: Use mapper "Token Claim Name" in `allowedRolesAndGroups` configuration
+*   **Realm Configuration**: Ensure proper realm settings and client configuration
+*   **Issuer URL Format**: `https://your-keycloak/auth/realms/your-realm`
+*   **Troubleshooting**: Verify mappers in Clients → Your Client → Mappers tab
+
+### AWS Cognito
+
+AWS Cognito provides managed OIDC with regional deployment.
+
+*   **User Pool Setup**: Create User Pool with proper app client configuration
+*   **App Client**: Enable "Authorization code grant" and configure callback URLs
+*   **Regional Endpoints**: Auto-detected from issuer URL format
+*   **Custom Attributes**: Configure custom attributes and map to claims
+*   **Groups**: Use Cognito Groups for role-based access control
+*   **Federation**: Supports federated identity providers (SAML, social providers)
+
+### GitLab
+
+GitLab supports OIDC for both GitLab.com and self-hosted instances.
+
+*   **Application Registration**: Create in GitLab Admin Area → Applications
+*   **Scopes**: Use `openid`, `profile`, `email` for basic claims
+*   **Self-hosted**: Use your GitLab instance URL as `providerURL`
+*   **GitLab.com**: Use `https://gitlab.com` as `providerURL`
+*   **Group Claims**: May require custom configuration for group information
+*   **API Access**: Include `read_api` scope for GitLab API access via access token
+
+### GitHub (OAuth 2.0 Only) ⚠️
+
+**Important**: GitHub uses OAuth 2.0, not OpenID Connect.
+
+*   **OAuth App Setup**: Register OAuth App in GitHub Settings → Developer settings
+*   **Limitations**:
+    *   No ID tokens (access tokens only)
+    *   No refresh tokens (tokens expire, requiring re-authentication)
+    *   No standard OIDC claims
+*   **Use Cases**: API access only, not suitable for user authentication with claims
+*   **Scopes**: Use `user:email`, `read:user` for basic profile access
+*   **Detection**: Auto-detected from `github.com` in issuer URL
 
 ### Azure AD (Microsoft Entra ID)
 
@@ -872,59 +1365,105 @@ logLevel: debug
    - Use double curly braces to escape template expressions: `value: "Bearer {{{{.AccessToken}}}}"`
    - This is the only reliable method that works with Traefik's YAML parsing
    - See the [Templated Headers](#templated-headers) section for complete examples
-7. **Google sessions expire after ~1 hour**: If using Google as the OIDC provider and sessions expire prematurely (around 1 hour instead of longer), ensure:
+
+#### Provider-Specific Issues
+
+7. **Google sessions expire after ~1 hour**: If using Google as the OIDC provider and sessions expire prematurely:
    - Do NOT manually add the `offline_access` scope. Google rejects this scope as invalid.
-   - The middleware automatically applies the required Google parameters (`access_type=offline` and `prompt=consent`).
-   - Your Google Cloud OAuth consent screen is set to "External" and "Production" mode. "Testing" mode often limits refresh token validity.
-   - Verify you're using a version of the middleware that includes the Google OAuth compatibility fix.
-   - For more details, see the [Google OAuth Compatibility Fix](#google-oauth-compatibility-fix) section or the [detailed documentation](docs/google-oauth-fix.md).
+   - The middleware automatically applies Google parameters (`access_type=offline` and `prompt=consent`).
+   - Ensure your Google Cloud OAuth consent screen is "Published" for production.
+   - "Testing" mode limits refresh token validity.
 
-8.  **Keycloak: Claims Missing from ID Token (e.g., email, roles)**
+8. **Keycloak: Claims Missing from ID Token**:
+   - Configure client mappers to add email, roles, groups to ID Token
+   - Check "Add to ID token" is enabled for all required mappers
+   - Verify "Token Claim Name" matches your configuration
 
-    If you are using Keycloak and claims like `email`, `roles`, or `groups` are missing from the ID Token, this plugin may not function as expected (e.g., for domain restrictions or RBAC).
-    *   **Solution**: This plugin validates the **ID Token**. You **must** configure Keycloak client mappers to add all necessary claims (email, roles, groups, etc.) to the ID Token.
-    *   For detailed instructions, please see the [Keycloak](#keycloak) section under [Provider Configuration Recommendations](#provider-configuration-recommendations).
+9. **Azure AD: Group overage issues**:
+   - Users with many groups may receive a groups link instead of embedded groups
+   - Consider using app roles instead of groups for many-group scenarios
+   - Configure group claims in App Registration → Token Configuration
+
+10. **Auth0: Custom claims not appearing**:
+    - Use Auth0 Actions (not Rules) to add custom claims to ID Token
+    - Ensure namespaced claims follow format: `https://your-app.com/claim`
+    - Add claims to ID token specifically, not just access token
+
+11. **Okta: Authorization server issues**:
+    - Verify using correct authorization server endpoint (`/oauth2/default` or custom)
+    - Ensure Groups claim is configured in authorization server
+    - Check application assignment and user group membership
+
+12. **AWS Cognito: Regional endpoint errors**:
+    - Use correct regional endpoint format: `cognito-idp.{region}.amazonaws.com`
+    - Verify User Pool ID is correct in issuer URL
+    - Check app client has authorization code grant enabled
+
+13. **GitLab: Self-hosted instance issues**:
+    - Ensure issuer URL points to your GitLab instance root
+    - Verify application is created in Admin Area → Applications
+    - Check redirect URI configuration matches exactly
+
+14. **GitHub: Limited functionality warnings**:
+    - Remember GitHub is OAuth 2.0 only, not OIDC
+    - No ID tokens available (access tokens only)
+    - No refresh tokens (re-authentication required on expiry)
+    - Use only for GitHub API access, not user authentication
+
+### Provider Warnings and Recommendations
+
+The middleware includes built-in warnings for provider-specific limitations. Check your logs for important notices about:
+
+- **GitHub OAuth 2.0 limitations** (no OIDC support)
+- **Auth0 offline_access scope requirements**
+- **Keycloak URL pattern requirements**
+- **AWS Cognito regional endpoint requirements**
+- **Provider-specific setup recommendations**
+
+For detailed provider-specific guidance, see the [Provider-Specific Configuration Examples](#provider-specific-configuration-examples) section.
 
 ## Recent Improvements
 
-### Memory Management (v0.3.0+)
+### Security Features (v0.4.0+)
 
-The middleware has undergone significant improvements to memory management and resource utilization:
+- **Security Headers**: Complete security headers system with CSP, HSTS, CORS, and XSS protection
+- **Multiple Security Profiles**: Choose from default, strict, development, API, or custom security configurations
+- **Enhanced Token Validation**: Improved JWT validation with comprehensive security checks
+- **Advanced Rate Limiting**: Configurable rate limiting to prevent abuse
 
-- **Memory Leak Prevention**: All background goroutines are properly managed with context cancellation
-- **Bounded Resource Usage**: Session storage, metadata cache, and token cache all have size limits with LRU eviction
-- **Automatic Cleanup**: Expired sessions and tokens are automatically cleaned up by background tasks
-- **Graceful Shutdown**: All resources are properly released when the middleware is stopped
-- **Performance Monitoring**: Built-in monitoring for goroutine leaks and memory growth
+### User Experience (v0.4.0+)
 
-These improvements ensure the middleware operates efficiently even under high load and long-running deployments.
+- **Automatic Provider Detection**: Seamless configuration for major OIDC providers
+- **Improved Error Handling**: Better error messages and graceful degradation
+- **Enhanced Session Management**: More reliable session handling with automatic cleanup
+- **Flexible Configuration**: Expanded configuration options for different deployment scenarios
 
-### Enhanced Test Coverage
+### Reliability (v0.4.0+)
 
-- Comprehensive test suite with race condition detection
-- Memory leak detection tests
-- Goroutine leak prevention tests
-- Test coverage increased to 67%+ for main package, 87-99% for subpackages
+- **Automatic Token Refresh**: Proactive token refresh to prevent authentication interruptions
+- **Memory Management**: Improved memory efficiency and automatic resource cleanup
+- **Better Provider Support**: Enhanced compatibility with provider-specific features
+- **Comprehensive Testing**: Extensive test coverage ensures reliability in production
 
-## Architecture and Internal Improvements
+## Architecture Overview
 
-### Internal Components
+### Design Principles
 
-The middleware uses several internal components for efficient operation:
+The middleware is designed with the following principles:
 
-1. **SessionManager**: Manages user sessions with automatic cleanup and pool-based allocation
-2. **ChunkManager**: Handles large session data by splitting it into manageable chunks
-3. **MetadataCache**: Caches OIDC provider metadata with LRU eviction and size limits
-4. **TaskRegistry**: Manages background tasks with proper lifecycle management
-5. **MemoryMonitor**: Monitors memory usage and detects potential leaks
+- **Reliability**: Automatic error recovery and graceful degradation
+- **Security**: Comprehensive security measures and validation
+- **Performance**: Efficient resource usage and caching
+- **Flexibility**: Extensive configuration options for different use cases
+- **Compatibility**: Support for all major OIDC providers with automatic detection
 
-### Key Design Decisions
+### Key Features
 
-- **Context-based cancellation**: All background operations use context for clean shutdown
-- **Bounded queues and caches**: Prevents unbounded memory growth
-- **LRU eviction policies**: Ensures most frequently used data stays in cache
-- **Atomic operations**: Uses atomic counters for statistics to avoid lock contention
-- **Test-friendly design**: Special handling for test environments to ensure clean test execution
+- **Automatic Session Management**: Handles session lifecycle, cleanup, and security
+- **Provider Integration**: Seamless integration with OIDC providers including auto-discovery
+- **Security Integration**: Built-in security headers and protection mechanisms
+- **Resource Management**: Efficient memory usage and automatic cleanup
+- **Error Handling**: Comprehensive error recovery and user-friendly error messages
 
 ## Contributing
 

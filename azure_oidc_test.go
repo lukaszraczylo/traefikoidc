@@ -63,7 +63,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 		refreshGracePeriod:    60 * time.Second,
 		limiter:               rate.NewLimiter(rate.Every(time.Second), 100), // Add rate limiter
 		logger:                mockLogger,
-		httpClient:            createDefaultHTTPClient(), // Add HTTP client
+		httpClient:            CreateDefaultHTTPClient(), // Add HTTP client
 		jwkCache:              &JWKCache{},               // Add JWK cache
 		tokenCache:            tokenCache,
 		tokenBlacklist:        tokenBlacklist,
