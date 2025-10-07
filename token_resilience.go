@@ -182,7 +182,9 @@ func (trm *TokenResilienceManager) ExecuteTokenRefresh(ctx context.Context, t *T
 	var err error
 
 	err = trm.ExecuteTokenOperation(ctx, "token_refresh", func() error {
-		result, err = t.getNewTokenWithRefreshToken(refreshToken)
+		// Call exchangeTokens directly to avoid recursion back to getNewTokenWithRefreshToken
+		// which would call ExecuteTokenRefresh again, causing infinite loop (issue #67)
+		result, err = t.exchangeTokens(ctx, "refresh_token", refreshToken, "", "")
 		return err
 	})
 
