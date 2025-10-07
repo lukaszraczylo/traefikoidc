@@ -11,17 +11,24 @@ import (
 	"github.com/google/uuid"
 )
 
+// ScopeFilter interface for filtering OAuth scopes based on provider capabilities
+type ScopeFilter interface {
+	FilterSupportedScopes(requestedScopes, supportedScopes []string, providerURL string) []string
+}
+
 // AuthHandler provides core authentication functionality for OIDC flows
 type AuthHandler struct {
-	logger         Logger
-	enablePKCE     bool
-	isGoogleProv   func() bool
-	isAzureProv    func() bool
-	clientID       string
-	authURL        string
-	issuerURL      string
-	scopes         []string
-	overrideScopes bool
+	logger          Logger
+	enablePKCE      bool
+	isGoogleProv    func() bool
+	isAzureProv     func() bool
+	clientID        string
+	authURL         string
+	issuerURL       string
+	scopes          []string
+	overrideScopes  bool
+	scopeFilter     ScopeFilter // NEW
+	scopesSupported []string    // NEW - from provider metadata
 }
 
 // Logger interface for dependency injection
@@ -32,17 +39,20 @@ type Logger interface {
 
 // NewAuthHandler creates a new AuthHandler instance
 func NewAuthHandler(logger Logger, enablePKCE bool, isGoogleProv, isAzureProv func() bool,
-	clientID, authURL, issuerURL string, scopes []string, overrideScopes bool) *AuthHandler {
+	clientID, authURL, issuerURL string, scopes []string, overrideScopes bool,
+	scopeFilter ScopeFilter, scopesSupported []string) *AuthHandler {
 	return &AuthHandler{
-		logger:         logger,
-		enablePKCE:     enablePKCE,
-		isGoogleProv:   isGoogleProv,
-		isAzureProv:    isAzureProv,
-		clientID:       clientID,
-		authURL:        authURL,
-		issuerURL:      issuerURL,
-		scopes:         scopes,
-		overrideScopes: overrideScopes,
+		logger:          logger,
+		enablePKCE:      enablePKCE,
+		isGoogleProv:    isGoogleProv,
+		isAzureProv:     isAzureProv,
+		clientID:        clientID,
+		authURL:         authURL,
+		issuerURL:       issuerURL,
+		scopes:          scopes,
+		overrideScopes:  overrideScopes,
+		scopeFilter:     scopeFilter,     // NEW
+		scopesSupported: scopesSupported, // NEW
 	}
 }
 
@@ -144,10 +154,25 @@ func (h *AuthHandler) BuildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	scopes := make([]string, len(h.scopes))
 	copy(scopes, h.scopes)
 
-	if h.isGoogleProv() {
-		params.Set("access_type", "offline")
-		h.logger.Debugf("Google OIDC provider detected, added access_type=offline for refresh tokens")
+	// Apply discovery-based scope filtering if available
+	if h.scopeFilter != nil && len(h.scopesSupported) > 0 {
+		scopes = h.scopeFilter.FilterSupportedScopes(scopes, h.scopesSupported, h.issuerURL)
+		h.logger.Debugf("AuthHandler.BuildAuthURL: After discovery filtering: %v", scopes)
+	}
 
+	// Then apply provider-specific modifications
+	if h.isGoogleProv() {
+		// Google: Remove offline_access if present, add access_type=offline
+		filteredScopes := make([]string, 0, len(scopes))
+		for _, scope := range scopes {
+			if scope != "offline_access" {
+				filteredScopes = append(filteredScopes, scope)
+			}
+		}
+		scopes = filteredScopes
+
+		params.Set("access_type", "offline")
+		h.logger.Debugf("Google OIDC provider detected, added access_type=offline")
 		params.Set("prompt", "consent")
 		h.logger.Debugf("Google OIDC provider detected, added prompt=consent to ensure refresh tokens")
 	} else if h.isAzureProv() {
@@ -155,7 +180,6 @@ func (h *AuthHandler) BuildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		h.logger.Debugf("Azure AD provider detected, added response_mode=query")
 
 		hasOfflineAccess := false
-
 		for _, scope := range scopes {
 			if scope == "offline_access" {
 				hasOfflineAccess = true
@@ -172,6 +196,7 @@ func (h *AuthHandler) BuildAuthURL(redirectURL, state, nonce, codeChallenge stri
 			h.logger.Debugf("Azure AD provider: User is overriding scopes (count: %d), offline_access not automatically added.", len(h.scopes))
 		}
 	} else {
+		// Standard providers: Add offline_access if not overriding and not present
 		if !h.overrideScopes || (h.overrideScopes && len(h.scopes) == 0) {
 			hasOfflineAccess := false
 			for _, scope := range scopes {
@@ -187,6 +212,12 @@ func (h *AuthHandler) BuildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		} else {
 			h.logger.Debugf("Standard provider: User is overriding scopes (count: %d), offline_access not automatically added.", len(h.scopes))
 		}
+	}
+
+	// Final filtering pass to remove anything the provider doesn't support
+	if h.scopeFilter != nil && len(h.scopesSupported) > 0 {
+		scopes = h.scopeFilter.FilterSupportedScopes(scopes, h.scopesSupported, h.issuerURL)
+		h.logger.Debugf("AuthHandler.BuildAuthURL: After final filtering: %v", scopes)
 	}
 
 	if len(scopes) > 0 {

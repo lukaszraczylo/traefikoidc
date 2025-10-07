@@ -192,6 +192,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		cancelFunc:              cancelFunc,
 		suppressDiagnosticLogs:  isTestMode(),
 		securityHeadersApplier:  config.GetSecurityHeadersApplier(),
+		scopeFilter:             NewScopeFilter(logger), // NEW - for discovery-based scope filtering
 	}
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger)
@@ -346,6 +347,7 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 //   - metadata: A pointer to the ProviderMetadata struct containing the discovered endpoints.
 func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	t.jwksURL = metadata.JWKSURL
+	t.scopesSupported = metadata.ScopesSupported // NEW - store supported scopes from discovery
 	t.authURL = metadata.AuthURL
 	t.tokenURL = metadata.TokenURL
 	t.issuerURL = metadata.Issuer

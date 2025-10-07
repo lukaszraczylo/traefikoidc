@@ -10,7 +10,7 @@ import (
 func TestAuthHandler_validateURL(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	tests := []struct {
 		name    string
@@ -185,7 +185,7 @@ func TestAuthHandler_validateURL(t *testing.T) {
 func TestAuthHandler_validateHost(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	tests := []struct {
 		name    string
@@ -334,7 +334,7 @@ func TestAuthHandler_validateHost(t *testing.T) {
 func TestAuthHandler_buildURLWithParams(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	tests := []struct {
 		name        string
@@ -438,7 +438,7 @@ func TestAuthHandler_buildURLWithParams(t *testing.T) {
 func TestAuthHandler_buildURLWithParams_ParameterEncoding(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	// Test special characters that need encoding
 	params := url.Values{
@@ -477,7 +477,7 @@ func TestAuthHandler_buildURLWithParams_ParameterEncoding(t *testing.T) {
 func TestAuthHandler_validateParsedURL(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	tests := []struct {
 		name    string

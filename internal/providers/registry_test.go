@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -236,6 +237,26 @@ func TestProviderRegistry_DetectProvider(t *testing.T) {
 		{
 			name:      "GitLab provider detection",
 			issuerURL: "https://gitlab.com/oauth",
+			expected:  gitlabProvider,
+		},
+		{
+			name:      "GitLab self-hosted detection - gitlab subdomain",
+			issuerURL: "https://gitlab.example.com",
+			expected:  gitlabProvider,
+		},
+		{
+			name:      "GitLab self-hosted detection - gitlab in domain",
+			issuerURL: "https://my-gitlab.company.io",
+			expected:  gitlabProvider,
+		},
+		{
+			name:      "GitLab self-hosted detection - gitlab prefix",
+			issuerURL: "https://gitlab-prod.internal.net",
+			expected:  gitlabProvider,
+		},
+		{
+			name:      "GitLab self-hosted detection - gitlab suffix",
+			issuerURL: "https://company-gitlab.net",
 			expected:  gitlabProvider,
 		},
 		{
@@ -479,6 +500,206 @@ func TestProviderRegistry_DoubleCheckedLocking(t *testing.T) {
 
 	if cacheSize != 1 {
 		t.Errorf("Expected 1 cache entry, got %d", cacheSize)
+	}
+}
+
+// TestProviderRegistry_DetectGitLabSelfHosted tests improved GitLab detection for issue #61
+func TestProviderRegistry_DetectGitLabSelfHosted(t *testing.T) {
+	registry := NewProviderRegistry()
+
+	genericProvider := NewGenericProvider()
+	gitlabProvider := NewGitLabProvider()
+	githubProvider := NewGitHubProvider()
+
+	registry.RegisterProvider(genericProvider)
+	registry.RegisterProvider(gitlabProvider)
+	registry.RegisterProvider(githubProvider)
+
+	tests := []struct {
+		name        string
+		issuerURL   string
+		expected    OIDCProvider
+		description string
+	}{
+		{
+			name:        "GitLab.com official",
+			issuerURL:   "https://gitlab.com",
+			expected:    gitlabProvider,
+			description: "Should detect official GitLab.com",
+		},
+		{
+			name:        "GitLab.com with path",
+			issuerURL:   "https://gitlab.com/oauth/authorize",
+			expected:    gitlabProvider,
+			description: "Should detect GitLab.com with path",
+		},
+		{
+			name:        "Self-hosted gitlab.example.com",
+			issuerURL:   "https://gitlab.example.com",
+			expected:    gitlabProvider,
+			description: "Should detect gitlab as subdomain",
+		},
+		{
+			name:        "Self-hosted my.gitlab.io",
+			issuerURL:   "https://my.gitlab.io",
+			expected:    gitlabProvider,
+			description: "Should detect gitlab in domain",
+		},
+		{
+			name:        "Self-hosted example-gitlab.com",
+			issuerURL:   "https://example-gitlab.com",
+			expected:    gitlabProvider,
+			description: "Should detect gitlab as suffix",
+		},
+		{
+			name:        "Self-hosted gitlab-prod.company.net",
+			issuerURL:   "https://gitlab-prod.company.net",
+			expected:    gitlabProvider,
+			description: "Should detect gitlab as prefix",
+		},
+		{
+			name:        "Self-hosted my-gitlab.internal",
+			issuerURL:   "https://my-gitlab.internal",
+			expected:    gitlabProvider,
+			description: "Should detect gitlab in middle of host",
+		},
+		{
+			name:        "Self-hosted company.gitlab.services",
+			issuerURL:   "https://company.gitlab.services",
+			expected:    gitlabProvider,
+			description: "Should detect gitlab in middle of domain",
+		},
+		{
+			name:        "Self-hosted with port",
+			issuerURL:   "https://gitlab.example.com:8443",
+			expected:    gitlabProvider,
+			description: "Should detect GitLab with custom port",
+		},
+		{
+			name:        "Self-hosted with path and query",
+			issuerURL:   "https://gitlab.example.com/oauth?param=value",
+			expected:    gitlabProvider,
+			description: "Should detect GitLab with complex URL",
+		},
+		{
+			name:        "Case insensitive - GITLAB",
+			issuerURL:   "https://GITLAB.example.com",
+			expected:    gitlabProvider,
+			description: "Should detect GitLab case-insensitively",
+		},
+		{
+			name:        "Case insensitive - GitLab",
+			issuerURL:   "https://GitLab.example.com",
+			expected:    gitlabProvider,
+			description: "Should detect GitLab with mixed case",
+		},
+		{
+			name:        "Not GitLab - git prefix only",
+			issuerURL:   "https://github.com",
+			expected:    githubProvider, // Should match GitHub provider, not GitLab
+			description: "Should not match github.com as GitLab",
+		},
+		{
+			name:        "Not GitLab - lab suffix only",
+			issuerURL:   "https://mylab.example.com",
+			expected:    genericProvider,
+			description: "Should not match partial gitlab string",
+		},
+		{
+			name:        "Not GitLab - git and lab separate",
+			issuerURL:   "https://git.mylab.example.com",
+			expected:    genericProvider,
+			description: "Should not match git and lab when not together",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clear cache to ensure fresh detection
+			registry.ClearCache()
+
+			result := registry.DetectProvider(tt.issuerURL)
+
+			if result != tt.expected {
+				t.Errorf("%s: Expected %v, got %v", tt.description, tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestProviderRegistry_GitLabDetection_RealWorldURLs tests real-world GitLab URLs
+func TestProviderRegistry_GitLabDetection_RealWorldURLs(t *testing.T) {
+	registry := NewProviderRegistry()
+
+	genericProvider := NewGenericProvider()
+	gitlabProvider := NewGitLabProvider()
+	githubProvider := NewGitHubProvider()
+
+	registry.RegisterProvider(genericProvider)
+	registry.RegisterProvider(gitlabProvider)
+	registry.RegisterProvider(githubProvider)
+
+	realWorldTests := []struct {
+		name      string
+		issuerURL string
+		expected  OIDCProvider
+	}{
+		// Actual self-hosted GitLab examples from issue #61
+		{
+			name:      "Company self-hosted GitLab",
+			issuerURL: "https://gitlab.company.com",
+			expected:  gitlabProvider,
+		},
+		{
+			name:      "Organization GitLab instance with gitlab in subdomain",
+			issuerURL: "https://gitlab.organization.org",
+			expected:  gitlabProvider,
+		},
+		{
+			name:      "Internal GitLab server",
+			issuerURL: "https://gitlab.internal.corp",
+			expected:  gitlabProvider,
+		},
+		{
+			name:      "GitLab with custom subdomain",
+			issuerURL: "https://code.gitlab.mycompany.com",
+			expected:  gitlabProvider,
+		},
+		// Negative cases to ensure we don't over-match
+		{
+			name:      "GitHub should not match GitLab",
+			issuerURL: "https://github.com",
+			expected:  githubProvider,
+		},
+		{
+			name:      "Generic git server",
+			issuerURL: "https://git.example.com",
+			expected:  genericProvider,
+		},
+	}
+
+	for _, tt := range realWorldTests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry.ClearCache()
+			result := registry.DetectProvider(tt.issuerURL)
+
+			if result != tt.expected {
+				var expectedType, resultType string
+				if tt.expected != nil {
+					expectedType = fmt.Sprintf("%v", tt.expected.GetType())
+				} else {
+					expectedType = "nil"
+				}
+				if result != nil {
+					resultType = fmt.Sprintf("%v", result.GetType())
+				} else {
+					resultType = "nil"
+				}
+
+				t.Errorf("Expected provider type %s, got %s for URL %s",
+					expectedType, resultType, tt.issuerURL)
+			}
+		})
 	}
 }
 

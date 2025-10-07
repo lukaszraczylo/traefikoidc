@@ -22,6 +22,28 @@ func (l *mockLogger) Errorf(format string, args ...interface{}) {
 	l.errorMessages = append(l.errorMessages, format)
 }
 
+// mockScopeFilter is a mock implementation of the ScopeFilter interface for testing
+type mockScopeFilter struct{}
+
+func (m *mockScopeFilter) FilterSupportedScopes(requestedScopes, supportedScopes []string, providerURL string) []string {
+	// For testing, just return requested scopes if no supported scopes provided
+	if len(supportedScopes) == 0 {
+		return requestedScopes
+	}
+	// Simple filter logic for tests
+	filtered := make([]string, 0, len(requestedScopes))
+	supportedMap := make(map[string]bool)
+	for _, s := range supportedScopes {
+		supportedMap[s] = true
+	}
+	for _, s := range requestedScopes {
+		if supportedMap[s] {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
 type mockSessionData struct {
 	authenticated bool
 	email         string
@@ -64,7 +86,7 @@ func TestAuthHandler_NewAuthHandler(t *testing.T) {
 
 	handler := NewAuthHandler(logger, true, isGoogleProv, isAzureProv,
 		"test-client-id", "https://example.com/auth", "https://example.com",
-		scopes, false)
+		scopes, false, nil, nil)
 
 	if handler == nil {
 		t.Fatal("Expected handler to be created, got nil")
@@ -103,7 +125,7 @@ func TestAuthHandler_NewAuthHandler(t *testing.T) {
 func TestAuthHandler_InitiateAuthentication_MaxRedirects(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	session := &mockSessionData{redirectCount: 5} // At the limit
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -138,7 +160,7 @@ func TestAuthHandler_InitiateAuthentication_MaxRedirects(t *testing.T) {
 func TestAuthHandler_InitiateAuthentication_NonceGenerationError(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	session := &mockSessionData{}
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -169,7 +191,7 @@ func TestAuthHandler_InitiateAuthentication_NonceGenerationError(t *testing.T) {
 func TestAuthHandler_InitiateAuthentication_PKCECodeVerifierError(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	session := &mockSessionData{}
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -200,7 +222,7 @@ func TestAuthHandler_InitiateAuthentication_PKCECodeVerifierError(t *testing.T) 
 func TestAuthHandler_InitiateAuthentication_PKCECodeChallengeError(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	session := &mockSessionData{}
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -231,7 +253,7 @@ func TestAuthHandler_InitiateAuthentication_PKCECodeChallengeError(t *testing.T)
 func TestAuthHandler_InitiateAuthentication_SessionSaveError(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
 
 	session := &mockSessionData{saveError: &testError{"save failed"}}
 	req := httptest.NewRequest("GET", "/test?param=value", nil)
@@ -275,7 +297,7 @@ func TestAuthHandler_InitiateAuthentication_SessionSaveError(t *testing.T) {
 func TestAuthHandler_InitiateAuthentication_Success(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{"openid", "email"}, false)
+		"test-client", "https://example.com/auth", "https://example.com", []string{"openid", "email"}, false, nil, nil)
 
 	session := &mockSessionData{}
 	req := httptest.NewRequest("GET", "/protected/resource", nil)
@@ -378,7 +400,7 @@ func TestAuthHandler_BuildAuthURL_GoogleProvider(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return true }, func() bool { return false },
 		"google-client", "https://accounts.google.com/oauth2/auth", "https://accounts.google.com",
-		[]string{"openid", "profile", "email"}, false)
+		[]string{"openid", "profile", "email"}, false, nil, nil)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -418,7 +440,7 @@ func TestAuthHandler_BuildAuthURL_AzureProvider(t *testing.T) {
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return true },
 		"azure-client", "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
 		"https://login.microsoftonline.com/tenant/v2.0",
-		[]string{"openid", "profile", "email"}, false)
+		[]string{"openid", "profile", "email"}, false, nil, nil)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -446,7 +468,7 @@ func TestAuthHandler_BuildAuthURL_PKCEEnabled(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
 		"pkce-client", "https://example.com/auth", "https://example.com",
-		[]string{"openid"}, false)
+		[]string{"openid"}, false, nil, nil)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "test-challenge")
 
@@ -471,7 +493,7 @@ func TestAuthHandler_BuildAuthURL_PKCEDisabled(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"no-pkce-client", "https://example.com/auth", "https://example.com",
-		[]string{"openid"}, false)
+		[]string{"openid"}, false, nil, nil)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "test-challenge")
 
@@ -543,7 +565,7 @@ func TestAuthHandler_BuildAuthURL_ScopeHandling(t *testing.T) {
 			logger := &mockLogger{}
 			handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return tt.isAzure },
 				"test-client", "https://example.com/auth", "https://example.com",
-				tt.scopes, tt.overrideScopes)
+				tt.scopes, tt.overrideScopes, nil, nil)
 
 			authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -596,4 +618,551 @@ type testError struct {
 
 func (e *testError) Error() string {
 	return e.message
+}
+
+// SCOPE FILTERING INTEGRATION TESTS
+
+// TestAuthHandler_BuildAuthURL_WithScopeFiltering tests scope filtering when enabled
+func TestAuthHandler_BuildAuthURL_WithScopeFiltering(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	// Requested scopes include offline_access
+	scopes := []string{"openid", "profile", "email", "offline_access"}
+	// Provider only supports these
+	scopesSupported := []string{"openid", "profile", "email"}
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+		"test-client", "https://example.com/auth", "https://example.com",
+		scopes, false, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	actualScope := parsedURL.Query().Get("scope")
+	actualScopes := strings.Split(actualScope, " ")
+
+	// offline_access should have been filtered out in the first pass
+	// The standard provider logic then tries to add it back
+	// But the final filtering pass removes it again
+	for _, scope := range actualScopes {
+		if scope == "offline_access" {
+			t.Error("offline_access should have been filtered out when not in scopesSupported")
+		}
+	}
+
+	// Should contain the supported scopes
+	if !strings.Contains(actualScope, "openid") {
+		t.Error("Expected openid in final scope string")
+	}
+	if !strings.Contains(actualScope, "profile") {
+		t.Error("Expected profile in final scope string")
+	}
+	if !strings.Contains(actualScope, "email") {
+		t.Error("Expected email in final scope string")
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_WithoutScopeFiltering tests backward compatibility
+func TestAuthHandler_BuildAuthURL_WithoutScopeFiltering(t *testing.T) {
+	logger := &mockLogger{}
+
+	scopes := []string{"openid", "profile", "email"}
+	// No scopeFilter or scopesSupported (backward compatibility)
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+		"test-client", "https://example.com/auth", "https://example.com",
+		scopes, false, nil, nil)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	actualScope := parsedURL.Query().Get("scope")
+
+	// All scopes should be present, plus offline_access added by standard provider logic
+	if !strings.Contains(actualScope, "openid") {
+		t.Error("Expected openid in scope string")
+	}
+	if !strings.Contains(actualScope, "profile") {
+		t.Error("Expected profile in scope string")
+	}
+	if !strings.Contains(actualScope, "email") {
+		t.Error("Expected email in scope string")
+	}
+	if !strings.Contains(actualScope, "offline_access") {
+		t.Error("Expected offline_access added by standard provider logic")
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_GitLabFiltersOfflineAccess tests GitLab scenario
+func TestAuthHandler_BuildAuthURL_GitLabFiltersOfflineAccess(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	scopes := []string{"openid", "profile", "email", "offline_access"}
+	// GitLab discovery doc doesn't include offline_access
+	scopesSupported := []string{"openid", "profile", "email", "read_user", "read_api"}
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+		"gitlab-client", "https://gitlab.example.com/oauth/authorize",
+		"https://gitlab.example.com",
+		scopes, false, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	actualScope := parsedURL.Query().Get("scope")
+	actualScopes := strings.Split(actualScope, " ")
+
+	// offline_access should be filtered out
+	for _, scope := range actualScopes {
+		if scope == "offline_access" {
+			t.Error("GitLab scenario: offline_access should have been filtered out")
+		}
+	}
+
+	// Should contain standard scopes
+	if !strings.Contains(actualScope, "openid") {
+		t.Error("Expected openid in final scope string")
+	}
+	if !strings.Contains(actualScope, "profile") {
+		t.Error("Expected profile in final scope string")
+	}
+	if !strings.Contains(actualScope, "email") {
+		t.Error("Expected email in final scope string")
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_GoogleRemovesOfflineAccess tests Google provider
+func TestAuthHandler_BuildAuthURL_GoogleRemovesOfflineAccess(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	scopes := []string{"openid", "profile", "email", "offline_access"}
+	scopesSupported := []string{"openid", "profile", "email"}
+
+	handler := NewAuthHandler(logger, false, func() bool { return true }, func() bool { return false },
+		"google-client", "https://accounts.google.com/o/oauth2/v2/auth",
+		"https://accounts.google.com",
+		scopes, false, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	query := parsedURL.Query()
+	actualScope := query.Get("scope")
+	actualScopes := strings.Split(actualScope, " ")
+
+	// Google removes offline_access and uses access_type=offline instead
+	for _, scope := range actualScopes {
+		if scope == "offline_access" {
+			t.Error("Google scenario: offline_access should have been removed by Google-specific logic")
+		}
+	}
+
+	// Google-specific parameters should be present
+	if query.Get("access_type") != "offline" {
+		t.Error("Expected access_type=offline for Google")
+	}
+	if query.Get("prompt") != "consent" {
+		t.Error("Expected prompt=consent for Google")
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_AzureAddsOfflineAccess tests Azure provider
+func TestAuthHandler_BuildAuthURL_AzureAddsOfflineAccess(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	scopes := []string{"openid", "profile", "email"}
+	// Azure supports offline_access
+	scopesSupported := []string{"openid", "profile", "email", "offline_access"}
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return true },
+		"azure-client", "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
+		"https://login.microsoftonline.com/tenant/v2.0",
+		scopes, false, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	query := parsedURL.Query()
+	actualScope := query.Get("scope")
+
+	// Azure should add offline_access automatically and it should pass filtering
+	if !strings.Contains(actualScope, "offline_access") {
+		t.Error("Azure scenario: offline_access should be present")
+	}
+
+	// Azure-specific parameter
+	if query.Get("response_mode") != "query" {
+		t.Error("Expected response_mode=query for Azure")
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_GenericWithFiltering tests generic provider with discovery filtering
+func TestAuthHandler_BuildAuthURL_GenericWithFiltering(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	scopes := []string{"openid", "profile", "email", "custom_scope", "offline_access"}
+	scopesSupported := []string{"openid", "profile", "email", "custom_scope"}
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+		"generic-client", "https://auth.provider.com/authorize",
+		"https://auth.provider.com",
+		scopes, false, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	actualScope := parsedURL.Query().Get("scope")
+
+	// Should contain supported scopes including custom_scope
+	if !strings.Contains(actualScope, "openid") {
+		t.Error("Expected openid in scope string")
+	}
+	if !strings.Contains(actualScope, "custom_scope") {
+		t.Error("Expected custom_scope in scope string")
+	}
+
+	// offline_access should be filtered out (not in scopesSupported)
+	actualScopes := strings.Split(actualScope, " ")
+	for _, scope := range actualScopes {
+		if scope == "offline_access" {
+			t.Error("offline_access should have been filtered out when not supported")
+		}
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_OverrideScopesWithFiltering tests override scopes + filtering
+func TestAuthHandler_BuildAuthURL_OverrideScopesWithFiltering(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	// User explicitly overrides scopes
+	scopes := []string{"openid", "custom:read", "custom:write"}
+	scopesSupported := []string{"openid", "custom:read"}
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+		"test-client", "https://example.com/auth", "https://example.com",
+		scopes, true, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	actualScope := parsedURL.Query().Get("scope")
+	actualScopes := strings.Split(actualScope, " ")
+
+	// Should contain only supported scopes from override
+	if !strings.Contains(actualScope, "openid") {
+		t.Error("Expected openid in scope string")
+	}
+	if !strings.Contains(actualScope, "custom:read") {
+		t.Error("Expected custom:read in scope string")
+	}
+
+	// custom:write should be filtered out
+	for _, scope := range actualScopes {
+		if scope == "custom:write" {
+			t.Error("custom:write should have been filtered out (not supported)")
+		}
+	}
+
+	// offline_access should NOT be auto-added when overrideScopes=true
+	for _, scope := range actualScopes {
+		if scope == "offline_access" {
+			t.Error("offline_access should not be auto-added when user overrides scopes")
+		}
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_DoubleFiltering tests initial + final filtering passes
+func TestAuthHandler_BuildAuthURL_DoubleFiltering(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	scopes := []string{"openid", "profile", "email"}
+	// Provider supports offline_access
+	scopesSupported := []string{"openid", "profile", "email", "offline_access"}
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+		"test-client", "https://example.com/auth", "https://example.com",
+		scopes, false, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	actualScope := parsedURL.Query().Get("scope")
+
+	// Initial filtering: All requested scopes pass (all in scopesSupported)
+	// Provider-specific logic: Adds offline_access (standard provider)
+	// Final filtering: offline_access should still be present (it's in scopesSupported)
+	if !strings.Contains(actualScope, "offline_access") {
+		t.Error("offline_access should be present (supported by provider and added by logic)")
+	}
+
+	// Original scopes should be present
+	if !strings.Contains(actualScope, "openid") {
+		t.Error("Expected openid in scope string")
+	}
+	if !strings.Contains(actualScope, "profile") {
+		t.Error("Expected profile in scope string")
+	}
+	if !strings.Contains(actualScope, "email") {
+		t.Error("Expected email in scope string")
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_NoScopeFilterProvided tests when scopeFilter is nil
+func TestAuthHandler_BuildAuthURL_NoScopeFilterProvided(t *testing.T) {
+	logger := &mockLogger{}
+
+	scopes := []string{"openid", "profile", "email"}
+	scopesSupported := []string{"openid", "profile"} // Even with scopesSupported, no filter
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+		"test-client", "https://example.com/auth", "https://example.com",
+		scopes, false, nil, scopesSupported) // scopeFilter is nil
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	actualScope := parsedURL.Query().Get("scope")
+
+	// Without scopeFilter, all scopes should be present (no filtering)
+	if !strings.Contains(actualScope, "openid") {
+		t.Error("Expected openid in scope string")
+	}
+	if !strings.Contains(actualScope, "profile") {
+		t.Error("Expected profile in scope string")
+	}
+	if !strings.Contains(actualScope, "email") {
+		t.Error("Expected email in scope string (no filtering without scopeFilter)")
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_EmptyScopesSupported tests empty scopesSupported list
+func TestAuthHandler_BuildAuthURL_EmptyScopesSupported(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	scopes := []string{"openid", "profile", "email"}
+	scopesSupported := []string{} // Empty - backward compatibility mode
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+		"test-client", "https://example.com/auth", "https://example.com",
+		scopes, false, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	actualScope := parsedURL.Query().Get("scope")
+
+	// With empty scopesSupported, mockScopeFilter returns requested scopes unchanged
+	if !strings.Contains(actualScope, "openid") {
+		t.Error("Expected openid in scope string")
+	}
+	if !strings.Contains(actualScope, "profile") {
+		t.Error("Expected profile in scope string")
+	}
+	if !strings.Contains(actualScope, "email") {
+		t.Error("Expected email in scope string")
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_FilteringWithPKCE tests scope filtering with PKCE enabled
+func TestAuthHandler_BuildAuthURL_FilteringWithPKCE(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	scopes := []string{"openid", "profile", "offline_access"}
+	scopesSupported := []string{"openid", "profile"}
+
+	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
+		"test-client", "https://example.com/auth", "https://example.com",
+		scopes, false, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "test-challenge")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	query := parsedURL.Query()
+
+	// PKCE parameters should be present
+	if query.Get("code_challenge") != "test-challenge" {
+		t.Error("Expected code_challenge parameter with PKCE enabled")
+	}
+	if query.Get("code_challenge_method") != "S256" {
+		t.Error("Expected code_challenge_method=S256 with PKCE enabled")
+	}
+
+	// Scope filtering should still work
+	actualScope := query.Get("scope")
+	actualScopes := strings.Split(actualScope, " ")
+
+	for _, scope := range actualScopes {
+		if scope == "offline_access" {
+			t.Error("offline_access should have been filtered out even with PKCE")
+		}
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_ComplexScenario tests realistic complex scenario
+func TestAuthHandler_BuildAuthURL_ComplexScenario(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	// User configures: openid, profile, email, custom:read, offline_access
+	scopes := []string{"openid", "profile", "email", "custom:read", "offline_access"}
+
+	// Provider discovery returns: openid, profile, email, custom:read, custom:write, admin:all
+	scopesSupported := []string{"openid", "profile", "email", "custom:read", "custom:write", "admin:all"}
+
+	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
+		"complex-client", "https://auth.complex.com/authorize", "https://auth.complex.com",
+		scopes, false, scopeFilter, scopesSupported)
+
+	authURL := handler.BuildAuthURL("https://example.com/callback", "state-123", "nonce-456", "challenge-789")
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Failed to parse auth URL: %v", err)
+	}
+
+	query := parsedURL.Query()
+
+	// Verify basic OAuth parameters
+	if query.Get("client_id") != "complex-client" {
+		t.Error("Expected correct client_id")
+	}
+	if query.Get("response_type") != "code" {
+		t.Error("Expected response_type=code")
+	}
+	if query.Get("state") != "state-123" {
+		t.Error("Expected correct state")
+	}
+	if query.Get("nonce") != "nonce-456" {
+		t.Error("Expected correct nonce")
+	}
+
+	// Verify PKCE parameters
+	if query.Get("code_challenge") != "challenge-789" {
+		t.Error("Expected correct code_challenge")
+	}
+
+	// Verify scope filtering
+	actualScope := query.Get("scope")
+
+	// Should contain: openid, profile, email, custom:read
+	if !strings.Contains(actualScope, "openid") {
+		t.Error("Expected openid in scope")
+	}
+	if !strings.Contains(actualScope, "profile") {
+		t.Error("Expected profile in scope")
+	}
+	if !strings.Contains(actualScope, "email") {
+		t.Error("Expected email in scope")
+	}
+	if !strings.Contains(actualScope, "custom:read") {
+		t.Error("Expected custom:read in scope")
+	}
+
+	// offline_access should be filtered (not in scopesSupported)
+	actualScopes := strings.Split(actualScope, " ")
+	for _, scope := range actualScopes {
+		if scope == "offline_access" {
+			t.Error("offline_access should have been filtered (not in scopesSupported)")
+		}
+	}
+}
+
+// TestAuthHandler_BuildAuthURL_LoggingVerification tests that logging occurs correctly
+func TestAuthHandler_BuildAuthURL_LoggingVerification(t *testing.T) {
+	logger := &mockLogger{}
+	scopeFilter := &mockScopeFilter{}
+
+	scopes := []string{"openid", "profile", "offline_access"}
+	scopesSupported := []string{"openid", "profile"}
+
+	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+		"test-client", "https://example.com/auth", "https://example.com",
+		scopes, false, scopeFilter, scopesSupported)
+
+	handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
+
+	// Should have logged debug messages about filtering
+	if len(logger.debugMessages) == 0 {
+		t.Error("Expected debug messages to be logged during scope filtering")
+	}
+
+	// Verify specific log messages were generated
+	hasDiscoveryFilterLog := false
+	hasFinalFilterLog := false
+	hasFinalScopeLog := false
+
+	for _, msg := range logger.debugMessages {
+		if strings.Contains(msg, "After discovery filtering") {
+			hasDiscoveryFilterLog = true
+		}
+		if strings.Contains(msg, "After final filtering") {
+			hasFinalFilterLog = true
+		}
+		if strings.Contains(msg, "Final scope string being sent") {
+			hasFinalScopeLog = true
+		}
+	}
+
+	if !hasDiscoveryFilterLog {
+		t.Error("Expected log message about discovery filtering")
+	}
+	if !hasFinalFilterLog {
+		t.Error("Expected log message about final filtering")
+	}
+	if !hasFinalScopeLog {
+		t.Error("Expected log message about final scope string")
+	}
 }

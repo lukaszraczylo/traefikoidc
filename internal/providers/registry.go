@@ -155,7 +155,9 @@ func (r *ProviderRegistry) detectProviderUnsafe(issuerURL string) OIDCProvider {
 				return p
 			}
 		case ProviderTypeGitLab:
-			if strings.Contains(host, "gitlab.com") {
+			// Match gitlab.com, self-hosted (gitlab.*), and instances with gitlab in subdomain
+			if strings.Contains(host, "gitlab.com") ||
+				strings.Contains(host, "gitlab") {
 				return p
 			}
 		}

@@ -236,7 +236,7 @@ scopes: ["openid", "profile", "email"]
 - **Self-hosted support**: Works with self-hosted GitLab instances
 - **Group membership**: Can restrict by GitLab groups
 - **Project access**: Can validate project permissions
-- **Offline access**: Supports refresh tokens with `offline_access`
+- **Offline access**: Supports refresh tokens without requiring `offline_access` scope
 
 ### Example Configuration
 ```yaml
@@ -250,7 +250,9 @@ http:
           clientSecret: "your-gitlab-application-secret"
           callbackUrl: "https://app.example.com/auth/callback"
           logoutUrl: "https://app.example.com/auth/logout"
-          scopes: ["openid", "profile", "email", "offline_access"]
+          scopes: ["openid", "profile", "email"]
+          # Note: GitLab doesn't support the offline_access scope.
+          # Refresh tokens are issued automatically for the openid scope.
           allowedRolesAndGroups: ["developers", "maintainers"]
           forceHttps: true
           enablePkce: true
@@ -456,6 +458,93 @@ http:
           forceHttps: true
           enablePkce: true
 ```
+
+---
+
+## Automatic Scope Filtering
+
+### Overview
+
+The middleware automatically filters OAuth scopes based on the provider's capabilities declared in their OIDC discovery document (`.well-known/openid-configuration`). This prevents authentication failures when providers reject unsupported scopes.
+
+### How It Works
+
+1. **Discovery Document Parsing**: The middleware fetches the provider's discovery document and extracts the `scopes_supported` field
+2. **Intelligent Filtering**: Requested scopes are filtered to only include those the provider supports
+3. **Fallback Behavior**: If the provider doesn't declare `scopes_supported`, all requested scopes are used (backward compatible)
+4. **Provider-Specific Handling**: Special logic for Google and Azure is preserved and applied after filtering
+
+### Example Scenarios
+
+#### Self-Hosted GitLab
+
+**Problem**: Self-hosted GitLab instances reject the `offline_access` scope with error:
+```
+The requested scope is invalid, unknown, or malformed.
+```
+
+**Solution**: The middleware automatically detects this by:
+1. Reading GitLab's discovery document at `https://gitlab.example.com/.well-known/openid-configuration`
+2. Observing that `offline_access` is NOT in the `scopes_supported` list
+3. Filtering out `offline_access` from the request
+4. Authentication succeeds
+
+**Configuration**:
+```yaml
+http:
+  middlewares:
+    gitlab-oidc:
+      plugin:
+        traefik-oidc:
+          providerUrl: "https://gitlab.example.com"
+          clientId: "your-gitlab-application-id"
+          clientSecret: "your-gitlab-application-secret"
+          callbackUrl: "https://app.example.com/auth/callback"
+          scopes: ["openid", "profile", "email", "offline_access"]
+          # Even though offline_access is listed, it will be automatically
+          # filtered out if GitLab doesn't support it
+```
+
+#### Auth0 or Keycloak
+
+These providers typically support `offline_access` and it will be included:
+
+```yaml
+# Auth0 scopes_supported: ["openid", "profile", "email", "offline_access", ...]
+# Result: All requested scopes are sent
+```
+
+### Benefits
+
+1. **Self-Hosted Support**: Works seamlessly with self-hosted provider instances
+2. **No Manual Configuration**: No need to know which scopes each provider supports
+3. **Error Prevention**: Eliminates "invalid scope" authentication failures
+4. **Standards Compliant**: Uses official OIDC discovery specification (RFC 8414)
+5. **Backward Compatible**: Existing configurations continue to work
+
+### Logging
+
+The middleware provides detailed logging for scope filtering:
+
+```
+INFO: ScopeFilter: Filtered unsupported scopes for https://gitlab.example.com: [offline_access]
+DEBUG: ScopeFilter: Provider https://gitlab.example.com supported scopes: [openid profile email read_user read_api]
+DEBUG: ScopeFilter: Final filtered scopes: [openid profile email]
+```
+
+### Troubleshooting
+
+**Issue**: Provider rejects scope even after filtering
+
+**Possible Causes**:
+1. Provider's discovery document is outdated
+2. Provider doesn't properly implement `scopes_supported`
+3. Custom authorization server with non-standard behavior
+
+**Solutions**:
+1. Use `overrideScopes: true` and explicitly list only supported scopes
+2. Check the provider's discovery document manually: `curl https://your-provider/.well-known/openid-configuration`
+3. Review middleware debug logs for filtering decisions
 
 ---
 

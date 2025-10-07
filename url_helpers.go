@@ -98,7 +98,23 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	scopes := make([]string, len(t.scopes))
 	copy(scopes, t.scopes)
 
+	// Apply discovery-based scope filtering if available
+	if t.scopeFilter != nil && len(t.scopesSupported) > 0 {
+		scopes = t.scopeFilter.FilterSupportedScopes(scopes, t.scopesSupported, t.providerURL)
+		t.logger.Debugf("TraefikOidc.buildAuthURL: After discovery filtering: %v", scopes)
+	}
+
+	// Then apply provider-specific modifications
 	if t.isGoogleProvider() {
+		// Google: Remove offline_access if present, add access_type=offline
+		filteredScopes := make([]string, 0, len(scopes))
+		for _, scope := range scopes {
+			if scope != "offline_access" {
+				filteredScopes = append(filteredScopes, scope)
+			}
+		}
+		scopes = filteredScopes
+
 		params.Set("access_type", "offline")
 		t.logger.Debug("Google OIDC provider detected, added access_type=offline for refresh tokens")
 
@@ -141,6 +157,12 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		} else {
 			t.logger.Debugf("Standard provider: User is overriding scopes (count: %d), offline_access not automatically added.", len(t.scopes))
 		}
+	}
+
+	// Final filtering pass to remove anything the provider doesn't support
+	if t.scopeFilter != nil && len(t.scopesSupported) > 0 {
+		scopes = t.scopeFilter.FilterSupportedScopes(scopes, t.scopesSupported, t.providerURL)
+		t.logger.Debugf("TraefikOidc.buildAuthURL: After final filtering: %v", scopes)
 	}
 
 	if len(scopes) > 0 {
