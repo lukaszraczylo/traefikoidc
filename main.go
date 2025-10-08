@@ -379,7 +379,7 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	if t.introspectionURL != "" {
 		t.logger.Debugf("Token introspection endpoint discovered: %s", t.introspectionURL)
 		if t.allowOpaqueTokens {
-			t.logger.Infof("Opaque token support enabled with introspection endpoint")
+			t.logger.Debugf("Opaque token support enabled with introspection endpoint")
 		}
 	} else if t.allowOpaqueTokens || t.requireTokenIntrospection {
 		t.logger.Infof("⚠️  Opaque tokens enabled but no introspection endpoint available from provider")
