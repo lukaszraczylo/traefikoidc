@@ -152,20 +152,24 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return config.PostLogoutRedirectURI
 		}(),
-		tokenBlacklist: cacheManager.GetSharedTokenBlacklist(),
-		jwkCache:       cacheManager.GetSharedJWKCache(),
-		metadataCache:  cacheManager.GetSharedMetadataCache(),
-		clientID:       config.ClientID,
-		clientSecret:   config.ClientSecret,
+		tokenBlacklist:     cacheManager.GetSharedTokenBlacklist(),
+		jwkCache:           cacheManager.GetSharedJWKCache(),
+		metadataCache:      cacheManager.GetSharedMetadataCache(),
+		introspectionCache: cacheManager.GetSharedIntrospectionCache(), // Cache for introspection results
+		clientID:           config.ClientID,
+		clientSecret:       config.ClientSecret,
 		audience: func() string {
 			if config.Audience != "" {
 				return config.Audience
 			}
 			return config.ClientID
 		}(),
-		forceHTTPS:     config.ForceHTTPS,
-		enablePKCE:     config.EnablePKCE,
-		overrideScopes: config.OverrideScopes,
+		forceHTTPS:                config.ForceHTTPS,
+		enablePKCE:                config.EnablePKCE,
+		overrideScopes:            config.OverrideScopes,
+		strictAudienceValidation:  config.StrictAudienceValidation,
+		allowOpaqueTokens:         config.AllowOpaqueTokens,
+		requireTokenIntrospection: config.RequireTokenIntrospection,
 		scopes: func() []string {
 			userProvidedScopes := deduplicateScopes(config.Scopes)
 
@@ -355,7 +359,7 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 
 // updateMetadataEndpoints updates internal endpoint URLs with discovered metadata.
 // It sets the authorization URL, token URL, JWKS URL, issuer URL, revocation URL,
-// and end session URL based on the provider's metadata.
+// end session URL, and introspection URL based on the provider's metadata.
 // Parameters:
 //   - metadata: A pointer to the ProviderMetadata struct containing the discovered endpoints.
 func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
@@ -363,12 +367,23 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	defer t.metadataMu.Unlock()
 
 	t.jwksURL = metadata.JWKSURL
-	t.scopesSupported = metadata.ScopesSupported // NEW - store supported scopes from discovery
+	t.scopesSupported = metadata.ScopesSupported // Store supported scopes from discovery
 	t.authURL = metadata.AuthURL
 	t.tokenURL = metadata.TokenURL
 	t.issuerURL = metadata.Issuer
 	t.revocationURL = metadata.RevokeURL
 	t.endSessionURL = metadata.EndSessionURL
+	t.introspectionURL = metadata.IntrospectionURL // OAuth 2.0 Token Introspection endpoint (RFC 7662)
+
+	// Log introspection endpoint availability for opaque token support
+	if t.introspectionURL != "" {
+		t.logger.Debugf("Token introspection endpoint discovered: %s", t.introspectionURL)
+		if t.allowOpaqueTokens {
+			t.logger.Infof("Opaque token support enabled with introspection endpoint")
+		}
+	} else if t.allowOpaqueTokens || t.requireTokenIntrospection {
+		t.logger.Infof("⚠️  Opaque tokens enabled but no introspection endpoint available from provider")
+	}
 }
 
 // startMetadataRefresh starts a background goroutine that periodically refreshes provider metadata.

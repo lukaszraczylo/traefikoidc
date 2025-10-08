@@ -415,10 +415,11 @@ func TestAudienceIntegrationAuth0Scenario(t *testing.T) {
 		}
 	})
 
-	t.Run("Auth0 token with clientID instead of API audience should fail", func(t *testing.T) {
+	t.Run("Auth0 ACCESS token with clientID instead of API audience should fail", func(t *testing.T) {
 		jwt, err := createTestJWT(rsaPrivateKey, "RS256", "auth0-key-id", map[string]interface{}{
 			"iss":   config.ProviderURL,
-			"aud":   config.ClientID, // Using clientID instead of API audience
+			"aud":   config.ClientID,        // Using clientID instead of API audience
+			"scope": "openid profile email", // Mark as access token
 			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
 			"iat":   float64(time.Now().Add(-2 * time.Minute).Unix()),
 			"sub":   "auth0|123456",
@@ -431,7 +432,7 @@ func TestAudienceIntegrationAuth0Scenario(t *testing.T) {
 
 		err = tOidc.VerifyToken(jwt)
 		if err == nil {
-			t.Error("Auth0 token with wrong audience should have been rejected")
+			t.Error("Auth0 access token with wrong audience should have been rejected")
 		} else if !strings.Contains(err.Error(), "invalid audience") {
 			t.Errorf("Expected 'invalid audience' error, got: %v", err)
 		}

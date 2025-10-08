@@ -90,6 +90,15 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	params.Set("state", state)
 	params.Set("nonce", nonce)
 
+	// Add audience parameter for custom API audiences (e.g., Auth0 APIs)
+	// This allows access tokens to have the correct audience claim
+	// Only add if audience is configured and different from client_id
+	// ID tokens will always have aud=client_id per OIDC spec
+	if t.audience != "" && t.audience != t.clientID {
+		params.Set("audience", t.audience)
+		t.logger.Debugf("Adding audience parameter to authorize URL: %s", t.audience)
+	}
+
 	if t.enablePKCE && codeChallenge != "" {
 		params.Set("code_challenge", codeChallenge)
 		params.Set("code_challenge_method", "S256")

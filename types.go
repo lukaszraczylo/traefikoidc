@@ -49,13 +49,14 @@ type TokenExchanger interface {
 // This data is typically retrieved from the provider's .well-known/openid-configuration endpoint
 // and contains essential URLs for authentication, token exchange, and key retrieval.
 type ProviderMetadata struct {
-	Issuer          string   `json:"issuer"`
-	AuthURL         string   `json:"authorization_endpoint"`
-	TokenURL        string   `json:"token_endpoint"`
-	JWKSURL         string   `json:"jwks_uri"`
-	RevokeURL       string   `json:"revocation_endpoint"`
-	EndSessionURL   string   `json:"end_session_endpoint"`
-	ScopesSupported []string `json:"scopes_supported,omitempty"` // NEW FIELD
+	Issuer           string   `json:"issuer"`
+	AuthURL          string   `json:"authorization_endpoint"`
+	TokenURL         string   `json:"token_endpoint"`
+	JWKSURL          string   `json:"jwks_uri"`
+	RevokeURL        string   `json:"revocation_endpoint"`
+	EndSessionURL    string   `json:"end_session_endpoint"`
+	IntrospectionURL string   `json:"introspection_endpoint,omitempty"` // OAuth 2.0 Token Introspection (RFC 7662)
+	ScopesSupported  []string `json:"scopes_supported,omitempty"`       // Supported scopes from discovery
 }
 
 // TraefikOidc is the main middleware struct that implements OIDC authentication for Traefik.
@@ -106,14 +107,19 @@ type TraefikOidc struct {
 	jwksURL                    string
 	issuerURL                  string
 	revocationURL              string
+	introspectionURL           string // OAuth 2.0 Token Introspection endpoint (RFC 7662)
 	providerURL                string
 	scopes                     []string
 	refreshGracePeriod         time.Duration
+	introspectionCache         CacheInterface // Cache for token introspection results
 	shutdownOnce               sync.Once
 	firstRequestMutex          sync.Mutex
 	forceHTTPS                 bool
 	enablePKCE                 bool
 	overrideScopes             bool
+	strictAudienceValidation   bool // Prevents Scenario 2 fallback to ID token
+	allowOpaqueTokens          bool // Enables opaque token support via introspection
+	requireTokenIntrospection  bool // Forces introspection for opaque tokens
 	suppressDiagnosticLogs     bool
 	firstRequestReceived       bool
 	metadataRefreshStarted     bool
