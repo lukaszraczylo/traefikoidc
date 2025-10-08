@@ -257,12 +257,12 @@ func parseJWT(tokenString string) (*JWT, error) {
 // not-before time (if present), and prevents replay attacks using JTI claims.
 // Parameters:
 //   - issuerURL: Expected issuer URL to validate against
-//   - clientID: Expected audience (client ID) to validate against
+//   - expectedAudience: Expected audience to validate against (can be clientID or custom audience)
 //   - skipReplayCheck: Optional parameter to skip replay attack protection
 //
 // Returns:
 //   - An error describing the first validation failure encountered
-func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error {
+func (j *JWT) Verify(issuerURL, expectedAudience string, skipReplayCheck ...bool) error {
 	alg, ok := j.Header["alg"].(string)
 	if !ok {
 		return fmt.Errorf("missing 'alg' header")
@@ -290,7 +290,7 @@ func (j *JWT) Verify(issuerURL, clientID string, skipReplayCheck ...bool) error 
 	if !ok {
 		return fmt.Errorf("missing 'aud' claim")
 	}
-	if err := verifyAudience(aud, clientID); err != nil {
+	if err := verifyAudience(aud, expectedAudience); err != nil {
 		return err
 	}
 

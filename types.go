@@ -49,12 +49,13 @@ type TokenExchanger interface {
 // This data is typically retrieved from the provider's .well-known/openid-configuration endpoint
 // and contains essential URLs for authentication, token exchange, and key retrieval.
 type ProviderMetadata struct {
-	Issuer        string `json:"issuer"`
-	AuthURL       string `json:"authorization_endpoint"`
-	TokenURL      string `json:"token_endpoint"`
-	JWKSURL       string `json:"jwks_uri"`
-	RevokeURL     string `json:"revocation_endpoint"`
-	EndSessionURL string `json:"end_session_endpoint"`
+	Issuer          string   `json:"issuer"`
+	AuthURL         string   `json:"authorization_endpoint"`
+	TokenURL        string   `json:"token_endpoint"`
+	JWKSURL         string   `json:"jwks_uri"`
+	RevokeURL       string   `json:"revocation_endpoint"`
+	EndSessionURL   string   `json:"end_session_endpoint"`
+	ScopesSupported []string `json:"scopes_supported,omitempty"` // NEW FIELD
 }
 
 // TraefikOidc is the main middleware struct that implements OIDC authentication for Traefik.
@@ -92,9 +93,11 @@ type TraefikOidc struct {
 	goroutineWG                *sync.WaitGroup
 	clientSecret               string
 	clientID                   string
+	audience                   string // Expected JWT audience, defaults to clientID
 	name                       string
 	redirURLPath               string
 	logoutURLPath              string
+	metadataMu                 sync.RWMutex // Protects metadata endpoint fields
 	tokenURL                   string
 	authURL                    string
 	endSessionURL              string
@@ -115,4 +118,6 @@ type TraefikOidc struct {
 	firstRequestReceived       bool
 	metadataRefreshStarted     bool
 	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
+	scopeFilter                *ScopeFilter // NEW - for discovery-based scope filtering
+	scopesSupported            []string     // NEW - from provider metadata
 }

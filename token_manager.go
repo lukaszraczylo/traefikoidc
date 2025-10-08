@@ -171,13 +171,18 @@ func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interfa
 func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error {
 	t.safeLogDebugf("Verifying JWT signature and claims")
 
-	jwks, err := t.jwkCache.GetJWKS(context.Background(), t.jwksURL, t.httpClient)
+	// Read jwksURL with RLock
+	t.metadataMu.RLock()
+	jwksURL := t.jwksURL
+	t.metadataMu.RUnlock()
+
+	jwks, err := t.jwkCache.GetJWKS(context.Background(), jwksURL, t.httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to get JWKS: %w", err)
 	}
 
 	if !t.suppressDiagnosticLogs && jwks != nil {
-		t.safeLogDebugf("DIAGNOSTIC: Retrieved JWKS with %d keys from URL: %s", len(jwks.Keys), t.jwksURL)
+		t.safeLogDebugf("DIAGNOSTIC: Retrieved JWKS with %d keys from URL: %s", len(jwks.Keys), jwksURL)
 	}
 
 	kid, ok := jwt.Header["kid"].(string)
@@ -235,7 +240,13 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 		t.safeLogDebugf("DIAGNOSTIC: Signature verification successful for kid=%s", kid)
 	}
 
-	if err := jwt.Verify(t.issuerURL, t.clientID, true); err != nil {
+	// Use configured audience (defaults to clientID if not specified)
+	// Read issuerURL with RLock
+	t.metadataMu.RLock()
+	issuerURL := t.issuerURL
+	t.metadataMu.RUnlock()
+
+	if err := jwt.Verify(issuerURL, t.audience, true); err != nil {
 		return fmt.Errorf("standard claim verification failed: %w", err)
 	}
 
@@ -423,10 +434,15 @@ func (t *TraefikOidc) RevokeToken(token string) {
 // Returns:
 //   - An error if the request fails or the provider returns a non-OK status.
 func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
-	if t.revocationURL == "" {
+	// Read revocationURL with RLock
+	t.metadataMu.RLock()
+	revocationURL := t.revocationURL
+	t.metadataMu.RUnlock()
+
+	if revocationURL == "" {
 		return fmt.Errorf("token revocation endpoint is not configured or discovered")
 	}
-	t.logger.Debugf("Attempting to revoke token (type: %s) with provider at %s", tokenType, t.revocationURL)
+	t.logger.Debugf("Attempting to revoke token (type: %s) with provider at %s", tokenType, revocationURL)
 
 	data := url.Values{
 		"token":           {token},
@@ -435,7 +451,7 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 		"client_secret":   {t.clientSecret},
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), "POST", t.revocationURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", revocationURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to create token revocation request: %w", err)
 	}
@@ -446,7 +462,10 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	// Send the request with circuit breaker protection if available
 	var resp *http.Response
 	if t.errorRecoveryManager != nil {
+		// Read issuerURL with RLock for service name
+		t.metadataMu.RLock()
 		serviceName := fmt.Sprintf("token-revocation-%s", t.issuerURL)
+		t.metadataMu.RUnlock()
 		err = t.errorRecoveryManager.ExecuteWithRecovery(context.Background(), serviceName, func() error {
 			var reqErr error
 			resp, reqErr = t.httpClient.Do(req)
@@ -517,7 +536,12 @@ func (t *TraefikOidc) GetNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 // Returns:
 //   - true if the provider is Google, false otherwise.
 func (t *TraefikOidc) isGoogleProvider() bool {
-	return strings.Contains(t.issuerURL, "google") || strings.Contains(t.issuerURL, "accounts.google.com")
+	// Read issuerURL with RLock
+	t.metadataMu.RLock()
+	issuerURL := t.issuerURL
+	t.metadataMu.RUnlock()
+
+	return strings.Contains(issuerURL, "google") || strings.Contains(issuerURL, "accounts.google.com")
 }
 
 // isAzureProvider detects if the configured OIDC provider is Azure AD.
@@ -525,9 +549,14 @@ func (t *TraefikOidc) isGoogleProvider() bool {
 // Returns:
 //   - true if the provider is Azure AD, false otherwise.
 func (t *TraefikOidc) isAzureProvider() bool {
-	return strings.Contains(t.issuerURL, "login.microsoftonline.com") ||
-		strings.Contains(t.issuerURL, "sts.windows.net") ||
-		strings.Contains(t.issuerURL, "login.windows.net")
+	// Read issuerURL with RLock
+	t.metadataMu.RLock()
+	issuerURL := t.issuerURL
+	t.metadataMu.RUnlock()
+
+	return strings.Contains(issuerURL, "login.microsoftonline.com") ||
+		strings.Contains(issuerURL, "sts.windows.net") ||
+		strings.Contains(issuerURL, "login.windows.net")
 }
 
 // ============================================================================

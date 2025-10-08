@@ -58,6 +58,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 		tokenURL:              "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
 		jwksURL:               "https://login.microsoftonline.com/tenant-id/discovery/v2.0/keys",
 		clientID:              "test-client-id",
+		audience:              "test-client-id",
 		clientSecret:          "test-client-secret",
 		scopes:                []string{"openid", "profile", "email"},
 		refreshGracePeriod:    60 * time.Second,

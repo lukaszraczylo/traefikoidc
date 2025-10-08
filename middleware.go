@@ -46,7 +46,12 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	select {
 	case <-t.initComplete:
-		if t.issuerURL == "" {
+		// Read issuerURL with RLock
+		t.metadataMu.RLock()
+		issuerURL := t.issuerURL
+		t.metadataMu.RUnlock()
+
+		if issuerURL == "" {
 			t.logger.Error("OIDC provider metadata initialization failed or incomplete")
 			t.sendErrorResponse(rw, req, "OIDC provider metadata initialization failed - please check provider availability and configuration", http.StatusServiceUnavailable)
 			return

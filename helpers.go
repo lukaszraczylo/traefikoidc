@@ -124,7 +124,12 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", t.tokenURL, strings.NewReader(data.Encode()))
+	// Read tokenURL with RLock
+	t.metadataMu.RLock()
+	tokenURL := t.tokenURL
+	t.metadataMu.RUnlock()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
@@ -355,8 +360,13 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		postLogoutRedirectURI = fmt.Sprintf("%s%s", baseURL, postLogoutRedirectURI)
 	}
 
-	if t.endSessionURL != "" && idToken != "" {
-		logoutURL, err := BuildLogoutURL(t.endSessionURL, idToken, postLogoutRedirectURI)
+	// Read endSessionURL with RLock
+	t.metadataMu.RLock()
+	endSessionURL := t.endSessionURL
+	t.metadataMu.RUnlock()
+
+	if endSessionURL != "" && idToken != "" {
+		logoutURL, err := BuildLogoutURL(endSessionURL, idToken, postLogoutRedirectURI)
 		if err != nil {
 			t.logger.Errorf("Failed to build logout URL: %v", err)
 			http.Error(rw, "Logout error", http.StatusInternalServerError)

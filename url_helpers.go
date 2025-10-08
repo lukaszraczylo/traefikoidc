@@ -98,7 +98,28 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	scopes := make([]string, len(t.scopes))
 	copy(scopes, t.scopes)
 
+	// Apply discovery-based scope filtering if available
+	// Read scopesSupported with RLock
+	t.metadataMu.RLock()
+	scopesSupported := t.scopesSupported
+	t.metadataMu.RUnlock()
+
+	if t.scopeFilter != nil && len(scopesSupported) > 0 {
+		scopes = t.scopeFilter.FilterSupportedScopes(scopes, scopesSupported, t.providerURL)
+		t.logger.Debugf("TraefikOidc.buildAuthURL: After discovery filtering: %v", scopes)
+	}
+
+	// Then apply provider-specific modifications
 	if t.isGoogleProvider() {
+		// Google: Remove offline_access if present, add access_type=offline
+		filteredScopes := make([]string, 0, len(scopes))
+		for _, scope := range scopes {
+			if scope != "offline_access" {
+				filteredScopes = append(filteredScopes, scope)
+			}
+		}
+		scopes = filteredScopes
+
 		params.Set("access_type", "offline")
 		t.logger.Debug("Google OIDC provider detected, added access_type=offline for refresh tokens")
 
@@ -143,13 +164,29 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		}
 	}
 
+	// Final filtering pass to remove anything the provider doesn't support
+	// Read scopesSupported with RLock
+	t.metadataMu.RLock()
+	scopesSupported = t.scopesSupported
+	t.metadataMu.RUnlock()
+
+	if t.scopeFilter != nil && len(scopesSupported) > 0 {
+		scopes = t.scopeFilter.FilterSupportedScopes(scopes, scopesSupported, t.providerURL)
+		t.logger.Debugf("TraefikOidc.buildAuthURL: After final filtering: %v", scopes)
+	}
+
 	if len(scopes) > 0 {
 		finalScopeString := strings.Join(scopes, " ")
 		params.Set("scope", finalScopeString)
 		t.logger.Debugf("TraefikOidc.buildAuthURL: Final scope string being sent to OIDC provider: %s", finalScopeString)
 	}
 
-	return t.buildURLWithParams(t.authURL, params)
+	// Read authURL with RLock
+	t.metadataMu.RLock()
+	authURL := t.authURL
+	t.metadataMu.RUnlock()
+
+	return t.buildURLWithParams(authURL, params)
 }
 
 // buildURLWithParams constructs a URL by combining a base URL with query parameters.
@@ -172,9 +209,14 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 	}
 
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-		issuerURLParsed, err := url.Parse(t.issuerURL)
+		// Read issuerURL with RLock
+		t.metadataMu.RLock()
+		issuerURL := t.issuerURL
+		t.metadataMu.RUnlock()
+
+		issuerURLParsed, err := url.Parse(issuerURL)
 		if err != nil {
-			t.logger.Errorf("Could not parse issuerURL: %s. Error: %v", t.issuerURL, err)
+			t.logger.Errorf("Could not parse issuerURL: %s. Error: %v", issuerURL, err)
 			return ""
 		}
 

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -37,6 +38,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -82,6 +84,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					enablePKCE:   true,
 					tokenHTTPClient: &http.Client{
@@ -116,6 +119,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/invalid",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -146,6 +150,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/expired",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -176,6 +181,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/timeout",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 100 * time.Millisecond,
@@ -206,6 +212,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/error",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -236,6 +243,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/malformed",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -266,6 +274,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/incomplete",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -299,6 +308,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/slow",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -329,6 +339,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/ratelimit",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -482,13 +493,17 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 // TestExchangeCodeForToken_Integration tests integration scenarios
 func TestExchangeCodeForToken_Integration(t *testing.T) {
 	t.Run("multiple concurrent exchanges", func(t *testing.T) {
+		// Use atomic counter for unique token generation to handle race detector slowdown
+		var tokenCounter int64
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Add small delay to test concurrency
 			time.Sleep(10 * time.Millisecond)
 
+			// Generate unique token using atomic counter
+			tokenID := atomic.AddInt64(&tokenCounter, 1)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(TokenResponse{
-				AccessToken:  fmt.Sprintf("token_%d", time.Now().UnixNano()),
+				AccessToken:  fmt.Sprintf("token_%d", tokenID),
 				IDToken:      "test_id_token",
 				RefreshToken: "test_refresh_token",
 				TokenType:    "Bearer",
@@ -500,6 +515,7 @@ func TestExchangeCodeForToken_Integration(t *testing.T) {
 		oidc := &TraefikOidc{
 			tokenURL:     server.URL + "/token",
 			clientID:     "test_client",
+			audience:     "test_client",
 			clientSecret: "test_secret",
 			tokenHTTPClient: &http.Client{
 				Timeout: 10 * time.Second,
@@ -586,6 +602,7 @@ func TestExchangeCodeForToken_Integration(t *testing.T) {
 		oidc := &TraefikOidc{
 			tokenURL:     server.URL + "/token",
 			clientID:     "test_client",
+			audience:     "test_client",
 			clientSecret: "test_secret",
 			tokenHTTPClient: &http.Client{
 				Timeout: 10 * time.Second,

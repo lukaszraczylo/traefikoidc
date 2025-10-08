@@ -157,6 +157,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		metadataCache:  cacheManager.GetSharedMetadataCache(),
 		clientID:       config.ClientID,
 		clientSecret:   config.ClientSecret,
+		audience: func() string {
+			if config.Audience != "" {
+				return config.Audience
+			}
+			return config.ClientID
+		}(),
 		forceHTTPS:     config.ForceHTTPS,
 		enablePKCE:     config.EnablePKCE,
 		overrideScopes: config.OverrideScopes,
@@ -192,6 +198,14 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		cancelFunc:              cancelFunc,
 		suppressDiagnosticLogs:  isTestMode(),
 		securityHeadersApplier:  config.GetSecurityHeadersApplier(),
+		scopeFilter:             NewScopeFilter(logger), // NEW - for discovery-based scope filtering
+	}
+
+	// Log audience configuration
+	if config.Audience != "" && config.Audience != config.ClientID {
+		t.logger.Infof("Custom audience configured: %s", config.Audience)
+	} else {
+		t.logger.Debugf("No custom audience specified, using clientID as audience: %s", t.clientID)
 	}
 
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger)
@@ -345,7 +359,11 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 // Parameters:
 //   - metadata: A pointer to the ProviderMetadata struct containing the discovered endpoints.
 func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
+	t.metadataMu.Lock()
+	defer t.metadataMu.Unlock()
+
 	t.jwksURL = metadata.JWKSURL
+	t.scopesSupported = metadata.ScopesSupported // NEW - store supported scopes from discovery
 	t.authURL = metadata.AuthURL
 	t.tokenURL = metadata.TokenURL
 	t.issuerURL = metadata.Issuer

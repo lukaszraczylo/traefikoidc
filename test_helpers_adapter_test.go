@@ -244,6 +244,7 @@ func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httpt
 		next:                  nextHandler,
 		issuerURL:             testIssuerURL,
 		clientID:              config.ClientID,
+		audience:              config.ClientID,
 		clientSecret:          config.ClientSecret,
 		redirURLPath:          callbackPath,
 		logoutURLPath:         logoutPath,

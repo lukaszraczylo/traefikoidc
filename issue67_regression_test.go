@@ -586,6 +586,7 @@ func TestIssue67_TokenResilienceRecursionBug(t *testing.T) {
 	oidc := &TraefikOidc{
 		tokenURL:               server.URL + "/token",
 		clientID:               "test_client",
+		audience:               "test_client",
 		clientSecret:           "test_secret",
 		tokenResilienceManager: resilienceManager,
 		tokenHTTPClient: &http.Client{
@@ -671,6 +672,7 @@ func TestIssue67_TokenResilienceManager_NoRecursion(t *testing.T) {
 	oidc := &TraefikOidc{
 		tokenURL:               server.URL + "/token",
 		clientID:               "test_client",
+		audience:               "test_client",
 		clientSecret:           "test_secret",
 		tokenResilienceManager: resilienceManager,
 		tokenHTTPClient: &http.Client{
@@ -738,6 +740,7 @@ func TestIssue67_DirectRecursionDetection(t *testing.T) {
 	oidc := &TraefikOidc{
 		tokenURL:               server.URL + "/token",
 		clientID:               "test",
+		audience:               "test",
 		clientSecret:           "test",
 		tokenResilienceManager: NewTokenResilienceManager(config, logger),
 		tokenHTTPClient:        &http.Client{Timeout: 2 * time.Second},
