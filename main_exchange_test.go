@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -492,13 +493,17 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 // TestExchangeCodeForToken_Integration tests integration scenarios
 func TestExchangeCodeForToken_Integration(t *testing.T) {
 	t.Run("multiple concurrent exchanges", func(t *testing.T) {
+		// Use atomic counter for unique token generation to handle race detector slowdown
+		var tokenCounter int64
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Add small delay to test concurrency
 			time.Sleep(10 * time.Millisecond)
 
+			// Generate unique token using atomic counter
+			tokenID := atomic.AddInt64(&tokenCounter, 1)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(TokenResponse{
-				AccessToken:  fmt.Sprintf("token_%d", time.Now().UnixNano()),
+				AccessToken:  fmt.Sprintf("token_%d", tokenID),
 				IDToken:      "test_id_token",
 				RefreshToken: "test_refresh_token",
 				TokenType:    "Bearer",

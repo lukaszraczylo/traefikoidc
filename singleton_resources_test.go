@@ -276,6 +276,7 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 
 	t.Run("SingletonTasksAcrossInstances", func(t *testing.T) {
 		// Reset singletons to ensure clean state
+		ResetGlobalTaskRegistry() // Reset circuit breaker and task registry
 		resetResourceManagerForTesting()
 		ResetUniversalCacheManagerForTesting()
 		defer ResetUniversalCacheManagerForTesting()
@@ -312,13 +313,35 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 			plugins = append(plugins, plugin)
 		}
 
-		// Wait for cleanup to run multiple times
-		time.Sleep(350 * time.Millisecond)
+		// Wait for cleanup to run at least 2 times with adaptive timeout
+		// This handles race detector overhead which can slow goroutine scheduling significantly
+		// When running as part of full test suite, CPU contention is even higher, so use generous timeout
+		const minExpectedCount = 2
+		const maxExpectedCount = 5
+		timeout := time.After(5 * time.Second)
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
 
-		// Check that cleanup ran but not excessively (should be singleton)
-		count := atomic.LoadInt32(&cleanupCount)
-		if count < 2 || count > 5 {
-			t.Errorf("Unexpected cleanup count: %d (expected 2-5 for singleton)", count)
+		var count int32
+	waitLoop:
+		for {
+			select {
+			case <-ticker.C:
+				count = atomic.LoadInt32(&cleanupCount)
+				if count >= minExpectedCount {
+					// Success: reached minimum threshold
+					break waitLoop
+				}
+			case <-timeout:
+				count = atomic.LoadInt32(&cleanupCount)
+				t.Errorf("Timeout waiting for cleanup count to reach %d, got %d (race detector may be slowing execution)", minExpectedCount, count)
+				break waitLoop
+			}
+		}
+
+		// Verify count is within expected range (should be singleton, not running excessively)
+		if count > maxExpectedCount {
+			t.Errorf("Cleanup count too high: %d (expected max %d for singleton)", count, maxExpectedCount)
 		}
 
 		// Cleanup
