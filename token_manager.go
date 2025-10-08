@@ -240,13 +240,126 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 		t.safeLogDebugf("DIAGNOSTIC: Signature verification successful for kid=%s", kid)
 	}
 
-	// Use configured audience (defaults to clientID if not specified)
+	// Determine expected audience based on token type
+	// Per OIDC spec: ID tokens MUST have aud=client_id
+	// Access tokens can have custom audience values (e.g., Auth0 API identifiers)
+
+	// Token type detection strategy (RFC 9068 + OIDC Core 1.0):
+	// 1. Check 'typ' header claim (RFC 9068) → "at+jwt" = ACCESS_TOKEN, "JWT" = could be either
+	// 2. Check explicit token type claims (token_use, token_type) if present
+	// 3. Check 'scope' claim → ACCESS_TOKEN (use configured audience)
+	// 4. Check 'nonce' claim → ID_TOKEN (use client_id, per OIDC spec)
+	// 5. Check if aud == client_id only → ID_TOKEN (use client_id)
+	// 6. Else → ACCESS_TOKEN with custom audience (use configured audience)
+
+	isIDToken := false
+	isAccessToken := false
+
+	// Step 1: Check typ header for explicit type (RFC 9068)
+	if typ, ok := jwt.Header["typ"].(string); ok {
+		if typ == "at+jwt" {
+			// RFC 9068 compliant access token
+			isAccessToken = true
+			if !t.suppressDiagnosticLogs {
+				t.safeLogDebugf("RFC 9068 access token detected (typ=at+jwt)")
+			}
+		} else if typ == "JWT" {
+			// Generic JWT, need further checks
+			if !t.suppressDiagnosticLogs {
+				t.safeLogDebugf("Generic JWT detected (typ=JWT), checking claims")
+			}
+		}
+	}
+
+	// Step 2: Check explicit token type claims (if not already determined)
+	if !isAccessToken && !isIDToken {
+		// Check for token_use claim (used by some providers like AWS Cognito)
+		if tokenUse, ok := jwt.Claims["token_use"].(string); ok {
+			if tokenUse == "access" {
+				isAccessToken = true
+			} else if tokenUse == "id" {
+				isIDToken = true
+			}
+		}
+
+		// Check for token_type claim
+		if !isAccessToken && !isIDToken {
+			if tokenType, ok := jwt.Claims["token_type"].(string); ok {
+				if tokenType == "access_token" || tokenType == "Bearer" {
+					isAccessToken = true
+				} else if tokenType == "id_token" {
+					isIDToken = true
+				}
+			}
+		}
+	}
+
+	// Step 3: Check scope claim (access tokens have this)
+	if !isAccessToken && !isIDToken {
+		if scope, ok := jwt.Claims["scope"]; ok {
+			if _, ok := scope.(string); ok {
+				isAccessToken = true
+			}
+		}
+	}
+
+	// Step 4: Check nonce claim (ID tokens have this per OIDC spec for replay protection)
+	if !isAccessToken && !isIDToken {
+		if nonce, ok := jwt.Claims["nonce"]; ok {
+			if _, ok := nonce.(string); ok {
+				isIDToken = true // Nonce indicates ID token
+			}
+		}
+	}
+
+	// Step 5: If no scope and no nonce, check if aud matches client_id (indicates ID token)
+	if !isAccessToken && !isIDToken {
+		if aud, ok := jwt.Claims["aud"]; ok {
+			// Check string audience
+			if audStr, ok := aud.(string); ok && audStr == t.clientID {
+				isIDToken = true
+			}
+			// Check array audience
+			if audArr, ok := aud.([]interface{}); ok {
+				for _, v := range audArr {
+					if str, ok := v.(string); ok && str == t.clientID {
+						// Only treat as ID token if it's the sole audience
+						// Access tokens can also contain client_id in array
+						if len(audArr) == 1 {
+							isIDToken = true
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Step 6: Default to access token if still undetermined
+	if !isIDToken {
+		isAccessToken = true
+	}
+
+	// Determine expected audience
+	expectedAudience := t.audience // Default to configured audience
+	if isIDToken {
+		expectedAudience = t.clientID
+		if !t.suppressDiagnosticLogs {
+			t.safeLogDebugf("ID token detected, validating with client_id: %s", expectedAudience)
+		}
+	} else {
+		// Access token or ambiguous - use configured audience
+		if !t.suppressDiagnosticLogs {
+			t.safeLogDebugf("Access token detected, validating with audience: %s", expectedAudience)
+		}
+	}
+
 	// Read issuerURL with RLock
 	t.metadataMu.RLock()
 	issuerURL := t.issuerURL
 	t.metadataMu.RUnlock()
 
-	if err := jwt.Verify(issuerURL, t.audience, true); err != nil {
+	if err := jwt.Verify(issuerURL, expectedAudience, true); err != nil {
 		return fmt.Errorf("standard claim verification failed: %w", err)
 	}
 
@@ -717,11 +830,42 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 	dotCount := strings.Count(accessToken, ".")
 	isOpaqueToken := dotCount != 2
 
-	// For opaque access tokens, rely on ID token for session validation
+	// For opaque access tokens, use introspection if available (RFC 7662 - Option C: Scenario 3)
 	if isOpaqueToken {
-		t.logger.Debugf("Access token appears to be opaque (dots: %d), validating session via ID token", dotCount)
+		t.logger.Debugf("Access token appears to be opaque (dots: %d)", dotCount)
 
-		// For opaque access tokens, check ID token for authentication status
+		// Try introspection first if opaque tokens are allowed
+		if t.allowOpaqueTokens {
+			if err := t.validateOpaqueToken(accessToken); err != nil {
+				t.logger.Infof("⚠️  Opaque access token validation via introspection failed: %v", err)
+
+				// If introspection required, reject the session
+				if t.requireTokenIntrospection {
+					t.logger.Errorf("❌ SECURITY: Opaque token rejected (introspection required but failed)")
+					if session.GetRefreshToken() != "" {
+						return false, true, false
+					}
+					return false, false, true
+				}
+
+				// Otherwise fall back to ID token validation (Scenario 3 backward compatibility)
+				t.logger.Infof("⚠️  Falling back to ID token validation for opaque access token")
+			} else {
+				// Introspection successful
+				t.logger.Debugf("✓ Opaque access token validated via introspection")
+				// Still need to check ID token for session expiry
+				idToken := session.GetIDToken()
+				if idToken != "" {
+					return t.validateTokenExpiry(session, idToken)
+				}
+				return true, false, false
+			}
+		} else {
+			// Opaque tokens not allowed - log warning and reject or fall back
+			t.logger.Infof("⚠️  Opaque access token detected but allowOpaqueTokens=false")
+		}
+
+		// Fall back to ID token validation
 		idToken := session.GetIDToken()
 		if idToken == "" {
 			t.logger.Debug("Opaque access token present but no ID token found")
@@ -756,11 +900,53 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 		return t.validateTokenExpiry(session, idToken)
 	}
 
+	// JWT access token present - validate it explicitly to detect Scenario 2
+	// (Option C: Scenario 2 detection and strict mode)
+	accessTokenValid := false
+	accessTokenError := ""
+
+	if err := t.verifyToken(accessToken); err != nil {
+		// Access token validation failed
+		accessTokenError = err.Error()
+
+		// Check if it's an audience validation failure (Scenario 2)
+		if strings.Contains(accessTokenError, "invalid audience") || strings.Contains(accessTokenError, "audience") {
+			// SCENARIO 2 DETECTED: Access token has wrong audience
+			t.logger.Infof("⚠️  SCENARIO 2 DETECTED: Access token validation failed due to audience mismatch: %v", err)
+
+			if t.strictAudienceValidation {
+				// Strict mode: Reject the session (don't fall back to ID token)
+				t.logger.Errorf("❌ SECURITY: Session rejected due to access token audience mismatch (strictAudienceValidation=true)")
+				t.logger.Errorf("❌ This prevents potential cross-API token confusion attacks (Auth0 Scenario 2)")
+				if session.GetRefreshToken() != "" {
+					return false, true, false // try refresh
+				}
+				return false, false, true // must re-authenticate
+			} else {
+				// Backward compatibility mode: Log loud warning but allow fallback to ID token
+				t.logger.Infof("⚠️⚠️⚠️  SECURITY WARNING: Falling back to ID token validation despite access token audience mismatch!")
+				t.logger.Infof("⚠️  This could allow tokens intended for different APIs to grant access")
+				t.logger.Infof("⚠️  Set strictAudienceValidation=true to enforce proper audience validation")
+				t.logger.Infof("⚠️  See: https://github.com/lukaszraczylo/traefikoidc/issues/74")
+			}
+		} else if !strings.Contains(accessTokenError, "token has expired") {
+			// Other validation errors (not expiration, not audience)
+			t.logger.Debugf("Access token validation failed (non-expiration, non-audience): %v", err)
+		}
+	} else {
+		// Access token is valid
+		accessTokenValid = true
+	}
+
 	idToken := session.GetIDToken()
 	if idToken == "" {
-		t.logger.Debug("Authenticated flag set with access token, but no ID token found in session (possibly opaque token)")
-		session.SetAuthenticated(true)
+		if accessTokenValid {
+			// Access token is valid, no ID token needed
+			t.logger.Debug("Access token valid, no ID token present")
+			return t.validateTokenExpiry(session, accessToken)
+		}
 
+		t.logger.Debug("Authenticated flag set with access token, but no ID token found in session")
 		if session.GetRefreshToken() != "" {
 			t.logger.Debug("ID token missing but refresh token exists. Signaling conditional refresh to obtain ID token.")
 			return true, true, false
@@ -768,6 +954,7 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 		return true, false, false
 	}
 
+	// Validate ID token
 	if err := t.verifyToken(idToken); err != nil {
 		if strings.Contains(err.Error(), "token has expired") {
 			t.logger.Debugf("ID token signature/claims valid but token expired, needs refresh")
@@ -783,6 +970,11 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 			return false, true, false
 		}
 		return false, false, true
+	}
+
+	// If access token was valid, use it for expiry; otherwise use ID token
+	if accessTokenValid {
+		return t.validateTokenExpiry(session, accessToken)
 	}
 
 	return t.validateTokenExpiry(session, idToken)

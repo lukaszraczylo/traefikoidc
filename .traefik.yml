@@ -102,7 +102,13 @@ testData:
   cookieDomain: "" # Explicit domain for session cookies (e.g., ".example.com" for multi-subdomain setups)
   overrideScopes: false # When true, replaces default scopes instead of appending (default: false)
   refreshGracePeriodSeconds: 60 # Seconds before token expiry to attempt proactive refresh (default: 60)
-  
+
+  # Auth0 / Custom API Audience Configuration
+  audience: "" # Custom audience for access token validation (default: clientID)
+  strictAudienceValidation: false # Reject sessions with audience mismatch (prevents token confusion attacks)
+  allowOpaqueTokens: false # Enable opaque (non-JWT) access token support via RFC 7662 introspection
+  requireTokenIntrospection: false # Force introspection for opaque tokens (requires introspection endpoint)
+
   # Security Headers Configuration (enabled by default with 'default' profile)
   securityHeaders:
     enabled: true
@@ -312,6 +318,20 @@ testData:
 #   clientSecret: your-auth0-client-secret # Store securely
 #   callbackURL: /oauth2/callback
 #   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-auth0"
+#
+#   # Auth0 Audience Configuration (for custom APIs)
+#   # Scenario 1 (Recommended): Custom API with JWT access tokens
+#   audience: "https://my-api.example.com" # Your API identifier from Auth0 dashboard
+#   strictAudienceValidation: true # Enforce proper audience validation for security
+#
+#   # Scenario 2 (Backward Compatible): Default audience (uses client_id)
+#   # audience: "" # Leave empty or omit to use client_id as audience
+#   # strictAudienceValidation: false # Allows fallback to ID token validation (logs warnings)
+#
+#   # Scenario 3: Opaque (non-JWT) access tokens
+#   # allowOpaqueTokens: true # Enable opaque token support
+#   # requireTokenIntrospection: true # Require RFC 7662 token introspection
+#
 #   scopes: # Defaults ["openid", "profile", "email"]. Add custom scopes if your Auth0 Rules/Actions require them.
 #     - read:custom_data # Example custom scope
 #   allowedRolesAndGroups: # Based on claims added via Auth0 Rules or Actions (e.g. namespaced claims)
@@ -319,7 +339,7 @@ testData:
 #     - editor
 #   # Use Auth0 Rules or Actions to add custom claims (roles, permissions) to the ID Token.
 #   # Ensure postLogoutRedirectURI is in Auth0 app's "Allowed Logout URLs".
-#   # See README.md "Provider Configuration Recommendations" for Auth0.
+#   # For detailed Auth0 audience configuration, see AUTH0_AUDIENCE_GUIDE.md
 
 # --- Generic OIDC Provider Example ---
 # testDataGenericOIDC:
@@ -588,14 +608,126 @@ configuration:
     type: integer
     description: |
       The number of seconds before a token expires to attempt proactive refresh.
-      
+
       When a request is made and the access token will expire within this grace period,
       the middleware will attempt to refresh the token proactively. This helps prevent
       authentication interruptions for active users.
-      
+
       Setting this to 0 disables proactive refresh (tokens are only refreshed after expiry).
-      
+
       Default: 60 (1 minute before expiry)
+    required: false
+
+  audience:
+    type: string
+    description: |
+      Custom audience value for access token validation.
+
+      This configures the expected audience claim in access tokens. Per OAuth 2.0 and OIDC
+      specifications:
+      - ID tokens always have aud=client_id (per OIDC Core 1.0)
+      - Access tokens can have custom audiences (e.g., API identifiers)
+
+      Auth0 Scenarios:
+      1. Custom API audience (recommended): Set to your API identifier from Auth0
+         Example: "https://my-api.example.com"
+         Result: Access tokens will contain this audience
+
+      2. Default audience: Leave empty or omit (uses client_id)
+         Result: Access tokens may not contain client_id, triggering warnings
+
+      3. Opaque tokens: Use with allowOpaqueTokens=true for non-JWT tokens
+
+      When configured and different from client_id, the middleware automatically adds
+      the audience parameter to the authorize endpoint request.
+
+      Default: "" (uses client_id as audience)
+      See: AUTH0_AUDIENCE_GUIDE.md for detailed configuration
+    required: false
+
+  strictAudienceValidation:
+    type: boolean
+    description: |
+      Enforce strict audience validation for access tokens.
+
+      When enabled, sessions are rejected if access token validation fails due to
+      audience mismatch. This prevents falling back to ID token validation, addressing
+      potential token confusion attacks where tokens intended for different APIs could
+      be used to grant access.
+
+      Auth0 Scenario 2 Protection:
+      - When true: Rejects sessions with mismatched access token audience
+      - When false: Logs security warnings but allows fallback to ID token (backward compatible)
+
+      Security Recommendation:
+      - Production environments: Set to true for maximum security
+      - Development/testing: Can use false with monitoring of security warnings
+
+      This setting addresses security concerns where access tokens without proper
+      audience claims could bypass API-specific authorization checks.
+
+      Default: false (backward compatible)
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/74
+    required: false
+
+  allowOpaqueTokens:
+    type: boolean
+    description: |
+      Enable acceptance of opaque (non-JWT) access tokens.
+
+      When enabled, the middleware accepts access tokens that are not in JWT format
+      (3-part base64 structure). Opaque tokens are validated using OAuth 2.0 Token
+      Introspection (RFC 7662) if the provider exposes an introspection endpoint.
+
+      Auth0 Scenario 3:
+      Some Auth0 configurations issue opaque access tokens when no default API is
+      configured. This setting allows those tokens to be validated.
+
+      Requirements:
+      - Provider must support introspection_endpoint in OIDC discovery
+      - Client must have appropriate introspection permissions
+
+      Validation Process:
+      1. Detects opaque token (not 3-part JWT structure)
+      2. Calls provider's introspection endpoint with client credentials
+      3. Validates response (active status, expiration, audience if present)
+      4. Caches result for 5 minutes or token expiry (whichever is shorter)
+      5. Falls back to ID token validation if introspection unavailable
+         (unless requireTokenIntrospection=true)
+
+      Default: false (only JWT access tokens accepted)
+      See: AUTH0_AUDIENCE_GUIDE.md for configuration examples
+    required: false
+
+  requireTokenIntrospection:
+    type: boolean
+    description: |
+      Require token introspection for all opaque access tokens.
+
+      When enabled with allowOpaqueTokens=true, opaque tokens are rejected if:
+      - Introspection endpoint is not available from provider metadata
+      - Introspection request fails
+      - Introspection response indicates token is not active
+
+      Security Levels:
+      - requireTokenIntrospection=true + allowOpaqueTokens=true:
+        Maximum security - rejects opaque tokens without successful introspection
+
+      - requireTokenIntrospection=false + allowOpaqueTokens=true:
+        Backward compatible - falls back to ID token validation if introspection fails
+
+      - requireTokenIntrospection=true + allowOpaqueTokens=false:
+        No effect - opaque tokens are already rejected
+
+      Recommended Configuration:
+      When accepting opaque tokens, always set this to true for maximum security:
+      ```yaml
+      allowOpaqueTokens: true
+      requireTokenIntrospection: true
+      ```
+
+      Default: false (allows fallback to ID token)
+      See: RFC 7662 OAuth 2.0 Token Introspection specification
     required: false
 
   headers:

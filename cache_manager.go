@@ -61,6 +61,14 @@ func (cm *CacheManager) GetSharedJWKCache() JWKCacheInterface {
 	return &JWKCache{cache: cm.manager.GetJWKCache()}
 }
 
+// GetSharedIntrospectionCache returns the shared token introspection cache
+// for caching OAuth 2.0 Token Introspection (RFC 7662) results
+func (cm *CacheManager) GetSharedIntrospectionCache() CacheInterface {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return &CacheInterfaceWrapper{cache: cm.manager.GetIntrospectionCache()}
+}
+
 // Close gracefully shuts down all cache components
 func (cm *CacheManager) Close() error {
 	cm.mu.Lock()

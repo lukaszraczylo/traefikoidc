@@ -39,23 +39,42 @@ type Config struct {
 	// For Auth0 API access tokens with custom audiences, set this to your API identifier.
 	// For Azure AD with Application ID URI, set to "api://your-app-id".
 	// Security: This value is validated against the JWT aud claim to prevent token confusion attacks.
-	Audience                  string                 `json:"audience,omitempty"`
-	PostLogoutRedirectURI     string                 `json:"postLogoutRedirectURI"`
-	LogLevel                  string                 `json:"logLevel"`
-	SessionEncryptionKey      string                 `json:"sessionEncryptionKey"`
-	ProviderURL               string                 `json:"providerURL"`
-	RevocationURL             string                 `json:"revocationURL"`
-	ExcludedURLs              []string               `json:"excludedURLs"`
-	AllowedUserDomains        []string               `json:"allowedUserDomains"`
-	AllowedUsers              []string               `json:"allowedUsers"`
-	Scopes                    []string               `json:"scopes"`
-	Headers                   []TemplatedHeader      `json:"headers"`
-	AllowedRolesAndGroups     []string               `json:"allowedRolesAndGroups"`
-	RateLimit                 int                    `json:"rateLimit"`
-	RefreshGracePeriodSeconds int                    `json:"refreshGracePeriodSeconds"`
-	ForceHTTPS                bool                   `json:"forceHTTPS"`
-	EnablePKCE                bool                   `json:"enablePKCE"`
-	OverrideScopes            bool                   `json:"overrideScopes"`
+	Audience                  string            `json:"audience,omitempty"`
+	PostLogoutRedirectURI     string            `json:"postLogoutRedirectURI"`
+	LogLevel                  string            `json:"logLevel"`
+	SessionEncryptionKey      string            `json:"sessionEncryptionKey"`
+	ProviderURL               string            `json:"providerURL"`
+	RevocationURL             string            `json:"revocationURL"`
+	ExcludedURLs              []string          `json:"excludedURLs"`
+	AllowedUserDomains        []string          `json:"allowedUserDomains"`
+	AllowedUsers              []string          `json:"allowedUsers"`
+	Scopes                    []string          `json:"scopes"`
+	Headers                   []TemplatedHeader `json:"headers"`
+	AllowedRolesAndGroups     []string          `json:"allowedRolesAndGroups"`
+	RateLimit                 int               `json:"rateLimit"`
+	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
+	ForceHTTPS                bool              `json:"forceHTTPS"`
+	EnablePKCE                bool              `json:"enablePKCE"`
+	OverrideScopes            bool              `json:"overrideScopes"`
+	// StrictAudienceValidation enforces strict audience validation for access tokens.
+	// When enabled, sessions are rejected if access token validation fails (prevents fallback to ID token).
+	// This addresses Auth0 Scenario 2 security concerns where access tokens without proper
+	// audience claims could be accepted based on ID token validation.
+	// Default: false (backward compatible - allows ID token fallback)
+	// Recommended: true for production environments requiring strict OAuth 2.0 compliance
+	StrictAudienceValidation bool `json:"strictAudienceValidation,omitempty"`
+	// AllowOpaqueTokens enables acceptance of non-JWT (opaque) access tokens.
+	// When enabled, opaque tokens are validated via OAuth 2.0 Token Introspection (RFC 7662).
+	// This supports Auth0 Scenario 3 and other providers that issue opaque access tokens.
+	// Default: false (only JWT access tokens accepted)
+	// Note: Requires introspection endpoint to be available from provider metadata
+	AllowOpaqueTokens bool `json:"allowOpaqueTokens,omitempty"`
+	// RequireTokenIntrospection forces token introspection for all opaque access tokens.
+	// When enabled, opaque tokens are rejected if introspection endpoint is unavailable.
+	// When disabled, opaque tokens fall back to ID token validation.
+	// Default: false (allows fallback to ID token)
+	// Recommended: true when AllowOpaqueTokens is enabled for maximum security
+	RequireTokenIntrospection bool                   `json:"requireTokenIntrospection,omitempty"`
 	SecurityHeaders           *SecurityHeadersConfig `json:"securityHeaders,omitempty"`
 }
 

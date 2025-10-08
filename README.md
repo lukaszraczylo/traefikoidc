@@ -126,6 +126,10 @@ The middleware supports the following configuration options:
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
 | `cookieDomain` | Explicit domain for session cookies (important for multi-subdomain setups) | auto-detected | `.example.com`, `app.example.com` |
+| `audience` | Custom audience for access token validation (for Auth0 custom APIs, etc.) | `clientID` | `https://my-api.example.com` |
+| `strictAudienceValidation` | Reject sessions with access token audience mismatch (prevents token confusion attacks) | `false` | `true` |
+| `allowOpaqueTokens` | Enable opaque (non-JWT) access token support via RFC 7662 introspection | `false` | `true` |
+| `requireTokenIntrospection` | Require introspection for opaque tokens (force validation, no fallback) | `false` | `true` |
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 | `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
 
@@ -201,6 +205,103 @@ scopes: []
 ```
 
 The default append behavior ensures essential OIDC scopes are always present, while the override mode gives you complete control over the exact scopes requested from the provider.
+
+## Auth0 Audience Validation & Security
+
+The middleware provides comprehensive support for Auth0 audience validation to prevent token confusion attacks. Auth0 can issue tokens in three different scenarios, each requiring specific configuration.
+
+### Understanding Token Audiences
+
+Per OAuth 2.0 and OIDC specifications:
+- **ID Tokens**: MUST have `aud = client_id` (OIDC Core 1.0 spec)
+- **Access Tokens**: Can have custom audiences (e.g., API identifiers)
+
+Proper audience validation prevents **token confusion attacks** where a token intended for one API is used to access another API.
+
+### Auth0 Scenarios
+
+#### Scenario 1: Custom API Audience ✅ (RECOMMENDED)
+
+**Configuration:**
+```yaml
+audience: "https://my-api.example.com"  # Your API identifier from Auth0
+strictAudienceValidation: true          # Enforce strict validation
+```
+
+**Result**: Fully secure, OIDC compliant with proper access token audience validation.
+
+#### Scenario 2: Default Audience ⚠️ (USE WITH CAUTION)
+
+**Configuration:**
+```yaml
+# audience not specified (defaults to client_id)
+strictAudienceValidation: true  # Recommended: reject mismatched tokens
+```
+
+**Behavior**: Access tokens may not contain client_id in audience, triggering security warnings. Set `strictAudienceValidation: true` to reject such sessions.
+
+#### Scenario 3: Opaque Access Tokens ✅ (SUPPORTED)
+
+**Configuration:**
+```yaml
+allowOpaqueTokens: true              # Enable opaque token support
+requireTokenIntrospection: true      # Require introspection (recommended)
+```
+
+**Result**: Secure with OAuth 2.0 Token Introspection (RFC 7662).
+
+### Security Configuration Options
+
+| Option | Purpose | Recommended Value |
+|--------|---------|-------------------|
+| `audience` | Expected audience for access tokens | Your API identifier or leave empty |
+| `strictAudienceValidation` | Reject sessions with audience mismatch | `true` for production |
+| `allowOpaqueTokens` | Accept non-JWT access tokens | `true` if provider issues opaque tokens |
+| `requireTokenIntrospection` | Force introspection for opaque tokens | `true` when `allowOpaqueTokens=true` |
+
+### Complete Auth0 Configuration Examples
+
+**Production Configuration (Scenario 1):**
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-auth0-secure
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://your-auth0-domain.auth0.com
+      clientID: your-auth0-client-id
+      clientSecret: your-auth0-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      audience: "https://my-api.example.com"
+      strictAudienceValidation: true
+      allowedRolesAndGroups:
+        - "https://your-app.com/roles:admin"
+        - editor
+```
+
+**Opaque Token Configuration (Scenario 3):**
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-auth0-opaque
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://your-auth0-domain.auth0.com
+      clientID: your-auth0-client-id
+      clientSecret: your-auth0-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      allowOpaqueTokens: true
+      requireTokenIntrospection: true
+      strictAudienceValidation: true
+```
+
+For detailed Auth0 configuration including all three scenarios, troubleshooting, and security best practices, see **[AUTH0_AUDIENCE_GUIDE.md](AUTH0_AUDIENCE_GUIDE.md)**.
 
 ## Security Headers Configuration
 
@@ -741,6 +842,11 @@ spec:
       sessionEncryptionKey: your-secure-encryption-key-min-32-chars
       callbackURL: /oauth2/callback
       logoutURL: /oauth2/logout
+
+      # Audience configuration for custom APIs
+      audience: "https://my-api.example.com"  # Your API identifier from Auth0
+      strictAudienceValidation: true          # Enforce proper audience validation
+
       scopes:
         - read:custom_data  # Custom scopes as needed
       allowedRolesAndGroups:
@@ -748,6 +854,8 @@ spec:
         - editor
       postLogoutRedirectURI: /logged-out-page  # Must be in Auth0 Allowed Logout URLs
 ```
+
+**Note**: For detailed Auth0 audience configuration including opaque tokens and all security scenarios, see [AUTH0_AUDIENCE_GUIDE.md](AUTH0_AUDIENCE_GUIDE.md).
 
 ### Okta Configuration
 
