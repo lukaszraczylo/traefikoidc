@@ -192,6 +192,7 @@ func TestServeHTTP_CallbackAndLogout(t *testing.T) {
 			logoutURLPath:          "/logout",
 			tokenURL:               "https://provider.example.com/token",
 			clientID:               "test-client",
+			audience:               "test-client",
 			clientSecret:           "test-secret",
 			tokenHTTPClient:        http.DefaultClient,
 		}
@@ -297,6 +298,7 @@ func TestProcessAuthorizedRequest(t *testing.T) {
 					logger:        NewLogger("debug"),
 					authURL:       "https://provider.example.com/auth",
 					clientID:      "test-client",
+					audience:      "test-client",
 					redirURLPath:  "/callback",
 				}
 			},

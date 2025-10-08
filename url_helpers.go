@@ -99,8 +99,13 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	copy(scopes, t.scopes)
 
 	// Apply discovery-based scope filtering if available
-	if t.scopeFilter != nil && len(t.scopesSupported) > 0 {
-		scopes = t.scopeFilter.FilterSupportedScopes(scopes, t.scopesSupported, t.providerURL)
+	// Read scopesSupported with RLock
+	t.metadataMu.RLock()
+	scopesSupported := t.scopesSupported
+	t.metadataMu.RUnlock()
+
+	if t.scopeFilter != nil && len(scopesSupported) > 0 {
+		scopes = t.scopeFilter.FilterSupportedScopes(scopes, scopesSupported, t.providerURL)
 		t.logger.Debugf("TraefikOidc.buildAuthURL: After discovery filtering: %v", scopes)
 	}
 
@@ -160,8 +165,13 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	}
 
 	// Final filtering pass to remove anything the provider doesn't support
-	if t.scopeFilter != nil && len(t.scopesSupported) > 0 {
-		scopes = t.scopeFilter.FilterSupportedScopes(scopes, t.scopesSupported, t.providerURL)
+	// Read scopesSupported with RLock
+	t.metadataMu.RLock()
+	scopesSupported = t.scopesSupported
+	t.metadataMu.RUnlock()
+
+	if t.scopeFilter != nil && len(scopesSupported) > 0 {
+		scopes = t.scopeFilter.FilterSupportedScopes(scopes, scopesSupported, t.providerURL)
 		t.logger.Debugf("TraefikOidc.buildAuthURL: After final filtering: %v", scopes)
 	}
 
@@ -171,7 +181,12 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		t.logger.Debugf("TraefikOidc.buildAuthURL: Final scope string being sent to OIDC provider: %s", finalScopeString)
 	}
 
-	return t.buildURLWithParams(t.authURL, params)
+	// Read authURL with RLock
+	t.metadataMu.RLock()
+	authURL := t.authURL
+	t.metadataMu.RUnlock()
+
+	return t.buildURLWithParams(authURL, params)
 }
 
 // buildURLWithParams constructs a URL by combining a base URL with query parameters.
@@ -194,9 +209,14 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 	}
 
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-		issuerURLParsed, err := url.Parse(t.issuerURL)
+		// Read issuerURL with RLock
+		t.metadataMu.RLock()
+		issuerURL := t.issuerURL
+		t.metadataMu.RUnlock()
+
+		issuerURLParsed, err := url.Parse(issuerURL)
 		if err != nil {
-			t.logger.Errorf("Could not parse issuerURL: %s. Error: %v", t.issuerURL, err)
+			t.logger.Errorf("Could not parse issuerURL: %s. Error: %v", issuerURL, err)
 			return ""
 		}
 

@@ -335,6 +335,7 @@ func TestJWTReplayAttack(t *testing.T) {
 	tOidc := &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
+		audience:           "test-client-id",
 		clientSecret:       "test-client-secret",
 		jwkCache:           mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
@@ -551,6 +552,7 @@ func TestSessionFixationAttack(t *testing.T) {
 		logoutURLPath:      "/callback/logout",
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
+		audience:           "test-client-id",
 		clientSecret:       "test-client-secret",
 		jwkCache:           mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
@@ -857,6 +859,7 @@ func TestTokenBlacklisting(t *testing.T) {
 	tOidc := &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
+		audience:           "test-client-id",
 		clientSecret:       "test-client-secret",
 		jwkCache:           mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
@@ -1278,6 +1281,7 @@ func TestRateLimiting(t *testing.T) {
 	tOidc := &TraefikOidc{
 		issuerURL:      "https://test-issuer.com",
 		clientID:       "test-client-id",
+		audience:       "test-client-id",
 		clientSecret:   "test-client-secret",
 		jwkCache:       ts.mockJWKCache,
 		jwksURL:        "https://test-jwks-url.com",
@@ -1385,6 +1389,7 @@ func TestAuthorizationHeaderBypass(t *testing.T) {
 		logoutURLPath:      "/callback/logout",
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
+		audience:           "test-client-id",
 		clientSecret:       "test-client-secret",
 		jwkCache:           ts.mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
@@ -1560,6 +1565,7 @@ func TestInvalidRedirectURI(t *testing.T) {
 		logoutURLPath:      "/callback/logout",
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
+		audience:           "test-client-id",
 		clientSecret:       "test-client-secret",
 		jwkCache:           ts.mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",

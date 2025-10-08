@@ -37,6 +37,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -82,6 +83,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					enablePKCE:   true,
 					tokenHTTPClient: &http.Client{
@@ -116,6 +118,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/invalid",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -146,6 +149,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/expired",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -176,6 +180,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/timeout",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 100 * time.Millisecond,
@@ -206,6 +211,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/error",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -236,6 +242,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/malformed",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -266,6 +273,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/incomplete",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -299,6 +307,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/slow",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -329,6 +338,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/ratelimit",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -500,6 +510,7 @@ func TestExchangeCodeForToken_Integration(t *testing.T) {
 		oidc := &TraefikOidc{
 			tokenURL:     server.URL + "/token",
 			clientID:     "test_client",
+			audience:     "test_client",
 			clientSecret: "test_secret",
 			tokenHTTPClient: &http.Client{
 				Timeout: 10 * time.Second,
@@ -586,6 +597,7 @@ func TestExchangeCodeForToken_Integration(t *testing.T) {
 		oidc := &TraefikOidc{
 			tokenURL:     server.URL + "/token",
 			clientID:     "test_client",
+			audience:     "test_client",
 			clientSecret: "test_secret",
 			tokenHTTPClient: &http.Client{
 				Timeout: 10 * time.Second,

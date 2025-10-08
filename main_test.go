@@ -124,6 +124,7 @@ func (ts *TestSuite) Setup() {
 	ts.tOidc = &TraefikOidc{
 		issuerURL:          "https://test-issuer.com",
 		clientID:           "test-client-id",
+		audience:           "test-client-id",
 		clientSecret:       "test-client-secret",
 		jwkCache:           ts.mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
@@ -1304,6 +1305,7 @@ func TestHandleCallback(t *testing.T) {
 
 				// Add potentially missing fields based on New() comparison
 				clientID:     ts.tOidc.clientID,
+				audience:     ts.tOidc.clientID,
 				issuerURL:    ts.tOidc.issuerURL,
 				jwkCache:     ts.tOidc.jwkCache, // Use the mock cache from TestSuite
 				httpClient:   ts.tOidc.httpClient,
@@ -1668,6 +1670,7 @@ func TestHandleLogout(t *testing.T) {
 				tokenBlacklist: NewCache(), // Use generic cache for blacklist
 				httpClient:     &http.Client{},
 				clientID:       "test-client-id",
+				audience:       "test-client-id",
 				clientSecret:   "test-client-secret",
 				tokenCache:     NewTokenCache(),
 				forceHTTPS:     false,

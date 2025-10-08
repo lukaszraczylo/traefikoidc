@@ -27,13 +27,19 @@ type TemplatedHeader struct {
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
 type Config struct {
-	HTTPClient                *http.Client           `json:"-"`
-	OIDCEndSessionURL         string                 `json:"oidcEndSessionURL"`
-	CookieDomain              string                 `json:"cookieDomain"`
-	CallbackURL               string                 `json:"callbackURL"`
-	LogoutURL                 string                 `json:"logoutURL"`
-	ClientID                  string                 `json:"clientID"`
-	ClientSecret              string                 `json:"clientSecret"`
+	HTTPClient        *http.Client `json:"-"`
+	OIDCEndSessionURL string       `json:"oidcEndSessionURL"`
+	CookieDomain      string       `json:"cookieDomain"`
+	CallbackURL       string       `json:"callbackURL"`
+	LogoutURL         string       `json:"logoutURL"`
+	ClientID          string       `json:"clientID"`
+	ClientSecret      string       `json:"clientSecret"`
+	// Audience specifies the expected JWT audience claim value.
+	// If not set, defaults to ClientID for backward compatibility.
+	// For Auth0 API access tokens with custom audiences, set this to your API identifier.
+	// For Azure AD with Application ID URI, set to "api://your-app-id".
+	// Security: This value is validated against the JWT aud claim to prevent token confusion attacks.
+	Audience                  string                 `json:"audience,omitempty"`
 	PostLogoutRedirectURI     string                 `json:"postLogoutRedirectURI"`
 	LogLevel                  string                 `json:"logLevel"`
 	SessionEncryptionKey      string                 `json:"sessionEncryptionKey"`
@@ -266,6 +272,29 @@ func (c *Config) Validate() error {
 	// Validate refresh grace period
 	if c.RefreshGracePeriodSeconds < 0 {
 		return fmt.Errorf("refreshGracePeriodSeconds cannot be negative")
+	}
+
+	// Validate audience if specified
+	if c.Audience != "" {
+		// Validate audience format - should be a valid identifier or URL
+		if len(c.Audience) > 256 {
+			return fmt.Errorf("audience must not exceed 256 characters")
+		}
+
+		// If audience looks like a URL, validate it's HTTPS
+		if strings.HasPrefix(c.Audience, "http://") {
+			return fmt.Errorf("audience URL must use HTTPS, not HTTP")
+		}
+
+		// Prevent wildcard audiences which could weaken security
+		if strings.Contains(c.Audience, "*") {
+			return fmt.Errorf("audience must not contain wildcards")
+		}
+
+		// Validate that audience doesn't contain obvious injection patterns
+		if strings.ContainsAny(c.Audience, "\n\r\t\x00") {
+			return fmt.Errorf("audience contains invalid characters")
+		}
 	}
 
 	// Validate headers configuration for template security

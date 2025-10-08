@@ -93,9 +93,11 @@ type TraefikOidc struct {
 	goroutineWG                *sync.WaitGroup
 	clientSecret               string
 	clientID                   string
+	audience                   string // Expected JWT audience, defaults to clientID
 	name                       string
 	redirURLPath               string
 	logoutURLPath              string
+	metadataMu                 sync.RWMutex // Protects metadata endpoint fields
 	tokenURL                   string
 	authURL                    string
 	endSessionURL              string

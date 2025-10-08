@@ -89,8 +89,9 @@ scopes: ["openid", "profile", "email", "offline_access"]
 - **Offline access**: Requires `offline_access` scope for refresh tokens
 - **Access token validation**: Supports both JWT and opaque access tokens
 - **Tenant isolation**: Can restrict to specific Azure AD tenants
+- **Application ID URI**: Supports custom audience for protected APIs
 
-### Example Configuration
+### Example Configuration (Basic)
 ```yaml
 http:
   middlewares:
@@ -108,6 +109,33 @@ http:
           forceHttps: true
 ```
 
+### Azure AD API Configuration (Application ID URI)
+
+When exposing your application as an API with a custom Application ID URI, you need to specify the `audience` parameter. Azure AD includes the Application ID URI in the JWT `aud` claim.
+
+```yaml
+http:
+  middlewares:
+    azure-api-oidc:
+      plugin:
+        traefik-oidc:
+          providerUrl: "https://login.microsoftonline.com/common/v2.0"
+          clientId: "12345678-1234-1234-1234-123456789abc"
+          clientSecret: "your-azure-client-secret"
+          # Specify the Application ID URI as audience
+          audience: "api://12345678-1234-1234-1234-123456789abc"
+          callbackUrl: "https://app.example.com/auth/callback"
+          logoutUrl: "https://app.example.com/auth/logout"
+          scopes: ["openid", "profile", "email", "offline_access"]
+          forceHttps: true
+```
+
+**Important**:
+- The `audience` parameter should match your Application ID URI (typically `api://{app-id}`)
+- Find your Application ID URI in Azure Portal → App Registration → Expose an API → Application ID URI
+- Without the `audience` parameter, access tokens with custom audiences will be rejected
+- For ID token validation only (no API access), you can omit the `audience` parameter
+
 ### Azure App Registration Setup
 1. Go to [Azure Portal](https://portal.azure.com/)
 2. Navigate to "Azure Active Directory" > "App registrations"
@@ -115,6 +143,12 @@ http:
 4. Add redirect URI: `https://your-domain.com/auth/callback`
 5. Create client secret in "Certificates & secrets"
 6. Configure API permissions for required scopes
+
+### Azure AD API Exposure Setup (for custom audiences)
+1. In your App Registration, go to "Expose an API"
+2. Set the Application ID URI (e.g., `api://12345678-1234-1234-1234-123456789abc`)
+3. Add any custom scopes your API exposes
+4. Update the middleware configuration to include the `audience` parameter with this URI
 
 ---
 
@@ -138,8 +172,9 @@ scopes: ["openid", "profile", "email", "offline_access"]
 - **Rules and hooks**: Leverages Auth0's extensibility
 - **Social connections**: Works with Auth0's social identity providers
 - **Offline access**: Requires `offline_access` scope
+- **API audiences**: Supports custom audience for API access tokens
 
-### Example Configuration
+### Example Configuration (Basic)
 ```yaml
 http:
   middlewares:
@@ -158,12 +193,48 @@ http:
           enablePkce: true
 ```
 
+### Auth0 API Configuration (Custom Audience)
+
+When using Auth0 APIs with custom audience parameters, you need to specify the `audience` field. Auth0 includes the API identifier in the JWT `aud` claim instead of the `clientId`.
+
+```yaml
+http:
+  middlewares:
+    auth0-api-oidc:
+      plugin:
+        traefik-oidc:
+          providerUrl: "https://company.auth0.com"
+          clientId: "abcdef123456789"
+          clientSecret: "your-auth0-client-secret"
+          # Specify the Auth0 API identifier as audience
+          audience: "https://api.company.com"
+          callbackUrl: "https://app.example.com/auth/callback"
+          logoutUrl: "https://app.example.com/auth/logout"
+          scopes: ["openid", "profile", "email", "offline_access"]
+          forceHttps: true
+          enablePkce: true
+```
+
+**Important**:
+- The `audience` parameter should match your Auth0 API identifier (not the client ID)
+- Find your API identifier in Auth0 Dashboard → APIs → Your API → Settings → Identifier
+- Without the `audience` parameter, access tokens with custom audiences will be rejected with "invalid audience" error
+- For ID token validation only (no APIs), you can omit the `audience` parameter
+
 ### Auth0 Application Setup
 1. Go to [Auth0 Dashboard](https://manage.auth0.com/)
 2. Create new application (Regular Web Application)
 3. Configure allowed callback URLs: `https://your-domain.com/auth/callback`
 4. Configure allowed logout URLs: `https://your-domain.com/auth/logout`
 5. Enable OIDC Conformant in Advanced Settings
+
+### Auth0 API Setup (for custom audiences)
+1. Go to Auth0 Dashboard → APIs
+2. Create a new API or select existing API
+3. Note the "Identifier" field (e.g., `https://api.company.com`) - this is your `audience` value
+4. In API Settings → Machine to Machine Applications, authorize your application
+5. Configure API permissions/scopes as needed
+6. Use the API identifier as the `audience` parameter in your configuration
 
 ---
 
@@ -549,6 +620,31 @@ DEBUG: ScopeFilter: Final filtered scopes: [openid profile email]
 ---
 
 ## Common Configuration Options
+
+### Audience Configuration
+
+The `audience` parameter specifies the expected JWT audience claim value. This is particularly important when using Auth0 APIs, Azure AD Application ID URIs, or other providers with custom audience requirements.
+
+```yaml
+# Optional: Custom audience for JWT validation
+# If not set, defaults to clientID for backward compatibility
+audience: "https://api.example.com"  # Auth0 API identifier
+# OR
+audience: "api://12345-guid"  # Azure AD Application ID URI
+```
+
+**When to use**:
+- **Auth0**: When using Auth0 APIs with custom audience parameters
+- **Azure AD**: When exposing your app as an API with Application ID URI
+- **Keycloak**: When using audience-restricted tokens
+- **Okta**: When using custom authorization servers with API audiences
+
+**When to omit**:
+- For standard ID token validation (default behavior)
+- When the provider sets `aud` claim to your `clientID`
+- For backward compatibility with existing configurations
+
+**Security Note**: The `audience` parameter prevents token confusion attacks by ensuring tokens issued for one service cannot be used at another service.
 
 ### Security Settings
 ```yaml

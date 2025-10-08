@@ -30,6 +30,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -71,6 +72,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/expired",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -97,6 +99,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/invalid",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -123,6 +126,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/revoked",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -149,6 +153,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/timeout",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 100 * time.Millisecond,
@@ -175,6 +180,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/error",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -201,6 +207,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/malformed",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -228,6 +235,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/partial",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -259,6 +267,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/ratelimit",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -285,6 +294,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -315,6 +325,7 @@ func TestGetNewTokenWithRefreshToken(t *testing.T) {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token/rotating",
 					clientID:     "test_client",
+					audience:     "test_client",
 					clientSecret: "test_secret",
 					tokenHTTPClient: &http.Client{
 						Timeout: 10 * time.Second,
@@ -519,6 +530,7 @@ func TestGetNewTokenWithRefreshToken_Concurrency(t *testing.T) {
 		oidc := &TraefikOidc{
 			tokenURL:     server.URL + "/token",
 			clientID:     "test_client",
+			audience:     "test_client",
 			clientSecret: "test_secret",
 			tokenHTTPClient: &http.Client{
 				Timeout: 10 * time.Second,
@@ -588,6 +600,7 @@ func TestGetNewTokenWithRefreshToken_Concurrency(t *testing.T) {
 		oidc := &TraefikOidc{
 			tokenURL:     server.URL + "/token",
 			clientID:     "test_client",
+			audience:     "test_client",
 			clientSecret: "test_secret",
 			tokenHTTPClient: &http.Client{
 				Timeout: 10 * time.Second,
@@ -642,6 +655,7 @@ func TestGetNewTokenWithRefreshToken_ErrorRecovery(t *testing.T) {
 		oidc := &TraefikOidc{
 			tokenURL:     server.URL + "/token",
 			clientID:     "test_client",
+			audience:     "test_client",
 			clientSecret: "test_secret",
 			tokenHTTPClient: &http.Client{
 				Timeout: 10 * time.Second,
