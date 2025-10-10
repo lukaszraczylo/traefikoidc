@@ -121,6 +121,12 @@ testData:
       - "https://*.example.com"
     corsAllowCredentials: true
     
+    # Cross-origin policies
+    permissionsPolicy: "geolocation=(), camera=(), microphone=()"
+    crossOriginEmbedderPolicy: "require-corp"
+    crossOriginOpenerPolicy: "same-origin"
+    crossOriginResourcePolicy: "same-origin"
+
     # Custom headers
     customHeaders:
       X-Custom-Header: "production"
@@ -1030,4 +1036,60 @@ configuration:
         description: |
           Remove the X-Powered-By header to hide technology stack information.
           Default: true
+        required: false
+
+      permissionsPolicy:
+        type: string
+        description: |
+          Permissions-Policy header to control browser feature permissions.
+          This header allows you to control which features and APIs can be used.
+
+          Examples:
+          - "geolocation=(), camera=(), microphone=()" (deny all)
+          - "geolocation=(self), camera=()" (allow geolocation for same origin only)
+
+          Common directives: accelerometer, camera, geolocation, gyroscope,
+          magnetometer, microphone, payment, usb
+        required: false
+
+      crossOriginEmbedderPolicy:
+        type: string
+        description: |
+          Cross-Origin-Embedder-Policy (COEP) header to prevent untrusted
+          resources from being loaded.
+
+          Options:
+          - "require-corp": Resources must explicitly grant permission
+          - "credentialless": Load without credentials for cross-origin resources
+          - "unsafe-none": No restrictions (default)
+
+          Required for certain browser features like SharedArrayBuffer.
+        required: false
+
+      crossOriginOpenerPolicy:
+        type: string
+        description: |
+          Cross-Origin-Opener-Policy (COOP) header to isolate browsing context
+          from cross-origin windows.
+
+          Options:
+          - "same-origin": Isolate from cross-origin documents
+          - "same-origin-allow-popups": Allow popups that don't set COOP
+          - "unsafe-none": No isolation (default)
+
+          Helps prevent cross-origin attacks and Spectre-like vulnerabilities.
+        required: false
+
+      crossOriginResourcePolicy:
+        type: string
+        description: |
+          Cross-Origin-Resource-Policy (CORP) header to control which origins
+          can load this resource.
+
+          Options:
+          - "same-origin": Only same-origin requests can load the resource
+          - "same-site": Only same-site requests can load the resource
+          - "cross-origin": Any origin can load the resource (default)
+
+          Prevents your resources from being embedded on other sites.
         required: false

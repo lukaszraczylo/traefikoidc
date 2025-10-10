@@ -69,6 +69,14 @@ func (cm *CacheManager) GetSharedIntrospectionCache() CacheInterface {
 	return &CacheInterfaceWrapper{cache: cm.manager.GetIntrospectionCache()}
 }
 
+// GetSharedTokenTypeCache returns the shared token type cache
+// for caching token type detection results to improve performance
+func (cm *CacheManager) GetSharedTokenTypeCache() CacheInterface {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return &CacheInterfaceWrapper{cache: cm.manager.GetTokenTypeCache()}
+}
+
 // Close gracefully shuts down all cache components
 func (cm *CacheManager) Close() error {
 	cm.mu.Lock()

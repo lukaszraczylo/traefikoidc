@@ -153,6 +153,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			return config.PostLogoutRedirectURI
 		}(),
 		tokenBlacklist:     cacheManager.GetSharedTokenBlacklist(),
+		tokenTypeCache:     cacheManager.GetSharedTokenTypeCache(), // Cache for token type detection
 		jwkCache:           cacheManager.GetSharedJWKCache(),
 		metadataCache:      cacheManager.GetSharedMetadataCache(),
 		introspectionCache: cacheManager.GetSharedIntrospectionCache(), // Cache for introspection results

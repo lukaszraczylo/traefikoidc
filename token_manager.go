@@ -158,6 +158,134 @@ func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interfa
 	t.tokenCache.Set(token, claims, duration)
 }
 
+// detectTokenType efficiently detects whether a token is an ID token or access token.
+// It uses caching to avoid re-detection and optimizes the detection order for performance.
+// Parameters:
+//   - jwt: The parsed JWT structure containing header and claims.
+//   - token: The raw token string for cache key generation.
+//
+// Returns:
+//   - true if the token is an ID token, false if it's an access token.
+func (t *TraefikOidc) detectTokenType(jwt *JWT, token string) bool {
+	// Use first 32 chars of token as cache key (sufficient for uniqueness)
+	cacheKey := token
+	if len(token) > 32 {
+		cacheKey = token[:32]
+	}
+
+	// Check cache first
+	if t.tokenTypeCache != nil {
+		if cachedType, found := t.tokenTypeCache.Get(cacheKey); found {
+			if isIDToken, ok := cachedType.(bool); ok {
+				return isIDToken
+			}
+		}
+	}
+
+	// Perform optimized detection
+	isIDToken := false
+
+	// 1. Check 'nonce' claim first (most definitive for ID tokens - short circuit)
+	if nonce, ok := jwt.Claims["nonce"]; ok {
+		if _, ok := nonce.(string); ok {
+			isIDToken = true
+			if !t.suppressDiagnosticLogs {
+				t.safeLogDebugf("ID token detected via nonce claim")
+			}
+			// Cache and return immediately
+			if t.tokenTypeCache != nil {
+				t.tokenTypeCache.Set(cacheKey, true, 5*time.Minute)
+			}
+			return true
+		}
+	}
+
+	// 2. Check 'typ' header for "at+jwt" (definitive for access tokens - short circuit)
+	if typ, ok := jwt.Header["typ"].(string); ok && typ == "at+jwt" {
+		// RFC 9068 compliant access token
+		if !t.suppressDiagnosticLogs {
+			t.safeLogDebugf("RFC 9068 access token detected (typ=at+jwt)")
+		}
+		// Cache and return immediately
+		if t.tokenTypeCache != nil {
+			t.tokenTypeCache.Set(cacheKey, false, 5*time.Minute)
+		}
+		return false
+	}
+
+	// 3. Check 'token_use' claim (definitive if present - short circuit)
+	if tokenUse, ok := jwt.Claims["token_use"].(string); ok {
+		if tokenUse == "id" {
+			isIDToken = true
+			if !t.suppressDiagnosticLogs {
+				t.safeLogDebugf("ID token detected via token_use claim")
+			}
+			// Cache and return
+			if t.tokenTypeCache != nil {
+				t.tokenTypeCache.Set(cacheKey, true, 5*time.Minute)
+			}
+			return true
+		} else if tokenUse == "access" {
+			if !t.suppressDiagnosticLogs {
+				t.safeLogDebugf("Access token detected via token_use claim")
+			}
+			// Cache and return
+			if t.tokenTypeCache != nil {
+				t.tokenTypeCache.Set(cacheKey, false, 5*time.Minute)
+			}
+			return false
+		}
+	}
+
+	// 4. Check 'scope' claim (strong indicator for access tokens)
+	if scope, ok := jwt.Claims["scope"]; ok {
+		if _, ok := scope.(string); ok {
+			if !t.suppressDiagnosticLogs {
+				t.safeLogDebugf("Access token detected via scope claim")
+			}
+			// Cache and return
+			if t.tokenTypeCache != nil {
+				t.tokenTypeCache.Set(cacheKey, false, 5*time.Minute)
+			}
+			return false
+		}
+	}
+
+	// 5. Check if aud == clientID only (ID token pattern)
+	if aud, ok := jwt.Claims["aud"]; ok {
+		// Check string audience
+		if audStr, ok := aud.(string); ok && audStr == t.clientID {
+			isIDToken = true
+		} else if audArr, ok := aud.([]interface{}); ok {
+			// Check array audience - only treat as ID token if client_id is sole audience
+			if len(audArr) == 1 {
+				for _, v := range audArr {
+					if str, ok := v.(string); ok && str == t.clientID {
+						isIDToken = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Cache the result
+	if t.tokenTypeCache != nil {
+		t.tokenTypeCache.Set(cacheKey, isIDToken, 5*time.Minute)
+	}
+
+	// Log detection result in debug mode
+	if !t.suppressDiagnosticLogs {
+		if isIDToken {
+			t.safeLogDebugf("ID token detected via audience matching")
+		} else {
+			t.safeLogDebugf("Defaulting to access token")
+		}
+	}
+
+	return isIDToken
+}
+
 // VerifyJWTSignatureAndClaims verifies JWT signature using provider's public keys and validates standard claims.
 // It retrieves the appropriate public key from the JWKS cache, verifies the token signature,
 // and validates standard OIDC claims like issuer, audience, and expiration.
@@ -240,105 +368,8 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 		t.safeLogDebugf("DIAGNOSTIC: Signature verification successful for kid=%s", kid)
 	}
 
-	// Determine expected audience based on token type
-	// Per OIDC spec: ID tokens MUST have aud=client_id
-	// Access tokens can have custom audience values (e.g., Auth0 API identifiers)
-
-	// Token type detection strategy (RFC 9068 + OIDC Core 1.0):
-	// 1. Check 'typ' header claim (RFC 9068) → "at+jwt" = ACCESS_TOKEN, "JWT" = could be either
-	// 2. Check explicit token type claims (token_use, token_type) if present
-	// 3. Check 'scope' claim → ACCESS_TOKEN (use configured audience)
-	// 4. Check 'nonce' claim → ID_TOKEN (use client_id, per OIDC spec)
-	// 5. Check if aud == client_id only → ID_TOKEN (use client_id)
-	// 6. Else → ACCESS_TOKEN with custom audience (use configured audience)
-
-	isIDToken := false
-	isAccessToken := false
-
-	// Step 1: Check typ header for explicit type (RFC 9068)
-	if typ, ok := jwt.Header["typ"].(string); ok {
-		if typ == "at+jwt" {
-			// RFC 9068 compliant access token
-			isAccessToken = true
-			if !t.suppressDiagnosticLogs {
-				t.safeLogDebugf("RFC 9068 access token detected (typ=at+jwt)")
-			}
-		} else if typ == "JWT" {
-			// Generic JWT, need further checks
-			if !t.suppressDiagnosticLogs {
-				t.safeLogDebugf("Generic JWT detected (typ=JWT), checking claims")
-			}
-		}
-	}
-
-	// Step 2: Check explicit token type claims (if not already determined)
-	if !isAccessToken && !isIDToken {
-		// Check for token_use claim (used by some providers like AWS Cognito)
-		if tokenUse, ok := jwt.Claims["token_use"].(string); ok {
-			if tokenUse == "access" {
-				isAccessToken = true
-			} else if tokenUse == "id" {
-				isIDToken = true
-			}
-		}
-
-		// Check for token_type claim
-		if !isAccessToken && !isIDToken {
-			if tokenType, ok := jwt.Claims["token_type"].(string); ok {
-				if tokenType == "access_token" || tokenType == "Bearer" {
-					isAccessToken = true
-				} else if tokenType == "id_token" {
-					isIDToken = true
-				}
-			}
-		}
-	}
-
-	// Step 3: Check scope claim (access tokens have this)
-	if !isAccessToken && !isIDToken {
-		if scope, ok := jwt.Claims["scope"]; ok {
-			if _, ok := scope.(string); ok {
-				isAccessToken = true
-			}
-		}
-	}
-
-	// Step 4: Check nonce claim (ID tokens have this per OIDC spec for replay protection)
-	if !isAccessToken && !isIDToken {
-		if nonce, ok := jwt.Claims["nonce"]; ok {
-			if _, ok := nonce.(string); ok {
-				isIDToken = true // Nonce indicates ID token
-			}
-		}
-	}
-
-	// Step 5: If no scope and no nonce, check if aud matches client_id (indicates ID token)
-	if !isAccessToken && !isIDToken {
-		if aud, ok := jwt.Claims["aud"]; ok {
-			// Check string audience
-			if audStr, ok := aud.(string); ok && audStr == t.clientID {
-				isIDToken = true
-			}
-			// Check array audience
-			if audArr, ok := aud.([]interface{}); ok {
-				for _, v := range audArr {
-					if str, ok := v.(string); ok && str == t.clientID {
-						// Only treat as ID token if it's the sole audience
-						// Access tokens can also contain client_id in array
-						if len(audArr) == 1 {
-							isIDToken = true
-						}
-						break
-					}
-				}
-			}
-		}
-	}
-
-	// Step 6: Default to access token if still undetermined
-	if !isIDToken {
-		isAccessToken = true
-	}
+	// Detect token type (cached for performance)
+	isIDToken := t.detectTokenType(jwt, token)
 
 	// Determine expected audience
 	expectedAudience := t.audience // Default to configured audience
@@ -348,7 +379,6 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 			t.safeLogDebugf("ID token detected, validating with client_id: %s", expectedAudience)
 		}
 	} else {
-		// Access token or ambiguous - use configured audience
 		if !t.suppressDiagnosticLogs {
 			t.safeLogDebugf("Access token detected, validating with audience: %s", expectedAudience)
 		}

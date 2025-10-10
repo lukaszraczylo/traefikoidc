@@ -13,6 +13,7 @@ type UniversalCacheManager struct {
 	jwkCache           *UniversalCache
 	sessionCache       *UniversalCache
 	introspectionCache *UniversalCache // OAuth 2.0 Token Introspection cache (RFC 7662)
+	tokenTypeCache     *UniversalCache // Cache for token type detection results
 	mu                 sync.RWMutex
 	logger             *Logger
 }
@@ -94,6 +95,14 @@ func GetUniversalCacheManager(logger *Logger) *UniversalCacheManager {
 			DefaultTTL: 5 * time.Minute, // Short TTL for security (introspect frequently)
 			Logger:     logger,
 		})
+
+		// Initialize token type cache for performance optimization
+		universalCacheManager.tokenTypeCache = NewUniversalCache(UniversalCacheConfig{
+			Type:       CacheTypeToken,  // Use token cache type for token type detection
+			MaxSize:    2000,            // Cache up to 2000 token type detections
+			DefaultTTL: 5 * time.Minute, // 5 minute TTL for token type detection
+			Logger:     logger,
+		})
 	})
 
 	return universalCacheManager
@@ -141,13 +150,20 @@ func (m *UniversalCacheManager) GetIntrospectionCache() *UniversalCache {
 	return m.introspectionCache
 }
 
+// GetTokenTypeCache returns the token type detection cache
+func (m *UniversalCacheManager) GetTokenTypeCache() *UniversalCache {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.tokenTypeCache
+}
+
 // Close shuts down all caches
 func (m *UniversalCacheManager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for _, cache := range []*UniversalCache{
-		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache,
+		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache, m.tokenTypeCache,
 	} {
 		if cache != nil {
 			cache.Close()
