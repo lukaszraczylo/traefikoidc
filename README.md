@@ -76,7 +76,7 @@ experimental:
   plugins:
     traefikoidc:
       moduleName: github.com/lukaszraczylo/traefikoidc
-      version: v0.2.1  # Use the latest version
+      version: v0.7.8  # Use the latest version
 ```
 
 2. Configure the middleware in your dynamic configuration (see examples below).
@@ -301,7 +301,7 @@ spec:
       strictAudienceValidation: true
 ```
 
-For detailed Auth0 configuration including all three scenarios, troubleshooting, and security best practices, see **[AUTH0_AUDIENCE_GUIDE.md](AUTH0_AUDIENCE_GUIDE.md)**.
+For detailed Auth0 configuration including all three scenarios, troubleshooting, and security best practices, see **[AUTH0_AUDIENCE_GUIDE.md](docs/AUTH0_AUDIENCE_GUIDE.md)**.
 
 ## Security Headers Configuration
 
@@ -421,6 +421,10 @@ securityHeaders:
 | `customHeaders` | Additional custom headers | `{}` | `{"X-Custom": "value"}` |
 | `disableServerHeader` | Remove Server header | `true` | `true`, `false` |
 | `disablePoweredByHeader` | Remove X-Powered-By header | `true` | `true`, `false` |
+| `permissionsPolicy` | Permissions-Policy header | `` | `"geolocation=(), camera=(), microphone=()"` |
+| `crossOriginEmbedderPolicy` | Cross-Origin-Embedder-Policy header | `` | `"require-corp"`, `"credentialless"`, `"unsafe-none"` |
+| `crossOriginOpenerPolicy` | Cross-Origin-Opener-Policy header | `` | `"same-origin"`, `"same-origin-allow-popups"`, `"unsafe-none"` |
+| `crossOriginResourcePolicy` | Cross-Origin-Resource-Policy header | `` | `"same-origin"`, `"same-site"`, `"cross-origin"` |
 
 ### CORS Wildcard Support
 
@@ -855,7 +859,7 @@ spec:
       postLogoutRedirectURI: /logged-out-page  # Must be in Auth0 Allowed Logout URLs
 ```
 
-**Note**: For detailed Auth0 audience configuration including opaque tokens and all security scenarios, see [AUTH0_AUDIENCE_GUIDE.md](AUTH0_AUDIENCE_GUIDE.md).
+**Note**: For detailed Auth0 audience configuration including opaque tokens and all security scenarios, see [AUTH0_AUDIENCE_GUIDE.md](docs/AUTH0_AUDIENCE_GUIDE.md).
 
 ### Okta Configuration
 
@@ -1029,7 +1033,7 @@ services:
     image: traefik:v3.2.1
     command:
       - "--experimental.plugins.traefikoidc.modulename=github.com/lukaszraczylo/traefikoidc"
-      - "--experimental.plugins.traefikoidc.version=v0.2.1"
+      - "--experimental.plugins.traefikoidc.version=v0.7.8"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./traefik-config/traefik.yml:/etc/traefik/traefik.yml

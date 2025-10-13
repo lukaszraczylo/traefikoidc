@@ -73,6 +73,7 @@ type TraefikOidc struct {
 	initComplete               chan struct{}
 	limiter                    *rate.Limiter
 	tokenBlacklist             CacheInterface
+	tokenTypeCache             CacheInterface // Cache for token type detection results
 	headerTemplates            map[string]*template.Template
 	sessionManager             *SessionManager
 	tokenCleanupStopChan       chan struct{}
