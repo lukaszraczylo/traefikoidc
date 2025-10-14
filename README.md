@@ -132,6 +132,7 @@ The middleware supports the following configuration options:
 | `requireTokenIntrospection` | Require introspection for opaque tokens (force validation, no fallback) | `false` | `true` |
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 | `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
+| `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
 
 ## Scope Configuration
 
@@ -495,6 +496,47 @@ securityHeaders:
   corsEnabled: true
   corsAllowedOrigins: ["http://localhost:*"]
 ```
+
+### Multi-Replica Deployment Configuration
+
+When running multiple Traefik replicas with the OIDC plugin, you may encounter false positive replay detection errors. Each replica maintains its own in-memory JTI (JWT Token ID) cache, causing legitimate token reuse to be flagged as replay attacks.
+
+**Problem**: When the same valid token hits different replicas:
+- Request → Replica A → JTI added to Replica A's cache ✓
+- Request → Replica B → JTI NOT in Replica B's cache ✓
+- Request → Replica A → ❌ **FALSE POSITIVE**: "token replay detected"
+
+**Solution**: Disable replay detection for distributed deployments:
+
+```yaml
+disableReplayDetection: true  # Disable JTI replay detection for multi-replica setups
+```
+
+**Security Note**: When `disableReplayDetection: true`:
+- ✅ Token signatures still validated
+- ✅ Expiration still checked
+- ✅ All other claims still verified
+- ❌ JTI replay check **skipped**
+
+**Example Configuration**:
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-multi-replica
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      disableReplayDetection: true  # Required for multi-replica deployments
+```
+
+**Recommendation**: For single-instance deployments, leave this setting at `false` (default) to maintain replay attack protection. For multi-replica deployments, set to `true` and consider implementing a shared cache backend (Redis/Memcached) if replay detection is required.
 
 ## Usage Examples
 

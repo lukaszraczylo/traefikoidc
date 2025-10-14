@@ -65,18 +65,25 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		}
 	}
 
+	// Check token cache FIRST - if token is already verified and cached, return immediately
+	// This prevents false positives when multiple goroutines validate the same token concurrently
+	if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
+		return nil
+	}
+
+	// Only check JTI blacklist for tokens that aren't already in the cache
+	// This is for FIRST-TIME validation to detect replay attacks
 	if jti, ok := parsedJWT.Claims["jti"].(string); ok && jti != "" {
-		if !strings.HasPrefix(token, "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0") {
-			if t.tokenBlacklist != nil {
-				if blacklisted, exists := t.tokenBlacklist.Get(jti); exists && blacklisted != nil {
-					return fmt.Errorf("token replay detected (jti: %s) in cache", jti)
+		// Skip JTI blacklist check if replay detection is disabled
+		if !t.disableReplayDetection {
+			if !strings.HasPrefix(token, "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0") {
+				if t.tokenBlacklist != nil {
+					if blacklisted, exists := t.tokenBlacklist.Get(jti); exists && blacklisted != nil {
+						return fmt.Errorf("token replay detected (jti: %s) in cache", jti)
+					}
 				}
 			}
 		}
-	}
-
-	if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
-		return nil
 	}
 
 	if !t.limiter.Allow() {
@@ -94,7 +101,8 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 
 	t.cacheVerifiedToken(token, jwt.Claims)
 
-	if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" {
+	if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" && !t.disableReplayDetection {
+		// Only add to blacklist if replay detection is enabled
 		expiry := time.Now().Add(defaultBlacklistDuration)
 		if expClaim, expOk := jwt.Claims["exp"].(float64); expOk {
 			expTime := time.Unix(int64(expClaim), 0)
@@ -389,6 +397,8 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	issuerURL := t.issuerURL
 	t.metadataMu.RUnlock()
 
+	// Always skip replay check in JWT.Verify since we handle it at the VerifyToken level
+	// This prevents false positives when multiple goroutines validate the same cached token
 	if err := jwt.Verify(issuerURL, expectedAudience, true); err != nil {
 		return fmt.Errorf("standard claim verification failed: %w", err)
 	}

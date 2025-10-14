@@ -74,8 +74,21 @@ type Config struct {
 	// When disabled, opaque tokens fall back to ID token validation.
 	// Default: false (allows fallback to ID token)
 	// Recommended: true when AllowOpaqueTokens is enabled for maximum security
-	RequireTokenIntrospection bool                   `json:"requireTokenIntrospection,omitempty"`
-	SecurityHeaders           *SecurityHeadersConfig `json:"securityHeaders,omitempty"`
+	RequireTokenIntrospection bool `json:"requireTokenIntrospection,omitempty"`
+	// DisableReplayDetection disables JTI-based replay attack detection.
+	// Enable this when running multiple Traefik replicas to prevent false positives.
+	// Each replica maintains its own in-memory JTI cache, so the same valid token
+	// hitting different replicas will trigger replay detection on subsequent requests.
+	//
+	// Security Note: When enabled, the plugin still validates token signatures,
+	// expiration, and other claims. Only the JTI replay check is disabled.
+	// Consider using a shared cache backend (Redis/Memcached) if replay detection
+	// is required in multi-replica scenarios.
+	//
+	// Default: false (replay detection enabled)
+	// Recommended: true for multi-replica deployments
+	DisableReplayDetection bool                   `json:"disableReplayDetection,omitempty"`
+	SecurityHeaders        *SecurityHeadersConfig `json:"securityHeaders,omitempty"`
 }
 
 // SecurityHeadersConfig configures security headers for the plugin

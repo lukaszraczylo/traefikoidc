@@ -171,6 +171,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		strictAudienceValidation:  config.StrictAudienceValidation,
 		allowOpaqueTokens:         config.AllowOpaqueTokens,
 		requireTokenIntrospection: config.RequireTokenIntrospection,
+		disableReplayDetection:    config.DisableReplayDetection,
 		scopes: func() []string {
 			userProvidedScopes := deduplicateScopes(config.Scopes)
 
