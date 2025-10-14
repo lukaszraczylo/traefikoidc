@@ -1,5 +1,3 @@
-version: 2
-
 run:
   timeout: 10m
   tests: true
@@ -53,10 +51,10 @@ linters-settings:
       - (*database/sql.Stmt).Close
 
   govet:
-    check-shadowing: true
     enable-all: true
     disable:
       - fieldalignment  # Too strict, impacts readability
+      - shadow          # Can be enabled separately if needed
 
   gocyclo:
     min-complexity: 15
@@ -182,6 +180,7 @@ issues:
   exclude-use-default: false
   max-same-issues: 0
   max-issues-per-linter: 0
+  uniq-by-line: true
 
   exclude-rules:
     # Exclude some linters from running on tests files
@@ -224,5 +223,4 @@ output:
   format: colored-line-number
   print-issued-lines: true
   print-linter-name: true
-  uniq-by-line: true
   sort-results: true

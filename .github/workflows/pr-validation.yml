@@ -29,9 +29,13 @@ jobs:
 
       - name: Format check
         run: |
-          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+          # Exclude vendor directory from format checks
+          UNFORMATTED=$(gofmt -s -l . | grep -v "^vendor/" || true)
+          if [ -n "$UNFORMATTED" ]; then
             echo "Code is not formatted. Run: gofmt -s -w ."
-            gofmt -s -d .
+            echo "Unformatted files:"
+            echo "$UNFORMATTED"
+            gofmt -s -d $(echo "$UNFORMATTED")
             exit 1
           fi
 
