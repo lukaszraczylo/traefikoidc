@@ -853,7 +853,7 @@ func (g *EdgeCaseGenerator) GenerateIntegerEdgeCases() []int {
 func (g *EdgeCaseGenerator) GenerateTimeEdgeCases() []time.Time {
 	now := time.Now()
 	return []time.Time{
-		time.Time{},                     // Zero time
+		{},                              // Zero time
 		now,                             // Current time
 		now.Add(-time.Hour),             // One hour ago
 		now.Add(time.Hour),              // One hour from now
