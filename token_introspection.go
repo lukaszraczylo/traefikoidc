@@ -88,7 +88,10 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 
 		err = t.errorRecoveryManager.ExecuteWithRecovery(context.Background(), serviceName, func() error {
 			var reqErr error
-			resp, reqErr = t.httpClient.Do(req)
+			resp, reqErr = t.httpClient.Do(req) //nolint:bodyclose // Body is closed in defer after error check
+			if reqErr != nil && resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
 			return reqErr
 		})
 	} else {
@@ -96,11 +99,16 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 	}
 
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		return nil, fmt.Errorf("introspection request failed: %w", err)
 	}
 	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		if resp != nil && resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
 	}()
 
 	// Check HTTP status

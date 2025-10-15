@@ -29,6 +29,8 @@ import (
 // Returns:
 //   - An error if verification fails (e.g., blacklisted token, invalid format,
 //     signature failure, or claims error), nil if verification succeeds.
+//
+//nolint:gocognit,gocyclo // Complex token verification logic requires multiple security checks
 func (t *TraefikOidc) VerifyToken(token string) error {
 	if token == "" {
 		return fmt.Errorf("invalid JWT format: token is empty")
@@ -109,11 +111,8 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 			tokenDuration := time.Until(expTime)
 			if tokenDuration > defaultBlacklistDuration && tokenDuration < (24*time.Hour) {
 				expiry = expTime
-			} else if tokenDuration <= 0 {
-				expiry = time.Now().Add(defaultBlacklistDuration)
-			} else {
-				expiry = time.Now().Add(defaultBlacklistDuration)
 			}
+			// else: keep default expiry for expired tokens or tokens >24h
 		}
 
 		if t.tokenBlacklist != nil {
@@ -174,6 +173,8 @@ func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interfa
 //
 // Returns:
 //   - true if the token is an ID token, false if it's an access token.
+//
+//nolint:gocognit,gocyclo // Complex token type detection with multiple provider-specific checks
 func (t *TraefikOidc) detectTokenType(jwt *JWT, token string) bool {
 	// Use first 32 chars of token as cache key (sufficient for uniqueness)
 	cacheKey := token
@@ -196,7 +197,6 @@ func (t *TraefikOidc) detectTokenType(jwt *JWT, token string) bool {
 	// 1. Check 'nonce' claim first (most definitive for ID tokens - short circuit)
 	if nonce, ok := jwt.Claims["nonce"]; ok {
 		if _, ok := nonce.(string); ok {
-			isIDToken = true
 			if !t.suppressDiagnosticLogs {
 				t.safeLogDebugf("ID token detected via nonce claim")
 			}
@@ -223,8 +223,8 @@ func (t *TraefikOidc) detectTokenType(jwt *JWT, token string) bool {
 
 	// 3. Check 'token_use' claim (definitive if present - short circuit)
 	if tokenUse, ok := jwt.Claims["token_use"].(string); ok {
-		if tokenUse == "id" {
-			isIDToken = true
+		switch tokenUse {
+		case "id":
 			if !t.suppressDiagnosticLogs {
 				t.safeLogDebugf("ID token detected via token_use claim")
 			}
@@ -233,7 +233,7 @@ func (t *TraefikOidc) detectTokenType(jwt *JWT, token string) bool {
 				t.tokenTypeCache.Set(cacheKey, true, 5*time.Minute)
 			}
 			return true
-		} else if tokenUse == "access" {
+		case "access":
 			if !t.suppressDiagnosticLogs {
 				t.safeLogDebugf("Access token detected via token_use claim")
 			}
@@ -383,11 +383,11 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	expectedAudience := t.audience // Default to configured audience
 	if isIDToken {
 		expectedAudience = t.clientID
-		if !t.suppressDiagnosticLogs {
+	}
+	if !t.suppressDiagnosticLogs {
+		if isIDToken {
 			t.safeLogDebugf("ID token detected, validating with client_id: %s", expectedAudience)
-		}
-	} else {
-		if !t.suppressDiagnosticLogs {
+		} else {
 			t.safeLogDebugf("Access token detected, validating with audience: %s", expectedAudience)
 		}
 	}
@@ -421,6 +421,8 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 // Returns:
 //   - true if refresh succeeded and session was updated, false if refresh failed,
 //     a concurrency conflict was detected, or saving the session failed.
+//
+//nolint:gocognit // Complex token refresh logic with multiple error handling paths
 func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, session *SessionData) bool {
 	session.refreshMutex.Lock()
 	defer session.refreshMutex.Unlock()
@@ -453,10 +455,13 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	newToken, err := t.tokenExchanger.GetNewTokenWithRefreshToken(initialRefreshToken)
 	if err != nil {
 		errMsg := err.Error()
+		//nolint:gocritic // Complex error handling with provider-specific conditions
 		if strings.Contains(errMsg, "invalid_grant") || strings.Contains(errMsg, "token expired") {
 			t.logger.Debug("Refresh token expired or revoked: %v", err)
 			// Clear all tokens and authentication state when refresh token is invalid
-			session.SetAuthenticated(false)
+			if err := session.SetAuthenticated(false); err != nil {
+				t.logger.Errorf("Failed to set authenticated to false: %v", err)
+			}
 			session.SetRefreshToken("")
 			session.SetAccessToken("")
 			session.SetIDToken("")
@@ -540,7 +545,9 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("refreshToken failed: Failed to save session after successful token refresh: %v", err)
 		// Reset authentication state since we couldn't persist it
-		session.SetAuthenticated(false)
+		if err := session.SetAuthenticated(false); err != nil {
+			t.logger.Errorf("Failed to set authenticated to false: %v", err)
+		}
 		return false
 	}
 
@@ -621,18 +628,26 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 		t.metadataMu.RUnlock()
 		err = t.errorRecoveryManager.ExecuteWithRecovery(context.Background(), serviceName, func() error {
 			var reqErr error
-			resp, reqErr = t.httpClient.Do(req)
+			resp, reqErr = t.httpClient.Do(req) //nolint:bodyclose // Body is closed in defer after error check
+			if reqErr != nil && resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
 			return reqErr
 		})
 	} else {
 		resp, err = t.httpClient.Do(req)
 	}
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		return fmt.Errorf("failed to send token revocation request: %w", err)
 	}
 	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		if resp != nil && resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
@@ -726,6 +741,8 @@ func (t *TraefikOidc) isAzureProvider() bool {
 //   - authenticated: Whether the user has valid authentication.
 //   - needsRefresh: Whether tokens need to be refreshed.
 //   - expired: Whether tokens have expired and cannot be refreshed.
+//
+//nolint:gocognit // Azure-specific validation requires multiple token type checks
 func (t *TraefikOidc) validateAzureTokens(session *SessionData) (bool, bool, bool) {
 	if !session.GetAuthenticated() {
 		t.logger.Debug("Azure user is not authenticated according to session flag")
@@ -758,13 +775,12 @@ func (t *TraefikOidc) validateAzureTokens(session *SessionData) (bool, bool, boo
 				return false, false, true
 			}
 			return t.validateTokenExpiry(session, accessToken)
-		} else {
-			t.logger.Debug("Azure access token appears opaque, treating as valid")
-			if idToken != "" {
-				return t.validateTokenExpiry(session, idToken)
-			}
-			return true, false, false
 		}
+		t.logger.Debug("Azure access token appears opaque, treating as valid")
+		if idToken != "" {
+			return t.validateTokenExpiry(session, idToken)
+		}
+		return true, false, false
 	}
 
 	if idToken != "" {
@@ -813,6 +829,8 @@ func (t *TraefikOidc) validateGoogleTokens(session *SessionData) (bool, bool, bo
 //   - authenticated: Whether the user has valid authentication.
 //   - needsRefresh: Whether tokens need to be refreshed.
 //   - expired: Whether tokens have expired and cannot be refreshed.
+//
+//nolint:gocognit,gocyclo // Complex validation logic handles multiple token scenarios and edge cases
 func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, bool) {
 	authenticated := session.GetAuthenticated()
 	// Removed debug output
@@ -962,13 +980,12 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 					return false, true, false // try refresh
 				}
 				return false, false, true // must re-authenticate
-			} else {
-				// Backward compatibility mode: Log loud warning but allow fallback to ID token
-				t.logger.Infof("⚠️⚠️⚠️  SECURITY WARNING: Falling back to ID token validation despite access token audience mismatch!")
-				t.logger.Infof("⚠️  This could allow tokens intended for different APIs to grant access")
-				t.logger.Infof("⚠️  Set strictAudienceValidation=true to enforce proper audience validation")
-				t.logger.Infof("⚠️  See: https://github.com/lukaszraczylo/traefikoidc/issues/74")
 			}
+			// Backward compatibility mode: Log loud warning but allow fallback to ID token
+			t.logger.Infof("⚠️⚠️⚠️  SECURITY WARNING: Falling back to ID token validation despite access token audience mismatch!")
+			t.logger.Infof("⚠️  This could allow tokens intended for different APIs to grant access")
+			t.logger.Infof("⚠️  Set strictAudienceValidation=true to enforce proper audience validation")
+			t.logger.Infof("⚠️  See: https://github.com/lukaszraczylo/traefikoidc/issues/74")
 		} else if !strings.Contains(accessTokenError, "token has expired") {
 			// Other validation errors (not expiration, not audience)
 			t.logger.Debugf("Access token validation failed (non-expiration, non-audience): %v", err)
@@ -1157,8 +1174,11 @@ func (t *TraefikOidc) startTokenCleanup() {
 
 	// Start the task if not already running
 	if !rm.IsTaskRunning(taskName) {
-		rm.StartBackgroundTask(taskName)
-		logger.Debug("Started singleton token cleanup task")
+		if err := rm.StartBackgroundTask(taskName); err != nil {
+			logger.Errorf("Failed to start background task: %v", err)
+		} else {
+			logger.Debug("Started singleton token cleanup task")
+		}
 	} else {
 		logger.Debug("Token cleanup task already running, skipping duplicate")
 	}
@@ -1191,14 +1211,13 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 		groupsSlice, ok := groupsClaim.([]interface{})
 		if !ok {
 			return nil, nil, fmt.Errorf("groups claim is not an array")
-		} else {
-			for _, group := range groupsSlice {
-				if groupStr, ok := group.(string); ok {
-					t.logger.Debugf("Found group: %s", groupStr)
-					groups = append(groups, groupStr)
-				} else {
-					t.logger.Errorf("Non-string value found in groups claim array: %v", group)
-				}
+		}
+		for _, group := range groupsSlice {
+			if groupStr, ok := group.(string); ok {
+				t.logger.Debugf("Found group: %s", groupStr)
+				groups = append(groups, groupStr)
+			} else {
+				t.logger.Errorf("Non-string value found in groups claim array: %v", group)
 			}
 		}
 	}
@@ -1207,14 +1226,13 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 		rolesSlice, ok := rolesClaim.([]interface{})
 		if !ok {
 			return nil, nil, fmt.Errorf("roles claim is not an array")
-		} else {
-			for _, role := range rolesSlice {
-				if roleStr, ok := role.(string); ok {
-					t.logger.Debugf("Found role: %s", roleStr)
-					roles = append(roles, roleStr)
-				} else {
-					t.logger.Errorf("Non-string value found in roles claim array: %v", role)
-				}
+		}
+		for _, role := range rolesSlice {
+			if roleStr, ok := role.(string); ok {
+				t.logger.Debugf("Found role: %s", roleStr)
+				roles = append(roles, roleStr)
+			} else {
+				t.logger.Errorf("Non-string value found in roles claim array: %v", role)
 			}
 		}
 	}
