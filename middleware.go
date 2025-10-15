@@ -57,8 +57,8 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			return
 		}
 	case <-req.Context().Done():
-		t.logger.Debug("Request cancelled while waiting for OIDC initialization")
-		t.sendErrorResponse(rw, req, "Request cancelled", http.StatusRequestTimeout)
+		t.logger.Debug("Request canceled while waiting for OIDC initialization")
+		t.sendErrorResponse(rw, req, "Request canceled", http.StatusRequestTimeout)
 		return
 	case <-time.After(30 * time.Second):
 		t.logger.Error("Timeout waiting for OIDC initialization")
@@ -84,7 +84,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		t.logger.Errorf("Error getting session: %v. Initiating authentication.", err)
 		cleanReq := req.Clone(req.Context())
-		session, _ = t.sessionManager.GetSession(cleanReq)
+		session, _ = t.sessionManager.GetSession(cleanReq) // Safe to ignore: error already logged, proceeding with new session
 		if session != nil {
 			defer session.returnToPoolSafely()
 			if clearErr := session.Clear(cleanReq, rw); clearErr != nil {

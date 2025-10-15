@@ -166,7 +166,7 @@ func (m *UniversalCacheManager) Close() error {
 		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache, m.tokenTypeCache,
 	} {
 		if cache != nil {
-			cache.Close()
+			_ = cache.Close() // Safe to ignore: best effort cache cleanup
 		}
 	}
 
@@ -178,7 +178,7 @@ func (m *UniversalCacheManager) Close() error {
 // This should only be called in test code to ensure proper cleanup between tests
 func ResetUniversalCacheManagerForTesting() {
 	if universalCacheManager != nil {
-		universalCacheManager.Close()
+		_ = universalCacheManager.Close() // Safe to ignore: test cleanup best effort
 	}
 	universalCacheManagerOnce = sync.Once{}
 	universalCacheManager = nil

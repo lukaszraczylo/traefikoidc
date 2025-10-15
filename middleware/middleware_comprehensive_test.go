@@ -301,7 +301,7 @@ func TestServeHTTP_ComprehensiveCoverage(t *testing.T) {
 
 		rw := httptest.NewRecorder()
 
-		// This should timeout or be cancelled
+		// This should timeout or be canceled
 		m.ServeHTTP(rw, req)
 
 		if !errorResponseSent {

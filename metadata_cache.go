@@ -109,7 +109,7 @@ func (mc *MetadataCache) GetProviderMetadata(ctx context.Context, providerURL st
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Safe to ignore: closing body on defer
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("metadata fetch returned status %d", resp.StatusCode)

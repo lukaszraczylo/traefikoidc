@@ -98,12 +98,12 @@ func TestStartGoroutineContextCancellation(t *testing.T) {
 	gm := NewGoroutineManager(logger)
 
 	started := atomic.Bool{}
-	cancelled := atomic.Bool{}
+	canceled := atomic.Bool{}
 
 	gm.StartGoroutine("cancel-test", func(ctx context.Context) {
 		started.Store(true)
 		<-ctx.Done()
-		cancelled.Store(true)
+		canceled.Store(true)
 	})
 
 	// Wait for goroutine to start
@@ -119,8 +119,8 @@ func TestStartGoroutineContextCancellation(t *testing.T) {
 	// Wait for cancellation
 	time.Sleep(50 * time.Millisecond)
 
-	if !cancelled.Load() {
-		t.Error("Expected goroutine to be cancelled")
+	if !canceled.Load() {
+		t.Error("Expected goroutine to be canceled")
 	}
 }
 
@@ -546,7 +546,7 @@ func TestStartGoroutineAfterShutdown(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	// Goroutine should have started but context already cancelled
+	// Goroutine should have started but context already canceled
 	// It may or may not execute depending on timing, but shouldn't panic
 	status := gm.GetStatus()
 	if _, exists := status["after-shutdown"]; exists {

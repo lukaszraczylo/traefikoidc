@@ -135,7 +135,7 @@ func TestServeHTTP_InitializationTimeout(t *testing.T) {
 			go func() {
 				time.Sleep(shortTimeout)
 				if time.Since(start) >= shortTimeout {
-					// Simulate timeout by cancelling
+					// Simulate timeout by canceling
 					close(done)
 				}
 			}()

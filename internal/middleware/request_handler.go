@@ -81,8 +81,8 @@ func (rp *RequestProcessor) WaitForInitialization(req *http.Request, initComplet
 	case <-initComplete:
 		return nil
 	case <-req.Context().Done():
-		rp.logger.Debug("Request cancelled while waiting for OIDC initialization")
-		return fmt.Errorf("request cancelled")
+		rp.logger.Debug("Request canceled while waiting for OIDC initialization")
+		return fmt.Errorf("request canceled")
 	case <-time.After(30 * time.Second):
 		rp.logger.Error("Timeout waiting for OIDC initialization")
 		return fmt.Errorf("timeout waiting for OIDC provider initialization")

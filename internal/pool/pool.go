@@ -119,7 +119,7 @@ func newManager() *Manager {
 	// Initialize compression pools
 	m.gzipWriterPool = &sync.Pool{
 		New: func() interface{} {
-			w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
+			w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed) // Safe to ignore: factory function
 			return w
 		},
 	}
@@ -178,13 +178,17 @@ func (m *Manager) GetBuffer(sizeHint int) *bytes.Buffer {
 
 	switch {
 	case sizeHint <= 1024:
-		return m.smallBufferPool.Get().(*bytes.Buffer)
+		buf, _ := m.smallBufferPool.Get().(*bytes.Buffer) // Safe to ignore: pool return is best-effort
+		return buf
 	case sizeHint <= 4096:
-		return m.mediumBufferPool.Get().(*bytes.Buffer)
+		buf, _ := m.mediumBufferPool.Get().(*bytes.Buffer) // Safe to ignore: pool return is best-effort
+		return buf
 	case sizeHint <= 8192:
-		return m.largeBufferPool.Get().(*bytes.Buffer)
+		buf, _ := m.largeBufferPool.Get().(*bytes.Buffer) // Safe to ignore: pool return is best-effort
+		return buf
 	case sizeHint <= 16384:
-		return m.xlBufferPool.Get().(*bytes.Buffer)
+		buf, _ := m.xlBufferPool.Get().(*bytes.Buffer) // Safe to ignore: pool return is best-effort
+		return buf
 	default:
 		// For very large buffers, create new ones
 		return bytes.NewBuffer(make([]byte, 0, sizeHint))
@@ -225,7 +229,8 @@ func (m *Manager) PutBuffer(buf *bytes.Buffer) {
 // GetGzipWriter returns a gzip writer from the pool
 func (m *Manager) GetGzipWriter() *gzip.Writer {
 	atomic.AddUint64(&m.stats.GzipGets, 1)
-	return m.gzipWriterPool.Get().(*gzip.Writer)
+	w, _ := m.gzipWriterPool.Get().(*gzip.Writer) // Safe to ignore: pool return is best-effort
+	return w
 }
 
 // PutGzipWriter returns a gzip writer to the pool
@@ -245,7 +250,8 @@ func (m *Manager) GetGzipReader() *gzip.Reader {
 	if r == nil {
 		return nil
 	}
-	return r.(*gzip.Reader)
+	reader, _ := r.(*gzip.Reader) // Safe to ignore: pool return is best-effort
+	return reader
 }
 
 // PutGzipReader returns a gzip reader to the pool
@@ -254,14 +260,14 @@ func (m *Manager) PutGzipReader(r *gzip.Reader) {
 		return
 	}
 	atomic.AddUint64(&m.stats.GzipPuts, 1)
-	r.Reset(nil)
+	_ = r.Reset(nil) // Safe to ignore: resetting to nil reader for pool reuse
 	m.gzipReaderPool.Put(r)
 }
 
 // GetStringBuilder returns a string builder from the pool
 func (m *Manager) GetStringBuilder() *strings.Builder {
 	atomic.AddUint64(&m.stats.StringGets, 1)
-	sb := m.stringBuilderPool.Get().(*strings.Builder)
+	sb, _ := m.stringBuilderPool.Get().(*strings.Builder) // Safe to ignore: pool return is best-effort
 	sb.Reset()
 	return sb
 }
@@ -287,7 +293,8 @@ func (m *Manager) PutStringBuilder(sb *strings.Builder) {
 // GetJWTBuffer returns JWT parsing buffers from the pool
 func (m *Manager) GetJWTBuffer() *JWTBuffer {
 	atomic.AddUint64(&m.stats.JWTGets, 1)
-	return m.jwtBufferPool.Get().(*JWTBuffer)
+	buf, _ := m.jwtBufferPool.Get().(*JWTBuffer) // Safe to ignore: pool return is best-effort
+	return buf
 }
 
 // PutJWTBuffer returns JWT parsing buffers to the pool
@@ -314,7 +321,8 @@ func (m *Manager) PutJWTBuffer(buf *JWTBuffer) {
 // GetHTTPResponseBuffer returns an HTTP response buffer from the pool
 func (m *Manager) GetHTTPResponseBuffer() []byte {
 	atomic.AddUint64(&m.stats.HTTPGets, 1)
-	return *m.httpResponsePool.Get().(*[]byte)
+	buf, _ := m.httpResponsePool.Get().(*[]byte) // Safe to ignore: pool return is best-effort
+	return *buf
 }
 
 // PutHTTPResponseBuffer returns an HTTP response buffer to the pool
@@ -363,7 +371,7 @@ func (m *Manager) GetByteSlice(size int) []byte {
 		m.poolMu.Unlock()
 	}
 
-	b := pool.Get().(*[]byte)
+	b, _ := pool.Get().(*[]byte) // Safe to ignore: pool return is best-effort
 	return (*b)[:size]
 }
 

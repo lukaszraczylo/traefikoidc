@@ -1,3 +1,5 @@
+// Package cache provides high-performance caching implementations for OIDC tokens, metadata, and JWKs.
+// It includes compatibility wrappers for backward compatibility with existing cache interfaces.
 package cache
 
 import (

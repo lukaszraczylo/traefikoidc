@@ -383,7 +383,7 @@ func TestWaitForInitialization(t *testing.T) {
 		}
 	})
 
-	t.Run("Request context cancelled", func(t *testing.T) {
+	t.Run("Request context canceled", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		req := httptest.NewRequest("GET", "http://example.com/test", nil)
 		req = req.WithContext(ctx)
@@ -396,15 +396,15 @@ func TestWaitForInitialization(t *testing.T) {
 
 		err := processor.WaitForInitialization(req, initComplete)
 		if err == nil {
-			t.Error("Expected error when request context is cancelled")
+			t.Error("Expected error when request context is canceled")
 		}
 
-		if !strings.Contains(err.Error(), "request cancelled") {
-			t.Errorf("Expected 'request cancelled' error, got: %v", err)
+		if !strings.Contains(err.Error(), "request canceled") {
+			t.Errorf("Expected 'request canceled' error, got: %v", err)
 		}
 
 		if len(logger.DebugCalls) == 0 {
-			t.Error("Expected debug log when request is cancelled")
+			t.Error("Expected debug log when request is canceled")
 		}
 	})
 

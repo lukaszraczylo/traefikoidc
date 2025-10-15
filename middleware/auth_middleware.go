@@ -179,8 +179,8 @@ func (m *AuthMiddleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			return
 		}
 	case <-req.Context().Done():
-		m.logger.Debug("Request cancelled while waiting for OIDC initialization")
-		m.sendErrorResponseFunc(rw, req, "Request cancelled", http.StatusRequestTimeout)
+		m.logger.Debug("Request canceled while waiting for OIDC initialization")
+		m.sendErrorResponseFunc(rw, req, "Request canceled", http.StatusRequestTimeout)
 		return
 	case <-time.After(30 * time.Second):
 		m.logger.Error("Timeout waiting for OIDC initialization")

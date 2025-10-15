@@ -271,9 +271,9 @@ func TestSharedTransportPoolCleanup(t *testing.T) {
 
 		select {
 		case <-pool.ctx.Done():
-			// Context was cancelled
+			// Context was canceled
 		case <-time.After(100 * time.Millisecond):
-			t.Error("context should be cancelled")
+			t.Error("context should be canceled")
 		}
 	})
 

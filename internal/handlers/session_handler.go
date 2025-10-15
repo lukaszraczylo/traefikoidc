@@ -215,12 +215,12 @@ func (h *SessionHandler) SendErrorResponse(rw http.ResponseWriter, req *http.Req
 		// For AJAX requests, send JSON response
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(statusCode)
-		fmt.Fprintf(rw, `{"error": "%s"}`, message)
+		_, _ = fmt.Fprintf(rw, `{"error": "%s"}`, message) // Safe to ignore: writing error response
 	} else {
 		// For browser requests, send HTML response
 		rw.Header().Set("Content-Type", "text/html")
 		rw.WriteHeader(statusCode)
-		fmt.Fprintf(rw, `<html><body><h1>Error %d</h1><p>%s</p></body></html>`, statusCode, message)
+		_, _ = fmt.Fprintf(rw, `<html><body><h1>Error %d</h1><p>%s</p></body></html>`, statusCode, message) // Safe to ignore: writing error response
 	}
 }
 

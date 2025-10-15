@@ -246,7 +246,7 @@ func TestAuthFlowHandler_waitForInitialization(t *testing.T) {
 			expectedResult: false,
 		},
 		{
-			name: "Request cancelled",
+			name: "Request canceled",
 			setupHandler: func() (*AuthFlowHandler, context.CancelFunc) {
 				initComplete := make(chan struct{})
 				handler := &AuthFlowHandler{

@@ -122,7 +122,7 @@ func (sm *SessionManager) initializeSession(sessionData SessionData, r *http.Req
 
 	// Extract and set session values
 	if auth, ok := session.Values["authenticated"].(bool); ok {
-		sessionData.SetAuthenticated(auth)
+		_ = sessionData.SetAuthenticated(auth) // Safe to ignore: session initialization error
 	}
 
 	return nil

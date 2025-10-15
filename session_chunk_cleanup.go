@@ -34,7 +34,7 @@ func (m *SessionChunkManager) CleanupChunks(chunks map[int]*sessions.Session, w 
 			if session != nil && session.Options != nil {
 				// Set MaxAge to -1 to expire the cookie
 				session.Options.MaxAge = -1
-				session.Save(nil, w) // Save with nil request is safe for expiration
+				_ = session.Save(nil, w) // Safe to ignore: best effort cleanup of expired chunk
 			}
 		}
 	}

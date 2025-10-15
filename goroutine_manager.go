@@ -86,7 +86,7 @@ func (m *GoroutineManager) StartPeriodicTask(name string, interval time.Duration
 		for {
 			select {
 			case <-ctx.Done():
-				m.logger.Debugf("Periodic task %s cancelled", name)
+				m.logger.Debugf("Periodic task %s canceled", name)
 				return
 			case <-ticker.C:
 				task()

@@ -99,7 +99,7 @@ type CacheInterfaceWrapper struct {
 
 // Set stores a value
 func (c *CacheInterfaceWrapper) Set(key string, value interface{}, ttl time.Duration) {
-	c.cache.Set(key, value, ttl)
+	_ = c.cache.Set(key, value, ttl) // Safe to ignore: cache set failures are non-critical
 }
 
 // Get retrieves a value
@@ -126,7 +126,7 @@ func (c *CacheInterfaceWrapper) Cleanup() {
 func (c *CacheInterfaceWrapper) Close() {
 	// Close the underlying cache to stop goroutines
 	if c.cache != nil {
-		c.cache.Close()
+		_ = c.cache.Close() // Safe to ignore: closing cache is best-effort during shutdown
 	}
 }
 

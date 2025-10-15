@@ -381,7 +381,7 @@ func NewTestSuite() *TestSuite {
 func (ts *TestSuite) Setup() {
 	// Common test setup
 	ts.Logger.Clear()
-	ts.Session.Clear(nil, nil)
+	_ = ts.Session.Clear(nil, nil) // Safe to ignore: test helper function
 	ts.TokenCache.Clear()
 	ts.TokenVerifier.ShouldFail = false
 	ts.TokenVerifier.Error = nil

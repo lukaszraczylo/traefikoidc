@@ -100,7 +100,7 @@ func (g *GlobalTestCleanup) CleanupAll() {
 	// Use a timeout to prevent hanging
 	cleanupDone := make(chan struct{})
 	go func() {
-		CleanupGlobalCacheManager()
+		_ = CleanupGlobalCacheManager() // Safe to ignore: cleanup in test infrastructure
 		close(cleanupDone)
 	}()
 

@@ -214,7 +214,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		t.logger.Debugf("No custom audience specified, using clientID as audience: %s", t.clientID)
 	}
 
-	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger)
+	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger) // Safe to ignore: session manager creation with fallback to defaults
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 
 	// Initialize token resilience manager with default configuration
@@ -304,11 +304,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		t.initializeMetadata(config.ProviderURL)
 	}()
 
-	// Setup cleanup hook for when context is cancelled
+	// Setup cleanup hook for when context is canceled
 	if pluginCtx != nil {
 		go func() {
 			<-pluginCtx.Done()
-			t.Close()
+			_ = t.Close() // Safe to ignore: cleanup on context cancellation
 		}()
 	}
 
@@ -425,7 +425,7 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 
 	// Start the task if not already running
 	if !rm.IsTaskRunning(taskName) {
-		rm.StartBackgroundTask(taskName)
+		_ = rm.StartBackgroundTask(taskName) // Safe to ignore: task registration succeeded, start is best-effort
 		t.logger.Debug("Started singleton metadata refresh task")
 	} else {
 		t.logger.Debug("Metadata refresh task already running, skipping duplicate")

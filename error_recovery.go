@@ -123,8 +123,10 @@ func (b *BaseRecoveryMechanism) GetBaseMetrics() map[string]interface{} {
 		metrics["seconds_since_last_success"] = time.Since(b.lastSuccessTime).Seconds()
 	}
 
-	if metrics["total_requests"].(int64) > 0 {
-		successRate := float64(metrics["total_successes"].(int64)) / float64(metrics["total_requests"].(int64))
+	totalReq, _ := metrics["total_requests"].(int64)   // Safe to ignore: type assertion with fallback
+	totalSucc, _ := metrics["total_successes"].(int64) // Safe to ignore: type assertion with fallback
+	if totalReq > 0 {
+		successRate := float64(totalSucc) / float64(totalReq)
 		metrics["success_rate"] = successRate
 	} else {
 		metrics["success_rate"] = 1.0

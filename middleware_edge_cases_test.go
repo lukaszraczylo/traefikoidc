@@ -17,7 +17,7 @@ func TestMiddlewareContextCancellation(t *testing.T) {
 		metadataRefreshStarted: true,
 	}
 
-	// Create request with cancelled context
+	// Create request with canceled context
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
@@ -28,7 +28,7 @@ func TestMiddlewareContextCancellation(t *testing.T) {
 
 	// Should return timeout/cancel error
 	if rw.Code != http.StatusRequestTimeout && rw.Code != http.StatusServiceUnavailable {
-		t.Errorf("Expected timeout status for cancelled context, got %d", rw.Code)
+		t.Errorf("Expected timeout status for canceled context, got %d", rw.Code)
 	}
 }
 

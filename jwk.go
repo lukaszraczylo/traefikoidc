@@ -100,7 +100,7 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 	}
 
 	// Cache for 1 hour
-	c.cache.Set(jwksURL, jwks, 1*time.Hour)
+	_ = c.cache.Set(jwksURL, jwks, 1*time.Hour) // Safe to ignore: cache failures are non-critical
 
 	return jwks, nil
 }
@@ -126,10 +126,10 @@ func fetchJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*J
 	if err != nil {
 		return nil, fmt.Errorf("error fetching JWKS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Safe to ignore: closing body on defer
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(resp.Body) // Safe to ignore: reading error body for diagnostics
 		return nil, fmt.Errorf("JWKS fetch failed with status %d: %s", resp.StatusCode, body)
 	}
 
