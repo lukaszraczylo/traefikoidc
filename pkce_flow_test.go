@@ -11,6 +11,67 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestGenerateNonce tests the nonce generation for OIDC flows
+func TestGenerateNonce(t *testing.T) {
+	t.Run("basic generation", func(t *testing.T) {
+		nonce, err := generateNonce()
+
+		require.NoError(t, err)
+		assert.NotEmpty(t, nonce)
+
+		// 32 bytes base64 URL encoded should produce 44 characters (with potential padding)
+		// but typically 43 characters without padding
+		assert.GreaterOrEqual(t, len(nonce), 43, "nonce should be at least 43 characters")
+	})
+
+	t.Run("nonce is base64 URL encoded", func(t *testing.T) {
+		nonce, err := generateNonce()
+
+		require.NoError(t, err)
+
+		// Should be valid base64 URL encoding
+		_, err = base64.URLEncoding.DecodeString(nonce)
+		assert.NoError(t, err, "nonce should be valid base64 URL encoding")
+	})
+
+	t.Run("multiple generations produce different values", func(t *testing.T) {
+		nonce1, err1 := generateNonce()
+		nonce2, err2 := generateNonce()
+
+		require.NoError(t, err1)
+		require.NoError(t, err2)
+
+		assert.NotEqual(t, nonce1, nonce2, "consecutive generations should produce different nonces")
+	})
+
+	t.Run("nonce has sufficient entropy", func(t *testing.T) {
+		// Generate multiple nonces and verify they're all unique
+		nonces := make(map[string]bool)
+		iterations := 100
+
+		for i := 0; i < iterations; i++ {
+			nonce, err := generateNonce()
+			require.NoError(t, err)
+
+			// Check for duplicates
+			assert.False(t, nonces[nonce], "nonce should be unique across multiple generations")
+			nonces[nonce] = true
+		}
+
+		assert.Len(t, nonces, iterations, "all nonces should be unique")
+	})
+
+	t.Run("nonce length is consistent", func(t *testing.T) {
+		nonce1, err1 := generateNonce()
+		nonce2, err2 := generateNonce()
+
+		require.NoError(t, err1)
+		require.NoError(t, err2)
+
+		assert.Equal(t, len(nonce1), len(nonce2), "nonce length should be consistent")
+	})
+}
+
 // TestGenerateCodeVerifier tests the PKCE code verifier generation
 func TestGenerateCodeVerifier(t *testing.T) {
 	t.Run("basic generation", func(t *testing.T) {
@@ -262,5 +323,41 @@ func TestTokenCacheCleanupAndClose(t *testing.T) {
 		claims, found := cache.Get("token2")
 		assert.True(t, found)
 		assert.Equal(t, testClaims, claims)
+	})
+}
+
+// TestCreateStringMap tests the createStringMap utility function
+func TestCreateStringMap(t *testing.T) {
+	t.Run("empty slice", func(t *testing.T) {
+		result := createStringMap([]string{})
+		assert.Empty(t, result)
+	})
+
+	t.Run("single item", func(t *testing.T) {
+		result := createStringMap([]string{"key1"})
+		assert.Len(t, result, 1)
+		_, exists := result["key1"]
+		assert.True(t, exists)
+	})
+
+	t.Run("multiple items", func(t *testing.T) {
+		result := createStringMap([]string{"key1", "key2", "key3"})
+		assert.Len(t, result, 3)
+
+		for _, key := range []string{"key1", "key2", "key3"} {
+			_, exists := result[key]
+			assert.True(t, exists, "key %s should exist", key)
+		}
+	})
+
+	t.Run("duplicate items", func(t *testing.T) {
+		result := createStringMap([]string{"key1", "key2", "key1", "key3", "key2"})
+		// Map should only contain unique keys
+		assert.Len(t, result, 3)
+
+		for _, key := range []string{"key1", "key2", "key3"} {
+			_, exists := result[key]
+			assert.True(t, exists, "key %s should exist", key)
+		}
 	})
 }
