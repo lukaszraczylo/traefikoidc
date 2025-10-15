@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"fmt"
+	"net/http"
 	"runtime"
 	"sync"
 	"testing"
@@ -1035,6 +1036,305 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 	suite.runner.RunMemoryLeakTests(t, tests)
 }
 
+// TestLazyBackgroundTask tests LazyBackgroundTask specific functionality
+func TestLazyBackgroundTask(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
+
+	suite := NewMemoryLeakFixesTestSuite()
+
+	tests := []MemoryLeakTestCase{
+		{
+			Name:        "LazyBackgroundTask delayed start",
+			Description: "Test that lazy background task doesn't start until StartIfNeeded is called",
+			Operation: func() error {
+				logger := GetSingletonNoOpLogger()
+				callCount := 0
+				taskFunc := func() {
+					callCount++
+				}
+
+				task := NewLazyBackgroundTask("lazy-test", 50*time.Millisecond, taskFunc, logger)
+
+				// Wait - should not execute yet
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
+				if callCount != 0 {
+					return fmt.Errorf("task should not have executed before StartIfNeeded")
+				}
+
+				// Now start it
+				task.StartIfNeeded()
+				time.Sleep(GetTestDuration(150 * time.Millisecond))
+
+				if callCount < 2 {
+					return fmt.Errorf("task should have executed at least twice after starting")
+				}
+
+				task.Stop()
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
+				return nil
+			},
+			Iterations:         5,
+			MaxGoroutineGrowth: 2,
+			MaxMemoryGrowthMB:  1.0,
+			GCBetweenRuns:      true,
+			Timeout:            10 * time.Second,
+		},
+		{
+			Name:        "LazyBackgroundTask multiple StartIfNeeded calls",
+			Description: "Test that multiple StartIfNeeded calls only start task once",
+			Operation: func() error {
+				logger := GetSingletonNoOpLogger()
+				execCount := 0
+
+				taskFunc := func() {
+					execCount++
+				}
+
+				task := NewLazyBackgroundTask("lazy-multiple", 50*time.Millisecond, taskFunc, logger)
+
+				// Call multiple times - should be idempotent
+				task.StartIfNeeded()
+				task.StartIfNeeded()
+				task.StartIfNeeded()
+
+				// Verify it started (should execute)
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
+
+				if execCount < 1 {
+					return fmt.Errorf("task should have executed at least once")
+				}
+
+				// Verify started flag is set
+				if !task.started {
+					return fmt.Errorf("task should be marked as started")
+				}
+
+				task.Stop()
+
+				return nil
+			},
+			Iterations:         5,
+			MaxGoroutineGrowth: 2,
+			MaxMemoryGrowthMB:  1.0,
+			GCBetweenRuns:      true,
+			Timeout:            10 * time.Second,
+		},
+		{
+			Name:        "LazyBackgroundTask stop and restart",
+			Description: "Test that task can be stopped and restarted",
+			Operation: func() error {
+				logger := GetSingletonNoOpLogger()
+				execCount := 0
+				taskFunc := func() {
+					execCount++
+				}
+
+				task := NewLazyBackgroundTask("lazy-restart", 50*time.Millisecond, taskFunc, logger)
+
+				// Start
+				task.StartIfNeeded()
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
+				countAfterFirst := execCount
+
+				// Stop
+				task.Stop()
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
+				countAfterStop := execCount
+
+				// Should not have executed much more after stop (allow 1 in-flight)
+				if countAfterStop > countAfterFirst+1 {
+					return fmt.Errorf("task executed after stop: %d > %d", countAfterStop, countAfterFirst+1)
+				}
+
+				// Restart
+				task.StartIfNeeded()
+				time.Sleep(GetTestDuration(100 * time.Millisecond))
+
+				if execCount <= countAfterStop {
+					return fmt.Errorf("task should execute after restart")
+				}
+
+				task.Stop()
+				return nil
+			},
+			Iterations:         3,
+			MaxGoroutineGrowth: 2,
+			MaxMemoryGrowthMB:  1.0,
+			GCBetweenRuns:      true,
+			Timeout:            10 * time.Second,
+		},
+	}
+
+	suite.runner.RunMemoryLeakTests(t, tests)
+}
+
+// TestLazyCache tests NewLazyCache and NewLazyCacheWithLogger
+func TestLazyCache(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
+
+	suite := NewMemoryLeakFixesTestSuite()
+
+	tests := []MemoryLeakTestCase{
+		{
+			Name:        "LazyCache basic operations",
+			Description: "Test NewLazyCache with basic cache operations",
+			Operation: func() error {
+				cache := NewLazyCache()
+				if cache == nil {
+					return fmt.Errorf("NewLazyCache returned nil")
+				}
+
+				// Test basic operations
+				cache.Set("key1", "value1", time.Minute)
+				val, found := cache.Get("key1")
+				if !found || val != "value1" {
+					return fmt.Errorf("cache operation failed")
+				}
+
+				return nil
+			},
+			Iterations:         10,
+			MaxGoroutineGrowth: 2,
+			MaxMemoryGrowthMB:  2.0,
+			GCBetweenRuns:      true,
+			Timeout:            10 * time.Second,
+		},
+		{
+			Name:        "LazyCacheWithLogger operations",
+			Description: "Test NewLazyCacheWithLogger with custom logger",
+			Operation: func() error {
+				logger := GetSingletonNoOpLogger()
+				cache := NewLazyCacheWithLogger(logger)
+				if cache == nil {
+					return fmt.Errorf("NewLazyCacheWithLogger returned nil")
+				}
+
+				// Test with multiple entries
+				for i := 0; i < 50; i++ {
+					key := fmt.Sprintf("lazy-key-%d", i)
+					cache.Set(key, i, time.Minute)
+				}
+
+				// Verify
+				for i := 0; i < 50; i++ {
+					key := fmt.Sprintf("lazy-key-%d", i)
+					val, found := cache.Get(key)
+					if !found || val != i {
+						return fmt.Errorf("cache value mismatch for %s", key)
+					}
+				}
+
+				return nil
+			},
+			Iterations:         5,
+			MaxGoroutineGrowth: 2,
+			MaxMemoryGrowthMB:  3.0,
+			GCBetweenRuns:      true,
+			Timeout:            10 * time.Second,
+		},
+	}
+
+	suite.runner.RunMemoryLeakTests(t, tests)
+}
+
+// TestOptimizedMiddlewareConfig tests DefaultOptimizedConfig
+func TestOptimizedMiddlewareConfig(t *testing.T) {
+	t.Run("DefaultOptimizedConfig", func(t *testing.T) {
+		config := DefaultOptimizedConfig()
+
+		assert.NotNil(t, config)
+		assert.True(t, config.DelayBackgroundTasks)
+		assert.True(t, config.ReducedCleanupIntervals)
+		assert.True(t, config.AggressiveConnectionCleanup)
+		assert.True(t, config.MinimalCacheSize)
+	})
+
+	t.Run("CustomOptimizedConfig", func(t *testing.T) {
+		config := &OptimizedMiddlewareConfig{
+			DelayBackgroundTasks:        false,
+			ReducedCleanupIntervals:     true,
+			AggressiveConnectionCleanup: false,
+			MinimalCacheSize:            true,
+		}
+
+		assert.False(t, config.DelayBackgroundTasks)
+		assert.True(t, config.ReducedCleanupIntervals)
+		assert.False(t, config.AggressiveConnectionCleanup)
+		assert.True(t, config.MinimalCacheSize)
+	})
+}
+
+// TestCleanupIdleConnections tests the HTTP connection cleanup function
+func TestCleanupIdleConnections(t *testing.T) {
+	config := GetTestConfig()
+	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
+		return
+	}
+
+	t.Run("CleanupIdleConnections basic", func(t *testing.T) {
+		client := &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:       10,
+				IdleConnTimeout:    30 * time.Second,
+				DisableCompression: true,
+			},
+		}
+
+		stopChan := make(chan struct{})
+
+		// Start cleanup in background
+		go CleanupIdleConnections(client, 50*time.Millisecond, stopChan)
+
+		// Let it run a couple of cycles
+		time.Sleep(150 * time.Millisecond)
+
+		// Stop cleanup
+		close(stopChan)
+
+		// Wait for cleanup to finish
+		time.Sleep(100 * time.Millisecond)
+	})
+
+	t.Run("CleanupIdleConnections stop immediately", func(t *testing.T) {
+		client := &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:    10,
+				IdleConnTimeout: 30 * time.Second,
+			},
+		}
+
+		stopChan := make(chan struct{})
+
+		// Start and immediately stop
+		go CleanupIdleConnections(client, 100*time.Millisecond, stopChan)
+		time.Sleep(10 * time.Millisecond)
+		close(stopChan)
+
+		// Wait for cleanup
+		time.Sleep(50 * time.Millisecond)
+	})
+
+	t.Run("CleanupIdleConnections with nil transport", func(t *testing.T) {
+		client := &http.Client{
+			Transport: nil,
+		}
+
+		stopChan := make(chan struct{})
+
+		// Should handle gracefully
+		go CleanupIdleConnections(client, 50*time.Millisecond, stopChan)
+		time.Sleep(100 * time.Millisecond)
+		close(stopChan)
+		time.Sleep(50 * time.Millisecond)
+	})
+}
+
 // BenchmarkMemoryLeakFixes provides performance benchmarks for memory leak fixes
 func BenchmarkMemoryLeakFixes(b *testing.B) {
 	suite := NewMemoryLeakFixesTestSuite()
@@ -1057,6 +1357,26 @@ func BenchmarkMemoryLeakFixes(b *testing.B) {
 			task := NewBackgroundTask("bench-task", 100*time.Millisecond, taskFunc, logger)
 			task.Start()
 			task.Stop()
+		}
+	})
+
+	b.Run("LazyBackgroundTaskLifecycle", func(b *testing.B) {
+		logger := GetSingletonNoOpLogger()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			taskFunc := func() {}
+			task := NewLazyBackgroundTask("bench-lazy-task", 100*time.Millisecond, taskFunc, logger)
+			task.StartIfNeeded()
+			task.Stop()
+		}
+	})
+
+	b.Run("LazyCacheLifecycle", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			cache := NewLazyCache()
+			cache.Set("bench-key", "bench-value", time.Minute)
+			_, _ = cache.Get("bench-key")
 		}
 	})
 

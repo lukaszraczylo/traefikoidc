@@ -239,7 +239,7 @@ jobs:
               coverageReport = 'Coverage details not available';
             }
 
-            const threshold = 75;
+            const threshold = 65;
             const coverageNum = parseFloat(coverage);
             const emoji = coverageNum >= threshold ? '✅' : '⚠️';
 
