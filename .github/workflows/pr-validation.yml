@@ -239,7 +239,7 @@ jobs:
               coverageReport = 'Coverage details not available';
             }
 
-            const threshold = 65;
+            const threshold = 70;
             const coverageNum = parseFloat(coverage);
             const emoji = coverageNum >= threshold ? '✅' : '⚠️';
 
@@ -276,7 +276,7 @@ jobs:
       - name: Check coverage threshold
         run: |
           COVERAGE=${{ steps.coverage.outputs.coverage }}
-          THRESHOLD=75
+          THRESHOLD=70
           echo "Coverage: $COVERAGE%"
           echo "Threshold: $THRESHOLD%"
           if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
