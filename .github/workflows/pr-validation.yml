@@ -408,7 +408,7 @@ jobs:
       - name: Run benchmarks
         run: |
           echo "Running benchmark tests..."
-          go test -bench=. -benchmem -benchtime=5s -run=^$ ./... | tee benchmark.txt
+          go test -bench=. -benchmem -benchtime=1s -run=^$ ./... | tee benchmark.txt
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
