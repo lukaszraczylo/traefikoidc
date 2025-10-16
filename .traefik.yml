@@ -73,7 +73,11 @@ testData:
     - admin
     - developer
 
-  forceHTTPS: false # Forces the use of HTTPS for all URLs (default: true for security)
+  # ⚠️ CRITICAL for TLS termination scenarios (AWS ALB, Cloud Load Balancers, etc.)
+  # When NOT specified in config: defaults to FALSE (Go zero value)
+  # When running behind load balancer that terminates TLS: MUST set to TRUE
+  # See: https://github.com/lukaszraczylo/traefikoidc/issues/82
+  forceHTTPS: true # Forces HTTPS scheme for redirect URIs (default when not specified: false)
   logLevel: debug # Sets logging verbosity: debug, info, error (default: info)
   rateLimit: 100 # Maximum number of requests per second (default: 100, minimum: 10)
 
@@ -475,9 +479,24 @@ configuration:
   forceHTTPS:
     type: boolean
     description: |
-      Forces the use of HTTPS for all URLs.
-      This is recommended for security in production environments.
-      Default: true
+      Forces HTTPS scheme for redirect URIs regardless of request headers or TLS state.
+
+      ⚠️ CRITICAL CONFIGURATION for TLS Termination Scenarios:
+
+      When running Traefik behind a load balancer that terminates TLS (AWS ALB,
+      Google Cloud Load Balancer, Azure Application Gateway, etc.), you MUST set
+      this to true. Without it, redirect URIs will use http:// instead of https://,
+      causing OAuth callback failures.
+
+      How it works:
+      - When true: Always uses https:// for redirect URIs (highest priority)
+      - When false: Detects scheme from X-Forwarded-Proto header or TLS state
+      - When NOT specified: Defaults to false (Go zero value for bool)
+
+      Default: false (when not specified in configuration)
+      Recommended: true (for production environments and TLS termination scenarios)
+
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/82
     required: false
 
   rateLimit:

@@ -37,19 +37,36 @@ func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 // =============================================================================
 
 // determineScheme determines the URL scheme for building redirect URLs.
-// It checks X-Forwarded-Proto header first, then TLS presence.
+// Priority order (highest to lowest):
+//  1. forceHTTPS configuration - explicit security requirement
+//  2. X-Forwarded-Proto header - proxy/load balancer information
+//  3. TLS connection state - direct HTTPS connection
+//  4. Default to http
+//
 // Parameters:
 //   - req: The HTTP request to analyze.
 //
 // Returns:
 //   - The determined scheme: "https" or "http".
 func (t *TraefikOidc) determineScheme(req *http.Request) string {
+	// Honor forceHTTPS configuration as highest priority
+	// This ensures redirect URIs use HTTPS even when behind proxies/load balancers
+	// that may overwrite X-Forwarded-Proto header (e.g., AWS ALB terminating TLS)
+	if t.forceHTTPS {
+		return "https"
+	}
+
+	// Check X-Forwarded-Proto header for proxy scenarios
 	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
 		return scheme
 	}
+
+	// Check if connection has TLS
 	if req.TLS != nil {
 		return "https"
 	}
+
+	// Default to http
 	return "http"
 }
 

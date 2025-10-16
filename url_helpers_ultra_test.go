@@ -35,34 +35,105 @@ func createMinimalMiddleware() *TraefikOidc {
 
 // TestDetermineScheme tests scheme determination edge cases
 func TestDetermineScheme(t *testing.T) {
-	middleware := createMinimalMiddleware()
+	t.Run("forceHTTPS=false: backward compatibility", func(t *testing.T) {
+		middleware := createMinimalMiddleware()
+		middleware.forceHTTPS = false
 
-	t.Run("defaults to http when no headers or TLS", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "http://example.com/auth", nil)
-		scheme := middleware.determineScheme(req)
-		assert.Equal(t, "http", scheme)
+		t.Run("defaults to http when no headers or TLS", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/auth", nil)
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "http", scheme)
+		})
+
+		t.Run("uses X-Forwarded-Proto when present", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/auth", nil)
+			req.Header.Set("X-Forwarded-Proto", "https")
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "https", scheme)
+		})
+
+		t.Run("X-Forwarded-Proto takes precedence over TLS", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "https://example.com/auth", nil)
+			req.TLS = &testTLSState
+			req.Header.Set("X-Forwarded-Proto", "http")
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "http", scheme)
+		})
+
+		t.Run("uses TLS when present and no X-Forwarded-Proto", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "https://example.com/auth", nil)
+			req.TLS = &testTLSState
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "https", scheme)
+		})
 	})
 
-	t.Run("uses X-Forwarded-Proto when present", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "http://example.com/auth", nil)
-		req.Header.Set("X-Forwarded-Proto", "https")
-		scheme := middleware.determineScheme(req)
-		assert.Equal(t, "https", scheme)
+	t.Run("forceHTTPS=true: overrides all detection", func(t *testing.T) {
+		middleware := createMinimalMiddleware()
+		middleware.forceHTTPS = true
+
+		t.Run("returns https with no headers or TLS", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/auth", nil)
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "https", scheme, "forceHTTPS should override default http")
+		})
+
+		t.Run("returns https even with X-Forwarded-Proto: http", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/auth", nil)
+			req.Header.Set("X-Forwarded-Proto", "http")
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "https", scheme, "forceHTTPS should override X-Forwarded-Proto")
+		})
+
+		t.Run("returns https with X-Forwarded-Proto: https", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/auth", nil)
+			req.Header.Set("X-Forwarded-Proto", "https")
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "https", scheme)
+		})
+
+		t.Run("returns https with TLS connection", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "https://example.com/auth", nil)
+			req.TLS = &testTLSState
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "https", scheme)
+		})
+
+		t.Run("returns https even when all indicators suggest http", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/auth", nil)
+			req.Header.Set("X-Forwarded-Proto", "http")
+			req.TLS = nil
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "https", scheme, "forceHTTPS should be absolute override")
+		})
 	})
 
-	t.Run("X-Forwarded-Proto takes precedence over TLS", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "https://example.com/auth", nil)
-		req.TLS = &testTLSState
-		req.Header.Set("X-Forwarded-Proto", "http")
-		scheme := middleware.determineScheme(req)
-		assert.Equal(t, "http", scheme)
-	})
+	t.Run("AWS ALB scenario: TLS termination at load balancer", func(t *testing.T) {
+		middleware := createMinimalMiddleware()
+		middleware.forceHTTPS = true
 
-	t.Run("uses TLS when present and no X-Forwarded-Proto", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "https://example.com/auth", nil)
-		req.TLS = &testTLSState
-		scheme := middleware.determineScheme(req)
-		assert.Equal(t, "https", scheme)
+		t.Run("simulates ALB overwriting X-Forwarded-Proto to http", func(t *testing.T) {
+			// This simulates the issue from GitHub #82:
+			// - Client connects via HTTPS to ALB
+			// - ALB terminates TLS and forwards HTTP to Traefik
+			// - Traefik overwrites X-Forwarded-Proto based on its view (HTTP)
+			// - Plugin receives X-Forwarded-Proto: http (incorrect)
+			req := httptest.NewRequest("GET", "http://example.com/auth", nil)
+			req.Header.Set("X-Forwarded-Proto", "http") // Overwritten by Traefik
+			req.TLS = nil                               // No TLS at plugin level
+
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "https", scheme, "forceHTTPS should ensure HTTPS redirect_uri despite incorrect header")
+		})
+
+		t.Run("simulates missing X-Forwarded-Proto header", func(t *testing.T) {
+			// Some configurations may not set the header at all
+			req := httptest.NewRequest("GET", "http://example.com/auth", nil)
+			req.TLS = nil
+
+			scheme := middleware.determineScheme(req)
+			assert.Equal(t, "https", scheme, "forceHTTPS should ensure HTTPS even without headers")
+		})
 	})
 }
 
@@ -419,5 +490,66 @@ func TestBuildAuthURLPKCEParameters(t *testing.T) {
 		)
 
 		assert.NotContains(t, authURL, "code_challenge=")
+	})
+}
+
+// TestForceHTTPSIntegration tests the complete flow of building redirect URIs with forceHTTPS
+func TestForceHTTPSIntegration(t *testing.T) {
+	t.Run("redirect_uri uses https when forceHTTPS=true", func(t *testing.T) {
+		middleware := createMinimalMiddleware()
+		middleware.forceHTTPS = true
+
+		// Simulate AWS ALB scenario: HTTP request with incorrect X-Forwarded-Proto
+		req := httptest.NewRequest("GET", "http://service.example.com/protected", nil)
+		req.Header.Set("X-Forwarded-Proto", "http") // Traefik overwrote it
+		req.Host = "service.example.com"
+		req.TLS = nil
+
+		// Build the full redirect URL as middleware does
+		scheme := middleware.determineScheme(req)
+		host := middleware.determineHost(req)
+		redirectURL := buildFullURL(scheme, host, "/oauth2/callback")
+
+		assert.Equal(t, "https", scheme, "scheme should be https due to forceHTTPS")
+		assert.Equal(t, "https://service.example.com/oauth2/callback", redirectURL,
+			"redirect_uri should use https scheme")
+	})
+
+	t.Run("buildAuthURL contains https redirect_uri with forceHTTPS", func(t *testing.T) {
+		middleware := createMinimalMiddleware()
+		middleware.forceHTTPS = true
+
+		// Simulate building auth URL with HTTP redirect_uri
+		req := httptest.NewRequest("GET", "http://service.example.com/protected", nil)
+		req.Header.Set("X-Forwarded-Proto", "http")
+		req.Host = "service.example.com"
+		req.TLS = nil
+
+		scheme := middleware.determineScheme(req)
+		host := middleware.determineHost(req)
+		redirectURL := buildFullURL(scheme, host, "/oauth2/callback")
+
+		authURL := middleware.buildAuthURL(redirectURL, "state123", "nonce456", "")
+
+		assert.Contains(t, authURL, "redirect_uri=https%3A%2F%2Fservice.example.com%2Foauth2%2Fcallback",
+			"auth URL should contain HTTPS redirect_uri")
+		assert.NotContains(t, authURL, "redirect_uri=http%3A",
+			"auth URL should not contain HTTP redirect_uri")
+	})
+
+	t.Run("without forceHTTPS respects X-Forwarded-Proto", func(t *testing.T) {
+		middleware := createMinimalMiddleware()
+		middleware.forceHTTPS = false
+
+		req := httptest.NewRequest("GET", "http://service.example.com/protected", nil)
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Host = "service.example.com"
+
+		scheme := middleware.determineScheme(req)
+		host := middleware.determineHost(req)
+		redirectURL := buildFullURL(scheme, host, "/oauth2/callback")
+
+		assert.Equal(t, "https://service.example.com/oauth2/callback", redirectURL,
+			"should use https from X-Forwarded-Proto when forceHTTPS is false")
 	})
 }

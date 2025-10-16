@@ -115,8 +115,22 @@ The middleware supports the following configuration options:
 | `scopes` | OAuth 2.0 scopes to use for authentication | `["openid", "profile", "email"]` (always included by default) | `["roles", "custom_scope"]` (appended to defaults) |
 | `overrideScopes` | When true, replaces default scopes with provided scopes instead of appending | `false` | `true` (use only the scopes explicitly provided) |
 | `logLevel` | Sets the logging verbosity | `info` | `debug`, `info`, `error` |
-| `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
+| `forceHTTPS` | Forces HTTPS scheme for redirect URIs (**REQUIRED** for TLS termination at load balancer like AWS ALB) | `false` (when not specified) | `true`, `false` |
 | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
+
+> **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
+>
+> If you're running Traefik behind a load balancer (AWS ALB, Google Cloud Load Balancer, Azure Application Gateway, etc.) that terminates TLS:
+> - **You MUST set `forceHTTPS: true`** in your configuration
+> - Without this setting, redirect URIs will use `http://` instead of `https://`, causing OAuth callback failures
+> - This is especially critical for AWS ALB which may overwrite the `X-Forwarded-Proto` header
+>
+> **Default behavior:**
+> - When `forceHTTPS` is **not specified** in your config → defaults to `false` (Go zero value)
+> - When `forceHTTPS: true` is explicitly set → always uses `https://` for redirect URIs
+> - When `forceHTTPS: false` is explicitly set → scheme detection based on headers/TLS
+>
+> See [GitHub Issue #82](https://github.com/lukaszraczylo/traefikoidc/issues/82) for details.
 | `excludedURLs` | Lists paths that bypass authentication | none | `["/health", "/metrics", "/public"]` |
 | `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
 | `allowedUsers` | A list of specific email addresses that are allowed access | none | `["user1@example.com", "user2@another.org"]` |
