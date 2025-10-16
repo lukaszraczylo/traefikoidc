@@ -618,11 +618,12 @@ func TestAudienceSecurityTokenConfusionAttack(t *testing.T) {
 
 		// Try to verify the service B token on service A
 		err = serviceA.VerifyToken(serviceBToken)
-		if err == nil {
+		switch {
+		case err == nil:
 			t.Error("SECURITY VULNERABILITY: Token confusion attack succeeded - service B token was accepted by service A")
-		} else if !strings.Contains(err.Error(), "invalid audience") {
+		case !strings.Contains(err.Error(), "invalid audience"):
 			t.Errorf("Expected 'invalid audience' error for token confusion, got: %v", err)
-		} else {
+		default:
 			t.Logf("Token confusion attack correctly prevented: %v", err)
 		}
 	})
@@ -808,9 +809,9 @@ func TestAudienceEndToEndScenario(t *testing.T) {
 	tc := newTestCleanup(t)
 
 	// Create a test next handler
-	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Authenticated with custom audience"))
+		_, _ = w.Write([]byte("Authenticated with custom audience"))
 	})
 
 	// Generate test keys
@@ -900,7 +901,9 @@ func TestAudienceEndToEndScenario(t *testing.T) {
 			t.Fatalf("Failed to get session: %v", err)
 		}
 
-		session.SetAuthenticated(true)
+		if err := session.SetAuthenticated(true); err != nil {
+			t.Fatalf("Failed to set authenticated: %v", err)
+		}
 		session.SetEmail("user@company.com")
 		session.SetIDToken(validJWT)
 		session.SetAccessToken(validJWT)

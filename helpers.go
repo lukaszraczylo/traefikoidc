@@ -109,7 +109,7 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 	client := t.tokenHTTPClient
 	if client == nil {
 		// Use shared transport pool to prevent memory leaks
-		jar, _ := cookiejar.New(nil)
+		jar, _ := cookiejar.New(nil) // Safe to ignore: cookiejar creation with nil options rarely fails
 		pooledClient := CreateTokenHTTPClient()
 		client = &http.Client{
 			Transport: pooledClient.Transport,
@@ -140,13 +140,13 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 		return nil, fmt.Errorf("failed to exchange tokens: %w", err)
 	}
 	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body) // Safe to ignore: draining response body on defer
+		_ = resp.Body.Close()                 // Safe to ignore: closing body on defer
 	}()
 
 	if resp.StatusCode != http.StatusOK {
 		limitReader := io.LimitReader(resp.Body, 1024*10)
-		bodyBytes, _ := io.ReadAll(limitReader)
+		bodyBytes, _ := io.ReadAll(limitReader) // Safe to ignore: reading error body for diagnostics
 		return nil, fmt.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -237,7 +237,7 @@ func NewTokenCache() *TokenCache {
 //   - expiration: The duration for which the cache entry should be valid
 func (tc *TokenCache) Set(token string, claims map[string]interface{}, expiration time.Duration) {
 	token = "t-" + token
-	tc.cache.Set(token, claims, expiration)
+	_ = tc.cache.Set(token, claims, expiration) // Safe to ignore: cache failures are non-critical
 }
 
 // Get retrieves cached claims for a token.

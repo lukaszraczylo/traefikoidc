@@ -47,7 +47,7 @@ func (t *TraefikOidc) generatePKCEParameters() (string, string, error) {
 // prepareSessionForAuthentication clears existing session data and sets new authentication state
 func (t *TraefikOidc) prepareSessionForAuthentication(session *SessionData, csrfToken, nonce, codeVerifier, incomingPath string) {
 	// Clear all existing session data
-	session.SetAuthenticated(false)
+	_ = session.SetAuthenticated(false) // Safe to ignore: clearing authentication state on new flow
 	session.SetEmail("")
 	session.SetAccessToken("")
 	session.SetRefreshToken("")
@@ -276,7 +276,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 //   - redirectURL: The callback URL to be used in the new authentication flow.
 func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 	t.logger.Debug("Handling expired token: Clearing session and initiating re-authentication.")
-	session.SetAuthenticated(false)
+	_ = session.SetAuthenticated(false) // Safe to ignore: clearing authentication on expired token
 	session.SetIDToken("")
 	session.SetAccessToken("")
 	session.SetRefreshToken("")

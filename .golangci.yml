@@ -1,0 +1,192 @@
+version: "2"
+run:
+  go: "1.24"
+  modules-download-mode: readonly
+  tests: true
+linters:
+  enable:
+    - bodyclose
+    - dupl
+    - goconst
+    - gocritic
+    - gocyclo
+    - goprintffuncname
+    - gosec
+    - misspell
+    - noctx
+    - nolintlint
+    - prealloc
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - unparam
+    - whitespace
+  disable:
+    - exhaustive
+    - funlen
+    - gocognit
+    - lll
+    - mnd
+    - testpackage
+    - wsl
+  settings:
+    dupl:
+      threshold: 200  # Allow intentional duplication in provider patterns and token management
+    errcheck:
+      check-type-assertions: true
+      check-blank: false  # Allow explicit blank assignments (_ = ...) to ignore errors
+      exclude-functions:
+        - (io.Closer).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (io.Writer).Write
+        - (*net/http.ResponseWriter).Write
+        - fmt.Fprintf
+        - fmt.Fprint
+        - fmt.Fprintln
+    goconst:
+      min-len: 3
+      min-occurrences: 10  # Increased to reduce noise for standard OAuth2/OIDC strings
+      ignore-tests: true
+    gocritic:
+      # Using default enabled checks in v2
+      enabled-checks:
+        - appendCombine
+        - boolExprSimplify
+        - builtinShadow
+        - commentedOutCode
+        - emptyFallthrough
+        - equalFold
+        - hexLiteral
+        - indexAlloc
+        - initClause
+        - methodExprCall
+        - nestingReduce
+        - rangeExprCopy
+        - rangeValCopy
+        - stringXbytes
+        - typeAssertChain
+        - typeUnparen
+        - unlabelStmt
+        - yodaStyleExpr
+    gocyclo:
+      min-complexity: 30  # OAuth/OIDC flows are inherently complex; set higher for Yaegi compatibility
+    gosec:
+      excludes:
+        - G104
+        - G404
+      severity: medium
+      confidence: medium
+    govet:
+      disable:
+        - fieldalignment
+        - shadow
+      enable-all: true
+    misspell:
+      locale: US
+      ignore-rules:
+        - traefik
+        - oidc
+        - keycloak
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    unparam:
+      check-exported: false
+    staticcheck:
+      checks:
+        - all
+        - -QF1001  # De Morgan's law - style preference, may affect Yaegi
+        - -QF1003  # Tagged switch - style preference, may affect Yaegi
+        - -QF1007  # Merge conditional assignment - style preference
+        - -QF1008  # Remove embedded field - may break Yaegi compatibility
+        - -QF1012  # Use fmt.Fprintf - style preference
+        - -ST1003  # Package name format - allowed for test packages
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - bodyclose
+          - dupl
+          - errcheck
+          - goconst
+          - gocyclo
+          - gosec
+          - noctx
+          - prealloc
+          - unparam
+        path: _test\.go
+      - linters:
+          - dupl
+          - gocyclo
+        path: test.*\.go
+      - linters:
+          - gocritic
+          - unused
+        path: mocks.*\.go
+      - linters:
+          - gosec
+        text: 'G404:'
+      - linters:
+          - all
+        path: vendor/
+      - linters:
+          - goconst
+        path: (.+)_test\.go
+      - linters:
+          - dupl
+        path: internal/providers/(auth0|keycloak|okta|google|azure|github|gitlab|cognito|generic)\.go
+      - linters:
+          - dupl
+        path: session\.go
+      - linters:
+          - dupl
+        path: session_chunk_manager\.go
+        text: "(extractJWTExpiration|extractJWTIssuedAt)"
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: true
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

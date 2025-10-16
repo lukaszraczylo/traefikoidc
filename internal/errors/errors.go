@@ -91,7 +91,8 @@ func (e *OIDCError) ToJSON() map[string]any {
 	}
 
 	if e.Details != "" {
-		result["error"].(map[string]any)["details"] = e.Details
+		errorMap, _ := result["error"].(map[string]any) // Safe to ignore: type assertion from known type
+		errorMap["details"] = e.Details
 	}
 
 	return result

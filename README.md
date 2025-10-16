@@ -115,8 +115,22 @@ The middleware supports the following configuration options:
 | `scopes` | OAuth 2.0 scopes to use for authentication | `["openid", "profile", "email"]` (always included by default) | `["roles", "custom_scope"]` (appended to defaults) |
 | `overrideScopes` | When true, replaces default scopes with provided scopes instead of appending | `false` | `true` (use only the scopes explicitly provided) |
 | `logLevel` | Sets the logging verbosity | `info` | `debug`, `info`, `error` |
-| `forceHTTPS` | Forces the use of HTTPS for all URLs | `true` | `true`, `false` |
+| `forceHTTPS` | Forces HTTPS scheme for redirect URIs (**REQUIRED** for TLS termination at load balancer like AWS ALB) | `false` (when not specified) | `true`, `false` |
 | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
+
+> **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
+>
+> If you're running Traefik behind a load balancer (AWS ALB, Google Cloud Load Balancer, Azure Application Gateway, etc.) that terminates TLS:
+> - **You MUST set `forceHTTPS: true`** in your configuration
+> - Without this setting, redirect URIs will use `http://` instead of `https://`, causing OAuth callback failures
+> - This is especially critical for AWS ALB which may overwrite the `X-Forwarded-Proto` header
+>
+> **Default behavior:**
+> - When `forceHTTPS` is **not specified** in your config → defaults to `false` (Go zero value)
+> - When `forceHTTPS: true` is explicitly set → always uses `https://` for redirect URIs
+> - When `forceHTTPS: false` is explicitly set → scheme detection based on headers/TLS
+>
+> See [GitHub Issue #82](https://github.com/lukaszraczylo/traefikoidc/issues/82) for details.
 | `excludedURLs` | Lists paths that bypass authentication | none | `["/health", "/metrics", "/public"]` |
 | `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
 | `allowedUsers` | A list of specific email addresses that are allowed access | none | `["user1@example.com", "user2@another.org"]` |
@@ -132,6 +146,7 @@ The middleware supports the following configuration options:
 | `requireTokenIntrospection` | Require introspection for opaque tokens (force validation, no fallback) | `false` | `true` |
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 | `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
+| `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
 
 ## Scope Configuration
 
@@ -495,6 +510,47 @@ securityHeaders:
   corsEnabled: true
   corsAllowedOrigins: ["http://localhost:*"]
 ```
+
+### Multi-Replica Deployment Configuration
+
+When running multiple Traefik replicas with the OIDC plugin, you may encounter false positive replay detection errors. Each replica maintains its own in-memory JTI (JWT Token ID) cache, causing legitimate token reuse to be flagged as replay attacks.
+
+**Problem**: When the same valid token hits different replicas:
+- Request → Replica A → JTI added to Replica A's cache ✓
+- Request → Replica B → JTI NOT in Replica B's cache ✓
+- Request → Replica A → ❌ **FALSE POSITIVE**: "token replay detected"
+
+**Solution**: Disable replay detection for distributed deployments:
+
+```yaml
+disableReplayDetection: true  # Disable JTI replay detection for multi-replica setups
+```
+
+**Security Note**: When `disableReplayDetection: true`:
+- ✅ Token signatures still validated
+- ✅ Expiration still checked
+- ✅ All other claims still verified
+- ❌ JTI replay check **skipped**
+
+**Example Configuration**:
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-multi-replica
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      disableReplayDetection: true  # Required for multi-replica deployments
+```
+
+**Recommendation**: For single-instance deployments, leave this setting at `false` (default) to maintain replay attack protection. For multi-replica deployments, set to `true` and consider implementing a shared cache backend (Redis/Memcached) if replay detection is required.
 
 ## Usage Examples
 

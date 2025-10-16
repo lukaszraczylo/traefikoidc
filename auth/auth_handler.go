@@ -16,8 +16,8 @@ type ScopeFilter interface {
 	FilterSupportedScopes(requestedScopes, supportedScopes []string, providerURL string) []string
 }
 
-// AuthHandler provides core authentication functionality for OIDC flows
-type AuthHandler struct {
+// Handler provides core authentication functionality for OIDC flows
+type Handler struct {
 	logger          Logger
 	enablePKCE      bool
 	isGoogleProv    func() bool
@@ -37,11 +37,11 @@ type Logger interface {
 	Errorf(format string, args ...interface{})
 }
 
-// NewAuthHandler creates a new AuthHandler instance
+// NewAuthHandler creates a new Handler instance
 func NewAuthHandler(logger Logger, enablePKCE bool, isGoogleProv, isAzureProv func() bool,
 	clientID, authURL, issuerURL string, scopes []string, overrideScopes bool,
-	scopeFilter ScopeFilter, scopesSupported []string) *AuthHandler {
-	return &AuthHandler{
+	scopeFilter ScopeFilter, scopesSupported []string) *Handler {
+	return &Handler{
 		logger:          logger,
 		enablePKCE:      enablePKCE,
 		isGoogleProv:    isGoogleProv,
@@ -59,10 +59,9 @@ func NewAuthHandler(logger Logger, enablePKCE bool, isGoogleProv, isAzureProv fu
 // InitiateAuthentication initiates the OIDC authentication flow.
 // It generates CSRF tokens, nonce, PKCE parameters (if enabled), clears the session,
 // stores authentication state, and redirects the user to the OIDC provider.
-func (h *AuthHandler) InitiateAuthentication(rw http.ResponseWriter, req *http.Request,
+func (h *Handler) InitiateAuthentication(rw http.ResponseWriter, req *http.Request,
 	session SessionData, redirectURL string,
 	generateNonce, generateCodeVerifier, deriveCodeChallenge func() (string, error)) {
-
 	h.logger.Debugf("Initiating new OIDC authentication flow for request: %s", req.URL.RequestURI())
 
 	const maxRedirects = 5
@@ -138,7 +137,7 @@ func (h *AuthHandler) InitiateAuthentication(rw http.ResponseWriter, req *http.R
 // BuildAuthURL constructs the OIDC provider authorization URL.
 // It builds the URL with all necessary parameters including client_id, scopes,
 // PKCE parameters, and provider-specific parameters for Google and Azure.
-func (h *AuthHandler) BuildAuthURL(redirectURL, state, nonce, codeChallenge string) string {
+func (h *Handler) BuildAuthURL(redirectURL, state, nonce, codeChallenge string) string {
 	params := url.Values{}
 	params.Set("client_id", h.clientID)
 	params.Set("response_type", "code")
@@ -160,59 +159,8 @@ func (h *AuthHandler) BuildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		h.logger.Debugf("AuthHandler.BuildAuthURL: After discovery filtering: %v", scopes)
 	}
 
-	// Then apply provider-specific modifications
-	if h.isGoogleProv() {
-		// Google: Remove offline_access if present, add access_type=offline
-		filteredScopes := make([]string, 0, len(scopes))
-		for _, scope := range scopes {
-			if scope != "offline_access" {
-				filteredScopes = append(filteredScopes, scope)
-			}
-		}
-		scopes = filteredScopes
-
-		params.Set("access_type", "offline")
-		h.logger.Debugf("Google OIDC provider detected, added access_type=offline")
-		params.Set("prompt", "consent")
-		h.logger.Debugf("Google OIDC provider detected, added prompt=consent to ensure refresh tokens")
-	} else if h.isAzureProv() {
-		params.Set("response_mode", "query")
-		h.logger.Debugf("Azure AD provider detected, added response_mode=query")
-
-		hasOfflineAccess := false
-		for _, scope := range scopes {
-			if scope == "offline_access" {
-				hasOfflineAccess = true
-				break
-			}
-		}
-
-		if !h.overrideScopes || (h.overrideScopes && len(h.scopes) == 0) {
-			if !hasOfflineAccess {
-				scopes = append(scopes, "offline_access")
-				h.logger.Debugf("Azure AD provider: Added offline_access scope (overrideScopes: %t, user scopes count: %d)", h.overrideScopes, len(h.scopes))
-			}
-		} else {
-			h.logger.Debugf("Azure AD provider: User is overriding scopes (count: %d), offline_access not automatically added.", len(h.scopes))
-		}
-	} else {
-		// Standard providers: Add offline_access if not overriding and not present
-		if !h.overrideScopes || (h.overrideScopes && len(h.scopes) == 0) {
-			hasOfflineAccess := false
-			for _, scope := range scopes {
-				if scope == "offline_access" {
-					hasOfflineAccess = true
-					break
-				}
-			}
-			if !hasOfflineAccess {
-				scopes = append(scopes, "offline_access")
-				h.logger.Debugf("Standard provider: Added offline_access scope (overrideScopes: %t, user scopes count: %d)", h.overrideScopes, len(h.scopes))
-			}
-		} else {
-			h.logger.Debugf("Standard provider: User is overriding scopes (count: %d), offline_access not automatically added.", len(h.scopes))
-		}
-	}
+	// Apply provider-specific modifications
+	scopes, params = h.applyProviderSpecificConfig(scopes, params)
 
 	// Final filtering pass to remove anything the provider doesn't support
 	if h.scopeFilter != nil && len(h.scopesSupported) > 0 {
@@ -229,10 +177,80 @@ func (h *AuthHandler) BuildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	return h.buildURLWithParams(h.authURL, params)
 }
 
+// applyProviderSpecificConfig applies provider-specific scope and parameter modifications
+func (h *Handler) applyProviderSpecificConfig(scopes []string, params url.Values) ([]string, url.Values) {
+	switch {
+	case h.isGoogleProv():
+		return h.applyGoogleConfig(scopes, params)
+	case h.isAzureProv():
+		return h.applyAzureConfig(scopes, params)
+	default:
+		return h.applyStandardProviderConfig(scopes, params)
+	}
+}
+
+// applyGoogleConfig applies Google-specific configuration
+func (h *Handler) applyGoogleConfig(scopes []string, params url.Values) ([]string, url.Values) {
+	// Google: Remove offline_access if present, add access_type=offline
+	filteredScopes := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope != "offline_access" {
+			filteredScopes = append(filteredScopes, scope)
+		}
+	}
+	params.Set("access_type", "offline")
+	h.logger.Debugf("Google OIDC provider detected, added access_type=offline")
+	params.Set("prompt", "consent")
+	h.logger.Debugf("Google OIDC provider detected, added prompt=consent to ensure refresh tokens")
+	return filteredScopes, params
+}
+
+// applyAzureConfig applies Azure AD-specific configuration
+func (h *Handler) applyAzureConfig(scopes []string, params url.Values) ([]string, url.Values) {
+	params.Set("response_mode", "query")
+	h.logger.Debugf("Azure AD provider detected, added response_mode=query")
+
+	if h.shouldAddOfflineAccess(scopes) {
+		scopes = append(scopes, "offline_access")
+		h.logger.Debugf("Azure AD provider: Added offline_access scope (overrideScopes: %t, user scopes count: %d)",
+			h.overrideScopes, len(h.scopes))
+	} else {
+		h.logger.Debugf("Azure AD provider: User is overriding scopes (count: %d), offline_access not automatically added.",
+			len(h.scopes))
+	}
+	return scopes, params
+}
+
+// applyStandardProviderConfig applies configuration for standard OIDC providers
+func (h *Handler) applyStandardProviderConfig(scopes []string, params url.Values) ([]string, url.Values) {
+	if h.shouldAddOfflineAccess(scopes) {
+		scopes = append(scopes, "offline_access")
+		h.logger.Debugf("Standard provider: Added offline_access scope (overrideScopes: %t, user scopes count: %d)",
+			h.overrideScopes, len(h.scopes))
+	} else {
+		h.logger.Debugf("Standard provider: User is overriding scopes (count: %d), offline_access not automatically added.",
+			len(h.scopes))
+	}
+	return scopes, params
+}
+
+// shouldAddOfflineAccess determines if offline_access scope should be added
+func (h *Handler) shouldAddOfflineAccess(scopes []string) bool {
+	if h.overrideScopes && len(h.scopes) > 0 {
+		return false
+	}
+	for _, scope := range scopes {
+		if scope == "offline_access" {
+			return false
+		}
+	}
+	return true
+}
+
 // buildURLWithParams constructs a URL by combining a base URL with query parameters.
 // It handles both relative and absolute URLs, validates URL security,
 // and properly encodes query parameters.
-func (h *AuthHandler) buildURLWithParams(baseURL string, params url.Values) string {
+func (h *Handler) buildURLWithParams(baseURL string, params url.Values) string {
 	if baseURL != "" {
 		if strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://") {
 			if err := h.validateURL(baseURL); err != nil {
@@ -283,7 +301,7 @@ func (h *AuthHandler) buildURLWithParams(baseURL string, params url.Values) stri
 
 // validateURL performs security validation on URLs to prevent SSRF attacks.
 // It checks for allowed schemes, validates hosts, and prevents access to private networks.
-func (h *AuthHandler) validateURL(urlStr string) error {
+func (h *Handler) validateURL(urlStr string) error {
 	if urlStr == "" {
 		return fmt.Errorf("empty URL")
 	}
@@ -298,7 +316,7 @@ func (h *AuthHandler) validateURL(urlStr string) error {
 
 // validateParsedURL validates a parsed URL structure for security.
 // It checks schemes, hosts, and paths to prevent malicious URLs.
-func (h *AuthHandler) validateParsedURL(u *url.URL) error {
+func (h *Handler) validateParsedURL(u *url.URL) error {
 	allowedSchemes := map[string]bool{
 		"https": true,
 		"http":  true,
@@ -329,7 +347,7 @@ func (h *AuthHandler) validateParsedURL(u *url.URL) error {
 
 // validateHost validates a hostname for security and reachability.
 // It prevents access to private networks and localhost addresses.
-func (h *AuthHandler) validateHost(host string) error {
+func (h *Handler) validateHost(host string) error {
 	if host == "" {
 		return fmt.Errorf("empty host")
 	}

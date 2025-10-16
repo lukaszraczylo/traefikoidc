@@ -9,7 +9,7 @@ import (
 )
 
 // TestGoroutineLeakPrevention_ContextCancellation tests that goroutines are properly cleaned up
-// when the context is cancelled during middleware initialization and operation
+// when the context is canceled during middleware initialization and operation
 func TestGoroutineLeakPrevention_ContextCancellation(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -21,19 +21,19 @@ func TestGoroutineLeakPrevention_ContextCancellation(t *testing.T) {
 			name:          "immediate_cancellation",
 			cancelAfter:   1 * time.Millisecond,
 			expectedLeaks: 10, // Allow for background tasks (replay-cache-cleanup, health-check, etc.)
-			description:   "Context cancelled immediately during initialization",
+			description:   "Context canceled immediately during initialization",
 		},
 		{
 			name:          "quick_cancellation",
 			cancelAfter:   50 * time.Millisecond,
 			expectedLeaks: 5, // Allow for some background task leaks during cancellation
-			description:   "Context cancelled during metadata initialization",
+			description:   "Context canceled during metadata initialization",
 		},
 		{
 			name:          "delayed_cancellation",
 			cancelAfter:   200 * time.Millisecond,
 			expectedLeaks: 5, // Allow for some background task leaks during cancellation
-			description:   "Context cancelled after partial initialization",
+			description:   "Context canceled after partial initialization",
 		},
 	}
 
@@ -83,7 +83,7 @@ func TestGoroutineLeakPrevention_ContextCancellation(t *testing.T) {
 
 			select {
 			case <-done:
-				// Initialization completed (or was cancelled)
+				// Initialization completed (or was canceled)
 			case <-time.After(5 * time.Second):
 				t.Fatal("Plugin initialization did not complete within timeout")
 			}

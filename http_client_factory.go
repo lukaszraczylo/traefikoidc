@@ -245,7 +245,7 @@ func (f *HTTPClientFactory) CreateHTTPClient(config HTTPClientConfig) *http.Clie
 
 	// Add cookie jar if requested
 	if config.UseCookieJar {
-		jar, _ := cookiejar.New(nil)
+		jar, _ := cookiejar.New(nil) // Safe to ignore: cookiejar creation with nil options rarely fails
 		client.Jar = jar
 	}
 

@@ -121,6 +121,7 @@ type TraefikOidc struct {
 	strictAudienceValidation   bool // Prevents Scenario 2 fallback to ID token
 	allowOpaqueTokens          bool // Enables opaque token support via introspection
 	requireTokenIntrospection  bool // Forces introspection for opaque tokens
+	disableReplayDetection     bool // Disables JTI-based replay detection for multi-replica deployments
 	suppressDiagnosticLogs     bool
 	firstRequestReceived       bool
 	metadataRefreshStarted     bool

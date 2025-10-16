@@ -444,9 +444,9 @@ func (sm *SessionManager) PeriodicChunkCleanup() {
 		return
 	}
 
-	// Check if context is cancelled or we're in test mode to prevent logging after test completion
+	// Check if context is canceled or we're in test mode to prevent logging after test completion
 	if sm.ctx == nil || sm.ctx.Err() != nil || isTestMode() {
-		return // Skip logging if context is cancelled or in test mode
+		return // Skip logging if context is canceled or in test mode
 	}
 
 	sm.logger.Debug("Starting comprehensive session cleanup cycle")
@@ -796,7 +796,7 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 //   - The loaded SessionData instance.
 //   - An error if session loading or validation fails.
 func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
-	sessionData := sm.sessionPool.Get().(*SessionData)
+	sessionData, _ := sm.sessionPool.Get().(*SessionData) // Safe to ignore: pool return is best-effort
 	atomic.AddInt64(&sm.poolHits, 1)
 	atomic.AddInt64(&sm.activeSessions, 1)
 
@@ -822,7 +822,7 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 
 	if createdAt, ok := sessionData.mainSession.Values["created_at"].(int64); ok {
 		if time.Since(time.Unix(createdAt, 0)) > absoluteSessionTimeout {
-			sessionData.Clear(r, nil)
+			_ = sessionData.Clear(r, nil) // Safe to ignore: session is being invalidated
 			return handleError(fmt.Errorf("session timeout"), "session expired")
 		}
 	}

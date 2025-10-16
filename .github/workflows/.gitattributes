@@ -1,0 +1,9 @@
+# Ensure consistent line endings
+* text=auto eol=lf
+
+# GitHub Actions files should use LF
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Shell scripts should use LF
+*.sh text eol=lf

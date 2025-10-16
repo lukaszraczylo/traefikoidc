@@ -452,7 +452,7 @@ func (c *UniversalCache) removeItem(key string, item *CacheItem) {
 // evictOldest evicts the oldest item from the cache (must be called with lock held)
 func (c *UniversalCache) evictOldest() {
 	if elem := c.lruList.Back(); elem != nil {
-		key := elem.Value.(string)
+		key, _ := elem.Value.(string) // Safe to ignore: cache internal type assertion
 		if item, exists := c.items[key]; exists {
 			c.removeItem(key, item)
 			atomic.AddInt64(&c.evictions, 1)

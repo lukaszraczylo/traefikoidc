@@ -58,7 +58,7 @@ func NewBufferPool(maxSize int) *BufferPool {
 
 // Get retrieves a buffer from the pool
 func (p *BufferPool) Get() *bytes.Buffer {
-	buf := p.pool.Get().(*bytes.Buffer)
+	buf, _ := p.pool.Get().(*bytes.Buffer) // Safe to ignore: pool return is best-effort
 	buf.Reset()
 	return buf
 }
@@ -85,7 +85,7 @@ func NewGzipWriterPool() *GzipWriterPool {
 	return &GzipWriterPool{
 		pool: sync.Pool{
 			New: func() interface{} {
-				w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
+				w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed) // Safe to ignore: factory function
 				return w
 			},
 		},
@@ -94,7 +94,8 @@ func NewGzipWriterPool() *GzipWriterPool {
 
 // Get retrieves a gzip writer from the pool
 func (p *GzipWriterPool) Get() *gzip.Writer {
-	return p.pool.Get().(*gzip.Writer)
+	w, _ := p.pool.Get().(*gzip.Writer) // Safe to ignore: pool return is best-effort
+	return w
 }
 
 // Put returns a gzip writer to the pool
@@ -128,13 +129,14 @@ func (p *GzipReaderPool) Get() *gzip.Reader {
 	if r == nil {
 		return nil
 	}
-	return r.(*gzip.Reader)
+	reader, _ := r.(*gzip.Reader) // Safe to ignore: pool return is best-effort
+	return reader
 }
 
 // Put returns a gzip reader to the pool
 func (p *GzipReaderPool) Put(r *gzip.Reader) {
 	if r != nil {
-		r.Reset(nil)
+		_ = r.Reset(nil) // Safe to ignore: resetting to nil reader for pool reuse
 		p.pool.Put(r)
 	}
 }
@@ -187,7 +189,9 @@ func DecompressTokenOptimized(compressed string) (string, error) {
 	if err != nil {
 		return compressed, err
 	}
-	defer gzipReader.Close()
+	defer func() {
+		_ = gzipReader.Close() // Safe to ignore: closing resource in defer
+	}()
 
 	outputBuf := opts.bufferPool.Get()
 	defer opts.bufferPool.Put(outputBuf)

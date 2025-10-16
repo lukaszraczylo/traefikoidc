@@ -538,7 +538,7 @@ func (tr *TaskRegistry) CreateSingletonTask(name string, interval time.Duration,
 
 	// Start the task if not already running
 	if !rm.IsTaskRunning(name) {
-		rm.StartBackgroundTask(name)
+		_ = rm.StartBackgroundTask(name) // Safe to ignore: task registration succeeded, start is best-effort
 	}
 
 	// Get the task from resource manager's internal registry

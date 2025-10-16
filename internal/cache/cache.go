@@ -355,7 +355,7 @@ func (c *Cache) removeItem(key string, item *Item) {
 
 func (c *Cache) evictLRU() {
 	if elem := c.lruList.Back(); elem != nil {
-		item := elem.Value.(*Item)
+		item, _ := elem.Value.(*Item) // Safe to ignore: type assertion from known type
 		c.removeItem(item.Key, item)
 		atomic.AddInt64(&c.evictions, 1)
 		c.logger.Debugf("Cache: Evicted LRU item key=%s", item.Key)

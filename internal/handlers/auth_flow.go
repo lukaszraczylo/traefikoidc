@@ -130,7 +130,7 @@ func (h *AuthFlowHandler) waitForInitialization(req *http.Request) bool {
 		}
 		return true
 	case <-req.Context().Done():
-		h.logger.Debug("Request cancelled while waiting for OIDC initialization")
+		h.logger.Debug("Request canceled while waiting for OIDC initialization")
 		return false
 	case <-time.After(30 * time.Second):
 		h.logger.Error("Timeout waiting for OIDC initialization")

@@ -47,7 +47,7 @@ func TestAudienceConfiguration(t *testing.T) {
 			config.Audience = tt.configAudience
 
 			// Create middleware instance
-			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
 
@@ -62,7 +62,7 @@ func TestAudienceConfiguration(t *testing.T) {
 			}
 
 			// Cleanup
-			traefikOidc.Close()
+			_ = traefikOidc.Close()
 		})
 	}
 }

@@ -73,7 +73,11 @@ testData:
     - admin
     - developer
 
-  forceHTTPS: false # Forces the use of HTTPS for all URLs (default: true for security)
+  # ⚠️ CRITICAL for TLS termination scenarios (AWS ALB, Cloud Load Balancers, etc.)
+  # When NOT specified in config: defaults to FALSE (Go zero value)
+  # When running behind load balancer that terminates TLS: MUST set to TRUE
+  # See: https://github.com/lukaszraczylo/traefikoidc/issues/82
+  forceHTTPS: true # Forces HTTPS scheme for redirect URIs (default when not specified: false)
   logLevel: debug # Sets logging verbosity: debug, info, error (default: info)
   rateLimit: 100 # Maximum number of requests per second (default: 100, minimum: 10)
 
@@ -108,6 +112,7 @@ testData:
   strictAudienceValidation: false # Reject sessions with audience mismatch (prevents token confusion attacks)
   allowOpaqueTokens: false # Enable opaque (non-JWT) access token support via RFC 7662 introspection
   requireTokenIntrospection: false # Force introspection for opaque tokens (requires introspection endpoint)
+  disableReplayDetection: false # Disable JTI replay detection for multi-replica deployments (default: false)
 
   # Security Headers Configuration (enabled by default with 'default' profile)
   securityHeaders:
@@ -474,9 +479,24 @@ configuration:
   forceHTTPS:
     type: boolean
     description: |
-      Forces the use of HTTPS for all URLs.
-      This is recommended for security in production environments.
-      Default: true
+      Forces HTTPS scheme for redirect URIs regardless of request headers or TLS state.
+
+      ⚠️ CRITICAL CONFIGURATION for TLS Termination Scenarios:
+
+      When running Traefik behind a load balancer that terminates TLS (AWS ALB,
+      Google Cloud Load Balancer, Azure Application Gateway, etc.), you MUST set
+      this to true. Without it, redirect URIs will use http:// instead of https://,
+      causing OAuth callback failures.
+
+      How it works:
+      - When true: Always uses https:// for redirect URIs (highest priority)
+      - When false: Detects scheme from X-Forwarded-Proto header or TLS state
+      - When NOT specified: Defaults to false (Go zero value for bool)
+
+      Default: false (when not specified in configuration)
+      Recommended: true (for production environments and TLS termination scenarios)
+
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/82
     required: false
 
   rateLimit:
@@ -734,6 +754,37 @@ configuration:
 
       Default: false (allows fallback to ID token)
       See: RFC 7662 OAuth 2.0 Token Introspection specification
+    required: false
+
+  disableReplayDetection:
+    type: boolean
+    description: |
+      Disable JTI-based replay attack detection for multi-replica deployments.
+
+      When running multiple Traefik replicas, each instance maintains its own in-memory
+      JTI (JWT Token ID) cache. This causes false positives when the same valid token
+      hits different replicas:
+      - Request → Replica A → JTI added to cache → OK
+      - Request → Replica B → JTI not in Replica B's cache → OK
+      - Request → Replica A again → JTI found → FALSE POSITIVE "replay detected"
+
+      Security Impact:
+      When disabled, the following validations remain active:
+      - RSA/ECDSA signature verification
+      - Token expiration (exp claim)
+      - Issuer validation (iss claim)
+      - Audience validation (aud claim)
+      - Not-before validation (nbf claim)
+      - Issued-at validation (iat claim)
+
+      Only the JTI replay check is skipped.
+
+      Recommendations:
+      - Single-instance deployment: false (default, enables replay protection)
+      - Multi-replica deployment: true (prevents false positives)
+      - Production with shared cache: false (use Redis/Memcached for shared JTI cache)
+
+      Default: false (replay detection enabled)
     required: false
 
   headers:

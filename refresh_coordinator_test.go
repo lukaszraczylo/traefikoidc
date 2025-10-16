@@ -557,7 +557,8 @@ func TestSessionWindowReset(t *testing.T) {
 	config := DefaultRefreshCoordinatorConfig()
 	config.MaxRefreshAttempts = 2
 	config.RefreshAttemptWindow = 500 * time.Millisecond
-	config.DeduplicationCleanupDelay = 0 // Immediate cleanup for deterministic test behavior
+	config.RefreshCooldownPeriod = 2 * time.Second // Explicitly set cooldown > window
+	config.DeduplicationCleanupDelay = 0           // Immediate cleanup for deterministic test behavior
 
 	coordinator := NewRefreshCoordinator(config, logger)
 	defer coordinator.Shutdown()
@@ -578,22 +579,25 @@ func TestSessionWindowReset(t *testing.T) {
 	for i := 0; i < config.MaxRefreshAttempts; i++ {
 		ctx := context.Background()
 		_, _ = coordinator.CoordinateRefresh(ctx, sessionID, refreshToken, refreshFunc)
+		// Add small delay to ensure attempts are registered separately
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// Next attempt should trigger cooldown
 	ctx := context.Background()
 	_, err := coordinator.CoordinateRefresh(ctx, sessionID, refreshToken, refreshFunc)
 	if err == nil || err.Error() != "refresh attempts exceeded for session, in cooldown period" {
-		t.Error("Expected cooldown after max attempts")
+		t.Errorf("Expected cooldown after max attempts, got: %v", err)
 	}
 
 	// Wait for window to expire (but not cooldown)
-	time.Sleep(config.RefreshAttemptWindow + 100*time.Millisecond)
+	// Use generous buffer for CI environments
+	time.Sleep(config.RefreshAttemptWindow + 200*time.Millisecond)
 
-	// Should still be in cooldown (cooldown > window)
+	// Should still be in cooldown (cooldown=2s > window=500ms)
 	_, err = coordinator.CoordinateRefresh(ctx, sessionID, refreshToken, refreshFunc)
 	if err == nil || err.Error() != "refresh attempts exceeded for session, in cooldown period" {
-		t.Error("Should still be in cooldown period")
+		t.Errorf("Should still be in cooldown period after window expiry, got: %v", err)
 	}
 }
 

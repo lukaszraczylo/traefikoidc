@@ -133,11 +133,11 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 		t.logger.Debugf("Sending JSON error response (code %d): %s", code, message)
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(code)
-		json.NewEncoder(rw).Encode(map[string]interface{}{
+		_ = json.NewEncoder(rw).Encode(map[string]interface{}{
 			"error":             http.StatusText(code),
 			"error_description": message,
 			"status_code":       code,
-		})
+		}) // Safe to ignore: error response write
 		return
 	}
 
@@ -169,7 +169,7 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(code)
-	_, _ = rw.Write([]byte(htmlBody))
+	_, _ = rw.Write([]byte(htmlBody)) // Safe to ignore: error response write
 }
 
 // =============================================================================
@@ -190,8 +190,8 @@ func (t *TraefikOidc) Close() error {
 		rm := GetResourceManager()
 
 		// Stop singleton tasks related to this instance
-		rm.StopBackgroundTask("singleton-token-cleanup")
-		rm.StopBackgroundTask("singleton-metadata-refresh")
+		_ = rm.StopBackgroundTask("singleton-token-cleanup")    // Safe to ignore: best effort cleanup
+		_ = rm.StopBackgroundTask("singleton-metadata-refresh") // Safe to ignore: best effort cleanup
 
 		// Remove reference for this instance
 		rm.RemoveReference(t.name)

@@ -88,7 +88,10 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 
 		err = t.errorRecoveryManager.ExecuteWithRecovery(context.Background(), serviceName, func() error {
 			var reqErr error
-			resp, reqErr = t.httpClient.Do(req)
+			resp, reqErr = t.httpClient.Do(req) //nolint:bodyclose // Body is closed in defer after error check
+			if reqErr != nil && resp != nil && resp.Body != nil {
+				_ = resp.Body.Close() // Safe to ignore: closing body on error
+			}
 			return reqErr
 		})
 	} else {
@@ -96,17 +99,22 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 	}
 
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close() // Safe to ignore: closing body on error
+		}
 		return nil, fmt.Errorf("introspection request failed: %w", err)
 	}
 	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		if resp != nil && resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body) // Safe to ignore: draining body on defer
+			_ = resp.Body.Close()                 // Safe to ignore: closing body on defer
+		}
 	}()
 
 	// Check HTTP status
 	if resp.StatusCode != http.StatusOK {
 		limitReader := io.LimitReader(resp.Body, 1024*10)
-		body, _ := io.ReadAll(limitReader)
+		body, _ := io.ReadAll(limitReader) // Safe to ignore: reading error body for diagnostics
 		return nil, fmt.Errorf("introspection endpoint returned status %d: %s", resp.StatusCode, string(body))
 	}
 

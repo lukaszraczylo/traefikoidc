@@ -1,0 +1,38 @@
+# Code Owners for traefik-oidc
+# These owners will be automatically requested for review when someone opens a PR
+
+# Default owner for everything in the repo
+* @lukaszraczylo
+
+# Core authentication and middleware
+/middleware/ @lukaszraczylo
+/auth/ @lukaszraczylo
+/handlers/ @lukaszraczylo
+
+# OIDC providers
+/internal/providers/ @lukaszraczylo
+
+# Session management and security
+/session/ @lukaszraczylo
+/internal/security/ @lukaszraczylo
+/security/ @lukaszraczylo
+
+# Token management
+/internal/token/ @lukaszraczylo
+
+# Configuration
+/config/ @lukaszraczylo
+/.traefik.yml @lukaszraczylo
+
+# GitHub Actions and CI/CD
+/.github/ @lukaszraczylo
+/.github/workflows/ @lukaszraczylo
+/.golangci.yml @lukaszraczylo
+
+# Documentation
+/docs/ @lukaszraczylo
+README.md @lukaszraczylo
+
+# Dependencies
+go.mod @lukaszraczylo
+go.sum @lukaszraczylo
