@@ -76,7 +76,7 @@ experimental:
   plugins:
     traefikoidc:
       moduleName: github.com/lukaszraczylo/traefikoidc
-      version: v0.7.8  # Use the latest version
+      version: v0.7.10  # Use the latest version
 ```
 
 2. Configure the middleware in your dynamic configuration (see examples below).
@@ -117,20 +117,6 @@ The middleware supports the following configuration options:
 | `logLevel` | Sets the logging verbosity | `info` | `debug`, `info`, `error` |
 | `forceHTTPS` | Forces HTTPS scheme for redirect URIs (**REQUIRED** for TLS termination at load balancer like AWS ALB) | `false` (when not specified) | `true`, `false` |
 | `rateLimit` | Sets the maximum number of requests per second | `100` | `500` |
-
-> **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
->
-> If you're running Traefik behind a load balancer (AWS ALB, Google Cloud Load Balancer, Azure Application Gateway, etc.) that terminates TLS:
-> - **You MUST set `forceHTTPS: true`** in your configuration
-> - Without this setting, redirect URIs will use `http://` instead of `https://`, causing OAuth callback failures
-> - This is especially critical for AWS ALB which may overwrite the `X-Forwarded-Proto` header
->
-> **Default behavior:**
-> - When `forceHTTPS` is **not specified** in your config → defaults to `false` (Go zero value)
-> - When `forceHTTPS: true` is explicitly set → always uses `https://` for redirect URIs
-> - When `forceHTTPS: false` is explicitly set → scheme detection based on headers/TLS
->
-> See [GitHub Issue #82](https://github.com/lukaszraczylo/traefikoidc/issues/82) for details.
 | `excludedURLs` | Lists paths that bypass authentication | none | `["/health", "/metrics", "/public"]` |
 | `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
 | `allowedUsers` | A list of specific email addresses that are allowed access | none | `["user1@example.com", "user2@another.org"]` |
@@ -147,6 +133,20 @@ The middleware supports the following configuration options:
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 | `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
 | `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
+
+> **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
+>
+> If you're running Traefik behind a load balancer (AWS ALB, Google Cloud Load Balancer, Azure Application Gateway, etc.) that terminates TLS:
+> - **You MUST set `forceHTTPS: true`** in your configuration
+> - Without this setting, redirect URIs will use `http://` instead of `https://`, causing OAuth callback failures
+> - This is especially critical for AWS ALB which may overwrite the `X-Forwarded-Proto` header
+>
+> **Default behavior:**
+> - When `forceHTTPS` is **not specified** in your config → defaults to `false` (Go zero value)
+> - When `forceHTTPS: true` is explicitly set → always uses `https://` for redirect URIs
+> - When `forceHTTPS: false` is explicitly set → scheme detection based on headers/TLS
+>
+> See [GitHub Issue #82](https://github.com/lukaszraczylo/traefikoidc/issues/82) for details.
 
 ## Scope Configuration
 
@@ -1089,7 +1089,7 @@ services:
     image: traefik:v3.2.1
     command:
       - "--experimental.plugins.traefikoidc.modulename=github.com/lukaszraczylo/traefikoidc"
-      - "--experimental.plugins.traefikoidc.version=v0.7.8"
+      - "--experimental.plugins.traefikoidc.version=v0.7.10"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./traefik-config/traefik.yml:/etc/traefik/traefik.yml
@@ -1196,58 +1196,6 @@ http:
                 {{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}
 ```
 
-## Advanced Configuration
-
-### Session Management
-
-The middleware uses encrypted cookies to manage user sessions. The `sessionEncryptionKey` must be at least 32 bytes long and should be kept secret.
-
-### PKCE Support
-
-The middleware supports PKCE (Proof Key for Code Exchange), which is an extension to the authorization code flow to prevent authorization code interception attacks. When enabled via the `enablePKCE` option, the middleware will generate a code verifier for each authentication request and derive a code challenge from it. The code verifier is stored in the user's session and sent during the token exchange process.
-
-PKCE is recommended when:
-- Your OIDC provider supports it (most modern providers do)
-- You need an additional layer of security for the authorization code flow
-- You're concerned about potential authorization code interception attacks
-
-Note that not all OIDC providers support PKCE, so check your provider's documentation before enabling this feature.
-
-### Session Duration and Token Refresh
-
-This middleware aims to provide long-lived user sessions, typically up to 24 hours, by utilizing OIDC refresh tokens.
-
-**How it works:**
-- When a user authenticates, the middleware requests an access token and, if available, a refresh token from the OIDC provider.
-- The access token usually has a short lifespan (e.g., 1 hour).
-- Before the access token expires (controlled by `refreshGracePeriodSeconds`), the middleware uses the refresh token to obtain a new access token from the provider without requiring the user to log in again.
-- This process repeats, allowing the session to remain valid for as long as the refresh token is valid (often 24 hours or more, depending on the provider).
-
-**Provider-Specific Considerations (e.g., Google):**
-- Some providers, like Google, issue short-lived access tokens (e.g., 1 hour) and require specific configurations for long-term sessions.
-- To enable session extension beyond the initial token expiry with Google and similar providers, the middleware automatically includes the `offline_access` scope in the authentication request. This scope is necessary to obtain a refresh token.
-- For Google specifically, the middleware also adds the `prompt=consent` parameter to the initial authorization request. This ensures Google issues a refresh token, which is crucial for extending the session.
-- If a refresh attempt fails (e.g., the refresh token is revoked or expired), the user will be required to re-authenticate. The middleware includes enhanced error handling and logging for these scenarios.
-- Ensure your OIDC provider is configured to issue refresh tokens and allows their use for extending sessions. Check your provider's documentation for details on refresh token validity periods.
-
-### Google OAuth Compatibility Fix
-
-The middleware includes a specific fix for Google's OAuth implementation, which differs from the standard OIDC specification in how it handles refresh tokens:
-
-- **Issue**: Google does not support the standard `offline_access` scope for requesting refresh tokens and instead requires special parameters.
-  
-- **Automatic Solution**: The middleware detects Google as the provider based on the issuer URL and:
-  - Uses `access_type=offline` query parameter instead of the `offline_access` scope
-  - Adds `prompt=consent` to ensure refresh tokens are consistently issued
-  - Properly handles token refresh with Google's implementation
-
-You do not need any special configuration to use Google OAuth - just set `providerURL` to `https://accounts.google.com` and the middleware will automatically apply the proper parameters.
-
-For detailed information on the Google OAuth fix, see the [dedicated documentation](docs/google-oauth-fix.md).
-
-### Token Caching and Blacklisting
-
-The middleware automatically caches validated tokens to improve performance and maintains a blacklist of revoked tokens.
 ### Templated Headers
 
 The middleware supports setting custom HTTP headers with values templated from OIDC claims and tokens. This allows you to pass authentication information to downstream services in a flexible, customized format.
@@ -1448,32 +1396,6 @@ GitLab supports OIDC for both GitLab.com and self-hosted instances.
 *   **Use Cases**: API access only, not suitable for user authentication with claims
 *   **Scopes**: Use `user:email`, `read:user` for basic profile access
 *   **Detection**: Auto-detected from `github.com` in issuer URL
-
-### Azure AD (Microsoft Entra ID)
-
-Azure AD generally works well with standard OIDC configurations.
-
-*   **ID Token Claims**: Azure AD typically includes standard claims like `email`, `name`, `preferred_username`, and `oid` (Object ID) in the ID Token by default when `openid profile email` scopes are requested.
-*   **Group Claims**: To include group claims in the ID Token, you need to configure this in the Azure AD application registration:
-    *   Go to your App Registration -> Token configuration -> Add groups claim.
-    *   You can choose which types of groups (Security groups, Directory roles, All groups) to include.
-    *   Be aware of the "overage" issue: If a user is a member of too many groups, Azure AD will send a link to fetch groups instead of embedding them. This plugin currently expects group claims to be directly in the ID token. For users with many groups, consider alternative role/permission management strategies.
-    *   The claim name for groups is typically `groups`.
-*   **Optional Claims**: You can add other optional claims via the "Token configuration" section of your App Registration. Ensure these are configured for the ID token.
-*   **Endpoints**: The `providerURL` should be `https://login.microsoftonline.com/{your-tenant-id}/v2.0`. The plugin will auto-discover the necessary endpoints.
-*   **Optimization**: Ensure your application manifest in Azure AD is configured for the desired token version (v1.0 or v2.0). This plugin works with v2.0 endpoints.
-
-### Google Workspace / Google Cloud Identity
-
-Google's OIDC implementation is well-supported.
-
-*   **Optimal Configuration**: The plugin automatically handles Google-specific requirements, such as using `access_type=offline` and `prompt=consent` to ensure refresh tokens are issued for long-lived sessions. You do not need to add `offline_access` to scopes.
-*   **ID Token Claims**: Google includes standard claims like `email`, `sub`, `name`, `given_name`, `family_name`, `picture` in the ID Token by default with `openid profile email` scopes.
-*   **Hosted Domain (hd claim)**: If you are using Google Workspace and want to restrict access to users within your organization's domain, Google includes an `hd` (hosted domain) claim in the ID Token. You can use this with the `allowedUserDomains` setting or for custom header logic.
-*   **Best Practices**:
-    *   Use the `providerURL`: `https://accounts.google.com`.
-    *   Ensure your OAuth consent screen in Google Cloud Console is configured correctly and published. For production, it should be "External" and in "Production" status. "Testing" status limits refresh token lifetime.
-    *   Refer to the [Google OAuth Compatibility Fix](#google-oauth-compatibility-fix) section for more details on how the plugin handles Google's specifics.
 
 ### Auth0
 

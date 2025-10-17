@@ -88,16 +88,16 @@ testData:
     - /metrics
     
   headers: # Custom headers to set with templated values from claims and tokens
-    # NOTE: If you encounter "can't evaluate field AccessToken in type bool" errors,
-    # you may need to escape the templates. See the headers section in configuration below.
+    # NOTE: Use double curly braces to escape template expressions in YAML
+    # See the headers section in configuration below for details
     - name: "X-User-Email"
-      value: "{{.Claims.email}}"
+      value: "{{{{.Claims.email}}}}"
     - name: "X-User-ID"
-      value: "{{.Claims.sub}}"
+      value: "{{{{.Claims.sub}}}}"
     - name: "Authorization"
-      value: "Bearer {{.AccessToken}}"
+      value: "Bearer {{{{.AccessToken}}}}"
     - name: "X-User-Roles"
-      value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+      value: "{{{{range $i, $e := .Claims.roles}}}}{{{{if $i}}}},{{{{end}}}}{{{{$e}}}}{{{{end}}}}"
 
   # Advanced parameters (usually discovered automatically from provider metadata)
   revocationURL: https://accounts.google.com/revoke # Endpoint for revoking tokens
@@ -186,11 +186,11 @@ testData:
 #     corsAllowedOrigins: ["https://app.example.com"]
 #     corsAllowedMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 #     corsAllowedHeaders: ["Authorization", "Content-Type", "X-API-Key"]
-#   headers:  # Custom headers with OIDC claims
+#   headers:  # Custom headers with OIDC claims (use double curly braces)
 #     - name: "X-User-Email"
-#       value: "{{.Claims.email}}"
+#       value: "{{{{.Claims.email}}}}"
 #     - name: "X-User-ID"
-#       value: "{{.Claims.sub}}"
+#       value: "{{{{.Claims.sub}}}}"
 
 # --- Provider Specific Configuration Examples ---
 #
@@ -803,29 +803,23 @@ configuration:
       IMPORTANT: Template Escaping
       If you encounter the error "can't evaluate field AccessToken in type bool" when
       starting Traefik, this means Traefik is trying to evaluate the template expressions
-      before passing them to the plugin. To fix this, you need to escape the templates
-      using one of these methods:
+      before passing them to the plugin.
 
-      1. Use YAML literal style (recommended):
-         headers:
-           - name: "Authorization"
-             value: |
-               Bearer {{.AccessToken}}
+      SOLUTION: You must escape the template expressions using double curly braces:
 
-      2. Use single quotes:
-         headers:
-           - name: "Authorization"
-             value: 'Bearer {{.AccessToken}}'
+      headers:
+        - name: "Authorization"
+          value: "Bearer {{{{.AccessToken}}}}"
 
-      3. For inline double quotes, escape the braces:
-         headers:
-           - name: "Authorization"
-             value: "Bearer {{"{{.AccessToken}}"}}"
+      This is the only reliable method that works consistently. Here's why:
+      - The YAML parser converts {{{{  →  {{ and }}}}  →  }}
+      - Result: Bearer {{.AccessToken}} reaches the Go template engine correctly
+      - Other methods (YAML literal style, single quotes) do NOT work reliably
 
       Examples:
-      - name: "X-User-Email", value: "{{.Claims.email}}"
-      - name: "Authorization", value: "Bearer {{.AccessToken}}"
-      - name: "X-User-Roles", value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
+      - name: "X-User-Email", value: "{{{{.Claims.email}}}}"
+      - name: "Authorization", value: "Bearer {{{{.AccessToken}}}}"
+      - name: "X-User-Roles", value: "{{{{range $i, $e := .Claims.roles}}}}{{{{if $i}}}},{{{{end}}}}{{{{$e}}}}{{{{end}}}}"
     required: false
     items:
       type: object
