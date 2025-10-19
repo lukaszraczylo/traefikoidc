@@ -26,6 +26,21 @@ The Redis cache feature provides a distributed caching solution for the Traefik 
 - **Health Checking**: Continuous monitoring of Redis connectivity
 - **Flexible Cache Modes**: Choose between memory, Redis, or hybrid caching
 - **Zero-Downtime Migration**: Seamlessly migrate from memory-only to Redis-backed cache
+- **Yaegi Compatible**: Pure-Go implementation works with both dynamic loading and pre-compiled deployments
+
+### ✨ Pure-Go Implementation
+
+This plugin implements Redis support using a **custom pure-Go RESP protocol client** that is fully compatible with Traefik's Yaegi interpreter. Unlike other Redis clients that rely on the `unsafe` package, our implementation:
+
+- Works seamlessly with Yaegi's dynamic plugin loading
+- Provides full Redis functionality (GET, SET, DEL, TTL, etc.)
+- Includes connection pooling for performance
+- Supports both SETEX (seconds) and PSETEX (milliseconds) for precise TTL control
+- No external dependencies beyond the standard library
+
+This means you get **full Redis caching support whether you're using**:
+- ✅ Traefik's dynamic plugin loading (Yaegi interpreter)
+- ✅ Pre-compiled Traefik builds with the plugin included
 
 ## Why Use Redis Cache?
 

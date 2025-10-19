@@ -559,6 +559,8 @@ spec:
 
 The plugin supports optional Redis caching for multi-replica deployments. This solves issues with JTI replay detection and session management when running multiple Traefik instances behind a load balancer.
 
+> **✨ Yaegi Compatible**: Redis support is implemented using a pure-Go RESP protocol client that works seamlessly with Traefik's Yaegi interpreter (no `unsafe` package). Full Redis functionality is available for both dynamic plugin loading and pre-compiled deployments.
+
 ### Why Use Redis Cache?
 
 When running multiple Traefik replicas, each instance maintains its own in-memory cache for:

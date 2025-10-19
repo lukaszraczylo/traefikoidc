@@ -112,6 +112,16 @@ func (m *MiniredisServer) CheckKeys() []string {
 	return m.server.Keys()
 }
 
+// Close closes the miniredis server
+func (m *MiniredisServer) Close() {
+	m.server.Close()
+}
+
+// Restart restarts the miniredis server
+func (m *MiniredisServer) Restart() {
+	m.server.Restart()
+}
+
 // TestConfig provides default test configuration
 type TestConfig struct {
 	MaxSize         int

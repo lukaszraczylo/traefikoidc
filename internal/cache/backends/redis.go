@@ -2,27 +2,37 @@ package backends
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
-// RedisBackend implements a Redis-based cache backend
+// Pure-Go Redis client implementation
+// Compatible with Yaegi interpreter (no unsafe package)
+// Implements RESP protocol for basic Redis operations
+
+var (
+	ErrPoolExhausted = errors.New("connection pool exhausted")
+)
+
+// RedisBackend implements a Redis-based cache backend using pure Go
 type RedisBackend struct {
-	client *redis.Client
-	config *Config
+	config        *Config
+	pool          *ConnectionPool
+	healthMonitor *HealthMonitor
 
 	// Metrics
-	hits   int64
-	misses int64
+	hits   atomic.Int64
+	misses atomic.Int64
 
 	// Lifecycle
 	closed atomic.Bool
+	mu     sync.Mutex
 }
 
-// NewRedisBackend creates a new Redis cache backend
+// NewRedisBackend creates a new Redis cache backend with pure-Go implementation
 func NewRedisBackend(config *Config) (*RedisBackend, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
@@ -32,184 +42,294 @@ func NewRedisBackend(config *Config) (*RedisBackend, error) {
 		return nil, fmt.Errorf("redis address is required")
 	}
 
-	client := redis.NewClient(&redis.Options{
-		Addr:     config.RedisAddr,
-		Password: config.RedisPassword,
-		DB:       config.RedisDB,
-		PoolSize: config.PoolSize,
-	})
-
-	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+	// Create connection pool with health checks enabled
+	poolConfig := &PoolConfig{
+		Address:           config.RedisAddr,
+		Password:          config.RedisPassword,
+		DB:                config.RedisDB,
+		MaxConnections:    config.PoolSize,
+		ConnectTimeout:    5 * time.Second,
+		ReadTimeout:       3 * time.Second,
+		WriteTimeout:      3 * time.Second,
+		EnableHealthCheck: true,
+		MaxRetries:        3,
+		RetryDelay:        100 * time.Millisecond,
 	}
+
+	pool, err := NewConnectionPool(poolConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
+	}
+
+	// Create health monitor
+	healthConfig := DefaultHealthMonitorConfig()
+	healthMonitor := NewHealthMonitor(pool, healthConfig)
 
 	backend := &RedisBackend{
-		client: client,
-		config: config,
+		config:        config,
+		pool:          pool,
+		healthMonitor: healthMonitor,
 	}
+
+	// Test connectivity
+	if err := backend.Ping(context.Background()); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("failed to ping Redis: %w", err)
+	}
+
+	// Start health monitoring
+	healthMonitor.Start()
 
 	return backend, nil
 }
 
-// Set stores a value with TTL
+// Set stores a value in Redis with TTL
 func (r *RedisBackend) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	if r.closed.Load() {
 		return ErrBackendClosed
 	}
 
 	prefixedKey := r.prefixKey(key)
-	return r.client.Set(ctx, prefixedKey, value, ttl).Err()
+
+	// Execute with retry logic
+	return r.executeWithRetry(ctx, func(conn *RedisConn) error {
+		var err error
+
+		// Use PSETEX for millisecond precision, SETEX for second precision
+		if ttl > 0 {
+			ttlMillis := ttl.Milliseconds()
+			if ttlMillis < 1000 {
+				// Use PSETEX for sub-second TTLs (millisecond precision)
+				_, err = conn.Do("PSETEX", prefixedKey, fmt.Sprintf("%d", ttlMillis), string(value))
+			} else {
+				// Use SETEX for larger TTLs (second precision)
+				ttlSeconds := int(ttl.Seconds())
+				_, err = conn.Do("SETEX", prefixedKey, fmt.Sprintf("%d", ttlSeconds), string(value))
+			}
+		} else {
+			_, err = conn.Do("SET", prefixedKey, string(value))
+		}
+
+		return err
+	})
 }
 
-// Get retrieves a value
+// Get retrieves a value from Redis
 func (r *RedisBackend) Get(ctx context.Context, key string) ([]byte, time.Duration, bool, error) {
 	if r.closed.Load() {
 		return nil, 0, false, ErrBackendClosed
 	}
 
 	prefixedKey := r.prefixKey(key)
+	var resultValue []byte
+	var resultTTL time.Duration
+	var resultExists bool
 
-	// Get value
-	value, err := r.client.Get(ctx, prefixedKey).Bytes()
-	if err == redis.Nil {
-		atomic.AddInt64(&r.misses, 1)
-		return nil, 0, false, nil
-	}
-	if err != nil {
-		atomic.AddInt64(&r.misses, 1)
-		return nil, 0, false, fmt.Errorf("failed to get key: %w", err)
-	}
+	// Execute with retry logic
+	err := r.executeWithRetry(ctx, func(conn *RedisConn) error {
+		// Get value
+		resp, err := conn.Do("GET", prefixedKey)
+		if err != nil {
+			if errors.Is(err, ErrNilResponse) {
+				r.misses.Add(1)
+				resultExists = false
+				return nil // Not an error, key just doesn't exist
+			}
+			return err
+		}
 
-	// Get TTL
-	ttl, err := r.client.TTL(ctx, prefixedKey).Result()
-	if err != nil {
-		// Value exists but couldn't get TTL
-		atomic.AddInt64(&r.hits, 1)
-		return value, 0, true, nil
-	}
+		value, err := RESPString(resp)
+		if err != nil {
+			return err
+		}
 
-	atomic.AddInt64(&r.hits, 1)
-	return value, ttl, true, nil
+		// Get TTL
+		ttlResp, err := conn.Do("TTL", prefixedKey)
+		if err != nil {
+			// If TTL fails, still return the value
+			r.hits.Add(1)
+			resultValue = []byte(value)
+			resultTTL = 0
+			resultExists = true
+			return nil
+		}
+
+		ttlSeconds, _ := RESPInt(ttlResp)
+		var ttl time.Duration
+		if ttlSeconds > 0 {
+			ttl = time.Duration(ttlSeconds) * time.Second
+		}
+
+		r.hits.Add(1)
+		resultValue = []byte(value)
+		resultTTL = ttl
+		resultExists = true
+		return nil
+	})
+
+	return resultValue, resultTTL, resultExists, err
 }
 
-// Delete removes a key
+// Delete removes a key from Redis
 func (r *RedisBackend) Delete(ctx context.Context, key string) (bool, error) {
 	if r.closed.Load() {
 		return false, ErrBackendClosed
 	}
 
-	prefixedKey := r.prefixKey(key)
-	result, err := r.client.Del(ctx, prefixedKey).Result()
+	conn, err := r.pool.Get(ctx)
 	if err != nil {
-		return false, fmt.Errorf("failed to delete key: %w", err)
+		return false, err
+	}
+	defer r.pool.Put(conn)
+
+	prefixedKey := r.prefixKey(key)
+	resp, err := conn.Do("DEL", prefixedKey)
+	if err != nil {
+		return false, err
 	}
 
-	return result > 0, nil
+	count, err := RESPInt(resp)
+	if err != nil {
+		return false, err
+	}
+
+	return count > 0, nil
 }
 
-// Exists checks if a key exists
+// Exists checks if a key exists in Redis
 func (r *RedisBackend) Exists(ctx context.Context, key string) (bool, error) {
 	if r.closed.Load() {
 		return false, ErrBackendClosed
 	}
 
-	prefixedKey := r.prefixKey(key)
-	result, err := r.client.Exists(ctx, prefixedKey).Result()
+	conn, err := r.pool.Get(ctx)
 	if err != nil {
-		return false, fmt.Errorf("failed to check existence: %w", err)
+		return false, err
+	}
+	defer r.pool.Put(conn)
+
+	prefixedKey := r.prefixKey(key)
+	resp, err := conn.Do("EXISTS", prefixedKey)
+	if err != nil {
+		return false, err
 	}
 
-	return result > 0, nil
+	count, err := RESPInt(resp)
+	if err != nil {
+		return false, err
+	}
+
+	return count > 0, nil
 }
 
-// Clear removes all keys with the prefix
+// Clear removes all keys with the configured prefix
 func (r *RedisBackend) Clear(ctx context.Context) error {
 	if r.closed.Load() {
 		return ErrBackendClosed
 	}
 
-	// Use SCAN to find all keys with prefix
+	conn, err := r.pool.Get(ctx)
+	if err != nil {
+		return err
+	}
+	defer r.pool.Put(conn)
+
+	// Use FLUSHDB if no prefix (clear entire DB)
+	if r.config.RedisPrefix == "" {
+		_, err := conn.Do("FLUSHDB")
+		return err
+	}
+
+	// With prefix, we need to scan and delete keys
+	// For simplicity in this implementation, we'll use KEYS pattern (not recommended for production at scale)
 	pattern := r.config.RedisPrefix + "*"
-	iter := r.client.Scan(ctx, 0, pattern, 0).Iterator()
-
-	var keys []string
-	for iter.Next(ctx) {
-		keys = append(keys, iter.Val())
+	resp, err := conn.Do("KEYS", pattern)
+	if err != nil {
+		return err
 	}
 
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("failed to scan keys: %w", err)
-	}
-
-	if len(keys) == 0 {
+	// Extract keys from array response
+	keys, ok := resp.([]interface{})
+	if !ok || len(keys) == 0 {
 		return nil
 	}
 
-	// Delete in batches to avoid blocking Redis
-	batchSize := 100
-	for i := 0; i < len(keys); i += batchSize {
-		end := i + batchSize
-		if end > len(keys) {
-			end = len(keys)
+	// Delete each key
+	for _, keyInterface := range keys {
+		key, err := RESPString(keyInterface)
+		if err != nil {
+			continue
 		}
-
-		if err := r.client.Del(ctx, keys[i:end]...).Err(); err != nil {
-			return fmt.Errorf("failed to delete keys: %w", err)
-		}
+		conn.Do("DEL", key) // Best effort, ignore errors
 	}
 
 	return nil
 }
 
-// GetStats returns statistics
+// GetStats returns backend statistics
 func (r *RedisBackend) GetStats() map[string]interface{} {
-	hits := atomic.LoadInt64(&r.hits)
-	misses := atomic.LoadInt64(&r.misses)
+	hits := r.hits.Load()
+	misses := r.misses.Load()
 	total := hits + misses
-	hitRate := 0.0
+
+	hitRate := float64(0)
 	if total > 0 {
 		hitRate = float64(hits) / float64(total)
 	}
 
 	stats := map[string]interface{}{
-		"type":     "redis",
+		"backend":  "redis-pure-go",
+		"address":  r.config.RedisAddr,
 		"hits":     hits,
 		"misses":   misses,
 		"hit_rate": hitRate,
+		"pool":     r.pool.Stats(),
 	}
 
-	// Try to get Redis info (non-critical)
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	if info, err := r.client.Info(ctx, "memory").Result(); err == nil {
-		stats["redis_info"] = info
+	// Add health monitor stats if available
+	if r.healthMonitor != nil {
+		stats["health"] = r.healthMonitor.GetStats()
 	}
 
 	return stats
 }
 
-// Ping checks Redis health
+// Ping checks Redis connectivity
 func (r *RedisBackend) Ping(ctx context.Context) error {
 	if r.closed.Load() {
 		return ErrBackendClosed
 	}
 
-	return r.client.Ping(ctx).Err()
+	conn, err := r.pool.Get(ctx)
+	if err != nil {
+		return err
+	}
+	defer r.pool.Put(conn)
+
+	_, err = conn.Do("PING")
+	return err
 }
 
-// Close shuts down the backend
+// Close closes the Redis backend and all connections
 func (r *RedisBackend) Close() error {
-	if !r.closed.CompareAndSwap(false, true) {
+	if r.closed.Swap(true) {
 		return nil // Already closed
 	}
 
-	return r.client.Close()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Stop health monitor
+	if r.healthMonitor != nil {
+		r.healthMonitor.Stop()
+	}
+
+	// Close connection pool
+	if r.pool != nil {
+		return r.pool.Close()
+	}
+
+	return nil
 }
 
 // prefixKey adds the configured prefix to a key
@@ -220,58 +340,116 @@ func (r *RedisBackend) prefixKey(key string) string {
 	return r.config.RedisPrefix + key
 }
 
-// Pipeline operations for batch operations (future enhancement)
+// executeWithRetry executes a Redis operation with exponential backoff retry logic
+func (r *RedisBackend) executeWithRetry(ctx context.Context, operation func(*RedisConn) error) error {
+	maxRetries := 3
+	baseDelay := 100 * time.Millisecond
 
-// SetMany stores multiple key-value pairs in a pipeline
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		conn, err := r.pool.Get(ctx)
+		if err != nil {
+			// If we can't get a connection and this is the last attempt, fail
+			if attempt == maxRetries-1 {
+				return fmt.Errorf("failed to get connection after %d attempts: %w", maxRetries, err)
+			}
+
+			// Wait with exponential backoff before retrying
+			delay := baseDelay * time.Duration(1<<uint(attempt))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+				continue
+			}
+		}
+
+		// Execute the operation
+		err = operation(conn)
+		r.pool.Put(conn)
+
+		// If successful, return
+		if err == nil {
+			return nil
+		}
+
+		// If error is not retryable or last attempt, fail
+		if attempt == maxRetries-1 || !isRetryableError(err) {
+			return err
+		}
+
+		// Wait with exponential backoff before retrying
+		delay := baseDelay * time.Duration(1<<uint(attempt))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+			continue
+		}
+	}
+
+	return fmt.Errorf("operation failed after %d attempts", maxRetries)
+}
+
+// isRetryableError determines if an error is worth retrying
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Retry on connection errors, timeouts, etc.
+	// Don't retry on application-level errors like wrong type
+	errMsg := err.Error()
+	retryablePatterns := []string{
+		"connection",
+		"timeout",
+		"EOF",
+		"broken pipe",
+		"reset by peer",
+	}
+
+	for _, pattern := range retryablePatterns {
+		if contains(errMsg, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// SetMany stores multiple values in Redis (batch operation)
 func (r *RedisBackend) SetMany(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
 	if r.closed.Load() {
 		return ErrBackendClosed
 	}
 
-	pipe := r.client.Pipeline()
-
+	// For simplicity, execute sequentially (can be optimized with pipelining later)
 	for key, value := range items {
-		prefixedKey := r.prefixKey(key)
-		pipe.Set(ctx, prefixedKey, value, ttl)
+		if err := r.Set(ctx, key, value, ttl); err != nil {
+			return err
+		}
 	}
 
-	_, err := pipe.Exec(ctx)
-	return err
+	return nil
 }
 
-// GetMany retrieves multiple values in a pipeline
+// GetMany retrieves multiple values from Redis
 func (r *RedisBackend) GetMany(ctx context.Context, keys []string) (map[string][]byte, error) {
 	if r.closed.Load() {
 		return nil, ErrBackendClosed
 	}
 
-	if len(keys) == 0 {
-		return make(map[string][]byte), nil
-	}
+	result := make(map[string][]byte)
 
-	pipe := r.client.Pipeline()
-	cmds := make(map[string]*redis.StringCmd, len(keys))
-
+	// For simplicity, execute sequentially
 	for _, key := range keys {
-		prefixedKey := r.prefixKey(key)
-		cmds[key] = pipe.Get(ctx, prefixedKey)
-	}
-
-	_, err := pipe.Exec(ctx)
-	if err != nil && err != redis.Nil {
-		return nil, err
-	}
-
-	results := make(map[string][]byte)
-	for key, cmd := range cmds {
-		value, err := cmd.Bytes()
-		if err == nil {
-			results[key] = value
-			atomic.AddInt64(&r.hits, 1)
-		} else if err != redis.Nil {
-			atomic.AddInt64(&r.misses, 1)
+		value, _, exists, err := r.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			result[key] = value
 		}
 	}
 
-	return results, nil
+	return result, nil
 }
