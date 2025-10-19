@@ -113,7 +113,7 @@ http:
           redis:
             enabled: true
             address: "redis-master.redis-namespace.svc.cluster.local:6379"
-            password: "strong-redis-password"
+            password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
             db: 0
             keyPrefix: "traefikoidc:prod:"
 
@@ -146,7 +146,7 @@ http:
           redis:
             enabled: true
             address: "redis.example.com:6380"
-            password: "secure-redis-password"
+            password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
             enableTLS: true
             tlsSkipVerify: false  # Verify certificates in production
             cacheMode: "redis"
@@ -165,7 +165,7 @@ http:
           redis:
             enabled: true
             address: "redis:6379"
-            password: "redis-password"
+            password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
             cacheMode: "hybrid"
 
             # Hybrid mode L1 cache settings
@@ -375,7 +375,7 @@ metadata:
   namespace: traefik
 type: Opaque
 stringData:
-  password: "your-secure-redis-password"
+  password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
 ---
 # OIDC Middleware with Redis
 apiVersion: traefik.io/v1alpha1
@@ -397,7 +397,7 @@ spec:
       redis:
         enabled: true
         address: "redis.traefik.svc.cluster.local:6379"
-        password: "your-secure-redis-password"
+        password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
         db: 0
         keyPrefix: "traefikoidc:k8s:"
         cacheMode: "hybrid"

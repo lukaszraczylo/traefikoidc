@@ -602,7 +602,7 @@ This approach allows you to manage all settings through Traefik's configuration 
 |-----------|-------------|---------|---------|
 | `enabled` | Enable Redis caching | `false` | `true` |
 | `address` | Redis server address | - | `redis:6379` |
-| `password` | Redis password | - | `secret` |
+| `password` | Redis password | - | `YOUR_PASSWORD` |
 | `db` | Database number | `0` | `1` |
 | `keyPrefix` | Key prefix for namespacing | `traefikoidc:` | `myapp:` |
 | `cacheMode` | Cache mode: `redis`, `hybrid`, `memory` | `redis` | `hybrid` |

@@ -45,7 +45,7 @@ http:
           redis:
             enabled: true
             address: "redis:6379"
-            password: "strong-password"
+            password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"  # Example placeholder - use your actual password
             db: 1
             keyPrefix: "myapp:"
             poolSize: 20
@@ -76,7 +76,7 @@ http:
           redis:
             enabled: true
             address: "redis.example.com:6380"
-            password: "secure-password"
+            password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"  # Example placeholder
             enableTLS: true
             tlsSkipVerify: false  # Set to true only for testing
             cacheMode: "redis"

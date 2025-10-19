@@ -247,7 +247,12 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	defer c.mu.Unlock()
 
 	// Build command arguments
-	cmdArgs := make([]string, 0, len(args)+1)
+	// Check for overflow: ensure len(args)+1 doesn't overflow int
+	argsLen := len(args)
+	if argsLen < 0 || argsLen > (1<<31)-2 {
+		return nil, errors.New("too many arguments")
+	}
+	cmdArgs := make([]string, 0, argsLen+1)
 	cmdArgs = append(cmdArgs, command)
 	cmdArgs = append(cmdArgs, args...)
 
