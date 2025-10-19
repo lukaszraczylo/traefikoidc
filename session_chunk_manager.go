@@ -971,7 +971,9 @@ func (cm *ChunkManager) validateTokenExpiration(token string, config TokenConfig
 // Returns:
 //   - The expiration time if present, nil if no 'exp' claim.
 //   - An error if JWT parsing fails.
-func (cm *ChunkManager) extractJWTExpiration(token string) (*time.Time, error) {
+//
+// extractJWTClaim extracts a time claim from a JWT token
+func (cm *ChunkManager) extractJWTClaim(token, claimName string) (*time.Time, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT format")
@@ -992,25 +994,29 @@ func (cm *ChunkManager) extractJWTExpiration(token string) (*time.Time, error) {
 		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 
-	exp, exists := claims["exp"]
+	claimValue, exists := claims[claimName]
 	if !exists {
 		return nil, nil
 	}
 
-	// Convert expiration to time.Time
-	var expTime time.Time
-	switch v := exp.(type) {
+	// Convert claim to time.Time
+	var claimTime time.Time
+	switch v := claimValue.(type) {
 	case float64:
-		expTime = time.Unix(int64(v), 0)
+		claimTime = time.Unix(int64(v), 0)
 	case int64:
-		expTime = time.Unix(v, 0)
+		claimTime = time.Unix(v, 0)
 	case int:
-		expTime = time.Unix(int64(v), 0)
+		claimTime = time.Unix(int64(v), 0)
 	default:
-		return nil, fmt.Errorf("invalid expiration format: %T", exp)
+		return nil, fmt.Errorf("invalid %s format: %T", claimName, claimValue)
 	}
 
-	return &expTime, nil
+	return &claimTime, nil
+}
+
+func (cm *ChunkManager) extractJWTExpiration(token string) (*time.Time, error) {
+	return cm.extractJWTClaim(token, "exp")
 }
 
 // validateTokenFreshness checks if token is fresh enough for storage.
@@ -1062,45 +1068,7 @@ func (cm *ChunkManager) validateTokenFreshness(token string, config TokenConfig)
 //   - The issued at time if present, nil if no 'iat' claim.
 //   - An error if JWT parsing fails.
 func (cm *ChunkManager) extractJWTIssuedAt(token string) (*time.Time, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT format")
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
-	}
-
-	// Parse the JSON payload using pooled decoder
-	var claims map[string]interface{}
-	pm := pool.Get()
-	decoder := pm.GetJSONDecoder(bytes.NewReader(payload))
-	defer pm.PutJSONDecoder(decoder)
-
-	if err := decoder.Decode(&claims); err != nil {
-		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
-	}
-
-	iat, exists := claims["iat"]
-	if !exists {
-		return nil, nil
-	}
-
-	// Convert issued at to time.Time
-	var iatTime time.Time
-	switch v := iat.(type) {
-	case float64:
-		iatTime = time.Unix(int64(v), 0)
-	case int64:
-		iatTime = time.Unix(v, 0)
-	case int:
-		iatTime = time.Unix(int64(v), 0)
-	default:
-		return nil, fmt.Errorf("invalid issued at format: %T", iat)
-	}
-
-	return &iatTime, nil
+	return cm.extractJWTClaim(token, "iat")
 }
 
 // CleanupExpiredSessions removes expired sessions to prevent memory leaks.

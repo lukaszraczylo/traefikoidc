@@ -61,7 +61,7 @@ func (v *ConfigValidator) ValidateScopes(scopes []string) error {
 
 	hasOpenIDScope := false
 	for _, scope := range scopes {
-		if strings.TrimSpace(scope) == "openid" {
+		if strings.TrimSpace(scope) == ScopeOpenID {
 			hasOpenIDScope = true
 			break
 		}

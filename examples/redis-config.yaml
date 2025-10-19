@@ -1,0 +1,149 @@
+# Example Traefik configuration for TraefikOIDC plugin with Redis caching
+# This example shows how to configure Redis through Traefik's dynamic configuration
+
+# Static configuration (traefik.yml)
+experimental:
+  plugins:
+    traefikoidc:
+      moduleName: github.com/lukaszraczylo/traefikoidc
+      version: v0.8.0
+
+# Dynamic configuration (dynamic.yml or labels)
+http:
+  middlewares:
+    # Example 1: Basic Redis configuration
+    oidc-redis-basic:
+      plugin:
+        traefikoidc:
+          # Required OIDC settings
+          clientID: "your-client-id"
+          clientSecret: "your-client-secret"
+          providerURL: "https://auth.example.com"
+          callbackURL: "/oauth2/callback"
+          sessionEncryptionKey: "your-64-character-encryption-key-here-keep-it-secret"
+
+          # Redis configuration
+          redis:
+            enabled: true
+            address: "redis:6379"
+            # password: "your-redis-password"  # Optional
+            db: 0
+            keyPrefix: "traefikoidc:"
+
+    # Example 2: Redis with resilience features
+    oidc-redis-resilient:
+      plugin:
+        traefikoidc:
+          # Required OIDC settings
+          clientID: "your-client-id"
+          clientSecret: "your-client-secret"
+          providerURL: "https://auth.example.com"
+          callbackURL: "/oauth2/callback"
+          sessionEncryptionKey: "your-64-character-encryption-key-here-keep-it-secret"
+
+          # Redis with full resilience configuration
+          redis:
+            enabled: true
+            address: "redis:6379"
+            password: "strong-password"
+            db: 1
+            keyPrefix: "myapp:"
+            poolSize: 20
+            connectTimeout: 10
+            readTimeout: 5
+            writeTimeout: 5
+            cacheMode: "redis"  # Options: "redis", "hybrid", "memory"
+            # Circuit breaker settings
+            enableCircuitBreaker: true
+            circuitBreakerThreshold: 5
+            circuitBreakerTimeout: 60
+            # Health check settings
+            enableHealthCheck: true
+            healthCheckInterval: 30
+
+    # Example 3: Redis with TLS
+    oidc-redis-tls:
+      plugin:
+        traefikoidc:
+          # Required OIDC settings
+          clientID: "your-client-id"
+          clientSecret: "your-client-secret"
+          providerURL: "https://auth.example.com"
+          callbackURL: "/oauth2/callback"
+          sessionEncryptionKey: "your-64-character-encryption-key-here-keep-it-secret"
+
+          # Redis with TLS configuration
+          redis:
+            enabled: true
+            address: "redis.example.com:6380"
+            password: "secure-password"
+            enableTLS: true
+            tlsSkipVerify: false  # Set to true only for testing
+            cacheMode: "redis"
+
+  routers:
+    my-app:
+      rule: "Host(`app.example.com`)"
+      middlewares:
+        - oidc-redis-basic
+      service: my-app-service
+
+  services:
+    my-app-service:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:8080"
+
+# Docker Compose labels example
+# version: '3.8'
+# services:
+#   traefik:
+#     image: traefik:v3.0
+#     # ... other config ...
+#
+#   my-app:
+#     image: my-app:latest
+#     labels:
+#       - "traefik.enable=true"
+#       - "traefik.http.routers.my-app.rule=Host(`app.example.com`)"
+#       - "traefik.http.routers.my-app.middlewares=my-oidc"
+#       # OIDC middleware configuration with Redis
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.clientID=your-client-id"
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.clientSecret=your-secret"
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.providerURL=https://auth.example.com"
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.callbackURL=/oauth2/callback"
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.sessionEncryptionKey=your-64-char-key"
+#       # Redis configuration via labels
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.enabled=true"
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.address=redis:6379"
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.password=redis-password"
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.db=0"
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.keyPrefix=traefikoidc:"
+#       - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.cacheMode=redis"
+#
+#   redis:
+#     image: redis:7-alpine
+#     command: redis-server --requirepass redis-password
+#     # ... other config ...
+
+# Environment variable fallback (optional)
+# If Redis configuration is not provided in Traefik config, these environment variables
+# can be used as a fallback (but Traefik config takes precedence):
+#
+# REDIS_ENABLED=true
+# REDIS_ADDRESS=redis:6379
+# REDIS_PASSWORD=secret
+# REDIS_DB=0
+# REDIS_KEY_PREFIX=traefikoidc:
+# REDIS_CACHE_MODE=redis
+# REDIS_POOL_SIZE=10
+# REDIS_CONNECT_TIMEOUT=5
+# REDIS_READ_TIMEOUT=3
+# REDIS_WRITE_TIMEOUT=3
+# REDIS_ENABLE_TLS=false
+# REDIS_TLS_SKIP_VERIFY=false
+# REDIS_ENABLE_CIRCUIT_BREAKER=true
+# REDIS_CIRCUIT_BREAKER_THRESHOLD=5
+# REDIS_CIRCUIT_BREAKER_TIMEOUT=60
+# REDIS_ENABLE_HEALTH_CHECK=true
+# REDIS_HEALTH_CHECK_INTERVAL=30

@@ -33,6 +33,14 @@ const (
 	ProviderTypeGitLab
 )
 
+// Standard OAuth2/OIDC scope constants
+const (
+	ScopeOfflineAccess = "offline_access"
+	ScopeOpenID        = "openid"
+	ScopeProfile       = "profile"
+	ScopeEmail         = "email"
+)
+
 // ProviderCapabilities defines the specific features and behaviors of an OIDC provider.
 type ProviderCapabilities struct {
 	PreferredTokenValidation   string

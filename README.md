@@ -133,6 +133,7 @@ The middleware supports the following configuration options:
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 | `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
 | `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
+| `redis` | Redis cache configuration for distributed deployments | disabled | See "Redis Cache" section |
 
 > **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
 >
@@ -520,11 +521,13 @@ When running multiple Traefik replicas with the OIDC plugin, you may encounter f
 - Request → Replica B → JTI NOT in Replica B's cache ✓
 - Request → Replica A → ❌ **FALSE POSITIVE**: "token replay detected"
 
-**Solution**: Disable replay detection for distributed deployments:
+**Solution 1 (Simple)**: Disable replay detection for distributed deployments:
 
 ```yaml
 disableReplayDetection: true  # Disable JTI replay detection for multi-replica setups
 ```
+
+**Solution 2 (Recommended)**: Use Redis cache backend for shared state (see [Redis Cache](#redis-cache-optional) section)
 
 **Security Note**: When `disableReplayDetection: true`:
 - ✅ Token signatures still validated
@@ -547,10 +550,158 @@ spec:
       clientSecret: your-client-secret
       sessionEncryptionKey: your-secure-encryption-key-min-32-chars
       callbackURL: /oauth2/callback
-      disableReplayDetection: true  # Required for multi-replica deployments
+      disableReplayDetection: true  # Required for multi-replica deployments without Redis
 ```
 
-**Recommendation**: For single-instance deployments, leave this setting at `false` (default) to maintain replay attack protection. For multi-replica deployments, set to `true` and consider implementing a shared cache backend (Redis/Memcached) if replay detection is required.
+**Recommendation**: For single-instance deployments, leave this setting at `false` (default) to maintain replay attack protection. For multi-replica deployments, use the Redis cache backend for proper replay detection across all instances.
+
+## Redis Cache (Optional)
+
+The plugin supports optional Redis caching for multi-replica deployments. This solves issues with JTI replay detection and session management when running multiple Traefik instances behind a load balancer.
+
+### Why Use Redis Cache?
+
+When running multiple Traefik replicas, each instance maintains its own in-memory cache for:
+- JTI (JWT Token ID) replay detection
+- Session data
+- Token metadata
+
+Without a shared cache, you may experience:
+- False positive replay detection errors
+- Session inconsistencies between replicas
+- Users needing to re-authenticate when hitting different instances
+
+### Basic Configuration
+
+Redis is configured through Traefik's dynamic configuration (YAML, labels, etc.):
+
+```yaml
+# Enable Redis cache in your middleware configuration
+redis:
+  enabled: true
+  address: "localhost:6379"
+  password: "your-password"  # Optional
+  db: 0
+  keyPrefix: "traefikoidc:"
+```
+
+### Configuration Priority
+
+The plugin uses the following priority for Redis configuration:
+
+1. **Traefik Dynamic Configuration** (PRIMARY) - Configure via YAML files or Docker/Kubernetes labels
+2. **Environment Variables** (FALLBACK) - Used only when not set in Traefik config
+
+This approach allows you to manage all settings through Traefik's configuration system while maintaining backward compatibility with environment variables.
+
+### Configuration Options
+
+| Parameter | Description | Default | Example |
+|-----------|-------------|---------|---------|
+| `enabled` | Enable Redis caching | `false` | `true` |
+| `address` | Redis server address | - | `redis:6379` |
+| `password` | Redis password | - | `secret` |
+| `db` | Database number | `0` | `1` |
+| `keyPrefix` | Key prefix for namespacing | `traefikoidc:` | `myapp:` |
+| `cacheMode` | Cache mode: `redis`, `hybrid`, `memory` | `redis` | `hybrid` |
+| `poolSize` | Connection pool size | `10` | `20` |
+| `connectTimeout` | Connection timeout (seconds) | `5` | `10` |
+| `readTimeout` | Read timeout (seconds) | `3` | `5` |
+| `writeTimeout` | Write timeout (seconds) | `3` | `5` |
+| `enableTLS` | Enable TLS | `false` | `true` |
+| `tlsSkipVerify` | Skip TLS verification | `false` | `true` |
+| `enableCircuitBreaker` | Circuit breaker for failures | `true` | `true` |
+| `circuitBreakerThreshold` | Failures before circuit opens | `5` | `10` |
+| `circuitBreakerTimeout` | Circuit reset timeout (seconds) | `60` | `30` |
+| `enableHealthCheck` | Periodic health checks | `true` | `true` |
+| `healthCheckInterval` | Health check interval (seconds) | `30` | `60` |
+
+### Environment Variables (Fallback)
+
+If not configured through Traefik, these environment variables can be used as fallback:
+
+- `REDIS_ENABLED` - Enable Redis cache
+- `REDIS_ADDRESS` - Redis server address
+- `REDIS_PASSWORD` - Redis password
+- `REDIS_DB` - Database number
+- `REDIS_KEY_PREFIX` - Key prefix
+- `REDIS_CACHE_MODE` - Cache mode
+- `REDIS_POOL_SIZE` - Connection pool size
+- `REDIS_CONNECT_TIMEOUT` - Connection timeout
+- `REDIS_READ_TIMEOUT` - Read timeout
+- `REDIS_WRITE_TIMEOUT` - Write timeout
+- `REDIS_ENABLE_TLS` - Enable TLS
+- `REDIS_TLS_SKIP_VERIFY` - Skip TLS verification
+
+### Cache Modes
+
+The plugin supports three cache modes:
+
+- **memory** (default): In-memory cache only, suitable for single-instance deployments
+- **redis**: Redis-only cache, all data stored in Redis
+- **hybrid**: Two-tier caching with local memory cache + Redis backend for optimal performance
+
+### Example Configurations
+
+#### Docker Compose with Redis
+
+```yaml
+services:
+  redis:
+    image: redis:alpine
+    command: redis-server --requirepass yourpassword
+
+  traefik:
+    image: traefik:v3.2
+    # ... rest of your Traefik configuration
+    labels:
+      # Configure the OIDC middleware with Redis
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.clientID=your-client-id"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.clientSecret=your-secret"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.providerURL=https://auth.example.com"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.callbackURL=/oauth2/callback"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.sessionEncryptionKey=your-64-char-key"
+      # Redis configuration via labels
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.enabled=true"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.address=redis:6379"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.password=yourpassword"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.cacheMode=hybrid"
+```
+
+#### Kubernetes with Redis
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-with-redis
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: your-encryption-key
+      callbackURL: /oauth2/callback
+      redis:
+        enabled: true
+        address: "redis-service.redis-namespace:6379"
+        password: "urn:k8s:secret:redis-secret:password"
+        db: 0
+        keyPrefix: "traefikoidc"
+        cacheMode: "hybrid"
+```
+
+### Advanced Redis Configuration
+
+See [Redis Cache Documentation](docs/REDIS_CACHE.md) for:
+- Detailed architecture overview
+- High availability setup with Redis Sentinel
+- Redis Cluster configuration
+- Performance tuning guidelines
+- Monitoring and observability
+- Troubleshooting guide
+- Migration from memory-only cache
 
 ## Usage Examples
 

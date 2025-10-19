@@ -124,7 +124,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		httpClient = CreateDefaultHTTPClient()
 	}
 	goroutineWG := &sync.WaitGroup{}
-	cacheManager := GetGlobalCacheManager(goroutineWG)
+	cacheManager := GetGlobalCacheManagerWithConfig(goroutineWG, config)
 
 	// Use provided context instead of creating new one
 	var pluginCtx context.Context

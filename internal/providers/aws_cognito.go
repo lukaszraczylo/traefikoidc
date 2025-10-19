@@ -40,7 +40,7 @@ func (p *AWSCognitoProvider) BuildAuthParams(baseParams url.Values, scopes []str
 	// Remove offline_access scope as Cognito doesn't use it (case-insensitive)
 	var filteredScopes []string
 	for _, scope := range scopes {
-		if strings.ToLower(scope) != "offline_access" {
+		if strings.ToLower(scope) != ScopeOfflineAccess {
 			filteredScopes = append(filteredScopes, scope)
 		}
 	}
@@ -48,18 +48,18 @@ func (p *AWSCognitoProvider) BuildAuthParams(baseParams url.Values, scopes []str
 	// Ensure openid scope is present
 	hasOpenID := false
 	for _, scope := range filteredScopes {
-		if scope == "openid" {
+		if scope == ScopeOpenID {
 			hasOpenID = true
 			break
 		}
 	}
 	if !hasOpenID {
-		filteredScopes = append(filteredScopes, "openid")
+		filteredScopes = append(filteredScopes, ScopeOpenID)
 	}
 
 	// Default Cognito scopes if none specified
-	if len(filteredScopes) == 1 && filteredScopes[0] == "openid" {
-		filteredScopes = append(filteredScopes, "email", "profile")
+	if len(filteredScopes) == 1 && filteredScopes[0] == ScopeOpenID {
+		filteredScopes = append(filteredScopes, ScopeEmail, ScopeProfile)
 	}
 
 	return &AuthParams{

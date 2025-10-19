@@ -3,10 +3,13 @@ package traefikoidc
 import (
 	"container/list"
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/lukaszraczylo/traefikoidc/internal/cache/backends"
 )
 
 // CacheType defines the type of cache for optimized behavior
@@ -89,6 +92,9 @@ type UniversalCache struct {
 	config  UniversalCacheConfig
 	logger  *Logger
 
+	// Backend for distributed caching (NEW)
+	backend backends.CacheBackend
+
 	// Memory management
 	currentSize   int64
 	currentMemory int64
@@ -108,6 +114,13 @@ type UniversalCache struct {
 // NewUniversalCache creates a new universal cache instance
 func NewUniversalCache(config UniversalCacheConfig) *UniversalCache {
 	return createUniversalCache(config)
+}
+
+// NewUniversalCacheWithBackend creates a new universal cache with a specific backend
+func NewUniversalCacheWithBackend(config UniversalCacheConfig, cacheBackend backends.CacheBackend) *UniversalCache {
+	cache := createUniversalCache(config)
+	cache.backend = cacheBackend
+	return cache
 }
 
 // createUniversalCache is the internal constructor
@@ -223,6 +236,25 @@ func (c *UniversalCache) Set(key string, value interface{}, ttl time.Duration) e
 		ttl = c.config.DefaultTTL
 	}
 
+	// If we have a backend, use it for distributed caching
+	if c.backend != nil {
+		// Serialize the value
+		data, err := c.serialize(value)
+		if err != nil {
+			c.logger.Errorf("Failed to serialize value for key %s: %v", key, err)
+			return err
+		}
+
+		// Store in backend
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		if err := c.backend.Set(ctx, c.prefixKey(key), data, ttl); err != nil {
+			c.logger.Infof("Backend set error for key %s: %v", key, err)
+			// Continue with local cache even if backend fails
+		}
+	}
+
 	size := c.estimateSize(value)
 
 	c.mu.Lock()
@@ -285,6 +317,32 @@ func (c *UniversalCache) Set(key string, value interface{}, ttl time.Duration) e
 
 // Get retrieves a value from the cache
 func (c *UniversalCache) Get(key string) (interface{}, bool) {
+	// Try backend first if available (for distributed consistency)
+	if c.backend != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		data, _, exists, err := c.backend.Get(ctx, c.prefixKey(key))
+		if err != nil {
+			c.logger.Debugf("Backend get error for key %s: %v", key, err)
+			// Fall through to local cache
+		} else if exists {
+			// Deserialize the value
+			var value interface{}
+			if err := c.deserialize(data, &value); err != nil {
+				c.logger.Errorf("Failed to deserialize value for key %s: %v", key, err)
+				// Fall through to local cache
+			} else {
+				atomic.AddInt64(&c.hits, 1)
+				// Update local cache with backend value
+				go func() {
+					_ = c.updateLocalCache(key, value, c.config.DefaultTTL)
+				}()
+				return value, true
+			}
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -341,6 +399,17 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 
 // Delete removes a key from the cache
 func (c *UniversalCache) Delete(key string) bool {
+	// Delete from backend if available
+	if c.backend != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		if _, err := c.backend.Delete(ctx, c.prefixKey(key)); err != nil {
+			c.logger.Debugf("Backend delete error for key %s: %v", key, err)
+			// Continue with local delete
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -355,6 +424,17 @@ func (c *UniversalCache) Delete(key string) bool {
 
 // Clear removes all items from the cache
 func (c *UniversalCache) Clear() {
+	// Clear backend if available
+	if c.backend != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		if err := c.backend.Clear(ctx); err != nil {
+			c.logger.Infof("Backend clear error: %v", err)
+			// Continue with local clear
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -436,6 +516,13 @@ func (c *UniversalCache) Close() error {
 
 	// Clear all items
 	c.Clear()
+
+	// Close backend if present
+	if c.backend != nil {
+		if err := c.backend.Close(); err != nil {
+			c.logger.Infof("Failed to close cache backend: %v", err)
+		}
+	}
 
 	c.logger.Debugf("UniversalCache[%s]: Closed", c.config.Type)
 	return nil
@@ -700,4 +787,61 @@ func (c *UniversalCache) Mutex() *sync.RWMutex {
 // Strategy returns the cache strategy for backward compatibility
 func (c *UniversalCache) Strategy() CacheStrategy {
 	return c.config.Strategy
+}
+
+// serialize converts a value to bytes for backend storage
+func (c *UniversalCache) serialize(value interface{}) ([]byte, error) {
+	// Use JSON for serialization - simple and universal
+	return json.Marshal(value)
+}
+
+// deserialize converts bytes from backend storage to a value
+func (c *UniversalCache) deserialize(data []byte, value interface{}) error {
+	// Use JSON for deserialization
+	return json.Unmarshal(data, value)
+}
+
+// prefixKey adds a cache type prefix to the key for backend storage
+func (c *UniversalCache) prefixKey(key string) string {
+	return fmt.Sprintf("%s:%s", c.config.Type, key)
+}
+
+// updateLocalCache updates the local cache with a value from the backend
+func (c *UniversalCache) updateLocalCache(key string, value interface{}, ttl time.Duration) error {
+	size := c.estimateSize(value)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Check memory limits
+	if c.config.MaxMemoryBytes > 0 {
+		for c.currentMemory+size > c.config.MaxMemoryBytes && c.lruList.Len() > 0 {
+			c.evictOldest()
+		}
+	}
+
+	// Check size limits
+	if c.lruList.Len() >= c.config.MaxSize {
+		c.evictOldest()
+	}
+
+	now := time.Now()
+	item := &CacheItem{
+		Key:          key,
+		Value:        value,
+		Size:         size,
+		ExpiresAt:    now.Add(ttl),
+		LastAccessed: now,
+		AccessCount:  1,
+		CacheType:    c.config.Type,
+		Metadata:     make(map[string]interface{}),
+	}
+
+	item.element = c.lruList.PushFront(key)
+	c.items[key] = item
+
+	c.currentSize++
+	c.currentMemory += size
+
+	return nil
 }

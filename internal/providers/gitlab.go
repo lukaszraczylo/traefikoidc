@@ -39,7 +39,7 @@ func (p *GitLabProvider) BuildAuthParams(baseParams url.Values, scopes []string)
 	// Remove offline_access scope as GitLab doesn't use it
 	var filteredScopes []string
 	for _, scope := range scopes {
-		if scope != "offline_access" {
+		if scope != ScopeOfflineAccess {
 			filteredScopes = append(filteredScopes, scope)
 		}
 	}
@@ -47,18 +47,18 @@ func (p *GitLabProvider) BuildAuthParams(baseParams url.Values, scopes []string)
 	// Ensure openid scope is present for OIDC
 	hasOpenID := false
 	for _, scope := range filteredScopes {
-		if scope == "openid" {
+		if scope == ScopeOpenID {
 			hasOpenID = true
 			break
 		}
 	}
 	if !hasOpenID {
-		filteredScopes = append(filteredScopes, "openid")
+		filteredScopes = append(filteredScopes, ScopeOpenID)
 	}
 
 	// Default GitLab scopes if none specified
-	if len(filteredScopes) == 1 && filteredScopes[0] == "openid" {
-		filteredScopes = append(filteredScopes, "profile", "email")
+	if len(filteredScopes) == 1 && filteredScopes[0] == ScopeOpenID {
+		filteredScopes = append(filteredScopes, ScopeProfile, ScopeEmail)
 	}
 
 	return &AuthParams{

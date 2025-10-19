@@ -31,6 +31,7 @@ summary: |
   - Flexible configuration with multiple deployment scenarios
   - Memory-efficient operation with automatic cleanup
   - Extensive logging and debugging capabilities
+  - Redis cache support for multi-replica deployments with automatic failover
   It supports various authentication scenarios including:
 
   - Basic authentication with customizable callback and logout URLs
@@ -136,6 +137,42 @@ testData:
     customHeaders:
       X-Custom-Header: "production"
       X-API-Version: "v1"
+
+# Example with Redis cache for multi-replica deployments
+testDataWithRedis:
+  # Required OIDC parameters (same as standard configuration)
+  providerURL: https://auth.example.com
+  clientID: your-client-id
+  clientSecret: your-client-secret
+  callbackURL: /oauth2/callback
+  sessionEncryptionKey: your-64-character-encryption-key-at-least-32-bytes
+
+  # Standard optional parameters
+  logLevel: info
+  allowedUserDomains:
+    - company.com
+
+  # Redis cache configuration for multi-replica support
+  redis:
+    enabled: true                    # Enable Redis caching
+    address: "redis:6379"           # Redis server address
+    password: "redis-password"       # Redis authentication password
+    db: 0                           # Redis database number (0-15)
+    keyPrefix: "traefikoidc:"       # Prefix for all Redis keys
+    cacheMode: "hybrid"             # Cache mode: redis, hybrid, or memory
+    poolSize: 20                    # Maximum number of connections
+    connectTimeout: 5               # Connection timeout in seconds
+    readTimeout: 3                  # Read operation timeout
+    writeTimeout: 3                 # Write operation timeout
+    enableTLS: false                # Use TLS for Redis connection
+    tlsSkipVerify: false           # Skip TLS certificate verification
+    hybridL1Size: 500              # L1 cache size for hybrid mode
+    hybridL1MemoryMB: 10           # L1 memory limit for hybrid mode
+    enableCircuitBreaker: true     # Enable circuit breaker
+    circuitBreakerThreshold: 5     # Failures before opening circuit
+    circuitBreakerTimeout: 60      # Timeout before retry (seconds)
+    enableHealthCheck: true         # Enable periodic health checks
+    healthCheckInterval: 30         # Health check interval (seconds)
 
 # --- Common Configuration Examples ---
 #
@@ -1137,4 +1174,262 @@ configuration:
           - "cross-origin": Any origin can load the resource (default)
 
           Prevents your resources from being embedded on other sites.
+        required: false
+
+  redis:
+    type: object
+    description: |
+      Optional Redis cache configuration for multi-replica deployments.
+
+      When running multiple Traefik instances, Redis provides shared caching to:
+      - Prevent JTI replay detection false positives across replicas
+      - Share token verification results between instances
+      - Maintain consistent session state across the cluster
+      - Improve performance by reducing redundant OIDC provider calls
+
+      Features:
+      - Automatic failover to memory-only mode when Redis is unavailable
+      - Circuit breaker pattern for resilience against Redis failures
+      - Health checking with automatic recovery
+      - Multiple cache modes: redis-only, hybrid (L1 memory + L2 Redis), memory-only
+      - Configurable timeouts and connection pooling
+      - TLS support for secure Redis connections
+
+      The middleware gracefully handles Redis failures by falling back to in-memory
+      caching, ensuring your authentication flow continues even during Redis outages.
+
+      Example configuration:
+      ```yaml
+      redis:
+        enabled: true
+        address: "redis:6379"
+        cacheMode: "hybrid"
+        enableCircuitBreaker: true
+      ```
+    required: false
+    properties:
+      enabled:
+        type: boolean
+        description: |
+          Enable Redis caching for distributed session and token management.
+          When enabled, the middleware will attempt to connect to Redis and use it
+          for shared state across multiple Traefik instances.
+
+          Default: false
+        required: false
+
+      address:
+        type: string
+        description: |
+          Redis server address in host:port format.
+
+          Examples:
+          - "redis:6379" (Docker/Kubernetes service)
+          - "localhost:6379" (local Redis)
+          - "redis.example.com:6380" (custom host/port)
+          - "redis-cluster.default.svc.cluster.local:6379" (Kubernetes)
+
+          Required when Redis is enabled.
+        required: false
+
+      password:
+        type: string
+        description: |
+          Password for Redis authentication.
+          Leave empty if Redis doesn't require authentication.
+
+          For Kubernetes deployments, you can use secret references:
+          urn:k8s:secret:namespace:secret-name:key
+
+          Default: "" (no authentication)
+        required: false
+
+      db:
+        type: integer
+        description: |
+          Redis database number to use (0-15).
+          Different databases can be used to isolate data between environments.
+
+          Default: 0
+        required: false
+
+      keyPrefix:
+        type: string
+        description: |
+          Prefix for all Redis keys created by this middleware.
+          Useful for:
+          - Avoiding key collisions with other applications
+          - Identifying keys for monitoring/debugging
+          - Supporting multiple environments in the same Redis instance
+
+          Default: "traefikoidc:"
+        required: false
+
+      cacheMode:
+        type: string
+        description: |
+          Determines the caching strategy:
+
+          - "redis": Redis-only caching. All cache operations go directly to Redis.
+            Best for: Consistent state across all replicas, minimal memory usage.
+
+          - "hybrid": Two-tier caching with in-memory L1 and Redis L2.
+            Best for: High performance with shared state, reduced Redis load.
+            L1 provides fast local cache, L2 provides shared state.
+
+          - "memory": Memory-only caching (Redis disabled even if configured).
+            Best for: Single instance deployments, development/testing.
+
+          Default: "redis" (when Redis is enabled)
+        required: false
+        enum:
+          - redis
+          - hybrid
+          - memory
+
+      poolSize:
+        type: integer
+        description: |
+          Maximum number of socket connections to Redis.
+          Higher values allow more concurrent operations but consume more resources.
+
+          Recommendations:
+          - Small deployments: 10-20
+          - Medium deployments: 20-50
+          - Large deployments: 50-100
+
+          Default: 10
+        required: false
+
+      connectTimeout:
+        type: integer
+        description: |
+          Timeout in seconds for establishing new connections to Redis.
+          Should be higher than network latency but low enough to fail fast.
+
+          Default: 5 seconds
+        required: false
+
+      readTimeout:
+        type: integer
+        description: |
+          Timeout in seconds for Redis read operations.
+          Includes the time to send the command, wait for Redis to process it,
+          and receive the response.
+
+          Default: 3 seconds
+        required: false
+
+      writeTimeout:
+        type: integer
+        description: |
+          Timeout in seconds for Redis write operations.
+          Should account for network latency and Redis persistence settings.
+
+          Default: 3 seconds
+        required: false
+
+      enableTLS:
+        type: boolean
+        description: |
+          Enable TLS encryption for Redis connections.
+          Required when connecting to Redis instances that enforce TLS,
+          such as AWS ElastiCache with encryption in transit.
+
+          Default: false
+        required: false
+
+      tlsSkipVerify:
+        type: boolean
+        description: |
+          Skip TLS certificate verification for Redis connections.
+
+          ⚠️ WARNING: Only use in development environments.
+          This option bypasses certificate validation and should never be used
+          in production as it's vulnerable to man-in-the-middle attacks.
+
+          Default: false
+        required: false
+
+      hybridL1Size:
+        type: integer
+        description: |
+          Maximum number of items in the L1 (in-memory) cache for hybrid mode.
+          Controls how many cache entries are kept in local memory before eviction.
+
+          Only applies when cacheMode is "hybrid".
+
+          Default: 500
+        required: false
+
+      hybridL1MemoryMB:
+        type: integer
+        description: |
+          Maximum memory in megabytes for L1 cache in hybrid mode.
+          The cache will start evicting items when this limit is approached.
+
+          Only applies when cacheMode is "hybrid".
+
+          Default: 10 MB
+        required: false
+
+      enableCircuitBreaker:
+        type: boolean
+        description: |
+          Enable circuit breaker pattern for Redis connection failures.
+
+          When enabled, the middleware will:
+          1. Track Redis operation failures
+          2. Open the circuit after threshold failures (stop trying Redis)
+          3. Fall back to in-memory caching
+          4. Periodically attempt to reconnect (half-open state)
+          5. Resume Redis operations when connection recovers
+
+          This prevents cascading failures and improves resilience.
+
+          Default: true
+        required: false
+
+      circuitBreakerThreshold:
+        type: integer
+        description: |
+          Number of consecutive Redis failures before opening the circuit.
+          Lower values make the system more sensitive to Redis issues,
+          higher values tolerate more failures before switching to fallback.
+
+          Default: 5
+        required: false
+
+      circuitBreakerTimeout:
+        type: integer
+        description: |
+          Time in seconds to wait before attempting to close the circuit.
+          After this timeout, the circuit breaker will allow one test request
+          to Redis. If successful, normal operations resume.
+
+          Default: 60 seconds
+        required: false
+
+      enableHealthCheck:
+        type: boolean
+        description: |
+          Enable periodic health checks for Redis connection.
+
+          Health checks:
+          - Run in the background at regular intervals
+          - Detect Redis availability without affecting request processing
+          - Automatically reconnect when Redis becomes available
+          - Update circuit breaker state based on health status
+
+          Default: true
+        required: false
+
+      healthCheckInterval:
+        type: integer
+        description: |
+          Interval in seconds between Redis health checks.
+          Lower values detect issues faster but increase Redis load.
+          Higher values reduce overhead but delay failure detection.
+
+          Default: 30 seconds
         required: false

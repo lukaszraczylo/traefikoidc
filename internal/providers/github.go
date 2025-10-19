@@ -38,7 +38,7 @@ func (p *GitHubProvider) BuildAuthParams(baseParams url.Values, scopes []string)
 	// GitHub doesn't use offline_access scope, so remove it if present
 	var filteredScopes []string
 	for _, scope := range scopes {
-		if scope != "offline_access" {
+		if scope != ScopeOfflineAccess {
 			filteredScopes = append(filteredScopes, scope)
 		}
 	}
