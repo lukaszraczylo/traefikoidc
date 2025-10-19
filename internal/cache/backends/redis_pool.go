@@ -256,9 +256,11 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 		c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 	}
 
-	// Write command
+	// Write command (using pooled writer for memory efficiency)
 	writer := NewRESPWriter(c.conn)
-	if err := writer.WriteCommand(cmdArgs...); err != nil {
+	err := writer.WriteCommand(cmdArgs...)
+	writer.Release() // Return to pool immediately after use
+	if err != nil {
 		c.closed.Store(true)
 		return nil, err
 	}
@@ -268,9 +270,10 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 		c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 	}
 
-	// Read response
+	// Read response (using pooled reader for memory efficiency)
 	reader := NewRESPReader(c.conn)
 	resp, err := reader.ReadResponse()
+	reader.Release() // Return to pool immediately after use
 	if err != nil {
 		if !errors.Is(err, ErrNilResponse) {
 			c.closed.Store(true)
