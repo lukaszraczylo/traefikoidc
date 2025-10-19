@@ -15,8 +15,9 @@ type UniversalCacheManager struct {
 	metadataCache      *UniversalCache
 	jwkCache           *UniversalCache
 	sessionCache       *UniversalCache
-	introspectionCache *UniversalCache // OAuth 2.0 Token Introspection cache (RFC 7662)
-	tokenTypeCache     *UniversalCache // Cache for token type detection results
+	introspectionCache *UniversalCache       // OAuth 2.0 Token Introspection cache (RFC 7662)
+	tokenTypeCache     *UniversalCache       // Cache for token type detection results
+	sharedBackend      backends.CacheBackend // Shared backend (Redis) that should be closed by manager, not individual caches
 	mu                 sync.RWMutex
 	logger             *Logger
 }
@@ -156,16 +157,17 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 		EnableMetrics: true,
 	}
 
-	var redisBackend backends.CacheBackend
-	var err error
-
-	// Create Redis backend with resilience features if enabled
-	redisBackend, err = backends.NewRedisBackend(redisBackendConfig)
+	// Use concrete type to avoid Yaegi reflection issues with interface assignment
+	// The concrete type will be automatically converted to interface when needed
+	baseBackend, err := backends.NewRedisBackend(redisBackendConfig)
 	if err != nil {
 		logger.Errorf("Failed to create Redis backend: %v. Falling back to memory-only mode.", err)
 		initializeDefaultCaches(manager, logger)
 		return
 	}
+
+	// Build the backend with optional wrappers
+	var redisBackend backends.CacheBackend = baseBackend
 
 	// Wrap with circuit breaker if enabled
 	if redisConfig.EnableCircuitBreaker {
@@ -195,6 +197,9 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 		redisBackend = resilience.NewHealthCheckBackend(redisBackend, hcConfig)
 		logger.Info("Redis backend wrapped with health checker")
 	}
+
+	// Store the fully-wrapped shared backend in the manager so it can be closed properly
+	manager.sharedBackend = redisBackend
 
 	// Decide which backend to use based on cache mode
 	var createBackend func(cacheType CacheType) backends.CacheBackend
@@ -364,11 +369,21 @@ func (m *UniversalCacheManager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Close all caches first (they won't close the shared backend)
 	for _, cache := range []*UniversalCache{
 		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache, m.tokenTypeCache,
 	} {
 		if cache != nil {
 			_ = cache.Close() // Safe to ignore: best effort cache cleanup
+		}
+	}
+
+	// Now close the shared backend if present
+	if m.sharedBackend != nil {
+		if err := m.sharedBackend.Close(); err != nil {
+			m.logger.Infof("Failed to close shared cache backend: %v", err)
+		} else {
+			m.logger.Info("UniversalCacheManager: Closed shared backend")
 		}
 	}
 

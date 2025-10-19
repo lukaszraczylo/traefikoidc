@@ -93,7 +93,8 @@ type UniversalCache struct {
 	logger  *Logger
 
 	// Backend for distributed caching (NEW)
-	backend backends.CacheBackend
+	backend     backends.CacheBackend
+	ownsBackend bool // If true, cache should close backend on Close(); if false, backend is shared
 
 	// Memory management
 	currentSize   int64
@@ -120,6 +121,7 @@ func NewUniversalCache(config UniversalCacheConfig) *UniversalCache {
 func NewUniversalCacheWithBackend(config UniversalCacheConfig, cacheBackend backends.CacheBackend) *UniversalCache {
 	cache := createUniversalCache(config)
 	cache.backend = cacheBackend
+	cache.ownsBackend = false // Shared backend, managed externally
 	return cache
 }
 
@@ -517,8 +519,8 @@ func (c *UniversalCache) Close() error {
 	// Clear all items
 	c.Clear()
 
-	// Close backend if present
-	if c.backend != nil {
+	// Close backend only if this cache owns it (not shared)
+	if c.backend != nil && c.ownsBackend {
 		if err := c.backend.Close(); err != nil {
 			c.logger.Infof("Failed to close cache backend: %v", err)
 		}
