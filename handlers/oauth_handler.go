@@ -147,7 +147,12 @@ func (h *OAuthHandler) HandleCallback(rw http.ResponseWriter, req *http.Request,
 		cookie, err := req.Cookie("_oidc_raczylo_m")
 		if err != nil {
 			h.logger.Errorf("Main session cookie not found in request: %v", err)
-			h.logger.Debugf("Available cookies: %v", req.Header.Get("Cookie"))
+			// Log cookie names only, not values (avoid logging sensitive session data)
+			cookieNames := make([]string, 0, len(req.Cookies()))
+			for _, c := range req.Cookies() {
+				cookieNames = append(cookieNames, c.Name)
+			}
+			h.logger.Debugf("Available cookies (names only): %v", cookieNames)
 		} else {
 			h.logger.Errorf("Main session cookie exists but CSRF token is empty. Cookie value length: %d", len(cookie.Value))
 			h.logger.Debugf("Cookie details - Domain: %s, Path: %s, Secure: %v, HttpOnly: %v, SameSite: %v",
