@@ -555,3 +555,66 @@ func TestConnectionPool_StatsTracking(t *testing.T) {
 	assert.Equal(t, initialPuts+int64(numOps), stats["puts"].(int64))
 	assert.Equal(t, int32(0), stats["active_connections"].(int32))
 }
+
+// TestRedisConn_TooManyArguments tests protection against allocation overflow
+func TestRedisConn_TooManyArguments(t *testing.T) {
+	mr := NewMiniredisServer(t)
+
+	config := &PoolConfig{
+		Address:        mr.GetAddr(),
+		MaxConnections: 1,
+		ConnectTimeout: 5 * time.Second,
+		ReadTimeout:    3 * time.Second,
+		WriteTimeout:   3 * time.Second,
+	}
+
+	pool, err := NewConnectionPool(config)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	ctx := context.Background()
+	conn, err := pool.Get(ctx)
+	require.NoError(t, err)
+	defer pool.Put(conn)
+
+	t.Run("AcceptableArgumentCount", func(t *testing.T) {
+		// Should work with reasonable number of args
+		args := make([]string, 100)
+		for i := range args {
+			args[i] = "value"
+		}
+		_, err := conn.Do("MSET", args...)
+		// May fail due to Redis constraints, but shouldn't panic or error on overflow
+		// Just verify it doesn't trigger our overflow protection
+		if err != nil {
+			assert.NotContains(t, err.Error(), "too many arguments")
+		}
+	})
+
+	t.Run("RejectExcessiveArguments", func(t *testing.T) {
+		// Create an absurdly large number of arguments that would cause overflow
+		// Use 1M + 1 to exceed maxSafeArgs = (1<<20)-1 = 1048575
+		args := make([]string, 1<<20) // 1,048,576 args
+		for i := range args {
+			args[i] = "x"
+		}
+
+		_, err := conn.Do("MSET", args...)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "too many arguments")
+	})
+
+	t.Run("BoundaryCase", func(t *testing.T) {
+		// Test exactly at the boundary (maxSafeArgs)
+		args := make([]string, (1<<20)-1) // Exactly 1,048,575 args (max allowed)
+		for i := range args {
+			args[i] = "x"
+		}
+
+		_, err := conn.Do("ECHO", args...)
+		// Should not error due to overflow protection
+		if err != nil {
+			assert.NotContains(t, err.Error(), "too many arguments")
+		}
+	})
+}

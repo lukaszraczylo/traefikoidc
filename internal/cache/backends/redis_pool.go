@@ -247,9 +247,12 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	defer c.mu.Unlock()
 
 	// Build command arguments
-	// Check for overflow: ensure len(args)+1 doesn't overflow int
+	// Check for overflow: ensure len(args)+1 doesn't cause allocation overflow
+	// Limit to a safe value that prevents integer overflow in allocation size calculation
+	// (capacity * sizeof(string) must fit in int/size_t)
 	argsLen := len(args)
-	if argsLen < 0 || argsLen > (1<<31)-2 {
+	const maxSafeArgs = (1 << 20) - 1 // 1M args is already absurdly large for Redis commands
+	if argsLen < 0 || argsLen > maxSafeArgs {
 		return nil, errors.New("too many arguments")
 	}
 	cmdArgs := make([]string, 0, argsLen+1)
