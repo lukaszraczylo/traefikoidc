@@ -126,6 +126,8 @@ func (ts *TestSuite) Setup() {
 		clientID:           "test-client-id",
 		audience:           "test-client-id",
 		clientSecret:       "test-client-secret",
+		roleClaimName:      "roles",  // Set default for backward compatibility
+		groupClaimName:     "groups", // Set default for backward compatibility
 		jwkCache:           ts.mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
 		revocationURL:      "https://revocation-endpoint.com",

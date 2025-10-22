@@ -93,6 +93,36 @@ type Config struct {
 	// When enabled, provides cache sharing across multiple Traefik replicas.
 	// Default: nil (disabled - uses in-memory caching)
 	Redis *RedisConfig `json:"redis,omitempty"`
+
+	// RoleClaimName specifies the JWT claim name to extract user roles from.
+	// This allows compatibility with different OIDC providers that use different claim names.
+	//
+	// Examples:
+	//   - Default (backward compatible): "roles"
+	//   - Auth0 namespaced: "https://myapp.com/roles"
+	//   - Keycloak realm roles: "realm_access.roles"
+	//   - Custom claim: "user_roles"
+	//
+	// If not specified, defaults to "roles" for backward compatibility.
+	// Supports both simple names and namespaced URIs per OIDC specification.
+	//
+	// Default: "roles"
+	RoleClaimName string `json:"roleClaimName,omitempty"`
+
+	// GroupClaimName specifies the JWT claim name to extract user groups from.
+	// This allows compatibility with different OIDC providers that use different claim names.
+	//
+	// Examples:
+	//   - Default (backward compatible): "groups"
+	//   - Auth0 namespaced: "https://myapp.com/groups"
+	//   - Azure AD groups: "groups"
+	//   - Custom claim: "user_groups"
+	//
+	// If not specified, defaults to "groups" for backward compatibility.
+	// Supports both simple names and namespaced URIs per OIDC specification.
+	//
+	// Default: "groups"
+	GroupClaimName string `json:"groupClaimName,omitempty"`
 }
 
 // RedisConfig configures Redis cache backend settings for distributed caching.

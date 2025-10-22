@@ -96,6 +96,8 @@ type TraefikOidc struct {
 	clientSecret               string
 	clientID                   string
 	audience                   string // Expected JWT audience, defaults to clientID
+	roleClaimName              string // JWT claim name for extracting roles, defaults to "roles"
+	groupClaimName             string // JWT claim name for extracting groups, defaults to "groups"
 	name                       string
 	redirURLPath               string
 	logoutURLPath              string

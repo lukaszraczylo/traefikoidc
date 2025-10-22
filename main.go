@@ -165,6 +165,18 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return config.ClientID
 		}(),
+		roleClaimName: func() string {
+			if config.RoleClaimName != "" {
+				return config.RoleClaimName
+			}
+			return "roles" // Backward compatible default
+		}(),
+		groupClaimName: func() string {
+			if config.GroupClaimName != "" {
+				return config.GroupClaimName
+			}
+			return "groups" // Backward compatible default
+		}(),
 		forceHTTPS:                config.ForceHTTPS,
 		enablePKCE:                config.EnablePKCE,
 		overrideScopes:            config.OverrideScopes,

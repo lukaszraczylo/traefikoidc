@@ -74,6 +74,10 @@ testData:
     - admin
     - developer
 
+  # Custom claim names for Auth0 and other providers with namespaced claims
+  roleClaimName: roles # JWT claim name for extracting user roles (default: "roles")
+  groupClaimName: groups # JWT claim name for extracting user groups (default: "groups")
+
   # ⚠️ CRITICAL for TLS termination scenarios (AWS ALB, Cloud Load Balancers, etc.)
   # When NOT specified in config: defaults to FALSE (Go zero value)
   # When running behind load balancer that terminates TLS: MUST set to TRUE

@@ -121,6 +121,8 @@ The middleware supports the following configuration options:
 | `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
 | `allowedUsers` | A list of specific email addresses that are allowed access | none | `["user1@example.com", "user2@another.org"]` |
 | `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
+| `roleClaimName` | JWT claim name for extracting user roles (supports namespaced claims for Auth0) | `"roles"` | `"https://myapp.com/roles"`, `"user_roles"` |
+| `groupClaimName` | JWT claim name for extracting user groups (supports namespaced claims for Auth0) | `"groups"` | `"https://myapp.com/groups"`, `"user_groups"` |
 | `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |
 | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
@@ -1062,8 +1064,13 @@ spec:
 
       scopes:
         - read:custom_data  # Custom scopes as needed
+
+      # Custom claim names for Auth0 namespaced claims
+      roleClaimName: "https://your-app.com/roles"   # Auth0 requires namespaced custom claims
+      groupClaimName: "https://your-app.com/groups" # Must match claims added in Auth0 Actions
+
       allowedRolesAndGroups:
-        - "https://your-app.com/roles:admin"  # Namespaced claims from Actions
+        - admin    # Will match "admin" in https://your-app.com/roles claim
         - editor
       postLogoutRedirectURI: /logged-out-page  # Must be in Auth0 Allowed Logout URLs
 ```
