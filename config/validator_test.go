@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestValidateUnifiedConfig tests the validation of UnifiedConfig
@@ -337,4 +340,249 @@ func TestValidateRedisConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ============================================================================
+// validateRateLimit Tests
+// ============================================================================
+
+func TestValidateRateLimit_Disabled(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.RateLimit.Enabled = false
+
+	errors := config.validateRateLimit()
+
+	assert.Empty(t, errors, "Should have no errors when rate limiting is disabled")
+}
+
+func TestValidateRateLimit_ValidConfig(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.RateLimit.Enabled = true
+	config.RateLimit.RequestsPerSecond = 100
+	config.RateLimit.Burst = 200
+	config.RateLimit.KeyType = "ip"
+
+	errors := config.validateRateLimit()
+
+	assert.Empty(t, errors, "Should have no errors for valid rate limit config")
+}
+
+func TestValidateRateLimit_RequestsPerSecondTooLow(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.RateLimit.Enabled = true
+	config.RateLimit.RequestsPerSecond = 0
+	config.RateLimit.Burst = 100
+	config.RateLimit.KeyType = "ip"
+
+	errors := config.validateRateLimit()
+
+	require.Len(t, errors, 1)
+	assert.Equal(t, "RateLimit.RequestsPerSecond", errors[0].Field)
+	assert.Contains(t, errors[0].Message, "between 1 and 10000")
+}
+
+func TestValidateRateLimit_RequestsPerSecondTooHigh(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.RateLimit.Enabled = true
+	config.RateLimit.RequestsPerSecond = 15000
+	config.RateLimit.Burst = 20000
+	config.RateLimit.KeyType = "ip"
+
+	errors := config.validateRateLimit()
+
+	require.Len(t, errors, 1)
+	assert.Equal(t, "RateLimit.RequestsPerSecond", errors[0].Field)
+	assert.Contains(t, errors[0].Message, "between 1 and 10000")
+}
+
+func TestValidateRateLimit_BurstTooSmall(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.RateLimit.Enabled = true
+	config.RateLimit.RequestsPerSecond = 100
+	config.RateLimit.Burst = 50 // Less than RequestsPerSecond
+	config.RateLimit.KeyType = "ip"
+
+	errors := config.validateRateLimit()
+
+	require.Len(t, errors, 1)
+	assert.Equal(t, "RateLimit.Burst", errors[0].Field)
+	assert.Contains(t, errors[0].Message, "at least as large as requests per second")
+}
+
+func TestValidateRateLimit_InvalidKeyType(t *testing.T) {
+	tests := []struct {
+		name    string
+		keyType string
+	}{
+		{"empty key type", ""},
+		{"invalid key type", "invalid"},
+		{"random string", "foobar"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := NewUnifiedConfig()
+			config.RateLimit.Enabled = true
+			config.RateLimit.RequestsPerSecond = 100
+			config.RateLimit.Burst = 200
+			config.RateLimit.KeyType = tt.keyType
+
+			errors := config.validateRateLimit()
+
+			require.Len(t, errors, 1)
+			assert.Equal(t, "RateLimit.KeyType", errors[0].Field)
+			assert.Contains(t, errors[0].Message, "invalid key type")
+		})
+	}
+}
+
+func TestValidateRateLimit_ValidKeyTypes(t *testing.T) {
+	validKeyTypes := []string{"ip", "user", "token", "custom"}
+
+	for _, keyType := range validKeyTypes {
+		t.Run(keyType, func(t *testing.T) {
+			config := NewUnifiedConfig()
+			config.RateLimit.Enabled = true
+			config.RateLimit.RequestsPerSecond = 100
+			config.RateLimit.Burst = 200
+			config.RateLimit.KeyType = keyType
+
+			errors := config.validateRateLimit()
+
+			assert.Empty(t, errors, "Should have no errors for valid key type: %s", keyType)
+		})
+	}
+}
+
+func TestValidateRateLimit_MultipleErrors(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.RateLimit.Enabled = true
+	config.RateLimit.RequestsPerSecond = 0 // Too low
+	config.RateLimit.Burst = 50            // Will pass (0 < 50)
+	config.RateLimit.KeyType = "invalid"   // Invalid
+
+	errors := config.validateRateLimit()
+
+	// Should have 2 errors (rps and keyType)
+	assert.Len(t, errors, 2)
+
+	// Check each error is present
+	fields := make(map[string]bool)
+	for _, err := range errors {
+		fields[err.Field] = true
+	}
+	assert.True(t, fields["RateLimit.RequestsPerSecond"])
+	assert.True(t, fields["RateLimit.KeyType"])
+}
+
+// ============================================================================
+// validateMetrics Tests
+// ============================================================================
+
+func TestValidateMetrics_Disabled(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.Metrics.Enabled = false
+
+	errors := config.validateMetrics()
+
+	assert.Empty(t, errors, "Should have no errors when metrics are disabled")
+}
+
+func TestValidateMetrics_ValidPrometheus(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.Metrics.Enabled = true
+	config.Metrics.Provider = "prometheus"
+	config.Metrics.Endpoint = "" // Prometheus doesn't require endpoint
+
+	errors := config.validateMetrics()
+
+	assert.Empty(t, errors, "Should have no errors for valid prometheus config")
+}
+
+func TestValidateMetrics_ValidStatsd(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.Metrics.Enabled = true
+	config.Metrics.Provider = "statsd"
+	config.Metrics.Endpoint = "localhost:8125"
+
+	errors := config.validateMetrics()
+
+	assert.Empty(t, errors, "Should have no errors for valid statsd config")
+}
+
+func TestValidateMetrics_ValidOTLP(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.Metrics.Enabled = true
+	config.Metrics.Provider = "otlp"
+	config.Metrics.Endpoint = "localhost:4317"
+
+	errors := config.validateMetrics()
+
+	assert.Empty(t, errors, "Should have no errors for valid otlp config")
+}
+
+func TestValidateMetrics_InvalidProvider(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+	}{
+		{"empty provider", ""},
+		{"invalid provider", "invalid"},
+		{"datadog", "datadog"},
+		{"influx", "influx"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := NewUnifiedConfig()
+			config.Metrics.Enabled = true
+			config.Metrics.Provider = tt.provider
+			config.Metrics.Endpoint = "localhost:8080"
+
+			errors := config.validateMetrics()
+
+			require.Len(t, errors, 1)
+			assert.Equal(t, "Metrics.Provider", errors[0].Field)
+			assert.Contains(t, errors[0].Message, "invalid metrics provider")
+		})
+	}
+}
+
+func TestValidateMetrics_StatsdMissingEndpoint(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.Metrics.Enabled = true
+	config.Metrics.Provider = "statsd"
+	config.Metrics.Endpoint = "" // Missing required endpoint
+
+	errors := config.validateMetrics()
+
+	require.Len(t, errors, 1)
+	assert.Equal(t, "Metrics.Endpoint", errors[0].Field)
+	assert.Contains(t, errors[0].Message, "endpoint is required for statsd provider")
+}
+
+func TestValidateMetrics_OTLPMissingEndpoint(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.Metrics.Enabled = true
+	config.Metrics.Provider = "otlp"
+	config.Metrics.Endpoint = "" // Missing required endpoint
+
+	errors := config.validateMetrics()
+
+	require.Len(t, errors, 1)
+	assert.Equal(t, "Metrics.Endpoint", errors[0].Field)
+	assert.Contains(t, errors[0].Message, "endpoint is required for otlp provider")
+}
+
+func TestValidateMetrics_MultipleErrors(t *testing.T) {
+	config := NewUnifiedConfig()
+	config.Metrics.Enabled = true
+	config.Metrics.Provider = "invalid" // Invalid provider
+	config.Metrics.Endpoint = ""        // Would be missing if provider was statsd/otlp
+
+	errors := config.validateMetrics()
+
+	// Should have at least 1 error for invalid provider
+	assert.NotEmpty(t, errors)
+	assert.Equal(t, "Metrics.Provider", errors[0].Field)
 }

@@ -44,6 +44,10 @@ func (l *TestLogger) Errorf(format string, args ...interface{}) {
 	l.Error(format, args...)
 }
 
+func (l *TestLogger) Warnf(format string, args ...interface{}) {
+	l.t.Logf("[WARN] "+format, args...)
+}
+
 // MiniredisServer manages a miniredis instance for testing
 type MiniredisServer struct {
 	server *miniredis.Miniredis

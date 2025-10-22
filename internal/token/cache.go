@@ -134,12 +134,15 @@ func (tc *TokenCache) StartCleanup(interval time.Duration) {
 		return // Already running
 	}
 
+	// Create fresh stop channel for this cleanup session
+	tc.cleanupStop = make(chan bool, 1)
 	tc.cleanupTicker = time.NewTicker(interval)
+	tickerChan := tc.cleanupTicker.C // Capture channel before goroutine starts
 
 	go func() {
 		for {
 			select {
-			case <-tc.cleanupTicker.C:
+			case <-tickerChan:
 				tc.cleanupExpiredTokens()
 			case <-tc.cleanupStop:
 				return
@@ -157,9 +160,11 @@ func (tc *TokenCache) StopCleanup() {
 
 	if tc.cleanupTicker != nil {
 		tc.cleanupTicker.Stop()
+		select {
+		case tc.cleanupStop <- true: // Signal stop
+		default: // Channel might be full or goroutine already stopped
+		}
 		tc.cleanupTicker = nil
-		close(tc.cleanupStop)
-		tc.cleanupStop = make(chan bool)
 		tc.logger.Logf("Stopped token cache cleanup")
 	}
 }

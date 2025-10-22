@@ -499,3 +499,285 @@ func TestMemoryBackend_ValueIsolation(t *testing.T) {
 	assert.True(t, exists)
 	assert.Equal(t, originalValue, retrieved2, "Original value should not be modified")
 }
+
+// TestMemoryBackend_Keys tests the Keys method with pattern matching
+func TestMemoryBackend_Keys(t *testing.T) {
+	t.Parallel()
+
+	backend, err := NewMemoryBackend(DefaultConfig())
+	require.NoError(t, err)
+	defer backend.Close()
+
+	ctx := context.Background()
+
+	// Add test data
+	testKeys := []string{"user:1", "user:2", "session:abc", "session:def", "token:xyz"}
+	for _, key := range testKeys {
+		err := backend.Set(ctx, key, []byte("value"), 1*time.Minute)
+		require.NoError(t, err)
+	}
+
+	t.Run("AllKeys", func(t *testing.T) {
+		keys, err := backend.Keys(ctx, "*")
+		require.NoError(t, err)
+		assert.Len(t, keys, 5)
+	})
+
+	t.Run("SpecificPattern", func(t *testing.T) {
+		// Simple exact match
+		keys, err := backend.Keys(ctx, "user:1")
+		require.NoError(t, err)
+		assert.Len(t, keys, 1)
+		assert.Contains(t, keys, "user:1")
+	})
+
+	t.Run("ExcludesExpired", func(t *testing.T) {
+		// Add an expired key
+		expiredKey := "expired:key"
+		err := backend.Set(ctx, expiredKey, []byte("value"), 1*time.Millisecond)
+		require.NoError(t, err)
+
+		// Wait for expiration
+		time.Sleep(10 * time.Millisecond)
+
+		keys, err := backend.Keys(ctx, "*")
+		require.NoError(t, err)
+		assert.NotContains(t, keys, expiredKey, "Expired keys should not be returned")
+	})
+
+	t.Run("AfterClose", func(t *testing.T) {
+		closedBackend, _ := NewMemoryBackend(DefaultConfig())
+		closedBackend.Close()
+
+		_, err := closedBackend.Keys(ctx, "*")
+		assert.Error(t, err)
+		assert.Equal(t, ErrBackendUnavailable, err)
+	})
+}
+
+// TestMemoryBackend_Size tests the Size method
+func TestMemoryBackend_Size(t *testing.T) {
+	t.Parallel()
+
+	backend, err := NewMemoryBackend(DefaultConfig())
+	require.NoError(t, err)
+	defer backend.Close()
+
+	ctx := context.Background()
+
+	// Initially empty
+	size, err := backend.Size(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), size)
+
+	// Add items
+	for i := 0; i < 5; i++ {
+		key := fmt.Sprintf("key-%d", i)
+		err := backend.Set(ctx, key, []byte("value"), 1*time.Minute)
+		require.NoError(t, err)
+	}
+
+	size, err = backend.Size(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), size)
+
+	// Delete one
+	backend.Delete(ctx, "key-0")
+
+	size, err = backend.Size(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), size)
+
+	// After close
+	backend.Close()
+	_, err = backend.Size(ctx)
+	assert.Error(t, err)
+	assert.Equal(t, ErrBackendUnavailable, err)
+}
+
+// TestMemoryBackend_TTL tests the TTL method
+func TestMemoryBackend_TTL(t *testing.T) {
+	t.Parallel()
+
+	backend, err := NewMemoryBackend(DefaultConfig())
+	require.NoError(t, err)
+	defer backend.Close()
+
+	ctx := context.Background()
+
+	t.Run("ExistingKey", func(t *testing.T) {
+		key := "ttl-key"
+		ttl := 1 * time.Minute
+
+		err := backend.Set(ctx, key, []byte("value"), ttl)
+		require.NoError(t, err)
+
+		remaining, err := backend.TTL(ctx, key)
+		require.NoError(t, err)
+		assert.Greater(t, remaining, 50*time.Second)
+		assert.LessOrEqual(t, remaining, ttl)
+	})
+
+	t.Run("NonExistentKey", func(t *testing.T) {
+		_, err := backend.TTL(ctx, "non-existent")
+		assert.Error(t, err)
+		assert.Equal(t, ErrCacheMiss, err)
+	})
+
+	t.Run("NoExpiration", func(t *testing.T) {
+		key := "no-expiry"
+		// TTL of 0 typically means no expiration
+		err := backend.Set(ctx, key, []byte("value"), 0)
+		require.NoError(t, err)
+
+		remaining, err := backend.TTL(ctx, key)
+		require.NoError(t, err)
+		// No expiration returns 0
+		assert.Equal(t, time.Duration(0), remaining)
+	})
+
+	t.Run("AfterClose", func(t *testing.T) {
+		closedBackend, _ := NewMemoryBackend(DefaultConfig())
+		closedBackend.Close()
+
+		_, err := closedBackend.TTL(ctx, "key")
+		assert.Error(t, err)
+		assert.Equal(t, ErrBackendUnavailable, err)
+	})
+}
+
+// TestMemoryBackend_Expire tests the Expire method
+func TestMemoryBackend_Expire(t *testing.T) {
+	t.Parallel()
+
+	backend, err := NewMemoryBackend(DefaultConfig())
+	require.NoError(t, err)
+	defer backend.Close()
+
+	ctx := context.Background()
+
+	t.Run("UpdateTTL", func(t *testing.T) {
+		key := "expire-key"
+		err := backend.Set(ctx, key, []byte("value"), 1*time.Minute)
+		require.NoError(t, err)
+
+		// Update to shorter TTL
+		err = backend.Expire(ctx, key, 5*time.Second)
+		require.NoError(t, err)
+
+		// Check new TTL
+		remaining, err := backend.TTL(ctx, key)
+		require.NoError(t, err)
+		assert.LessOrEqual(t, remaining, 5*time.Second)
+	})
+
+	t.Run("NonExistentKey", func(t *testing.T) {
+		err := backend.Expire(ctx, "non-existent", 1*time.Minute)
+		assert.Error(t, err)
+		assert.Equal(t, ErrCacheMiss, err)
+	})
+
+	t.Run("RemoveExpiration", func(t *testing.T) {
+		key := "no-expire-key"
+		err := backend.Set(ctx, key, []byte("value"), 1*time.Minute)
+		require.NoError(t, err)
+
+		// Set TTL to 0 to remove expiration
+		err = backend.Expire(ctx, key, 0)
+		require.NoError(t, err)
+
+		// TTL should now be 0
+		remaining, err := backend.TTL(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(0), remaining)
+	})
+
+	t.Run("AfterClose", func(t *testing.T) {
+		closedBackend, _ := NewMemoryBackend(DefaultConfig())
+		closedBackend.Close()
+
+		err := closedBackend.Expire(ctx, "key", 1*time.Minute)
+		assert.Error(t, err)
+		assert.Equal(t, ErrBackendUnavailable, err)
+	})
+}
+
+// TestMemoryBackend_IsHealthy tests the IsHealthy method
+func TestMemoryBackend_IsHealthy(t *testing.T) {
+	t.Parallel()
+
+	backend, err := NewMemoryBackend(DefaultConfig())
+	require.NoError(t, err)
+
+	// Should be healthy when open
+	assert.True(t, backend.IsHealthy())
+
+	// Should be unhealthy after close
+	backend.Close()
+	assert.False(t, backend.IsHealthy())
+}
+
+// TestMemoryBackend_Type tests the Type method
+func TestMemoryBackend_Type(t *testing.T) {
+	t.Parallel()
+
+	backend, err := NewMemoryBackend(DefaultConfig())
+	require.NoError(t, err)
+	defer backend.Close()
+
+	backendType := backend.Type()
+	assert.Equal(t, TypeMemory, backendType)
+}
+
+// TestMemoryBackend_Capabilities tests the Capabilities method
+func TestMemoryBackend_Capabilities(t *testing.T) {
+	t.Parallel()
+
+	backend, err := NewMemoryBackend(DefaultConfig())
+	require.NoError(t, err)
+	defer backend.Close()
+
+	caps := backend.Capabilities()
+	require.NotNil(t, caps)
+
+	// Memory backend should not be distributed or persistent
+	assert.False(t, caps.Distributed)
+	assert.False(t, caps.Persistent)
+
+	// Should support eviction and TTL
+	assert.True(t, caps.Eviction)
+	assert.True(t, caps.TTL)
+	assert.True(t, caps.SupportsExpire)
+	assert.True(t, caps.SupportsMultiGet)
+
+	// Check limits
+	assert.Greater(t, caps.MaxKeySize, int64(0))
+	assert.Greater(t, caps.MaxValueSize, int64(0))
+}
+
+// TestMatchPattern tests the matchPattern helper function
+func TestMatchPattern(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		pattern string
+		key     string
+		matches bool
+	}{
+		{"*", "any-key", true},
+		{"*", "another", true},
+		{"user:1", "user:1", true},
+		{"user:1", "user:2", false},
+		{"*:suffix", "prefix:suffix", true},
+		{"*suffix", "prefix-suffix", true},
+		{"*abc", "xyzabc", true},
+		{"*abc", "xyz", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s-%s", tt.pattern, tt.key), func(t *testing.T) {
+			result := matchPattern(tt.pattern, tt.key)
+			assert.Equal(t, tt.matches, result)
+		})
+	}
+}

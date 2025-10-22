@@ -250,6 +250,10 @@ func testClear(t *testing.T, ctx context.Context, backend CacheBackend) {
 		require.NoError(t, err)
 	}
 
+	// Give async writes time to complete before clearing
+	// This prevents race conditions with async write workers
+	time.Sleep(50 * time.Millisecond)
+
 	// Clear all
 	err := backend.Clear(ctx)
 	require.NoError(t, err)
@@ -395,8 +399,23 @@ func setupRedisBackend(t *testing.T) CacheBackend {
 
 func setupHybridBackend(t *testing.T) CacheBackend {
 	t.Helper()
-	// This will be implemented in hybrid_test.go
-	// For now, return nil to allow compilation
-	t.Skip("HybridBackend implementation pending")
-	return nil
+
+	primary := newMockBackend()
+	secondary := newMockBackend()
+
+	config := &HybridConfig{
+		Primary:         primary,
+		Secondary:       secondary,
+		AsyncBufferSize: 100,
+		Logger:          NewTestLogger(t),
+	}
+
+	hybrid, err := NewHybridBackend(config)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		hybrid.Close()
+	})
+
+	return hybrid
 }
