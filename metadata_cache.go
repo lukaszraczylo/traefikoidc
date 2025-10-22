@@ -10,11 +10,22 @@ import (
 	"time"
 )
 
+const (
+	// metadataCacheVersion is incremented when cache format changes
+	// This ensures old cached data is automatically ignored
+	metadataCacheVersion = "v2"
+)
+
 // MetadataCache wraps UniversalCache for metadata operations
 type MetadataCache struct {
 	cache  *UniversalCache
 	logger *Logger
 	wg     *sync.WaitGroup
+}
+
+// versionedKey adds version prefix to cache keys
+func (mc *MetadataCache) versionedKey(key string) string {
+	return metadataCacheVersion + ":" + key
 }
 
 // MetadataCacheEntry for compatibility
@@ -55,12 +66,14 @@ func (mc *MetadataCache) Set(providerURL string, metadata *ProviderMetadata, ttl
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
-	return mc.cache.Set(providerURL, data, ttl)
+	// Use versioned key to prevent stale data issues
+	return mc.cache.Set(mc.versionedKey(providerURL), data, ttl)
 }
 
 // Get retrieves provider metadata from cache
 func (mc *MetadataCache) Get(providerURL string) (*ProviderMetadata, bool) {
-	value, exists := mc.cache.Get(providerURL)
+	// Use versioned key to prevent stale data issues
+	value, exists := mc.cache.Get(mc.versionedKey(providerURL))
 	if !exists {
 		mc.logger.Debugf("MetadataCache: MISS for %s", providerURL)
 		return nil, false
@@ -78,9 +91,21 @@ func (mc *MetadataCache) Get(providerURL string) (*ProviderMetadata, bool) {
 		return nil, false
 	}
 
+	// Debug: log first 100 chars of cached data to diagnose unmarshal issues
+	dataPreview := string(data)
+	if len(dataPreview) > 100 {
+		dataPreview = dataPreview[:100]
+	}
+	mc.logger.Debugf("MetadataCache: Attempting to unmarshal for %s, data preview: %s", providerURL, dataPreview)
+
 	var metadata ProviderMetadata
 	if err := json.Unmarshal(data, &metadata); err != nil {
-		mc.logger.Errorf("MetadataCache: Failed to unmarshal metadata for %s: %v", providerURL, err)
+		// Graceful degradation: corrupt data is treated as cache miss
+		mc.logger.Errorf("MetadataCache: Corrupt data detected for %s: %v (preview: %s) - deleting and treating as miss", providerURL, err, dataPreview)
+
+		// Delete corrupt entry to prevent repeated errors (use versioned key)
+		mc.cache.Delete(mc.versionedKey(providerURL))
+
 		return nil, false
 	}
 
@@ -183,7 +208,7 @@ func (mc *MetadataCache) CleanupExpired() {
 
 // Delete removes an entry from the cache
 func (mc *MetadataCache) Delete(key string) {
-	mc.cache.Delete(key)
+	mc.cache.Delete(mc.versionedKey(key))
 }
 
 // Mutex returns the cache mutex for testing
