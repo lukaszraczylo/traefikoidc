@@ -9,6 +9,7 @@ require (
 	github.com/redis/go-redis/v9 v9.14.0
 	github.com/stretchr/testify v1.10.0
 	golang.org/x/time v0.14.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -18,5 +19,4 @@ require (
 	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
