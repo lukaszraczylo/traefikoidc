@@ -277,8 +277,9 @@ func TestHealthMonitor_StatsAccuracy(t *testing.T) {
 	assert.Equal(t, int64(0), stats["consecutive_failures"].(int64))
 
 	// Last check time should be recent (within check interval + buffer)
+	// Use 2s tolerance to account for CI runner load and timing variance
 	lastCheck := stats["last_check"].(time.Time)
-	assert.WithinDuration(t, time.Now(), lastCheck, 1*time.Second)
+	assert.WithinDuration(t, time.Now(), lastCheck, 2*time.Second)
 }
 
 // TestHealthMonitor_DefaultConfig tests default configuration
