@@ -172,7 +172,6 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		allowOpaqueTokens:         config.AllowOpaqueTokens,
 		requireTokenIntrospection: config.RequireTokenIntrospection,
 		disableReplayDetection:    config.DisableReplayDetection,
-		allowLocalhostRedirect:    config.AllowLocalhostRedirect,
 		scopes: func() []string {
 			userProvidedScopes := deduplicateScopes(config.Scopes)
 
@@ -214,6 +213,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	} else {
 		t.logger.Debugf("No custom audience specified, using clientID as audience: %s", t.clientID)
 	}
+
+	// Initialize URL validator for security (SSRF protection)
+	// This defaults to production validator which blocks localhost/private IPs
+	// Can be overridden in tests by injecting a custom validator
+	t.urlValidator = NewProductionURLValidator(t.logger)
 
 	// FIX: Pass instance name to create unique cookie names per middleware instance
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger, t.name) // Safe to ignore: session manager creation with fallback to defaults

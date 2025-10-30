@@ -122,11 +122,11 @@ type TraefikOidc struct {
 	allowOpaqueTokens          bool // Enables opaque token support via introspection
 	requireTokenIntrospection  bool // Forces introspection for opaque tokens
 	disableReplayDetection     bool // Disables JTI-based replay detection for multi-replica deployments
-	allowLocalhostRedirect     bool // Allows localhost/private IPs for testing (NEVER use in production!)
 	suppressDiagnosticLogs     bool
 	firstRequestReceived       bool
 	metadataRefreshStarted     bool
 	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
 	scopeFilter                *ScopeFilter // NEW - for discovery-based scope filtering
 	scopesSupported            []string     // NEW - from provider metadata
+	urlValidator               URLValidator // URL validation interface (production default, can be overridden for testing)
 }

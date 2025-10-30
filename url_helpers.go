@@ -12,6 +12,86 @@ import (
 )
 
 // =============================================================================
+// URL Validation Interface (Security)
+// =============================================================================
+
+// URLValidator provides an interface for validating URLs and hostnames.
+// This interface enables dependency injection for testing while keeping
+// production security validation strict and uncompromised.
+type URLValidator interface {
+	// ValidateHost checks if a hostname/IP is safe to redirect to or connect to.
+	// Returns an error if the host is considered dangerous (localhost, private IP, etc.)
+	ValidateHost(host string) error
+}
+
+// ProductionURLValidator implements strict URL validation for production use.
+// It blocks access to:
+// - Localhost and loopback addresses (127.0.0.1, ::1, localhost)
+// - Private IP ranges (RFC 1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+// - Link-local addresses (169.254.0.0/16, fe80::/10)
+// - Cloud metadata endpoints (169.254.169.254, metadata.google.internal)
+// - Unspecified and multicast addresses
+//
+// This prevents Server-Side Request Forgery (SSRF) attacks where an attacker
+// could trick the middleware into making requests to internal services.
+type ProductionURLValidator struct {
+	logger *Logger
+}
+
+// NewProductionURLValidator creates a new production URL validator.
+func NewProductionURLValidator(logger *Logger) *ProductionURLValidator {
+	return &ProductionURLValidator{logger: logger}
+}
+
+// ValidateHost implements URLValidator.ValidateHost with strict security checks.
+func (p *ProductionURLValidator) ValidateHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("host cannot be empty")
+	}
+
+	hostname := host
+
+	// Handle host:port format
+	if strings.Contains(host, ":") {
+		var err error
+		hostname, _, err = net.SplitHostPort(host)
+		if err != nil {
+			return fmt.Errorf("invalid host format: %w", err)
+		}
+	}
+
+	// Check if hostname is an IP address and validate IP security constraints
+	ip := net.ParseIP(hostname)
+	if ip != nil {
+		// Block private and internal IP addresses (SSRF protection)
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("access to private/internal IP addresses is not allowed: %s", ip.String())
+		}
+
+		// Block unspecified (0.0.0.0, ::) and multicast addresses
+		if ip.IsUnspecified() || ip.IsMulticast() {
+			return fmt.Errorf("access to unspecified or multicast IP addresses is not allowed: %s", ip.String())
+		}
+	}
+
+	// Block known dangerous hostnames (SSRF protection)
+	dangerousHosts := map[string]bool{
+		"localhost":                true, // Loopback hostname
+		"127.0.0.1":                true, // IPv4 loopback
+		"::1":                      true, // IPv6 loopback
+		"0.0.0.0":                  true, // Unspecified address
+		"169.254.169.254":          true, // AWS/Azure metadata endpoint
+		"metadata.google.internal": true, // GCP metadata endpoint
+	}
+
+	if dangerousHosts[strings.ToLower(hostname)] {
+		return fmt.Errorf("access to dangerous hostname is not allowed: %s", hostname)
+	}
+
+	return nil
+}
+
+// =============================================================================
 // URL Exclusion Methods
 // =============================================================================
 
@@ -339,57 +419,24 @@ func (t *TraefikOidc) validateParsedURL(u *url.URL) error {
 }
 
 // validateHost validates a hostname or IP address for security.
-// It prevents access to localhost, private networks, and known metadata endpoints.
+// It delegates to the configured URLValidator (default: ProductionURLValidator)
+// which blocks localhost, private IPs, and other dangerous destinations to prevent SSRF.
+//
+// The validator can be overridden for testing purposes by injecting a custom
+// implementation (see PermissiveURLValidator in test files).
+//
 // Parameters:
 //   - host: The host string to validate (may include port).
 //
 // Returns:
 //   - An error if the host is dangerous or not allowed, nil if safe.
 func (t *TraefikOidc) validateHost(host string) error {
-	hostname := host
-	if strings.Contains(host, ":") {
-		var err error
-		hostname, _, err = net.SplitHostPort(host)
-		if err != nil {
-			return fmt.Errorf("invalid host format: %w", err)
-		}
+	// Use the configured validator, or fallback to production validator if not set
+	if t.urlValidator == nil {
+		// Defensive: ensure we always have a validator (production default)
+		t.logger.Debug("No URL validator configured, using default production validator")
+		return NewProductionURLValidator(t.logger).ValidateHost(host)
 	}
 
-	ip := net.ParseIP(hostname)
-	if ip != nil {
-		// Allow localhost/private IPs if explicitly enabled for testing
-		// This should ONLY be used in test environments with mock OIDC servers
-		if t.allowLocalhostRedirect {
-			t.logger.Debugf("AllowLocalhostRedirect enabled: allowing IP %s", ip.String())
-			return nil
-		}
-
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return fmt.Errorf("access to private/internal IP addresses is not allowed: %s", ip.String())
-		}
-
-		if ip.IsUnspecified() || ip.IsMulticast() {
-			return fmt.Errorf("access to unspecified or multicast IP addresses is not allowed: %s", ip.String())
-		}
-	}
-
-	dangerousHosts := map[string]bool{
-		"localhost":                true,
-		"127.0.0.1":                true,
-		"::1":                      true,
-		"0.0.0.0":                  true,
-		"169.254.169.254":          true,
-		"metadata.google.internal": true,
-	}
-
-	if dangerousHosts[strings.ToLower(hostname)] {
-		// Allow dangerous hosts if explicitly enabled for testing
-		if t.allowLocalhostRedirect {
-			t.logger.Debugf("AllowLocalhostRedirect enabled: allowing hostname %s", hostname)
-			return nil
-		}
-		return fmt.Errorf("access to dangerous hostname is not allowed: %s", hostname)
-	}
-
-	return nil
+	return t.urlValidator.ValidateHost(host)
 }

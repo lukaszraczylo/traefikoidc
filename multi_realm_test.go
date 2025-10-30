@@ -12,6 +12,27 @@ import (
 	"time"
 )
 
+// =============================================================================
+// Test Helpers for URL Validation
+// =============================================================================
+
+// PermissiveURLValidator is a test-only URL validator that allows all URLs.
+// This is used in tests to bypass SSRF protection for localhost and private IPs
+// when testing with mock OIDC servers.
+//
+// IMPORTANT: This should NEVER be used in production code!
+type PermissiveURLValidator struct{}
+
+// ValidateHost implements URLValidator.ValidateHost by allowing all hosts.
+// This bypasses all security checks for testing purposes only.
+func (p *PermissiveURLValidator) ValidateHost(host string) error {
+	return nil // Allow all URLs for testing
+}
+
+// =============================================================================
+// Multi-Realm Tests
+// =============================================================================
+
 // TestMultipleRealmsMetadataRefresh tests that two middleware instances
 // with different Keycloak realms can independently refresh their metadata
 func TestMultipleRealmsMetadataRefresh(t *testing.T) {
@@ -76,24 +97,22 @@ func TestMultipleRealmsMetadataRefresh(t *testing.T) {
 
 	// Create configuration for Realm A
 	configA := &Config{
-		ProviderURL:            realmAServer.URL,
-		ClientID:               "client-a",
-		ClientSecret:           "secret-a",
-		SessionEncryptionKey:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		CallbackURL:            "/oauth2/callback",
-		LogLevel:               "debug",
-		AllowLocalhostRedirect: true, // Allow localhost for test mock servers
+		ProviderURL:          realmAServer.URL,
+		ClientID:             "client-a",
+		ClientSecret:         "secret-a",
+		SessionEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		CallbackURL:          "/oauth2/callback",
+		LogLevel:             "debug",
 	}
 
 	// Create configuration for Realm B
 	configB := &Config{
-		ProviderURL:            realmBServer.URL,
-		ClientID:               "client-b",
-		ClientSecret:           "secret-b",
-		SessionEncryptionKey:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		CallbackURL:            "/oauth2/callback",
-		LogLevel:               "debug",
-		AllowLocalhostRedirect: true, // Allow localhost for test mock servers
+		ProviderURL:          realmBServer.URL,
+		ClientID:             "client-b",
+		ClientSecret:         "secret-b",
+		SessionEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		CallbackURL:          "/oauth2/callback",
+		LogLevel:             "debug",
 	}
 
 	// Create both middleware instances
@@ -106,12 +125,14 @@ func TestMultipleRealmsMetadataRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create middleware A: %v", err)
 	}
+	middlewareA.urlValidator = &PermissiveURLValidator{} // Inject test validator for localhost testing
 	defer middlewareA.Close()
 
 	middlewareB, err := NewWithContext(ctx, configB, nextHandler, "realm-b-middleware")
 	if err != nil {
 		t.Fatalf("Failed to create middleware B: %v", err)
 	}
+	middlewareB.urlValidator = &PermissiveURLValidator{} // Inject test validator for localhost testing
 	defer middlewareB.Close()
 
 	// Wait for initial metadata fetch
@@ -196,35 +217,35 @@ func TestMultipleRealmsSessionCookies(t *testing.T) {
 	})
 
 	configA := &Config{
-		ProviderURL:            "https://keycloak.example.com/realms/realm-a",
-		ClientID:               "client-a",
-		ClientSecret:           "secret-a",
-		SessionEncryptionKey:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		CallbackURL:            "/oauth2/callback",
-		LogLevel:               "debug",
-		AllowLocalhostRedirect: true, // Allow localhost for test mock servers
+		ProviderURL:          "https://keycloak.example.com/realms/realm-a",
+		ClientID:             "client-a",
+		ClientSecret:         "secret-a",
+		SessionEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		CallbackURL:          "/oauth2/callback",
+		LogLevel:             "debug",
 	}
 
 	configB := &Config{
-		ProviderURL:            "https://keycloak.example.com/realms/realm-b",
-		ClientID:               "client-b",
-		ClientSecret:           "secret-b",
-		SessionEncryptionKey:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		CallbackURL:            "/oauth2/callback",
-		LogLevel:               "debug",
-		AllowLocalhostRedirect: true, // Allow localhost for test mock servers
+		ProviderURL:          "https://keycloak.example.com/realms/realm-b",
+		ClientID:             "client-b",
+		ClientSecret:         "secret-b",
+		SessionEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		CallbackURL:          "/oauth2/callback",
+		LogLevel:             "debug",
 	}
 
 	middlewareA, err := NewWithContext(ctx, configA, nextHandler, "realm-a-middleware")
 	if err != nil {
 		t.Fatalf("Failed to create middleware A: %v", err)
 	}
+	middlewareA.urlValidator = &PermissiveURLValidator{} // Inject test validator for localhost testing
 	defer middlewareA.Close()
 
 	middlewareB, err := NewWithContext(ctx, configB, nextHandler, "realm-b-middleware")
 	if err != nil {
 		t.Fatalf("Failed to create middleware B: %v", err)
 	}
+	middlewareB.urlValidator = &PermissiveURLValidator{} // Inject test validator for localhost testing
 	defer middlewareB.Close()
 
 	// Check session manager cookie names
@@ -447,27 +468,27 @@ func TestMultipleRealmsEndToEnd(t *testing.T) {
 		})
 
 		configA := &Config{
-			ProviderURL:            realmAServer.URL,
-			ClientID:               "client-a",
-			ClientSecret:           "secret-a",
-			SessionEncryptionKey:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			CallbackURL:            "/oauth2/callback",
-			AllowLocalhostRedirect: true, // Allow localhost for test mock servers
+			ProviderURL:          realmAServer.URL,
+			ClientID:             "client-a",
+			ClientSecret:         "secret-a",
+			SessionEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			CallbackURL:          "/oauth2/callback",
 		}
 
 		configB := &Config{
-			ProviderURL:            realmBServer.URL,
-			ClientID:               "client-b",
-			ClientSecret:           "secret-b",
-			SessionEncryptionKey:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			CallbackURL:            "/oauth2/callback",
-			AllowLocalhostRedirect: true, // Allow localhost for test mock servers
+			ProviderURL:          realmBServer.URL,
+			ClientID:             "client-b",
+			ClientSecret:         "secret-b",
+			SessionEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			CallbackURL:          "/oauth2/callback",
 		}
 
 		middlewareA, _ := NewWithContext(ctx, configA, nextHandler, "realm-a-middleware")
+		middlewareA.urlValidator = &PermissiveURLValidator{} // Inject test validator for localhost testing
 		defer middlewareA.Close()
 
 		middlewareB, _ := NewWithContext(ctx, configB, nextHandler, "realm-b-middleware")
+		middlewareB.urlValidator = &PermissiveURLValidator{} // Inject test validator for localhost testing
 		defer middlewareB.Close()
 
 		// Wait for initialization
