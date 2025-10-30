@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"runtime"
@@ -69,6 +70,11 @@ const (
 	maxBrowserCookieSize = 3500
 
 	maxCookieSize = 1200
+
+	// maxInstanceNameLength limits the length of sanitized instance names in cookie names.
+	// This ensures total cookie name stays under 50 chars for browser compatibility.
+	// Calculation: "_oidc_raczylo_id_" (17) + name (20) + "_" (1) + hash (8) = 46 chars total
+	maxInstanceNameLength = 20
 
 	absoluteSessionTimeout = 24 * time.Hour
 
@@ -250,13 +256,21 @@ type SessionManager struct {
 }
 
 // sanitizeInstanceName converts an instance name to a cookie-safe identifier.
-// It replaces non-alphanumeric characters with underscores and truncates to 32 chars.
+// It replaces non-alphanumeric characters with underscores.
+// For names longer than maxInstanceNameLength, it appends a hash to guarantee uniqueness
+// and prevent collisions between similar long names.
+//
+// Example outputs:
+//   - "realm-a" → "realm_a" (short name, unchanged)
+//   - "my-super-long-keycloak-realm-name-for-staging-us-east-1" → "my_super_lo_a1b2c3d4" (long name with hash)
+//
+// The hash ensures that even names differing only at the end remain unique.
 func sanitizeInstanceName(name string) string {
 	if name == "" {
 		return "default"
 	}
 
-	// Replace non-alphanumeric chars with underscore
+	// Replace non-alphanumeric chars with underscore for cookie safety
 	sanitized := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			return r
@@ -264,12 +278,19 @@ func sanitizeInstanceName(name string) string {
 		return '_'
 	}, name)
 
-	// Truncate if too long (cookie names should be reasonable length)
-	if len(sanitized) > 32 {
-		sanitized = sanitized[:32]
+	// If name is short enough, return as-is
+	if len(sanitized) <= maxInstanceNameLength {
+		return sanitized
 	}
 
-	return sanitized
+	// For long names: use first 12 chars + underscore + 8-char hash
+	// This guarantees uniqueness even for names that differ only at the end
+	// Hash the ORIGINAL name (not sanitized) to preserve uniqueness
+	h := fnv.New32a()
+	h.Write([]byte(name))
+
+	// Format: "first_12_cha_a1b2c3d4" (12 + 1 + 8 = 21 chars)
+	return fmt.Sprintf("%s_%x", sanitized[:12], h.Sum32())
 }
 
 // NewSessionManager creates a new SessionManager instance with secure defaults.
