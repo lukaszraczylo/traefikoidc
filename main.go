@@ -220,7 +220,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	t.urlValidator = NewProductionURLValidator(t.logger)
 
 	// FIX: Pass instance name to create unique cookie names per middleware instance
-	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger, t.name) // Safe to ignore: session manager creation with fallback to defaults
+	var err error
+	t.sessionManager, err = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger, t.name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session manager: %w", err)
+	}
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 
 	// Initialize token resilience manager with default configuration
