@@ -254,6 +254,7 @@ func TestMemoryLeakConsolidated(t *testing.T) {
 					false,
 					"",
 					tf.logger,
+					"test-instance",
 				)
 				if err != nil {
 					return err
@@ -294,6 +295,7 @@ func TestMemoryLeakConsolidated(t *testing.T) {
 					false,
 					"",
 					tf.logger,
+					"test-instance",
 				)
 				return err
 			},
@@ -696,6 +698,7 @@ func BenchmarkMemoryUsage(b *testing.B) {
 			false,
 			"",
 			NewLogger("error"),
+			"test-instance",
 		)
 		// No Cleanup method, defer not needed
 
@@ -775,6 +778,7 @@ func TestGoroutineLeaks(t *testing.T) {
 					false,
 					"",
 					NewLogger("error"),
+					"test-instance",
 				)
 				require.NoError(t, err)
 
@@ -864,6 +868,7 @@ func TestMemoryThresholds(t *testing.T) {
 			false,
 			"",
 			NewLogger("error"),
+			"test-instance",
 		)
 
 		for i := 0; i < 100; i++ {

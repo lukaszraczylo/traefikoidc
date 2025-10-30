@@ -1,2 +1,53 @@
 docker/
 .claude/
+
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+.cache
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+node_modules/
+.npm
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Runtime data
+
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# IDE specific files
+.vscode
+.idea
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Project build
+bin
+dist
+tmp
+node_modules
+*.env
+!.env.example
+internal/static/css/tailwind.css

@@ -280,6 +280,7 @@ func (tf *TestFramework) CreateAuthenticatedRequest(method, path string) (*http.
 		false,
 		"",
 		tf.oidc.logger,
+		"test-instance",
 	)
 	if err != nil {
 		tf.t.Fatalf("Error: %v", err)
@@ -324,6 +325,7 @@ func (tf *TestFramework) CreateCallbackRequest() *http.Request {
 		false,
 		"",
 		tf.oidc.logger,
+		"test-instance",
 	)
 
 	session, _ := sessionManager.GetSession(req)

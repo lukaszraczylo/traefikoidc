@@ -84,7 +84,7 @@ func TestSessionPoolMemoryLeak(t *testing.T) {
 			}
 
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -107,7 +107,7 @@ func TestSessionPoolMemoryLeak(t *testing.T) {
 				session.ReturnToPool()
 
 			case "Error path in GetSession":
-				badSM, _ := NewSessionManager("different0123456789abcdef0123456789abcdef0123456789", false, "", logger)
+				badSM, _ := NewSessionManager("different0123456789abcdef0123456789abcdef0123456789", false, "", logger, "test-instance")
 				_, err = badSM.GetSession(req)
 				if err == nil {
 					t.Log("Note: Expected error when using mismatched encryption keys")
@@ -172,7 +172,7 @@ func TestSessionErrorHandling(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -181,7 +181,7 @@ func TestSessionErrorHandling(t *testing.T) {
 
 			if input, ok := test.Input.(string); ok && input != "" {
 				req.AddCookie(&http.Cookie{
-					Name:  mainCookieName,
+					Name:  sm.mainCookieName,
 					Value: input,
 				})
 			}
@@ -226,7 +226,7 @@ func TestSessionClearAlwaysReturnsToPool(t *testing.T) {
 			Timeout:            30 * time.Second,
 			Operation: func() error {
 				logger := NewLogger("debug")
-				sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+				sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 				if err != nil {
 					return fmt.Errorf("failed to create session manager: %w", err)
 				}
@@ -264,7 +264,7 @@ func TestSessionClearAlwaysReturnsToPool(t *testing.T) {
 	// Additional verification test
 	t.Run("Verify pool still works after errors", func(t *testing.T) {
 		logger := NewLogger("debug")
-		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 		if err != nil {
 			t.Fatalf("Failed to create session manager: %v", err)
 		}
@@ -324,7 +324,7 @@ func TestSessionObjectTracking(t *testing.T) {
 			}
 
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -574,7 +574,7 @@ func TestTokenChunkingIntegrity(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -681,7 +681,7 @@ func TestTokenChunkingCorruptionResistance(t *testing.T) {
 	for _, test := range corruptionTests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -772,7 +772,7 @@ func TestTokenSizeLimits(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -837,7 +837,7 @@ func TestConcurrentTokenOperations(t *testing.T) {
 			Timeout:            60 * time.Second,
 			Operation: func() error {
 				logger := NewLogger("debug")
-				sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+				sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 				if err != nil {
 					return fmt.Errorf("failed to create session manager: %w", err)
 				}
@@ -925,7 +925,7 @@ func TestSessionValidationAndCleanup(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -1010,7 +1010,7 @@ func TestLargeIDTokenChunking(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -1055,7 +1055,7 @@ func TestLargeIDTokenChunking(t *testing.T) {
 
 			var chunkCookies []*http.Cookie
 			for _, cookie := range cookies {
-				if strings.HasPrefix(cookie.Name, idTokenCookie+"_") {
+				if strings.HasPrefix(cookie.Name, sm.idTokenCookie+"_") {
 					chunkCookies = append(chunkCookies, cookie)
 				}
 			}
@@ -1096,7 +1096,7 @@ func TestLargeIDTokenChunking(t *testing.T) {
 			// Verify chunks are expired (MaxAge = -1)
 			clearCookies := clearRR.Result().Cookies()
 			for _, cookie := range clearCookies {
-				if strings.HasPrefix(cookie.Name, idTokenCookie+"_") {
+				if strings.HasPrefix(cookie.Name, sm.idTokenCookie+"_") {
 					if cookie.MaxAge != -1 {
 						t.Errorf("Expected chunk cookie %s to be expired (MaxAge=-1), got MaxAge=%d",
 							cookie.Name, cookie.MaxAge)
@@ -1115,7 +1115,7 @@ func BenchmarkSessionOperations(b *testing.B) {
 	perfHelper := NewPerformanceTestHelper()
 
 	logger := NewLogger("error") // Reduce logging for benchmarks
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, "test-instance")
 	if err != nil {
 		b.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -1256,7 +1256,7 @@ func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
 	t.Log("Testing session state preservation with expired tokens - this test demonstrates BROKEN BEHAVIOR")
 
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("test-session-key-32-bytes-long-12345", false, "", logger)
+	sm, err := NewSessionManager("test-session-key-32-bytes-long-12345", false, "", logger, "test-instance")
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -1452,7 +1452,7 @@ func TestSessionExpiryVsTokenExpiry(t *testing.T) {
 	t.Log("Testing session expiry vs token expiry distinction - validating proper session and token lifetime management")
 
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("session-vs-token-test-key-32-bytes", false, "", logger)
+	sm, err := NewSessionManager("session-vs-token-test-key-32-bytes", false, "", logger, "test-instance")
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -1591,7 +1591,7 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 	t.Log("Testing session cleanup on token expiry - validating proper session data management")
 
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("cleanup-test-key-32-bytes-long-123", false, "", logger)
+	sm, err := NewSessionManager("cleanup-test-key-32-bytes-long-123", false, "", logger, "test-instance")
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -1767,4 +1767,74 @@ func createExpiredJWTToken(userID, email string, expiredTime time.Time) string {
 	signatureEncoded := base64.RawURLEncoding.EncodeToString([]byte(signature))
 
 	return header + "." + claimsEncoded + "." + signatureEncoded
+}
+
+// TestSessionCookieNameUniquenessWithLongNames verifies that long instance names
+// don't collide even when they share the same prefix.
+// This test validates Issue #2 fix: instance name collision vulnerability.
+func TestSessionCookieNameUniquenessWithLongNames(t *testing.T) {
+	// Two instances with names that would collide after simple truncation
+	nameA := "my-super-long-keycloak-realm-name-for-environment-staging-us-east-1"
+	nameB := "my-super-long-keycloak-realm-name-for-environment-staging-us-west-2"
+
+	logger := NewLogger("debug")
+	key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	smA, err := NewSessionManager(key, false, "", logger, nameA)
+	if err != nil {
+		t.Fatalf("Failed to create session manager A: %v", err)
+	}
+
+	smB, err := NewSessionManager(key, false, "", logger, nameB)
+	if err != nil {
+		t.Fatalf("Failed to create session manager B: %v", err)
+	}
+
+	// Cookie names MUST be different to prevent collision
+	if smA.mainCookieName == smB.mainCookieName {
+		t.Errorf("❌ FAIL: Cookie name collision detected!")
+		t.Errorf("  Instance A name: %s", nameA)
+		t.Errorf("  Instance B name: %s", nameB)
+		t.Errorf("  Both produce cookie name: %s", smA.mainCookieName)
+		t.Error("  This will cause session data to overwrite between middleware instances")
+	}
+
+	t.Logf("✅ Instance A main cookie: %s", smA.mainCookieName)
+	t.Logf("✅ Instance B main cookie: %s", smB.mainCookieName)
+
+	// Verify all cookie types are unique
+	cookieTypesA := []string{smA.mainCookieName, smA.accessTokenCookie, smA.refreshTokenCookie, smA.idTokenCookie}
+	cookieTypesB := []string{smB.mainCookieName, smB.accessTokenCookie, smB.refreshTokenCookie, smB.idTokenCookie}
+
+	for i, cookieA := range cookieTypesA {
+		if cookieA == cookieTypesB[i] {
+			t.Errorf("Cookie collision at index %d: %s", i, cookieA)
+		}
+	}
+
+	// Verify cookie names are reasonable length (< 50 chars for browser compatibility)
+	for _, cookie := range cookieTypesA {
+		if len(cookie) > 50 {
+			t.Errorf("Cookie name too long: %s (%d chars, max 50)", cookie, len(cookie))
+		}
+	}
+
+	for _, cookie := range cookieTypesB {
+		if len(cookie) > 50 {
+			t.Errorf("Cookie name too long: %s (%d chars, max 50)", cookie, len(cookie))
+		}
+	}
+
+	// Log all cookie names for verification
+	t.Logf("Instance A cookies:")
+	t.Logf("  Main:    %s (%d chars)", smA.mainCookieName, len(smA.mainCookieName))
+	t.Logf("  Access:  %s (%d chars)", smA.accessTokenCookie, len(smA.accessTokenCookie))
+	t.Logf("  Refresh: %s (%d chars)", smA.refreshTokenCookie, len(smA.refreshTokenCookie))
+	t.Logf("  ID:      %s (%d chars)", smA.idTokenCookie, len(smA.idTokenCookie))
+
+	t.Logf("Instance B cookies:")
+	t.Logf("  Main:    %s (%d chars)", smB.mainCookieName, len(smB.mainCookieName))
+	t.Logf("  Access:  %s (%d chars)", smB.accessTokenCookie, len(smB.accessTokenCookie))
+	t.Logf("  Refresh: %s (%d chars)", smB.refreshTokenCookie, len(smB.refreshTokenCookie))
+	t.Logf("  ID:      %s (%d chars)", smB.idTokenCookie, len(smB.idTokenCookie))
 }

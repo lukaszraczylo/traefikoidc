@@ -128,4 +128,5 @@ type TraefikOidc struct {
 	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
 	scopeFilter                *ScopeFilter // NEW - for discovery-based scope filtering
 	scopesSupported            []string     // NEW - from provider metadata
+	urlValidator               URLValidator // URL validation interface (production default, can be overridden for testing)
 }

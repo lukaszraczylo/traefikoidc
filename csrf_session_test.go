@@ -18,7 +18,7 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 	// Test that CSRF tokens persist through the authentication flow
 	t.Run("CSRF_Token_Persists_After_Selective_Clear", func(t *testing.T) {
 		// Create a session manager
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"), "test-instance")
 		require.NoError(t, err)
 
 		// Create initial request
@@ -90,7 +90,7 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 
 	// Test that marking session as dirty forces save
 	t.Run("Mark_Dirty_Forces_Session_Save", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"), "test-instance")
 		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "http://example.com/test", nil)
@@ -113,10 +113,10 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 		cookies := rec.Result().Cookies()
 		assert.NotEmpty(t, cookies, "Cookies should be set after save")
 
-		// Find main session cookie
+		// Find main session cookie (with instance-specific name)
 		var mainCookie *http.Cookie
 		for _, cookie := range cookies {
-			if cookie.Name == "_oidc_raczylo_m" {
+			if strings.HasPrefix(cookie.Name, "_oidc_raczylo_m") {
 				mainCookie = cookie
 				break
 			}
@@ -126,7 +126,7 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 
 	// Test Azure-specific session handling
 	t.Run("Azure_Session_Cookie_Configuration", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"), "test-instance")
 		require.NoError(t, err)
 
 		// Simulate Azure callback scenario
@@ -146,7 +146,7 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 		// Check cookie attributes
 		cookies := rec.Result().Cookies()
 		for _, cookie := range cookies {
-			if cookie.Name == "_oidc_raczylo_m" {
+			if strings.HasPrefix(cookie.Name, "_oidc_raczylo_m") {
 				// Azure requires SameSite=Lax for cross-site redirects
 				assert.Equal(t, http.SameSiteLaxMode, cookie.SameSite, "SameSite should be Lax for Azure compatibility")
 				assert.Equal(t, "/", cookie.Path, "Path should be root")
@@ -158,7 +158,7 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 
 	// Test session continuity through auth flow
 	t.Run("Session_Continuity_Through_Auth_Flow", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"), "test-instance")
 		require.NoError(t, err)
 
 		// Step 1: Initial request
@@ -199,7 +199,7 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 
 	// Test large token handling doesn't affect CSRF
 	t.Run("Large_Tokens_Dont_Affect_CSRF", func(t *testing.T) {
-		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
+		sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"), "test-instance")
 		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "http://example.com/test", nil)
@@ -225,7 +225,7 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 		mainFound := false
 		chunkCount := 0
 		for _, cookie := range cookies {
-			if cookie.Name == "_oidc_raczylo_m" {
+			if strings.HasPrefix(cookie.Name, "_oidc_raczylo_m") {
 				mainFound = true
 			}
 			if strings.Contains(cookie.Name, "_oidc_raczylo_") && strings.Contains(cookie.Name, "_") {
@@ -262,7 +262,7 @@ func TestAuthFlowWithoutExternalDependencies(t *testing.T) {
 
 	// We can't fully initialize TraefikOidc without network access,
 	// but we can test the session management directly
-	sessionManager, err := NewSessionManager(plugin.SessionEncryptionKey, plugin.ForceHTTPS, "", NewLogger(plugin.LogLevel))
+	sessionManager, err := NewSessionManager(plugin.SessionEncryptionKey, plugin.ForceHTTPS, "", NewLogger(plugin.LogLevel), "test-instance")
 	require.NoError(t, err)
 
 	t.Run("Session_Created_On_Protected_Request", func(t *testing.T) {
@@ -291,7 +291,7 @@ func TestAuthFlowWithoutExternalDependencies(t *testing.T) {
 // TestRegressionLoginLoop specifically tests the fix for issue #53
 func TestRegressionLoginLoop(t *testing.T) {
 	// This test verifies that the specific changes made to fix the login loop work correctly
-	sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
+	sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"), "test-instance")
 	require.NoError(t, err)
 
 	// Simulate the exact flow that was causing the login loop
@@ -381,7 +381,7 @@ func TestRegressionLoginLoop(t *testing.T) {
 		cookies := rec.Result().Cookies()
 		found := false
 		for _, cookie := range cookies {
-			if cookie.Name == "_oidc_raczylo_m" {
+			if strings.HasPrefix(cookie.Name, "_oidc_raczylo_m") {
 				found = true
 				assert.NotEmpty(t, cookie.Value, "Cookie should have value")
 			}
@@ -392,7 +392,7 @@ func TestRegressionLoginLoop(t *testing.T) {
 
 // TestCSRFValidationTiming tests timing-sensitive CSRF validation scenarios
 func TestCSRFValidationTiming(t *testing.T) {
-	sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
+	sessionManager, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"), "test-instance")
 	require.NoError(t, err)
 
 	t.Run("Rapid_Redirect_Maintains_CSRF", func(t *testing.T) {
