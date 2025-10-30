@@ -357,6 +357,13 @@ func (t *TraefikOidc) validateHost(host string) error {
 
 	ip := net.ParseIP(hostname)
 	if ip != nil {
+		// Allow localhost/private IPs if explicitly enabled for testing
+		// This should ONLY be used in test environments with mock OIDC servers
+		if t.allowLocalhostRedirect {
+			t.logger.Debugf("AllowLocalhostRedirect enabled: allowing IP %s", ip.String())
+			return nil
+		}
+
 		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			return fmt.Errorf("access to private/internal IP addresses is not allowed: %s", ip.String())
 		}
@@ -376,6 +383,11 @@ func (t *TraefikOidc) validateHost(host string) error {
 	}
 
 	if dangerousHosts[strings.ToLower(hostname)] {
+		// Allow dangerous hosts if explicitly enabled for testing
+		if t.allowLocalhostRedirect {
+			t.logger.Debugf("AllowLocalhostRedirect enabled: allowing hostname %s", hostname)
+			return nil
+		}
 		return fmt.Errorf("access to dangerous hostname is not allowed: %s", hostname)
 	}
 

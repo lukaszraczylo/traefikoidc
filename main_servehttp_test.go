@@ -539,7 +539,7 @@ func (m *MockSessionData) Clear(r *http.Request, w http.ResponseWriter) error { 
 
 // Helper function to create a test session manager
 func createTestSessionManager(t *testing.T) *SessionManager {
-	sm, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"))
+	sm, err := NewSessionManager("test-encryption-key-32-characters", false, "", NewLogger("debug"), "test-instance")
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}

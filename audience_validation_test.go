@@ -838,7 +838,7 @@ func TestAudienceEndToEndScenario(t *testing.T) {
 	}
 
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager(strings.Repeat("a", MinSessionEncryptionKeyLength), false, "", logger)
+	sm, err := NewSessionManager(strings.Repeat("a", MinSessionEncryptionKeyLength), false, "", logger, "test-instance")
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}

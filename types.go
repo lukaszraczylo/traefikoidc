@@ -122,6 +122,7 @@ type TraefikOidc struct {
 	allowOpaqueTokens          bool // Enables opaque token support via introspection
 	requireTokenIntrospection  bool // Forces introspection for opaque tokens
 	disableReplayDetection     bool // Disables JTI-based replay detection for multi-replica deployments
+	allowLocalhostRedirect     bool // Allows localhost/private IPs for testing (NEVER use in production!)
 	suppressDiagnosticLogs     bool
 	firstRequestReceived       bool
 	metadataRefreshStarted     bool

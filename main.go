@@ -172,6 +172,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		allowOpaqueTokens:         config.AllowOpaqueTokens,
 		requireTokenIntrospection: config.RequireTokenIntrospection,
 		disableReplayDetection:    config.DisableReplayDetection,
+		allowLocalhostRedirect:    config.AllowLocalhostRedirect,
 		scopes: func() []string {
 			userProvidedScopes := deduplicateScopes(config.Scopes)
 
@@ -214,7 +215,8 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		t.logger.Debugf("No custom audience specified, using clientID as audience: %s", t.clientID)
 	}
 
-	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger) // Safe to ignore: session manager creation with fallback to defaults
+	// FIX: Pass instance name to create unique cookie names per middleware instance
+	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger, t.name) // Safe to ignore: session manager creation with fallback to defaults
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 
 	// Initialize token resilience manager with default configuration
@@ -396,7 +398,9 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	// Use singleton resource manager for metadata refresh
 	rm := GetResourceManager()
-	taskName := "singleton-metadata-refresh"
+	// FIX: Use instance name to create unique task name per middleware instance
+	// This allows multiple realms to each have their own metadata refresh task
+	taskName := fmt.Sprintf("singleton-metadata-refresh-%s", t.name)
 
 	// Create refresh function
 	refreshFunc := func() {
@@ -426,9 +430,9 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	// Start the task if not already running
 	if !rm.IsTaskRunning(taskName) {
 		_ = rm.StartBackgroundTask(taskName) // Safe to ignore: task registration succeeded, start is best-effort
-		t.logger.Debug("Started singleton metadata refresh task")
+		t.logger.Debugf("Started metadata refresh task: %s", taskName)
 	} else {
-		t.logger.Debug("Metadata refresh task already running, skipping duplicate")
+		t.logger.Debugf("Metadata refresh task already running: %s", taskName)
 	}
 }
 

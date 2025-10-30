@@ -87,7 +87,13 @@ type Config struct {
 	//
 	// Default: false (replay detection enabled)
 	// Recommended: true for multi-replica deployments
-	DisableReplayDetection bool                   `json:"disableReplayDetection,omitempty"`
+	DisableReplayDetection bool `json:"disableReplayDetection,omitempty"`
+	// AllowLocalhostRedirect allows redirects to localhost and private IPs for testing purposes.
+	// WARNING: This should NEVER be enabled in production! It's only for test environments with mock OIDC servers.
+	// When enabled, URL validation will allow localhost, 127.0.0.1, and private IP ranges.
+	// Default: false (localhost blocked for security)
+	// Recommended: only enable in automated tests
+	AllowLocalhostRedirect bool                   `json:"allowLocalhostRedirect,omitempty"`
 	SecurityHeaders        *SecurityHeadersConfig `json:"securityHeaders,omitempty"`
 }
 
