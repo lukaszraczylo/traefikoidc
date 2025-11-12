@@ -237,6 +237,7 @@ type SessionManager struct {
 	logger         *Logger
 	chunkManager   *ChunkManager
 	cookieDomain   string
+	cookiePrefix   string // Prefix for cookie names (default: "_oidc_raczylo_")
 	cleanupMutex   sync.RWMutex
 	forceHTTPS     bool
 	cleanupDone    bool
@@ -256,14 +257,20 @@ type SessionManager struct {
 //   - encryptionKey: The key for encrypting session cookies (minimum 32 bytes).
 //   - forceHTTPS: Whether to force HTTPS-only cookies regardless of request scheme.
 //   - cookieDomain: The domain for session cookies (empty for auto-detection).
+//   - cookiePrefix: Prefix for session cookie names (empty for default "_oidc_raczylo_").
 //   - logger: Logger instance for debug and error logging.
 //
 // Returns:
 //   - The configured SessionManager instance.
 //   - An error if the encryption key does not meet minimum length requirements.
-func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, logger *Logger) (*SessionManager, error) {
+func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, cookiePrefix string, logger *Logger) (*SessionManager, error) {
 	if len(encryptionKey) < minEncryptionKeyLength {
 		return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
+	}
+
+	// Set default cookie prefix if not provided
+	if cookiePrefix == "" {
+		cookiePrefix = "_oidc_raczylo_"
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -272,6 +279,7 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 		store:        sessions.NewCookieStore([]byte(encryptionKey)),
 		forceHTTPS:   forceHTTPS,
 		cookieDomain: cookieDomain,
+		cookiePrefix: cookiePrefix,
 		logger:       logger,
 		chunkManager: NewChunkManager(logger),
 		ctx:          ctx,

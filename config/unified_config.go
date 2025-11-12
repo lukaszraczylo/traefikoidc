@@ -69,11 +69,12 @@ type SessionConfig struct {
 	MaxChunks     int    `json:"maxChunks" yaml:"maxChunks"`
 
 	// Cookie settings
-	Domain   string `json:"domain" yaml:"domain"`
-	Path     string `json:"path" yaml:"path"`
-	Secure   bool   `json:"secure" yaml:"secure"`
-	HttpOnly bool   `json:"httpOnly" yaml:"httpOnly"`
-	SameSite string `json:"sameSite" yaml:"sameSite"`
+	Domain       string `json:"domain" yaml:"domain"`
+	Path         string `json:"path" yaml:"path"`
+	Secure       bool   `json:"secure" yaml:"secure"`
+	HttpOnly     bool   `json:"httpOnly" yaml:"httpOnly"`
+	SameSite     string `json:"sameSite" yaml:"sameSite"`
+	CookiePrefix string `json:"cookiePrefix" yaml:"cookiePrefix"` // Prefix for cookie names (e.g., "_oidc_myapp_")
 
 	// Storage settings
 	StorageType     string        `json:"storageType" yaml:"storageType"` // "memory", "redis", "cookie"

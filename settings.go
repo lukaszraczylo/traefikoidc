@@ -30,6 +30,7 @@ type Config struct {
 	HTTPClient        *http.Client `json:"-"`
 	OIDCEndSessionURL string       `json:"oidcEndSessionURL"`
 	CookieDomain      string       `json:"cookieDomain"`
+	CookiePrefix      string       `json:"cookiePrefix"` // Prefix for session cookie names (default: "_oidc_raczylo_")
 	CallbackURL       string       `json:"callbackURL"`
 	LogoutURL         string       `json:"logoutURL"`
 	ClientID          string       `json:"clientID"`

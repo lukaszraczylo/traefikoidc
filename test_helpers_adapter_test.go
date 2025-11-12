@@ -204,7 +204,7 @@ func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httpt
 		logInfo:  log.New(&testWriter{t}, "INFO: ", 0),
 		logDebug: log.New(&testWriter{t}, "DEBUG: ", 0),
 	}
-	sessionManager, _ := NewSessionManager(config.SessionEncryptionKey, false, "", logger)
+	sessionManager, _ := NewSessionManager(config.SessionEncryptionKey, false, "", "", logger)
 
 	// Create next handler
 	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -350,7 +350,7 @@ func createMockJWT(t *testing.T, sub, email string) string {
 func createTestSession() *SessionData {
 	// Create a minimal session manager for testing
 	logger := newNoOpLogger()
-	sessionManager, _ := NewSessionManager("test-encryption-key-32-characters", false, "", logger)
+	sessionManager, _ := NewSessionManager("test-encryption-key-32-characters", false, "", "", logger)
 
 	// Create a test request
 	req := httptest.NewRequest("GET", "/", nil)

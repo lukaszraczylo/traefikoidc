@@ -23,6 +23,7 @@ type SessionManager struct {
 	logger       Logger
 	chunkManager ChunkManager
 	cookieDomain string
+	cookiePrefix string // Prefix for cookie names (default: "_oidc_raczylo_")
 	cleanupMutex sync.RWMutex
 	forceHTTPS   bool
 	cleanupDone  bool
@@ -69,15 +70,21 @@ type SessionData interface {
 // NewSessionManager creates a new SessionManager instance with secure defaults.
 // It initializes the cookie store with encryption, sets up session pooling,
 // and configures chunk management for large tokens.
-func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, logger Logger, chunkManager ChunkManager) (*SessionManager, error) {
+func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, cookiePrefix string, logger Logger, chunkManager ChunkManager) (*SessionManager, error) {
 	if len(encryptionKey) < minEncryptionKeyLength {
 		return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
+	}
+
+	// Set default cookie prefix if not provided
+	if cookiePrefix == "" {
+		cookiePrefix = "_oidc_raczylo_"
 	}
 
 	sm := &SessionManager{
 		store:        sessions.NewCookieStore([]byte(encryptionKey)),
 		forceHTTPS:   forceHTTPS,
 		cookieDomain: cookieDomain,
+		cookiePrefix: cookiePrefix,
 		logger:       logger,
 		chunkManager: chunkManager,
 	}
@@ -114,7 +121,7 @@ func (sm *SessionManager) initializeSession(sessionData SessionData, r *http.Req
 	sessionData.SetManager(sm)
 
 	// Load session data from cookies
-	session, err := sm.store.Get(r, MainCookieName())
+	session, err := sm.store.Get(r, sm.MainCookieName())
 	if err != nil {
 		sm.logger.Debugf("Error getting main session: %v", err)
 		return nil // Not a fatal error, will create new session
@@ -322,7 +329,14 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 	}
 }
 
-// Cookie name functions
+// Cookie name methods - these now use the configurable prefix
+func (sm *SessionManager) MainCookieName() string     { return sm.cookiePrefix + "m" }
+func (sm *SessionManager) AccessTokenCookie() string  { return sm.cookiePrefix + "a" }
+func (sm *SessionManager) RefreshTokenCookie() string { return sm.cookiePrefix + "r" }
+func (sm *SessionManager) IDTokenCookie() string      { return sm.cookiePrefix + "id" }
+
+// Package-level functions for backward compatibility (use default prefix)
+// These are deprecated and will be removed in a future version
 func MainCookieName() string     { return "_oidc_raczylo_m" }
 func AccessTokenCookie() string  { return "_oidc_raczylo_a" }
 func RefreshTokenCookie() string { return "_oidc_raczylo_r" }

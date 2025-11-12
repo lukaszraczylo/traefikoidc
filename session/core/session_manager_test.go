@@ -165,7 +165,7 @@ func TestSessionManagerCreation(t *testing.T) {
 			logger := &MockLogger{}
 			chunkManager := &MockChunkManager{}
 
-			sm, err := NewSessionManager(tt.encryptionKey, false, "", logger, chunkManager)
+			sm, err := NewSessionManager(tt.encryptionKey, false, "", "", logger, chunkManager)
 
 			if tt.expectError {
 				if err == nil {
@@ -200,7 +200,7 @@ func TestSessionManagerCreation(t *testing.T) {
 func TestSessionManagerPoolBehavior(t *testing.T) {
 	logger := &MockLogger{}
 	chunkManager := &MockChunkManager{}
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, chunkManager)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger, chunkManager)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestSessionManagerPoolBehavior(t *testing.T) {
 func TestSessionManagerErrorHandling(t *testing.T) {
 	logger := &MockLogger{}
 	chunkManager := &MockChunkManager{}
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, chunkManager)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger, chunkManager)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestSessionManagerCleanup(t *testing.T) {
 	logger := &MockLogger{}
 	mockChunkManager := &MockChunkManager{}
 
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, mockChunkManager)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger, mockChunkManager)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestSessionManagerHTTPSBehavior(t *testing.T) {
 			chunkManager := &MockChunkManager{}
 
 			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef",
-				tt.forceHTTPS, "", logger, chunkManager)
+				tt.forceHTTPS, "", "", logger, chunkManager)
 
 			if tt.expectError {
 				if err == nil {
@@ -520,7 +520,7 @@ func TestSessionManagerCookieDomain(t *testing.T) {
 			chunkManager := &MockChunkManager{}
 
 			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef",
-				false, tt.cookieDomain, logger, chunkManager)
+				false, tt.cookieDomain, "", logger, chunkManager)
 
 			if err != nil {
 				t.Errorf("Unexpected error for %s: %v", tt.description, err)
@@ -549,7 +549,7 @@ func BenchmarkSessionManagerCreation(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		sm, err := NewSessionManager(encryptionKey, false, "", logger, chunkManager)
+		sm, err := NewSessionManager(encryptionKey, false, "", "", logger, chunkManager)
 		if err != nil {
 			b.Fatalf("Failed to create session manager: %v", err)
 		}
@@ -561,7 +561,7 @@ func BenchmarkSessionManagerCreation(b *testing.B) {
 func BenchmarkSessionManagerGetSession(b *testing.B) {
 	logger := &MockLogger{}
 	chunkManager := &MockChunkManager{}
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, chunkManager)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger, chunkManager)
 	if err != nil {
 		b.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -599,7 +599,7 @@ func minInt(a, b int) int {
 func TestValidateSessionHealth(t *testing.T) {
 	logger := &MockLogger{}
 	chunkManager := &MockChunkManager{}
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, chunkManager)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger, chunkManager)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -660,7 +660,7 @@ func TestValidateSessionHealth(t *testing.T) {
 func TestValidateTokenFormat(t *testing.T) {
 	logger := &MockLogger{}
 	chunkManager := &MockChunkManager{}
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, chunkManager)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger, chunkManager)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -727,7 +727,7 @@ func TestValidateTokenFormat(t *testing.T) {
 func TestDetectSessionTampering(t *testing.T) {
 	logger := &MockLogger{}
 	chunkManager := &MockChunkManager{}
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger, chunkManager)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger, chunkManager)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -812,7 +812,7 @@ func TestGetSessionMetrics(t *testing.T) {
 			logger := &MockLogger{}
 			chunkManager := &MockChunkManager{}
 			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef",
-				tt.forceHTTPS, tt.cookieDomain, logger, chunkManager)
+				tt.forceHTTPS, tt.cookieDomain, "", logger, chunkManager)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -898,7 +898,7 @@ func TestShouldUseSecureCookies(t *testing.T) {
 			logger := &MockLogger{}
 			chunkManager := &MockChunkManager{}
 			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef",
-				tt.forceHTTPS, "", logger, chunkManager)
+				tt.forceHTTPS, "", "", logger, chunkManager)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -940,7 +940,7 @@ func TestGetSessionOptions(t *testing.T) {
 			logger := &MockLogger{}
 			chunkManager := &MockChunkManager{}
 			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef",
-				false, tt.cookieDomain, logger, chunkManager)
+				false, tt.cookieDomain, "", logger, chunkManager)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}

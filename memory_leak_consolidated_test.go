@@ -253,6 +253,7 @@ func TestMemoryLeakConsolidated(t *testing.T) {
 					"test-encryption-key-32-bytes-long-enough",
 					false,
 					"",
+					"",
 					tf.logger,
 				)
 				if err != nil {
@@ -292,6 +293,7 @@ func TestMemoryLeakConsolidated(t *testing.T) {
 				tf.sessionMgr, err = NewSessionManager(
 					"test-encryption-key-32-bytes-long-enough",
 					false,
+					"",
 					"",
 					tf.logger,
 				)
@@ -695,6 +697,7 @@ func BenchmarkMemoryUsage(b *testing.B) {
 			"test-encryption-key-32-bytes-long-enough",
 			false,
 			"",
+			"",
 			NewLogger("error"),
 		)
 		// No Cleanup method, defer not needed
@@ -773,6 +776,7 @@ func TestGoroutineLeaks(t *testing.T) {
 				sm, err := NewSessionManager(
 					"test-encryption-key-32-bytes-long-enough",
 					false,
+					"",
 					"",
 					NewLogger("error"),
 				)
@@ -862,6 +866,7 @@ func TestMemoryThresholds(t *testing.T) {
 		sm, _ := NewSessionManager(
 			"test-encryption-key-32-bytes-long-enough",
 			false,
+			"",
 			"",
 			NewLogger("error"),
 		)
