@@ -128,6 +128,7 @@ The middleware supports the following configuration options:
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
 | `cookieDomain` | Explicit domain for session cookies (important for multi-subdomain setups) | auto-detected | `.example.com`, `app.example.com` |
+| `cookiePrefix` | Custom prefix for session cookie names (for isolating multiple middleware instances) | `_oidc_raczylo_` | `_oidc_userauth_`, `_oidc_admin_` |
 | `audience` | Custom audience for access token validation (for Auth0 custom APIs, etc.) | `clientID` | `https://my-api.example.com` |
 | `strictAudienceValidation` | Reject sessions with access token audience mismatch (prevents token confusion attacks) | `false` | `true` |
 | `allowOpaqueTokens` | Enable opaque (non-JWT) access token support via RFC 7662 introspection | `false` | `true` |
@@ -884,6 +885,54 @@ spec:
 ```
 
 **Important**: The `cookieDomain` parameter is crucial when running behind a reverse proxy or when your application serves multiple subdomains. Without it, cookies may be created with inconsistent domains, leading to authentication issues like "CSRF token missing in session" errors.
+
+### With Multiple Middleware Instances (Session Isolation)
+
+When running multiple middleware instances with different authorization requirements (e.g., one for general users and one for admins), you must use different `cookiePrefix` values to prevent session sharing between instances:
+
+```yaml
+# Middleware for general user authentication
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-userauth
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://auth.example.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: user-key-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      cookiePrefix: "_oidc_userauth_"  # Unique prefix for this instance
+---
+# Middleware for admin authentication with stricter requirements
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-adminauth
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://auth.example.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: admin-key-at-least-32-bytes-long  # Different encryption key
+      callbackURL: /oauth2/admin/callback  # Different callback URL
+      cookiePrefix: "_oidc_adminauth_"  # Different prefix for isolation
+      allowedUsers:  # Restricted to specific admin users
+        - admin@example.com
+        - superadmin@example.com
+```
+
+**Security Note**: When running multiple instances, ensure you use:
+1. **Different `cookiePrefix`** values to prevent cookie name collisions
+2. **Different `sessionEncryptionKey`** values for complete session isolation
+3. **Different `callbackURL`** paths to avoid routing conflicts
+
+This configuration prevents authorization bypass issues where a user authenticated via the general middleware could access admin-protected routes. See [issue #87](https://github.com/lukaszraczylo/traefikoidc/issues/87) for more details.
 
 ### With Custom Logging and Rate Limiting
 

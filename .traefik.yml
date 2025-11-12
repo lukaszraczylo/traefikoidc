@@ -109,6 +109,7 @@ testData:
   oidcEndSessionURL: https://accounts.google.com/logout # Provider's end session endpoint
   enablePKCE: false # Enables PKCE (Proof Key for Code Exchange) for additional security
   cookieDomain: "" # Explicit domain for session cookies (e.g., ".example.com" for multi-subdomain setups)
+  cookiePrefix: "" # Custom prefix for cookie names (e.g., "_oidc_myapp_" for session isolation between middleware instances)
   overrideScopes: false # When true, replaces default scopes instead of appending (default: false)
   refreshGracePeriodSeconds: 60 # Seconds before token expiry to attempt proactive refresh (default: 60)
 
@@ -636,26 +637,60 @@ configuration:
   cookieDomain:
     type: string
     description: |
-      Explicit domain for session cookies. This is important for multi-subdomain setups 
+      Explicit domain for session cookies. This is important for multi-subdomain setups
       and reverse proxy deployments to ensure consistent cookie handling.
-      
+
       When set, all session cookies will use this domain. When not set, the domain
       is auto-detected from the request headers (X-Forwarded-Host or Host).
-      
+
       Use a leading dot for subdomain-wide cookies (e.g., ".example.com" allows
       cookies to be shared between app.example.com, api.example.com, etc.).
-      
+
       Use a specific domain for host-only cookies (e.g., "app.example.com" restricts
       cookies to that exact domain).
-      
+
       This setting is crucial to prevent authentication issues like "CSRF token missing
       in session" errors that can occur when cookies are created with inconsistent domains.
-      
+
       Examples:
       - ".example.com" - Allows all subdomains to share cookies
       - "app.example.com" - Restricts cookies to this specific host
-      
+
       Default: "" (auto-detected from request headers)
+    required: false
+
+  cookiePrefix:
+    type: string
+    description: |
+      Custom prefix for session cookie names. This is essential for running multiple
+      middleware instances with different authorization requirements on the same domain.
+
+      By default, all middleware instances use the same cookie names (_oidc_raczylo_m,
+      _oidc_raczylo_a, etc.), which means they share session state. When you have
+      multiple instances with different access restrictions (e.g., one for general users
+      and one for admins), this session sharing can lead to authorization bypass issues.
+
+      Setting a unique cookiePrefix for each middleware instance ensures complete
+      session isolation, preventing users authenticated via one middleware from
+      automatically gaining access to routes protected by a different middleware.
+
+      The prefix is prepended to all session cookie names:
+      - Main session cookie: {prefix}m
+      - Access token cookie: {prefix}a
+      - Refresh token cookie: {prefix}r
+      - ID token cookie: {prefix}id
+
+      Examples:
+      - "_oidc_userauth_" - For general user authentication middleware
+      - "_oidc_adminauth_" - For admin-only authentication middleware
+      - "_oidc_api_" - For API-specific authentication middleware
+
+      Security Note: Use different cookie prefixes AND different sessionEncryptionKey
+      values for each middleware instance to ensure complete isolation.
+
+      Default: "_oidc_raczylo_" (standard prefix for backward compatibility)
+
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/87
     required: false
 
   overrideScopes:
