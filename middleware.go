@@ -138,17 +138,10 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if authenticated && !needsRefresh {
 		t.logger.Debug("User authenticated and token valid, proceeding to process authorized request")
-		if accessToken := session.GetAccessToken(); accessToken != "" {
-			if strings.Count(accessToken, ".") == 2 {
-				if err := t.verifyToken(accessToken); err != nil {
-					t.logger.Errorf("Access token validation failed: %v", err)
-					t.handleExpiredToken(rw, req, session, redirectURL)
-					return
-				}
-			} else {
-				t.logger.Debugf("Access token appears opaque, skipping JWT verification for it.")
-			}
-		}
+		// Access token validation is already performed by provider-specific validation
+		// methods (validateAzureTokens/validateStandardTokens) before reaching this point.
+		// Redundant validation here was causing issues with Azure AD tokens that have
+		// JWT format but unverifiable signatures. See issue #89.
 		t.processAuthorizedRequest(rw, req, session, redirectURL)
 		return
 	}

@@ -261,17 +261,10 @@ func (m *AuthMiddleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if authenticated && !needsRefresh {
 		m.logger.Debug("User authenticated and token valid, proceeding to process authorized request")
-		if accessToken := session.GetAccessToken(); accessToken != "" {
-			if strings.Count(accessToken, ".") == 2 {
-				if err := m.tokenVerifier.VerifyToken(accessToken); err != nil {
-					m.logger.Errorf("Access token validation failed: %v", err)
-					m.handleExpiredToken(rw, req, session, redirectURL)
-					return
-				}
-			} else {
-				m.logger.Debugf("Access token appears opaque, skipping JWT verification for it.")
-			}
-		}
+		// Access token validation is already performed by provider-specific validation
+		// methods (validateAzureTokens/validateStandardTokens) before reaching this point.
+		// Redundant validation here was causing issues with Azure AD tokens that have
+		// JWT format but unverifiable signatures. See issue #89.
 		m.processAuthorizedRequest(rw, req, session, redirectURL)
 		return
 	}
