@@ -79,7 +79,7 @@ func TestAzureOIDCRegression(t *testing.T) {
 	tOidc := &mockTraefikOidc{TraefikOidc: baseOidc}
 
 	// Initialize session manager
-	sessionManager, _ := NewSessionManager("test-encryption-key-32-bytes-long", false, "", "", mockLogger)
+	sessionManager, _ := NewSessionManager("test-encryption-key-32-bytes-long", false, "", "", 0, mockLogger)
 	tOidc.sessionManager = sessionManager
 
 	// Mock the JWT verification to avoid JWKS lookup issues

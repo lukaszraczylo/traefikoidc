@@ -50,6 +50,7 @@ func TestCookiePrefix(t *testing.T) {
 				false,
 				"",
 				tt.cookiePrefix,
+				0,
 				logger,
 				chunkManager,
 			)
@@ -87,6 +88,7 @@ func TestMultipleInstancesWithDifferentPrefixes(t *testing.T) {
 		false,
 		"example.com",
 		"_oidc_app1_",
+		0,
 		logger,
 		chunkManager1,
 	)
@@ -99,6 +101,7 @@ func TestMultipleInstancesWithDifferentPrefixes(t *testing.T) {
 		false,
 		"example.com",
 		"_oidc_app2_",
+		0,
 		logger,
 		chunkManager2,
 	)

@@ -30,7 +30,7 @@ func testIssue53CSRFRegression(t *testing.T) {
 	// 3. Session cookies must be properly configured for HTTPS
 	// 4. CSRF token must persist through the OAuth flow
 
-	sessionManager, err := traefikoidc.NewSessionManager("test-encryption-key-32-characters", false, "", "", traefikoidc.NewLogger("debug"))
+	sessionManager, err := traefikoidc.NewSessionManager("test-encryption-key-32-characters", false, "", "", 0, traefikoidc.NewLogger("debug"))
 	require.NoError(t, err)
 
 	// Step 1: Initial request to protected resource
@@ -116,7 +116,7 @@ func testIssue53CSRFRegression(t *testing.T) {
 
 // testIssue53ReverseProxyHTTPS tests HTTPS detection in reverse proxy setups
 func testIssue53ReverseProxyHTTPS(t *testing.T) {
-	sessionManager, err := traefikoidc.NewSessionManager("test-encryption-key-32-characters", false, "", "", traefikoidc.NewLogger("debug"))
+	sessionManager, err := traefikoidc.NewSessionManager("test-encryption-key-32-characters", false, "", "", 0, traefikoidc.NewLogger("debug"))
 	require.NoError(t, err)
 
 	// Create authenticated session with Azure tokens
@@ -200,7 +200,7 @@ func testIssue53SameSiteCookies(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			sessionManager, err := traefikoidc.NewSessionManager("test-encryption-key-32-characters", false, "", "", traefikoidc.NewLogger("debug"))
+			sessionManager, err := traefikoidc.NewSessionManager("test-encryption-key-32-characters", false, "", "", 0, traefikoidc.NewLogger("debug"))
 			require.NoError(t, err)
 
 			req := httptest.NewRequest("GET", "http://internal/test", nil)

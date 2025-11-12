@@ -110,6 +110,7 @@ testData:
   enablePKCE: false # Enables PKCE (Proof Key for Code Exchange) for additional security
   cookieDomain: "" # Explicit domain for session cookies (e.g., ".example.com" for multi-subdomain setups)
   cookiePrefix: "" # Custom prefix for cookie names (e.g., "_oidc_myapp_" for session isolation between middleware instances)
+  sessionMaxAge: 86400 # Maximum session age in seconds (default: 86400 = 24 hours, 0 = use default)
   overrideScopes: false # When true, replaces default scopes instead of appending (default: false)
   refreshGracePeriodSeconds: 60 # Seconds before token expiry to attempt proactive refresh (default: 60)
 
@@ -691,6 +692,45 @@ configuration:
       Default: "_oidc_raczylo_" (standard prefix for backward compatibility)
 
       See: https://github.com/lukaszraczylo/traefikoidc/issues/87
+    required: false
+
+  sessionMaxAge:
+    type: integer
+    description: |
+      Maximum session age in seconds before requiring re-authentication.
+
+      This setting controls how long a user's authentication session remains valid
+      before they must authenticate again through the OIDC provider. The session
+      age is tracked from the initial authentication time (created_at).
+
+      When a session exceeds this age:
+      - The session is cleared and invalidated
+      - The user is redirected to re-authenticate
+      - All session cookies are removed
+
+      Use Cases:
+      - High-security applications: Use shorter durations (e.g., 3600 = 1 hour)
+      - Standard applications: Default 24 hours balances security and UX
+      - Long-lived sessions: Extend for applications accessed infrequently
+        (e.g., 604800 = 7 days, 2592000 = 30 days)
+
+      Security Considerations:
+      - Shorter sessions provide better security but require more frequent logins
+      - Longer sessions improve user experience but increase security risk
+      - Consider your application's security requirements and user access patterns
+      - This is independent of token refresh - tokens can be refreshed during the session
+
+      Common Values:
+      - 3600 (1 hour) - High security applications
+      - 28800 (8 hours) - Working day session
+      - 86400 (24 hours) - Default, balances security and convenience
+      - 604800 (7 days) - Weekly session for less frequently accessed apps
+      - 2592000 (30 days) - Monthly session for infrequently used applications
+
+      Default: 86400 (24 hours)
+      Minimum: 0 (uses default of 24 hours)
+
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/91
     required: false
 
   overrideScopes:

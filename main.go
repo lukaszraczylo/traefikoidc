@@ -226,7 +226,9 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		t.logger.Debugf("No custom audience specified, using clientID as audience: %s", t.clientID)
 	}
 
-	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, config.CookiePrefix, t.logger) // Safe to ignore: session manager creation with fallback to defaults
+	// Convert sessionMaxAge from seconds to duration (0 will use default 24 hours)
+	sessionMaxAge := time.Duration(config.SessionMaxAge) * time.Second
+	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, config.CookiePrefix, sessionMaxAge, t.logger) // Safe to ignore: session manager creation with fallback to defaults
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 
 	// Initialize token resilience manager with default configuration

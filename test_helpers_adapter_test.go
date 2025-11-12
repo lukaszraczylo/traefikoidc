@@ -350,7 +350,7 @@ func createMockJWT(t *testing.T, sub, email string) string {
 func createTestSession() *SessionData {
 	// Create a minimal session manager for testing
 	logger := newNoOpLogger()
-	sessionManager, _ := NewSessionManager("test-encryption-key-32-characters", false, "", "", logger)
+	sessionManager, _ := NewSessionManager("test-encryption-key-32-characters", false, "", "", 0, logger)
 
 	// Create a test request
 	req := httptest.NewRequest("GET", "/", nil)

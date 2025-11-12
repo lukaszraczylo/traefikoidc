@@ -11,7 +11,7 @@ import (
 // TestSetCodeVerifier_NoChange tests the branch where the code verifier value doesn't change
 func TestSetCodeVerifier_NoChange(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestSetCodeVerifier_NoChange(t *testing.T) {
 // TestClearTokenChunks_EmptyChunks tests the branch where the chunks map is empty
 func TestClearTokenChunks_EmptyChunks(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestClearTokenChunks_EmptyChunks(t *testing.T) {
 // TestClearTokenChunks_WithSessions tests the branch where the chunks map contains actual sessions
 func TestClearTokenChunks_WithSessions(t *testing.T) {
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}

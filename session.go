@@ -237,7 +237,8 @@ type SessionManager struct {
 	logger         *Logger
 	chunkManager   *ChunkManager
 	cookieDomain   string
-	cookiePrefix   string // Prefix for cookie names (default: "_oidc_raczylo_")
+	cookiePrefix   string        // Prefix for cookie names (default: "_oidc_raczylo_")
+	sessionMaxAge  time.Duration // Maximum session age (default: 24 hours)
 	cleanupMutex   sync.RWMutex
 	forceHTTPS     bool
 	cleanupDone    bool
@@ -258,12 +259,13 @@ type SessionManager struct {
 //   - forceHTTPS: Whether to force HTTPS-only cookies regardless of request scheme.
 //   - cookieDomain: The domain for session cookies (empty for auto-detection).
 //   - cookiePrefix: Prefix for session cookie names (empty for default "_oidc_raczylo_").
+//   - sessionMaxAge: Maximum session age duration (0 for default 24 hours).
 //   - logger: Logger instance for debug and error logging.
 //
 // Returns:
 //   - The configured SessionManager instance.
 //   - An error if the encryption key does not meet minimum length requirements.
-func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, cookiePrefix string, logger *Logger) (*SessionManager, error) {
+func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, cookiePrefix string, sessionMaxAge time.Duration, logger *Logger) (*SessionManager, error) {
 	if len(encryptionKey) < minEncryptionKeyLength {
 		return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
 	}
@@ -273,17 +275,23 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 		cookiePrefix = "_oidc_raczylo_"
 	}
 
+	// Set default session max age if not provided (24 hours for backward compatibility)
+	if sessionMaxAge == 0 {
+		sessionMaxAge = absoluteSessionTimeout
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sm := &SessionManager{
-		store:        sessions.NewCookieStore([]byte(encryptionKey)),
-		forceHTTPS:   forceHTTPS,
-		cookieDomain: cookieDomain,
-		cookiePrefix: cookiePrefix,
-		logger:       logger,
-		chunkManager: NewChunkManager(logger),
-		ctx:          ctx,
-		cancel:       cancel,
+		store:         sessions.NewCookieStore([]byte(encryptionKey)),
+		forceHTTPS:    forceHTTPS,
+		cookieDomain:  cookieDomain,
+		cookiePrefix:  cookiePrefix,
+		sessionMaxAge: sessionMaxAge,
+		logger:        logger,
+		chunkManager:  NewChunkManager(logger),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 
 	// Initialize global memory monitoring (singleton)
@@ -615,7 +623,7 @@ func (sm *SessionManager) GetSessionMetrics() map[string]interface{} {
 	metrics := make(map[string]interface{})
 	metrics["session_manager_type"] = "CookieStore"
 	metrics["force_https"] = sm.forceHTTPS
-	metrics["absolute_timeout_hours"] = absoluteSessionTimeout.Hours()
+	metrics["absolute_timeout_hours"] = sm.sessionMaxAge.Hours()
 	metrics["max_cookie_size"] = maxCookieSize
 	metrics["max_browser_cookie_size"] = maxBrowserCookieSize
 
@@ -649,7 +657,7 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 		userAgent := r.Header.Get("User-Agent")
 		if userAgent == "" {
 			sm.logger.Debugf("Request from %s missing User-Agent header", r.RemoteAddr)
-			options.MaxAge = int((absoluteSessionTimeout / 2).Seconds())
+			options.MaxAge = int((sm.sessionMaxAge / 2).Seconds())
 		}
 
 		if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sm.forceHTTPS {
@@ -699,7 +707,7 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 		HttpOnly: true,
 		Secure:   isSecure || sm.forceHTTPS,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(absoluteSessionTimeout.Seconds()),
+		MaxAge:   int(sm.sessionMaxAge.Seconds()),
 		Path:     "/",
 		Domain:   sm.cookieDomain,
 	}
@@ -829,7 +837,7 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	}
 
 	if createdAt, ok := sessionData.mainSession.Values["created_at"].(int64); ok {
-		if time.Since(time.Unix(createdAt, 0)) > absoluteSessionTimeout {
+		if time.Since(time.Unix(createdAt, 0)) > sm.sessionMaxAge {
 			_ = sessionData.Clear(r, nil) // Safe to ignore: session is being invalidated
 			return handleError(fmt.Errorf("session timeout"), "session expired")
 		}
@@ -1138,7 +1146,7 @@ func (sd *SessionData) getAuthenticatedUnsafe() bool {
 	if !ok {
 		return false
 	}
-	return time.Since(time.Unix(createdAt, 0)) <= absoluteSessionTimeout
+	return time.Since(time.Unix(createdAt, 0)) <= sd.manager.sessionMaxAge
 }
 
 // SetAuthenticated sets the authentication status and manages session security.

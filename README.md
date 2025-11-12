@@ -129,6 +129,7 @@ The middleware supports the following configuration options:
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
 | `cookieDomain` | Explicit domain for session cookies (important for multi-subdomain setups) | auto-detected | `.example.com`, `app.example.com` |
 | `cookiePrefix` | Custom prefix for session cookie names (for isolating multiple middleware instances) | `_oidc_raczylo_` | `_oidc_userauth_`, `_oidc_admin_` |
+| `sessionMaxAge` | Maximum session age in seconds before requiring re-authentication | `86400` (24 hours) | `3600` (1 hour), `604800` (7 days) |
 | `audience` | Custom audience for access token validation (for Auth0 custom APIs, etc.) | `clientID` | `https://my-api.example.com` |
 | `strictAudienceValidation` | Reject sessions with access token audience mismatch (prevents token confusion attacks) | `false` | `true` |
 | `allowOpaqueTokens` | Enable opaque (non-JWT) access token support via RFC 7662 introspection | `false` | `true` |
@@ -933,6 +934,39 @@ spec:
 3. **Different `callbackURL`** paths to avoid routing conflicts
 
 This configuration prevents authorization bypass issues where a user authenticated via the general middleware could access admin-protected routes. See [issue #87](https://github.com/lukaszraczylo/traefikoidc/issues/87) for more details.
+
+### With Extended Session Duration
+
+For applications that users access infrequently (weekly or monthly), you can extend the session duration beyond the default 24 hours to reduce authentication friction:
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-long-session
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://auth.example.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: your-key-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      sessionMaxAge: 604800  # 7 days (in seconds)
+      # Other common values:
+      # 259200   - 3 days
+      # 604800   - 7 days
+      # 1209600  - 14 days
+      # 2592000  - 30 days
+```
+
+**Security Note**: Longer session durations improve user experience but increase security risk. Consider your application's security requirements:
+- **High-security apps**: Use shorter sessions (3600 = 1 hour)
+- **Standard apps**: Default 24 hours balances security and UX
+- **Low-frequency access apps**: Extend to 7-30 days for better UX
+
+See [issue #91](https://github.com/lukaszraczylo/traefikoidc/issues/91) for more details.
 
 ### With Custom Logging and Rate Limiting
 

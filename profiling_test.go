@@ -65,7 +65,7 @@ func TestMemoryTestOrchestrator(t *testing.T) {
 	mto := NewMemoryTestOrchestrator(config, logger)
 
 	// Test registering a component
-	sessionManager, err := NewSessionManager("test-key-32-chars-long-for-testing", false, "", "", logger)
+	sessionManager, err := NewSessionManager("test-key-32-chars-long-for-testing", false, "", "", 0, logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestComponentProfilers(t *testing.T) {
 	logger := NewLogger("debug")
 
 	// Test Session Pool Profiler
-	sessionManager, err := NewSessionManager("test-key-32-chars-long-for-testing", false, "", "", logger)
+	sessionManager, err := NewSessionManager("test-key-32-chars-long-for-testing", false, "", "", 0, logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}

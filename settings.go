@@ -30,7 +30,8 @@ type Config struct {
 	HTTPClient        *http.Client `json:"-"`
 	OIDCEndSessionURL string       `json:"oidcEndSessionURL"`
 	CookieDomain      string       `json:"cookieDomain"`
-	CookiePrefix      string       `json:"cookiePrefix"` // Prefix for session cookie names (default: "_oidc_raczylo_")
+	CookiePrefix      string       `json:"cookiePrefix"`  // Prefix for session cookie names (default: "_oidc_raczylo_")
+	SessionMaxAge     int          `json:"sessionMaxAge"` // Maximum session age in seconds (default: 86400 = 24 hours)
 	CallbackURL       string       `json:"callbackURL"`
 	LogoutURL         string       `json:"logoutURL"`
 	ClientID          string       `json:"clientID"`

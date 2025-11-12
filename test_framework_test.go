@@ -280,6 +280,7 @@ func (tf *TestFramework) CreateAuthenticatedRequest(method, path string) (*http.
 		false,
 		"",
 		"",
+		0,
 		tf.oidc.logger,
 	)
 	if err != nil {
@@ -325,6 +326,7 @@ func (tf *TestFramework) CreateCallbackRequest() *http.Request {
 		false,
 		"",
 		"",
+		0,
 		tf.oidc.logger,
 	)
 
