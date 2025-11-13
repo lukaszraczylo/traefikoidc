@@ -255,6 +255,18 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	if argsLen < 0 || argsLen > maxSafeArgs {
 		return nil, errors.New("too many arguments")
 	}
+	const maxTotalArgBytes = 64 << 20 // 64 MiB max total size
+	totalBytes := len(command)
+	for _, s := range args {
+		// Protect against possible overflow
+		if len(s) > maxTotalArgBytes-totalBytes {
+			return nil, errors.New("arguments too large (would overflow maximum allowed total size)")
+		}
+		totalBytes += len(s)
+		if totalBytes > maxTotalArgBytes {
+			return nil, errors.New("total argument size exceeds maximum allowed")
+		}
+	}
 	cmdArgs := make([]string, 0, argsLen+1)
 	cmdArgs = append(cmdArgs, command)
 	cmdArgs = append(cmdArgs, args...)
