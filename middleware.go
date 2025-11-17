@@ -87,6 +87,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if err := t.verifyToken(token); err != nil {
 			t.sendErrorResponse(rw, req, "Unauthorized", http.StatusUnauthorized)
 		}
+		t.next.ServeHTTP(rw, req)
 		return
 	}
 
