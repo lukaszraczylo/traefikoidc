@@ -80,6 +80,16 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	t.sessionManager.CleanupOldCookies(rw, req)
 
+	authHeader := req.Header.Get("Authorization")
+	if authHeader != "" && strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		t.logger.Debug("Bearer token found in Authorization header, processing token authentication")
+		token := strings.TrimSpace(authHeader[7:])
+		if err := t.verifyToken(token); err != nil {
+			t.sendErrorResponse(rw, req, "Unauthorized", http.StatusUnauthorized)
+		}
+		return
+	}
+
 	session, err := t.sessionManager.GetSession(req)
 	if err != nil {
 		t.logger.Errorf("Error getting session: %v. Initiating authentication.", err)
