@@ -974,7 +974,7 @@ func (sm *SessionManager) CreateSessionFromAccessToken(accessToken string) (*Ses
 	}
 
 	email := resolveClaim("email", "upn", "preferred_username")
-	if email == "" || !strings.Contains(email, "@") {
+	if email == "" {
 		if sm.logger != nil {
 			sm.logger.Debug("CreateSessionFromAccessToken: missing email-like claim")
 		}
