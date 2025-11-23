@@ -84,11 +84,28 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if authHeader != "" && strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 		t.logger.Debug("Bearer token found in Authorization header, processing token authentication")
 		token := strings.TrimSpace(authHeader[7:])
-		if err := t.verifyToken(token); err != nil {
+		if token == "" {
+			t.logger.Debug("Authorization header contained empty bearer token")
 			t.sendErrorResponse(rw, req, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
+
+		if err := t.verifyToken(token); err != nil {
+			t.logger.Errorf("Access token verification failed: %v", err)
+			t.sendErrorResponse(rw, req, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		session, err := t.sessionManager.CreateSessionFromAccessToken(token)
+		if err != nil {
+			t.logger.Errorf("Failed to synthesize session from bearer token: %v", err)
+			t.sendErrorResponse(rw, req, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		defer session.returnToPoolSafely()
+
 		req.Header.Del("Authorization")
-		t.next.ServeHTTP(rw, req)
+		t.processAuthorizedRequest(rw, req, session, "")
 		return
 	}
 
