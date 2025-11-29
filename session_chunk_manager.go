@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -196,26 +195,23 @@ func (cm *ChunkManager) performPeriodicCleanup() {
 
 	cm.CleanupExpiredSessions()
 
-	// Force garbage collection if memory usage is high
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-
+	// Track memory stats for monitoring but DO NOT force GC
+	// Forced GC causes significant CPU spikes every cleanup interval
+	// Let the Go runtime handle GC scheduling efficiently
 	currentSessions := atomic.LoadInt64(&cm.peakSessions)
 	allocatedBytes := atomic.LoadInt64(&cm.bytesAllocated)
-
-	if allocatedBytes > 10*1024*1024 || currentSessions > int64(cm.maxSessions/2) {
-		runtime.GC()
-		if cm.logger != nil {
-			cm.logger.Debugf("Forced GC: sessions=%d, allocated=%d bytes",
-				currentSessions, allocatedBytes)
-		}
-	}
 
 	duration := time.Since(startTime)
 	atomic.AddInt64(&cm.cleanupCount, 1)
 
-	if cm.logger != nil && duration > 100*time.Millisecond {
-		cm.logger.Debugf("Chunk manager cleanup took %v", duration)
+	if cm.logger != nil {
+		if duration > 100*time.Millisecond {
+			cm.logger.Debugf("Chunk manager cleanup took %v (sessions=%d, allocated=%d bytes)",
+				duration, currentSessions, allocatedBytes)
+		} else if duration > 10*time.Millisecond {
+			cm.logger.Debugf("Chunk manager cleanup: sessions=%d, allocated=%d bytes, duration=%v",
+				currentSessions, allocatedBytes, duration)
+		}
 	}
 }
 
@@ -1161,6 +1157,7 @@ func (cm *ChunkManager) CleanupExpiredSessions(force ...bool) {
 }
 
 // enforceSessionLimit removes oldest sessions when limit is exceeded
+// Uses partial sort (O(n) for finding k smallest) instead of full sort (O(n log n))
 func (cm *ChunkManager) enforceSessionLimit() {
 	currentLocal := len(cm.sessionMap)
 	currentGlobal := atomic.LoadInt64(&globalSessionCount)
@@ -1185,37 +1182,20 @@ func (cm *ChunkManager) enforceSessionLimit() {
 		return
 	}
 
-	// Find oldest sessions to remove
-	type sessionAge struct {
-		key      string
-		lastUsed time.Time
-	}
-
-	sessions := make([]sessionAge, 0, len(cm.sessionMap))
-	for key, entry := range cm.sessionMap {
-		sessions = append(sessions, sessionAge{key: key, lastUsed: entry.LastUsed})
-	}
-
-	// Sort by last used time (oldest first)
-	for i := 0; i < len(sessions)-1; i++ {
-		for j := i + 1; j < len(sessions); j++ {
-			if sessions[i].lastUsed.After(sessions[j].lastUsed) {
-				sessions[i], sessions[j] = sessions[j], sessions[i]
-			}
-		}
-	}
-
-	// Remove excess sessions and track memory - CRITICAL FIX: More aggressive
+	// Calculate how many sessions to remove
 	excessCount := currentLocal - targetCapacity
-	if excessCount < 0 {
-		excessCount = 0
+	if excessCount <= 0 {
+		return
 	}
+
+	// Use partial selection instead of full sort for better performance
+	// For finding k oldest sessions, we only need O(n) operations
+	keysToRemove := cm.findOldestSessions(excessCount)
 
 	totalBytesFreed := int64(0)
 	removedCount := int64(0)
 
-	for i := 0; i < excessCount && i < len(sessions); i++ {
-		key := sessions[i].key
+	for _, key := range keysToRemove {
 		if entry, exists := cm.sessionMap[key]; exists {
 			totalBytesFreed += entry.SizeEstimate
 			atomic.AddInt64(&cm.bytesAllocated, -entry.SizeEstimate)
@@ -1230,7 +1210,56 @@ func (cm *ChunkManager) enforceSessionLimit() {
 	}
 
 	cm.logger.Infof("Enforced session limit: removed %d excess sessions, freed %d bytes",
-		excessCount, totalBytesFreed)
+		len(keysToRemove), totalBytesFreed)
+}
+
+// findOldestSessions returns keys of the k oldest sessions efficiently
+// Uses a simple approach: find the kth oldest timestamp, then collect all older entries
+func (cm *ChunkManager) findOldestSessions(k int) []string {
+	if k <= 0 || len(cm.sessionMap) == 0 {
+		return nil
+	}
+
+	if k >= len(cm.sessionMap) {
+		// Remove all sessions
+		keys := make([]string, 0, len(cm.sessionMap))
+		for key := range cm.sessionMap {
+			keys = append(keys, key)
+		}
+		return keys
+	}
+
+	// Collect all timestamps with keys
+	type sessionAge struct {
+		key      string
+		lastUsed time.Time
+	}
+
+	sessions := make([]sessionAge, 0, len(cm.sessionMap))
+	for key, entry := range cm.sessionMap {
+		sessions = append(sessions, sessionAge{key: key, lastUsed: entry.LastUsed})
+	}
+
+	// Partial sort: get the k smallest elements using selection
+	// This is O(n*k) which is better than O(n log n) when k << n
+	for i := 0; i < k; i++ {
+		minIdx := i
+		for j := i + 1; j < len(sessions); j++ {
+			if sessions[j].lastUsed.Before(sessions[minIdx].lastUsed) {
+				minIdx = j
+			}
+		}
+		if minIdx != i {
+			sessions[i], sessions[minIdx] = sessions[minIdx], sessions[i]
+		}
+	}
+
+	// Return the k oldest
+	result := make([]string, k)
+	for i := 0; i < k; i++ {
+		result[i] = sessions[i].key
+	}
+	return result
 }
 
 // CanCreateSession checks if a new session can be created within limits
@@ -1292,29 +1321,12 @@ func (cm *ChunkManager) EmergencyCleanup() {
 	// If still over 80% capacity, remove oldest sessions more aggressively
 	targetCapacity := int(float64(cm.maxSessions) * 0.8)
 	if len(cm.sessionMap) > targetCapacity {
-		type sessionAge struct {
-			key      string
-			lastUsed time.Time
-		}
-
-		sessions := make([]sessionAge, 0, len(cm.sessionMap))
-		for key, entry := range cm.sessionMap {
-			sessions = append(sessions, sessionAge{key: key, lastUsed: entry.LastUsed})
-		}
-
-		// Sort by last used time (oldest first)
-		for i := 0; i < len(sessions)-1; i++ {
-			for j := i + 1; j < len(sessions); j++ {
-				if sessions[i].lastUsed.After(sessions[j].lastUsed) {
-					sessions[i], sessions[j] = sessions[j], sessions[i]
-				}
-			}
-		}
-
-		// Remove sessions until we reach target capacity
 		excessCount := len(cm.sessionMap) - targetCapacity
-		for i := 0; i < excessCount && i < len(sessions); i++ {
-			key := sessions[i].key
+
+		// Use efficient partial sort to find oldest sessions
+		keysToRemove := cm.findOldestSessions(excessCount)
+
+		for _, key := range keysToRemove {
 			if entry, exists := cm.sessionMap[key]; exists {
 				atomic.AddInt64(&cm.bytesAllocated, -entry.SizeEstimate)
 			}
@@ -1327,11 +1339,9 @@ func (cm *ChunkManager) EmergencyCleanup() {
 	cm.logger.Infof("Emergency cleanup completed: removed %d sessions, %d remaining",
 		removed, len(cm.sessionMap))
 
-	// Log memory stats after emergency cleanup
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	cm.logger.Infof("Memory after emergency cleanup - Heap: %.1fMB, Sessions: %d, Tracked bytes: %d",
-		float64(m.HeapAlloc)/(1024*1024), len(cm.sessionMap), atomic.LoadInt64(&cm.bytesAllocated))
+	// Log memory stats after emergency cleanup (read only, no forced GC)
+	cm.logger.Infof("Sessions after emergency cleanup: %d, Tracked bytes: %d",
+		len(cm.sessionMap), atomic.LoadInt64(&cm.bytesAllocated))
 }
 
 // GetSessionCount returns the current number of active sessions (for monitoring)

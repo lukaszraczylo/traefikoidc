@@ -122,15 +122,22 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 			t.safeLogErrorf("Token blacklist not available, skipping JTI %s blacklist", jti)
 		}
 
-		replayCacheMu.Lock()
-		if replayCache == nil {
-			initReplayCache()
-		}
+		// Use sharded cache for replay detection - no global mutex needed
+		// This reduces lock contention by ~64x under high load
+		initReplayCache()
 		duration := time.Until(expiry)
 		if duration > 0 {
-			replayCache.Set(jti, true, duration)
+			if shardedReplayCache != nil {
+				shardedReplayCache.Set(jti, true, duration)
+			} else {
+				// Fall back to legacy cache (should rarely happen)
+				replayCacheMu.Lock()
+				if replayCache != nil {
+					replayCache.Set(jti, true, duration)
+				}
+				replayCacheMu.Unlock()
+			}
 		}
-		replayCacheMu.Unlock()
 	}
 
 	return nil

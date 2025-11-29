@@ -146,6 +146,9 @@ func (p *SharedTransportPool) ReleaseTransport(transport *http.Transport) {
 }
 
 // cleanupIdleTransports periodically cleans up unused transports
+// Uses two-phase cleanup to minimize lock contention:
+// 1. Find candidates while holding read lock
+// 2. Remove and close transports with minimal lock duration
 func (p *SharedTransportPool) cleanupIdleTransports(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -155,17 +158,46 @@ func (p *SharedTransportPool) cleanupIdleTransports(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.mu.Lock()
-			now := time.Now()
-			for transportKey, shared := range p.transports {
-				// Clean up transports not used for 2 minutes with no references
-				if shared.refCount <= 0 && now.Sub(shared.lastUsed) > 2*time.Minute {
-					shared.transport.CloseIdleConnections()
-					delete(p.transports, transportKey)
-					// SECURITY FIX: Decrement client count when removing transport
-					atomic.AddInt32(&p.clientCount, -1)
-				}
+			p.performCleanup()
+		}
+	}
+}
+
+// performCleanup does the actual cleanup with optimized locking
+func (p *SharedTransportPool) performCleanup() {
+	now := time.Now()
+
+	// Phase 1: Find candidates while holding read lock (fast)
+	p.mu.RLock()
+	candidates := make([]string, 0)
+	for transportKey, shared := range p.transports {
+		// Clean up transports not used for 2 minutes with no references
+		if shared.refCount <= 0 && now.Sub(shared.lastUsed) > 2*time.Minute {
+			candidates = append(candidates, transportKey)
+		}
+	}
+	p.mu.RUnlock()
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	// Phase 2: Remove and close each candidate individually
+	// This minimizes lock contention and allows concurrent access
+	for _, key := range candidates {
+		p.mu.Lock()
+		shared, exists := p.transports[key]
+		if exists && shared.refCount <= 0 && now.Sub(shared.lastUsed) > 2*time.Minute {
+			// Remove from map first (releases memory)
+			delete(p.transports, key)
+			atomic.AddInt32(&p.clientCount, -1)
+			p.mu.Unlock()
+
+			// Close idle connections outside the lock (can be slow)
+			if shared.transport != nil {
+				shared.transport.CloseIdleConnections()
 			}
+		} else {
 			p.mu.Unlock()
 		}
 	}

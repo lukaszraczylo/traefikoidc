@@ -671,3 +671,98 @@ func TestCleanupRoutine(t *testing.T) {
 		t.Errorf("Expected 0 sessions after cleanup, got %d", finalCount)
 	}
 }
+
+// TestNoGoroutineExplosionWithTimers verifies that timer-based cleanup doesn't cause goroutine explosion
+// This was the original issue: spawning a goroutine per refresh to sleep and cleanup
+func TestNoGoroutineExplosionWithTimers(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultRefreshCoordinatorConfig()
+	config.DeduplicationCleanupDelay = 100 * time.Millisecond // Non-zero delay
+	config.MaxConcurrentRefreshes = 100                       // Allow many concurrent
+	config.MaxRefreshAttempts = 10000                         // Don't rate limit
+
+	coordinator := NewRefreshCoordinator(config, logger)
+	defer coordinator.Shutdown()
+
+	// Record initial goroutines (allow settling time)
+	time.Sleep(50 * time.Millisecond)
+	runtime.GC()
+	initialGoroutines := runtime.NumGoroutine()
+	t.Logf("Initial goroutines: %d", initialGoroutines)
+
+	// Submit many refresh operations rapidly
+	const numRefreshes = 500
+	var wg sync.WaitGroup
+	wg.Add(numRefreshes)
+
+	refreshFunc := func() (*TokenResponse, error) {
+		return &TokenResponse{AccessToken: "token"}, nil
+	}
+
+	for i := 0; i < numRefreshes; i++ {
+		go func(id int) {
+			defer wg.Done()
+			ctx := context.Background()
+			_, _ = coordinator.CoordinateRefresh(
+				ctx,
+				fmt.Sprintf("session_%d", id),
+				fmt.Sprintf("token_%d", id),
+				refreshFunc,
+			)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Measure goroutines immediately after all operations complete
+	// With the old approach, we'd have ~500 sleeping goroutines
+	// With the new timer approach, we should have much fewer
+	currentGoroutines := runtime.NumGoroutine()
+	t.Logf("Goroutines after %d refresh operations: %d", numRefreshes, currentGoroutines)
+
+	// Check timer count
+	coordinator.cleanupTimerMu.Lock()
+	timerCount := len(coordinator.cleanupTimers)
+	coordinator.cleanupTimerMu.Unlock()
+	t.Logf("Active cleanup timers: %d", timerCount)
+
+	// With timer-based cleanup, goroutine increase should be minimal
+	// Timers don't create goroutines - they use the runtime timer heap
+	goroutineIncrease := currentGoroutines - initialGoroutines
+
+	// Allow for some goroutine overhead (test framework, etc)
+	// With the old approach, we'd see ~500 goroutines
+	// With the new approach, we should see <50 (much smaller)
+	maxAcceptableIncrease := 100 // Very generous limit
+
+	if goroutineIncrease > maxAcceptableIncrease {
+		t.Errorf("Goroutine explosion detected: started with %d, now have %d (increase of %d)",
+			initialGoroutines, currentGoroutines, goroutineIncrease)
+	}
+
+	// Wait for timers to fire and cleanup
+	time.Sleep(config.DeduplicationCleanupDelay + 50*time.Millisecond)
+
+	// Verify timers were cleaned up
+	coordinator.cleanupTimerMu.Lock()
+	remainingTimers := len(coordinator.cleanupTimers)
+	coordinator.cleanupTimerMu.Unlock()
+
+	// Most timers should have fired and been removed
+	if remainingTimers > 10 {
+		t.Errorf("Too many cleanup timers remaining: %d", remainingTimers)
+	}
+
+	// Verify goroutines returned to near initial
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+	finalGoroutines := runtime.NumGoroutine()
+	t.Logf("Final goroutines: %d", finalGoroutines)
+
+	// Should be close to initial (within tolerance)
+	finalIncrease := finalGoroutines - initialGoroutines
+	if finalIncrease > 20 {
+		t.Errorf("Goroutine leak detected: started with %d, ended with %d (increase of %d)",
+			initialGoroutines, finalGoroutines, finalIncrease)
+	}
+}

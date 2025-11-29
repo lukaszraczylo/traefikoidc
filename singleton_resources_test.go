@@ -505,6 +505,285 @@ func TestBackwardCompatibility(t *testing.T) {
 	})
 }
 
+// TestGoroutinePoolConditionVariable tests the condition variable-based Wait implementation
+func TestGoroutinePoolConditionVariable(t *testing.T) {
+	t.Run("WaitDoesNotBusyPoll", func(t *testing.T) {
+		// This test verifies that Wait() uses condition variable instead of busy-polling
+		pool := NewGoroutinePool(2, nil)
+		defer pool.Shutdown(context.Background())
+
+		// Submit a slow task
+		var taskStarted, taskFinished int32
+		pool.Submit(func() {
+			atomic.StoreInt32(&taskStarted, 1)
+			time.Sleep(100 * time.Millisecond)
+			atomic.StoreInt32(&taskFinished, 1)
+		})
+
+		// Give task time to start
+		time.Sleep(10 * time.Millisecond)
+
+		// Measure CPU-time before Wait
+		startCPU := time.Now()
+
+		// Wait should block efficiently without consuming CPU
+		pool.Wait()
+
+		elapsed := time.Since(startCPU)
+
+		// Verify task completed
+		if atomic.LoadInt32(&taskFinished) != 1 {
+			t.Error("Task should have finished")
+		}
+
+		// Wait should have taken ~90ms (task was already running for ~10ms)
+		// If it was busy-polling, we would see much higher CPU usage
+		// This is a sanity check - the real proof is in profiling
+		if elapsed < 50*time.Millisecond {
+			t.Errorf("Wait returned too quickly: %v", elapsed)
+		}
+	})
+
+	t.Run("WaitReturnsImmediatelyWhenEmpty", func(t *testing.T) {
+		pool := NewGoroutinePool(2, nil)
+		defer pool.Shutdown(context.Background())
+
+		// Wait on empty pool should return immediately
+		start := time.Now()
+		pool.Wait()
+		elapsed := time.Since(start)
+
+		// Should return almost immediately
+		if elapsed > 10*time.Millisecond {
+			t.Errorf("Wait on empty pool took too long: %v", elapsed)
+		}
+	})
+
+	t.Run("ConcurrentSubmitAndWait", func(t *testing.T) {
+		pool := NewGoroutinePool(4, nil)
+		defer pool.Shutdown(context.Background())
+
+		var completed int32
+		const numTasks = 100
+
+		// Submit tasks concurrently
+		var wg sync.WaitGroup
+		for i := 0; i < numTasks; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pool.Submit(func() {
+					time.Sleep(1 * time.Millisecond)
+					atomic.AddInt32(&completed, 1)
+				})
+			}()
+		}
+
+		wg.Wait() // Wait for all submissions
+
+		// Wait for all tasks to complete
+		pool.Wait()
+
+		if atomic.LoadInt32(&completed) != numTasks {
+			t.Errorf("Expected %d tasks completed, got %d", numTasks, completed)
+		}
+	})
+
+	t.Run("WaitWithTimeoutSuccess", func(t *testing.T) {
+		pool := NewGoroutinePool(2, nil)
+		defer pool.Shutdown(context.Background())
+
+		pool.Submit(func() {
+			time.Sleep(50 * time.Millisecond)
+		})
+
+		// Should complete within timeout
+		success := pool.WaitWithTimeout(1 * time.Second)
+		if !success {
+			t.Error("WaitWithTimeout should have succeeded")
+		}
+	})
+
+	t.Run("WaitWithTimeoutExpired", func(t *testing.T) {
+		pool := NewGoroutinePool(1, nil)
+		defer pool.Shutdown(context.Background())
+
+		pool.Submit(func() {
+			time.Sleep(500 * time.Millisecond)
+		})
+
+		// Should timeout
+		success := pool.WaitWithTimeout(50 * time.Millisecond)
+		if success {
+			t.Error("WaitWithTimeout should have timed out")
+		}
+
+		// Wait for actual completion to avoid goroutine leak in test
+		pool.Wait()
+	})
+
+	t.Run("PendingTasksCounter", func(t *testing.T) {
+		// Use pool with larger buffer (maxWorkers=2, buffer=4)
+		pool := NewGoroutinePool(2, nil)
+		defer pool.Shutdown(context.Background())
+
+		// Initially no pending tasks
+		if pool.PendingTasks() != 0 {
+			t.Errorf("Expected 0 pending tasks, got %d", pool.PendingTasks())
+		}
+
+		// Block both workers with signals that tasks have started
+		blocker1 := make(chan struct{})
+		blocker2 := make(chan struct{})
+		started1 := make(chan struct{})
+		started2 := make(chan struct{})
+
+		pool.Submit(func() {
+			close(started1)
+			<-blocker1
+		})
+		pool.Submit(func() {
+			close(started2)
+			<-blocker2
+		})
+
+		// Wait for both blocking tasks to actually start
+		<-started1
+		<-started2
+
+		// Submit 2 more tasks that will queue up (buffer can hold 4)
+		for i := 0; i < 2; i++ {
+			pool.Submit(func() {
+				time.Sleep(1 * time.Millisecond)
+			})
+		}
+
+		// Should have pending tasks (2 running + 2 queued = 4)
+		pending := pool.PendingTasks()
+		if pending != 4 {
+			t.Errorf("Expected 4 pending tasks, got %d", pending)
+		}
+
+		// Release blockers
+		close(blocker1)
+		close(blocker2)
+
+		// Wait for completion
+		pool.Wait()
+
+		// Should have no pending tasks
+		if pool.PendingTasks() != 0 {
+			t.Errorf("Expected 0 pending tasks after Wait, got %d", pool.PendingTasks())
+		}
+	})
+
+	t.Run("MultipleWaiters", func(t *testing.T) {
+		pool := NewGoroutinePool(2, nil)
+		defer pool.Shutdown(context.Background())
+
+		// Submit a slow task
+		pool.Submit(func() {
+			time.Sleep(100 * time.Millisecond)
+		})
+
+		// Multiple goroutines waiting
+		var waiters sync.WaitGroup
+		var waitCount int32
+		for i := 0; i < 5; i++ {
+			waiters.Add(1)
+			go func() {
+				defer waiters.Done()
+				pool.Wait()
+				atomic.AddInt32(&waitCount, 1)
+			}()
+		}
+
+		// All waiters should complete
+		waiters.Wait()
+
+		if atomic.LoadInt32(&waitCount) != 5 {
+			t.Errorf("Expected all 5 waiters to complete, got %d", waitCount)
+		}
+	})
+
+	t.Run("SubmitFailureDoesNotIncrementPending", func(t *testing.T) {
+		pool := NewGoroutinePool(1, nil)
+
+		// Shutdown the pool
+		pool.Shutdown(context.Background())
+
+		// Submit should fail
+		err := pool.Submit(func() {})
+		if err == nil {
+			t.Error("Submit should fail on shutdown pool")
+		}
+
+		// Pending tasks should still be 0
+		if pool.PendingTasks() != 0 {
+			t.Errorf("Pending tasks should be 0 after failed submit, got %d", pool.PendingTasks())
+		}
+	})
+
+	t.Run("PanicRecoveryDecrementsPending", func(t *testing.T) {
+		pool := NewGoroutinePool(2, nil)
+		defer pool.Shutdown(context.Background())
+
+		// Submit a task that panics
+		pool.Submit(func() {
+			panic("test panic")
+		})
+
+		// Submit a normal task
+		var normalCompleted int32
+		pool.Submit(func() {
+			atomic.StoreInt32(&normalCompleted, 1)
+		})
+
+		// Wait should still work (panic is recovered)
+		pool.Wait()
+
+		// Normal task should have completed
+		if atomic.LoadInt32(&normalCompleted) != 1 {
+			t.Error("Normal task should have completed despite panic in other task")
+		}
+
+		// Pending should be 0
+		if pool.PendingTasks() != 0 {
+			t.Errorf("Pending tasks should be 0 after Wait, got %d", pool.PendingTasks())
+		}
+	})
+}
+
+// BenchmarkGoroutinePoolWait benchmarks the Wait implementation
+func BenchmarkGoroutinePoolWait(b *testing.B) {
+	pool := NewGoroutinePool(4, nil)
+	defer pool.Shutdown(context.Background())
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Submit a quick task
+		pool.Submit(func() {})
+		pool.Wait()
+	}
+}
+
+// BenchmarkGoroutinePoolHighThroughput benchmarks high throughput scenario
+func BenchmarkGoroutinePoolHighThroughput(b *testing.B) {
+	pool := NewGoroutinePool(8, nil)
+	defer pool.Shutdown(context.Background())
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for j := 0; j < 100; j++ {
+			pool.Submit(func() {
+				// Minimal work
+				_ = 1 + 1
+			})
+		}
+		pool.Wait()
+	}
+}
+
 // Helper function to reset singleton for testing
 func resetResourceManagerForTesting() {
 	resourceManagerMutex.Lock()

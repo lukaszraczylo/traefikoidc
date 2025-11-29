@@ -3214,10 +3214,8 @@ func TestAuthenticationFlowReplayDetection(t *testing.T) {
 		t.Fatalf("Initial authentication should succeed: %v", err)
 	}
 
-	// Verify JTI is in cache
-	replayCacheMu.Lock()
-	_, exists := replayCache.Get(jti)
-	replayCacheMu.Unlock()
+	// Verify JTI is in cache (use shardedReplayCache which is the actual cache used)
+	exists := shardedReplayCache.Exists(jti)
 	if !exists {
 		t.Error("JTI should be added to replay cache during initial authentication")
 	}
@@ -3398,14 +3396,12 @@ func TestConcurrentTokenValidation(t *testing.T) {
 		t.Errorf("Expected no errors in concurrent validation, got %d errors: %v", len(errors), errors)
 	}
 
-	// Verify all JTIs are in cache
-	replayCacheMu.Lock()
+	// Verify all JTIs are in cache (use shardedReplayCache which is the actual cache used)
 	for i, jti := range jtis {
-		if _, exists := replayCache.Get(jti); !exists {
+		if !shardedReplayCache.Exists(jti) {
 			t.Errorf("JTI %d (%s) should be in replay cache", i, jti)
 		}
 	}
-	replayCacheMu.Unlock()
 }
 
 // TestJTIBlacklistBehavior tests the JTI blacklist cache management
@@ -3458,9 +3454,8 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 		{
 			name: "JTI exists in blacklist after verification",
 			action: func() error {
-				replayCacheMu.RLock()
-				defer replayCacheMu.RUnlock()
-				if _, exists := replayCache.Get(jti); !exists {
+				// Use shardedReplayCache which is the actual cache used
+				if !shardedReplayCache.Exists(jti) {
 					return fmt.Errorf("JTI not found in blacklist cache")
 				}
 				return nil
@@ -3567,9 +3562,8 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 	}
 
 	// Check replay cache
-	replayCacheMu.Lock()
-	_, inReplayCache := replayCache.Get(jti)
-	replayCacheMu.Unlock()
+	// Use shardedReplayCache which is the actual cache used
+	inReplayCache := shardedReplayCache.Exists(jti)
 	if !inReplayCache {
 		t.Error("JTI should be in replay cache")
 	}
