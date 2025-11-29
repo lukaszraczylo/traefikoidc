@@ -44,6 +44,10 @@ var (
 // This function uses sync.Once to ensure thread-safe single initialization.
 func initReplayCache() {
 	replayCacheOnce.Do(func() {
+		// Hold mutex during initialization to synchronize with cleanup goroutine
+		replayCacheMu.Lock()
+		defer replayCacheMu.Unlock()
+
 		// Create sharded cache with 64 shards for reduced contention
 		// Under 500 req/sec, this reduces lock contention by ~64x compared to single mutex
 		shardedReplayCache = NewShardedCache(64, 10000)
@@ -121,22 +125,31 @@ func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
 
 	// Define the cleanup task function
 	cleanupFunc := func() {
+		// Use mutex to safely access cache pointers - this prevents race with initReplayCache
+		replayCacheMu.RLock()
+		shardedCache := shardedReplayCache
+		legacyCache := replayCache
+		replayCacheMu.RUnlock()
+
+		// Only proceed if caches have been initialized
+		if shardedCache == nil && legacyCache == nil {
+			return
+		}
+
 		size, maxSize := getReplayCacheStats()
 		if logger != nil {
 			logger.Debugf("Replay cache stats: size=%d, maxSize=%d", size, maxSize)
 		}
 
-		// Clean up sharded cache (lock-free at the caller level)
-		if shardedReplayCache != nil {
-			shardedReplayCache.Cleanup()
+		// Clean up sharded cache
+		if shardedCache != nil {
+			shardedCache.Cleanup()
 		}
 
 		// Also clean up legacy cache for backward compatibility
-		replayCacheMu.RLock()
-		if replayCache != nil {
-			replayCache.Cleanup()
+		if legacyCache != nil {
+			legacyCache.Cleanup()
 		}
-		replayCacheMu.RUnlock()
 	}
 
 	// Create or get singleton cleanup task
