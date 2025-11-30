@@ -38,13 +38,13 @@ func (p *AzureProvider) BuildAuthParams(baseParams url.Values, scopes []string) 
 
 	hasOfflineAccess := false
 	for _, scope := range scopes {
-		if scope == "offline_access" {
+		if scope == ScopeOfflineAccess {
 			hasOfflineAccess = true
 			break
 		}
 	}
 	if !hasOfflineAccess {
-		scopes = append(scopes, "offline_access")
+		scopes = append(scopes, ScopeOfflineAccess)
 	}
 
 	return &AuthParams{

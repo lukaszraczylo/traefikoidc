@@ -36,10 +36,10 @@ func (p *GoogleProvider) BuildAuthParams(baseParams url.Values, scopes []string)
 	baseParams.Set("access_type", "offline")
 	baseParams.Set("prompt", "consent")
 
-	// Google does not use the "offline_access" scope, so we remove it if present.
+	// Google does not use the ScopeOfflineAccess scope, so we remove it if present.
 	var filteredScopes []string
 	for _, scope := range scopes {
-		if scope != "offline_access" {
+		if scope != ScopeOfflineAccess {
 			filteredScopes = append(filteredScopes, scope)
 		}
 	}

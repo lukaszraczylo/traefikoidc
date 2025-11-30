@@ -553,3 +553,164 @@ func TestIsTestModeYaegiCompiler(t *testing.T) {
 		t.Error("Expected true when GO_TEST=1 is set")
 	}
 }
+
+// ============================================================================
+// LOGGER WRAPPER TESTS
+// ============================================================================
+
+// mockLogger is a simple mock implementation for testing
+type mockLogger struct {
+	infoCalls  int
+	debugCalls int
+	errorCalls int
+	lastFormat string
+	lastArgs   []interface{}
+}
+
+func (m *mockLogger) Infof(format string, args ...interface{}) {
+	m.infoCalls++
+	m.lastFormat = format
+	m.lastArgs = args
+}
+
+func (m *mockLogger) Debugf(format string, args ...interface{}) {
+	m.debugCalls++
+	m.lastFormat = format
+	m.lastArgs = args
+}
+
+func (m *mockLogger) Errorf(format string, args ...interface{}) {
+	m.errorCalls++
+	m.lastFormat = format
+	m.lastArgs = args
+}
+
+// TestWrapLoggerForRecovery tests the recovery logger wrapper
+func TestWrapLoggerForRecovery(t *testing.T) {
+	mock := &mockLogger{}
+	wrapper := WrapLoggerForRecovery(mock)
+
+	if wrapper == nil {
+		t.Fatal("WrapLoggerForRecovery should not return nil")
+	}
+
+	// Test Logf
+	wrapper.Logf("test info: %s", "value")
+	if mock.infoCalls != 1 {
+		t.Errorf("Expected 1 info call, got %d", mock.infoCalls)
+	}
+	if mock.lastFormat != "test info: %s" {
+		t.Errorf("Expected format 'test info: %%s', got '%s'", mock.lastFormat)
+	}
+
+	// Test ErrorLogf
+	wrapper.ErrorLogf("test error: %d", 123)
+	if mock.errorCalls != 1 {
+		t.Errorf("Expected 1 error call, got %d", mock.errorCalls)
+	}
+	if mock.lastFormat != "test error: %d" {
+		t.Errorf("Expected format 'test error: %%d', got '%s'", mock.lastFormat)
+	}
+
+	// Test DebugLogf
+	wrapper.DebugLogf("test debug: %v", true)
+	if mock.debugCalls != 1 {
+		t.Errorf("Expected 1 debug call, got %d", mock.debugCalls)
+	}
+	if mock.lastFormat != "test debug: %v" {
+		t.Errorf("Expected format 'test debug: %%v', got '%s'", mock.lastFormat)
+	}
+}
+
+// TestWrapLoggerForRecovery_NilLogger tests recovery wrapper with nil logger
+func TestWrapLoggerForRecovery_NilLogger(t *testing.T) {
+	wrapper := WrapLoggerForRecovery(nil)
+
+	if wrapper == nil {
+		t.Fatal("WrapLoggerForRecovery should not return nil even with nil logger")
+	}
+
+	// These should not panic
+	wrapper.Logf("test")
+	wrapper.ErrorLogf("test")
+	wrapper.DebugLogf("test")
+}
+
+// TestWrapLoggerForCleanup tests the cleanup logger wrapper
+func TestWrapLoggerForCleanup(t *testing.T) {
+	mock := &mockLogger{}
+	wrapper := WrapLoggerForCleanup(mock)
+
+	if wrapper == nil {
+		t.Fatal("WrapLoggerForCleanup should not return nil")
+	}
+
+	// Test Logf
+	wrapper.Logf("cleanup info: %s", "value")
+	if mock.infoCalls != 1 {
+		t.Errorf("Expected 1 info call, got %d", mock.infoCalls)
+	}
+	if mock.lastFormat != "cleanup info: %s" {
+		t.Errorf("Expected format 'cleanup info: %%s', got '%s'", mock.lastFormat)
+	}
+
+	// Test ErrorLogf
+	wrapper.ErrorLogf("cleanup error: %d", 456)
+	if mock.errorCalls != 1 {
+		t.Errorf("Expected 1 error call, got %d", mock.errorCalls)
+	}
+	if mock.lastFormat != "cleanup error: %d" {
+		t.Errorf("Expected format 'cleanup error: %%d', got '%s'", mock.lastFormat)
+	}
+
+	// Test DebugLogf
+	wrapper.DebugLogf("cleanup debug: %v", false)
+	if mock.debugCalls != 1 {
+		t.Errorf("Expected 1 debug call, got %d", mock.debugCalls)
+	}
+	if mock.lastFormat != "cleanup debug: %v" {
+		t.Errorf("Expected format 'cleanup debug: %%v', got '%s'", mock.lastFormat)
+	}
+}
+
+// TestWrapLoggerForCleanup_NilLogger tests cleanup wrapper with nil logger
+func TestWrapLoggerForCleanup_NilLogger(t *testing.T) {
+	wrapper := WrapLoggerForCleanup(nil)
+
+	if wrapper == nil {
+		t.Fatal("WrapLoggerForCleanup should not return nil even with nil logger")
+	}
+
+	// These should not panic
+	wrapper.Logf("test")
+	wrapper.ErrorLogf("test")
+	wrapper.DebugLogf("test")
+}
+
+// TestLoggerWrappers_MultipleArgs tests wrappers with multiple arguments
+func TestLoggerWrappers_MultipleArgs(t *testing.T) {
+	mock := &mockLogger{}
+
+	// Test recovery wrapper with multiple args
+	recoveryWrapper := WrapLoggerForRecovery(mock)
+	recoveryWrapper.Logf("format: %s %d %v", "str", 123, true)
+	if mock.infoCalls != 1 {
+		t.Errorf("Expected 1 info call, got %d", mock.infoCalls)
+	}
+	if len(mock.lastArgs) != 3 {
+		t.Errorf("Expected 3 args, got %d", len(mock.lastArgs))
+	}
+
+	// Reset mock
+	mock = &mockLogger{}
+
+	// Test cleanup wrapper with multiple args
+	cleanupWrapper := WrapLoggerForCleanup(mock)
+	cleanupWrapper.ErrorLogf("error: %s %d %v", "err", 456, false)
+	if mock.errorCalls != 1 {
+		t.Errorf("Expected 1 error call, got %d", mock.errorCalls)
+	}
+	if len(mock.lastArgs) != 3 {
+		t.Errorf("Expected 3 args, got %d", len(mock.lastArgs))
+	}
+}

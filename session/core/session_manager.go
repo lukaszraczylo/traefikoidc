@@ -18,14 +18,16 @@ const (
 
 // SessionManager handles session creation, management and cleanup
 type SessionManager struct {
-	sessionPool  sync.Pool
-	store        sessions.Store
-	logger       Logger
-	chunkManager ChunkManager
-	cookieDomain string
-	cleanupMutex sync.RWMutex
-	forceHTTPS   bool
-	cleanupDone  bool
+	sessionPool   sync.Pool
+	store         sessions.Store
+	logger        Logger
+	chunkManager  ChunkManager
+	cookieDomain  string
+	cookiePrefix  string        // Prefix for cookie names (default: "_oidc_raczylo_")
+	sessionMaxAge time.Duration // Maximum session age (default: 24 hours)
+	cleanupMutex  sync.RWMutex
+	forceHTTPS    bool
+	cleanupDone   bool
 }
 
 // Logger interface for dependency injection
@@ -69,17 +71,29 @@ type SessionData interface {
 // NewSessionManager creates a new SessionManager instance with secure defaults.
 // It initializes the cookie store with encryption, sets up session pooling,
 // and configures chunk management for large tokens.
-func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, logger Logger, chunkManager ChunkManager) (*SessionManager, error) {
+func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain string, cookiePrefix string, sessionMaxAge time.Duration, logger Logger, chunkManager ChunkManager) (*SessionManager, error) {
 	if len(encryptionKey) < minEncryptionKeyLength {
 		return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
 	}
 
+	// Set default cookie prefix if not provided
+	if cookiePrefix == "" {
+		cookiePrefix = "_oidc_raczylo_"
+	}
+
+	// Set default session max age if not provided (24 hours for backward compatibility)
+	if sessionMaxAge == 0 {
+		sessionMaxAge = absoluteSessionTimeout
+	}
+
 	sm := &SessionManager{
-		store:        sessions.NewCookieStore([]byte(encryptionKey)),
-		forceHTTPS:   forceHTTPS,
-		cookieDomain: cookieDomain,
-		logger:       logger,
-		chunkManager: chunkManager,
+		store:         sessions.NewCookieStore([]byte(encryptionKey)),
+		forceHTTPS:    forceHTTPS,
+		cookieDomain:  cookieDomain,
+		cookiePrefix:  cookiePrefix,
+		sessionMaxAge: sessionMaxAge,
+		logger:        logger,
+		chunkManager:  chunkManager,
 	}
 
 	sm.sessionPool.New = func() interface{} {
@@ -114,7 +128,7 @@ func (sm *SessionManager) initializeSession(sessionData SessionData, r *http.Req
 	sessionData.SetManager(sm)
 
 	// Load session data from cookies
-	session, err := sm.store.Get(r, MainCookieName())
+	session, err := sm.store.Get(r, sm.MainCookieName())
 	if err != nil {
 		sm.logger.Debugf("Error getting main session: %v", err)
 		return nil // Not a fatal error, will create new session
@@ -315,14 +329,21 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 	return &sessions.Options{
 		Path:     "/",
 		Domain:   sm.cookieDomain,
-		MaxAge:   int(absoluteSessionTimeout.Seconds()),
+		MaxAge:   int(sm.sessionMaxAge.Seconds()),
 		Secure:   isSecure,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	}
 }
 
-// Cookie name functions
+// Cookie name methods - these now use the configurable prefix
+func (sm *SessionManager) MainCookieName() string     { return sm.cookiePrefix + "m" }
+func (sm *SessionManager) AccessTokenCookie() string  { return sm.cookiePrefix + "a" }
+func (sm *SessionManager) RefreshTokenCookie() string { return sm.cookiePrefix + "r" }
+func (sm *SessionManager) IDTokenCookie() string      { return sm.cookiePrefix + "id" }
+
+// Package-level functions for backward compatibility (use default prefix)
+// These are deprecated and will be removed in a future version
 func MainCookieName() string     { return "_oidc_raczylo_m" }
 func AccessTokenCookie() string  { return "_oidc_raczylo_a" }
 func RefreshTokenCookie() string { return "_oidc_raczylo_r" }

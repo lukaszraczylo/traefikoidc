@@ -104,7 +104,7 @@ func (ts *TestSuite) Setup() {
 	}
 
 	logger := NewLogger("info")
-	ts.sessionManager, _ = NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
+	ts.sessionManager, _ = NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", "", 0, logger)
 
 	// Create WaitGroup for the OIDC instance
 	goroutineWG := &sync.WaitGroup{}
@@ -126,6 +126,8 @@ func (ts *TestSuite) Setup() {
 		clientID:           "test-client-id",
 		audience:           "test-client-id",
 		clientSecret:       "test-client-secret",
+		roleClaimName:      "roles",  // Set default for backward compatibility
+		groupClaimName:     "groups", // Set default for backward compatibility
 		jwkCache:           ts.mockJWKCache,
 		jwksURL:            "https://test-jwks-url.com",
 		revocationURL:      "https://revocation-endpoint.com",
@@ -1272,7 +1274,7 @@ func TestHandleCallback(t *testing.T) {
 			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
 
 			logger := NewLogger("info")
-			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
+			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", "", 0, logger)
 
 			// Create a new instance for each test to avoid state carryover
 			instanceExtractClaimsFunc := tc.extractClaimsFunc
@@ -1661,7 +1663,7 @@ func TestHandleLogout(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := NewLogger("info")
-			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
+			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", "", 0, logger)
 			tOidc := &TraefikOidc{
 				revocationURL:  mockRevocationServer.URL,
 				endSessionURL:  tc.endSessionURL,
@@ -1964,7 +1966,7 @@ func TestHandleExpiredToken(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := NewLogger("info")
-			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", logger)
+			sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", "", 0, logger)
 
 			tOidc := &TraefikOidc{
 				sessionManager: sessionManager,

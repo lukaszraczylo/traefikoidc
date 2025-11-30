@@ -84,7 +84,7 @@ func TestSessionPoolMemoryLeak(t *testing.T) {
 			}
 
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -107,7 +107,7 @@ func TestSessionPoolMemoryLeak(t *testing.T) {
 				session.ReturnToPool()
 
 			case "Error path in GetSession":
-				badSM, _ := NewSessionManager("different0123456789abcdef0123456789abcdef0123456789", false, "", logger)
+				badSM, _ := NewSessionManager("different0123456789abcdef0123456789abcdef0123456789", false, "", "", 0, logger)
 				_, err = badSM.GetSession(req)
 				if err == nil {
 					t.Log("Note: Expected error when using mismatched encryption keys")
@@ -172,7 +172,7 @@ func TestSessionErrorHandling(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -226,7 +226,7 @@ func TestSessionClearAlwaysReturnsToPool(t *testing.T) {
 			Timeout:            30 * time.Second,
 			Operation: func() error {
 				logger := NewLogger("debug")
-				sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+				sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 				if err != nil {
 					return fmt.Errorf("failed to create session manager: %w", err)
 				}
@@ -264,7 +264,7 @@ func TestSessionClearAlwaysReturnsToPool(t *testing.T) {
 	// Additional verification test
 	t.Run("Verify pool still works after errors", func(t *testing.T) {
 		logger := NewLogger("debug")
-		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 		if err != nil {
 			t.Fatalf("Failed to create session manager: %v", err)
 		}
@@ -324,7 +324,7 @@ func TestSessionObjectTracking(t *testing.T) {
 			}
 
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -574,7 +574,7 @@ func TestTokenChunkingIntegrity(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -681,7 +681,7 @@ func TestTokenChunkingCorruptionResistance(t *testing.T) {
 	for _, test := range corruptionTests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -772,7 +772,7 @@ func TestTokenSizeLimits(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -837,7 +837,7 @@ func TestConcurrentTokenOperations(t *testing.T) {
 			Timeout:            60 * time.Second,
 			Operation: func() error {
 				logger := NewLogger("debug")
-				sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+				sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 				if err != nil {
 					return fmt.Errorf("failed to create session manager: %w", err)
 				}
@@ -925,7 +925,7 @@ func TestSessionValidationAndCleanup(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -1010,7 +1010,7 @@ func TestLargeIDTokenChunking(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			logger := NewLogger("debug")
-			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+			sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 			if err != nil {
 				t.Fatalf("Failed to create session manager: %v", err)
 			}
@@ -1115,7 +1115,7 @@ func BenchmarkSessionOperations(b *testing.B) {
 	perfHelper := NewPerformanceTestHelper()
 
 	logger := NewLogger("error") // Reduce logging for benchmarks
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 	if err != nil {
 		b.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -1256,7 +1256,7 @@ func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
 	t.Log("Testing session state preservation with expired tokens - this test demonstrates BROKEN BEHAVIOR")
 
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("test-session-key-32-bytes-long-12345", false, "", logger)
+	sm, err := NewSessionManager("test-session-key-32-bytes-long-12345", false, "", "", 0, logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -1452,7 +1452,7 @@ func TestSessionExpiryVsTokenExpiry(t *testing.T) {
 	t.Log("Testing session expiry vs token expiry distinction - validating proper session and token lifetime management")
 
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("session-vs-token-test-key-32-bytes", false, "", logger)
+	sm, err := NewSessionManager("session-vs-token-test-key-32-bytes", false, "", "", 0, logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}
@@ -1591,7 +1591,7 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 	t.Log("Testing session cleanup on token expiry - validating proper session data management")
 
 	logger := NewLogger("debug")
-	sm, err := NewSessionManager("cleanup-test-key-32-bytes-long-123", false, "", logger)
+	sm, err := NewSessionManager("cleanup-test-key-32-bytes-long-123", false, "", "", 0, logger)
 	if err != nil {
 		t.Fatalf("Failed to create session manager: %v", err)
 	}

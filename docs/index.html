@@ -88,6 +88,7 @@
                         <a href="#providers" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Providers</a>
                         <a href="#installation" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Installation</a>
                         <a href="#configuration" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Configuration</a>
+                        <a href="#deployment" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Deployment</a>
                         <a href="#security" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Security</a>
                     </div>
                     <div class="flex items-center space-x-4">
@@ -111,6 +112,7 @@
                     <a href="#providers" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Providers</a>
                     <a href="#installation" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Installation</a>
                     <a href="#configuration" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Configuration</a>
+                    <a href="#deployment" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Deployment</a>
                     <a href="#security" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Security</a>
                 </div>
             </div>
@@ -294,6 +296,28 @@
                             </div>
                         </div>
                     </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-database text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Redis Cache</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Distributed caching with Redis for multi-replica deployments with circuit breaker and health checks</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-lime-500 to-lime-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-search text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Token Introspection</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">RFC 7662 Token Introspection support for opaque access tokens and enhanced validation</p>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
@@ -443,58 +467,130 @@
                     <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Installation</h2>
                     <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">Get started in under 5 minutes</p>
                 </div>
+
+                <!-- Tab Switcher -->
+                <div class="max-w-3xl mx-auto mb-6">
+                    <div class="flex justify-center">
+                        <div class="glass inline-flex rounded-lg p-1">
+                            <button class="platform-tab px-6 py-2 rounded-md text-sm font-medium transition-all duration-200 bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-md" data-platform="docker">
+                                <i class="fab fa-docker mr-2"></i>Docker Compose
+                            </button>
+                            <button class="platform-tab px-6 py-2 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700" data-platform="kubernetes">
+                                <i class="fas fa-dharmachakra mr-2"></i>Kubernetes
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="max-w-3xl mx-auto space-y-6">
                     <div class="glass p-6 rounded-xl">
                         <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3 flex items-center">
                             <span class="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-bold mr-3">1</span>
                             Enable the Plugin
                         </h3>
-                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm">Add to your Traefik static configuration:</p>
-                        <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># traefik.yml
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm platform-desc-docker">Add to your Traefik static configuration or Docker Compose command:</p>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm platform-desc-kubernetes hidden">Add to your Traefik Helm values or static configuration:</p>
+
+                        <!-- Docker -->
+                        <pre class="platform-example-docker bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># docker-compose.yml - Traefik service command
+command:
+  - "--experimental.plugins.traefikoidc.modulename=github.com/lukaszraczylo/traefikoidc"
+  - "--experimental.plugins.traefikoidc.version=v0.7.10"
+
+# Or in traefik.yml static config
 experimental:
   plugins:
     traefikoidc:
       moduleName: github.com/lukaszraczylo/traefikoidc
       version: v0.7.10</code></pre>
+
+                        <!-- Kubernetes -->
+                        <pre class="platform-example-kubernetes hidden bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># Helm values.yaml for Traefik
+experimental:
+  plugins:
+    traefikoidc:
+      moduleName: github.com/lukaszraczylo/traefikoidc
+      version: v0.7.10
+
+# Or apply via additionalArguments
+additionalArguments:
+  - "--experimental.plugins.traefikoidc.modulename=github.com/lukaszraczylo/traefikoidc"
+  - "--experimental.plugins.traefikoidc.version=v0.7.10"</code></pre>
                     </div>
                     <div class="glass p-6 rounded-xl">
                         <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3 flex items-center">
                             <span class="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-bold mr-3">2</span>
                             Configure the Middleware
                         </h3>
-                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm">Create your middleware configuration:</p>
-                        <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># dynamic/middleware.yml
-http:
-  middlewares:
-    oidc-auth:
-      plugin:
-        traefikoidc:
-          providerURL: "https://accounts.google.com"
-          clientID: "your-client-id"
-          clientSecret: "your-client-secret"
-          callbackURL: "/oauth2/callback"
-          sessionEncryptionKey: "your-32-byte-secret-key-here!!"
-          scopes:
-            - "openid"
-            - "profile"
-            - "email"</code></pre>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm platform-desc-docker">Add middleware configuration via Docker labels:</p>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm platform-desc-kubernetes hidden">Create a Middleware custom resource:</p>
+
+                        <!-- Docker -->
+                        <pre class="platform-example-docker bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># docker-compose.yml - Service labels
+labels:
+  - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.providerURL=https://accounts.google.com"
+  - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.clientID=your-client-id"
+  - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.clientSecret=your-client-secret"
+  - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.callbackURL=/oauth2/callback"
+  - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.sessionEncryptionKey=your-32-byte-secret-key-here!!"</code></pre>
+
+                        <!-- Kubernetes -->
+                        <pre class="platform-example-kubernetes hidden bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># middleware.yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-auth
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      callbackURL: /oauth2/callback
+      sessionEncryptionKey: your-32-byte-secret-key-here!!</code></pre>
                     </div>
                     <div class="glass p-6 rounded-xl">
                         <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3 flex items-center">
                             <span class="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-bold mr-3">3</span>
                             Apply to Your Routes
                         </h3>
-                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm">Use the middleware on your services:</p>
-                        <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># dynamic/routers.yml
-http:
-  routers:
-    my-secure-app:
-      rule: "Host(`app.example.com`)"
-      service: my-service
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm platform-desc-docker">Use the middleware on your services via labels:</p>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm platform-desc-kubernetes hidden">Reference the middleware in your IngressRoute:</p>
+
+                        <!-- Docker -->
+                        <pre class="platform-example-docker bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># docker-compose.yml - Protected service
+services:
+  my-app:
+    image: my-app:latest
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.my-app.rule=Host(`app.example.com`)"
+      - "traefik.http.routers.my-app.middlewares=oidc-auth"
+      - "traefik.http.routers.my-app.tls=true"
+      - "traefik.http.routers.my-app.tls.certresolver=letsencrypt"</code></pre>
+
+                        <!-- Kubernetes -->
+                        <pre class="platform-example-kubernetes hidden bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># ingressroute.yaml
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`app.example.com`)
+      kind: Rule
       middlewares:
-        - oidc-auth
-      tls:
-        certResolver: letsencrypt</code></pre>
+        - name: oidc-auth
+          namespace: traefik
+      services:
+        - name: my-app
+          port: 80
+  tls:
+    certResolver: letsencrypt</code></pre>
                     </div>
                 </div>
             </div>
@@ -507,6 +603,21 @@ http:
                     <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Configuration</h2>
                     <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">Flexible options for any deployment scenario</p>
                 </div>
+
+                <!-- Tab Switcher -->
+                <div class="max-w-4xl mx-auto mb-6">
+                    <div class="flex justify-center">
+                        <div class="glass inline-flex rounded-lg p-1">
+                            <button class="platform-tab px-6 py-2 rounded-md text-sm font-medium transition-all duration-200 bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-md" data-platform="docker">
+                                <i class="fab fa-docker mr-2"></i>Docker Compose
+                            </button>
+                            <button class="platform-tab px-6 py-2 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700" data-platform="kubernetes">
+                                <i class="fas fa-dharmachakra mr-2"></i>Kubernetes
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="max-w-4xl mx-auto space-y-6">
                     <div class="glass p-6 rounded-xl">
                         <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4">Required Parameters</h3>
@@ -558,7 +669,7 @@ http:
                                     <tr class="border-b border-gray-100 dark:border-gray-800">
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">forceHTTPS</code></td>
                                         <td class="py-2 px-3">false</td>
-                                        <td class="py-2 px-3">Required for TLS termination at load balancer</td>
+                                        <td class="py-2 px-3">Required for TLS termination at load balancer (AWS ALB, etc.)</td>
                                     </tr>
                                     <tr class="border-b border-gray-100 dark:border-gray-800">
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">allowedUserDomains</code></td>
@@ -566,9 +677,24 @@ http:
                                         <td class="py-2 px-3">Restrict to specific email domains</td>
                                     </tr>
                                     <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">allowedUsers</code></td>
+                                        <td class="py-2 px-3">none</td>
+                                        <td class="py-2 px-3">Specific email addresses allowed access</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">allowedRolesAndGroups</code></td>
                                         <td class="py-2 px-3">none</td>
-                                        <td class="py-2 px-3">Restrict to users with specific roles</td>
+                                        <td class="py-2 px-3">Restrict to users with specific roles or groups</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">roleClaimName</code></td>
+                                        <td class="py-2 px-3">"roles"</td>
+                                        <td class="py-2 px-3">JWT claim for roles (supports namespaced claims like <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">https://myapp.com/roles</code>)</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">groupClaimName</code></td>
+                                        <td class="py-2 px-3">"groups"</td>
+                                        <td class="py-2 px-3">JWT claim for groups (supports namespaced claims)</td>
                                     </tr>
                                     <tr class="border-b border-gray-100 dark:border-gray-800">
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">excludedURLs</code></td>
@@ -580,10 +706,50 @@ http:
                                         <td class="py-2 px-3">false</td>
                                         <td class="py-2 px-3">Enable PKCE for enhanced security</td>
                                     </tr>
-                                    <tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">rateLimit</code></td>
                                         <td class="py-2 px-3">100</td>
                                         <td class="py-2 px-3">Maximum requests per second</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">sessionMaxAge</code></td>
+                                        <td class="py-2 px-3">86400</td>
+                                        <td class="py-2 px-3">Maximum session age in seconds (24 hours default)</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">cookiePrefix</code></td>
+                                        <td class="py-2 px-3">_oidc_raczylo_</td>
+                                        <td class="py-2 px-3">Custom prefix for session cookies</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">cookieDomain</code></td>
+                                        <td class="py-2 px-3">auto-detected</td>
+                                        <td class="py-2 px-3">Explicit domain for session cookies (multi-subdomain)</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">audience</code></td>
+                                        <td class="py-2 px-3">clientID</td>
+                                        <td class="py-2 px-3">Custom audience for access token validation</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">strictAudienceValidation</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Reject sessions with audience mismatch</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">allowOpaqueTokens</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Enable opaque (non-JWT) access token support</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">requireTokenIntrospection</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Require RFC 7662 introspection for opaque tokens</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">disableReplayDetection</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Disable JTI replay detection (for multi-replica without Redis)</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -591,32 +757,362 @@ http:
                     </div>
                     <div class="glass p-6 rounded-xl">
                         <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3">Example: Google Workspace with Domain Restriction</h3>
-                        <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>http:
-  middlewares:
-    google-oidc:
-      plugin:
-        traefikoidc:
-          providerURL: "https://accounts.google.com"
-          clientID: "1234567890.apps.googleusercontent.com"
-          clientSecret: "your-client-secret"
-          callbackURL: "/oauth2/callback"
-          sessionEncryptionKey: "your-32-byte-encryption-key!!"
-          allowedUserDomains:
-            - "yourcompany.com"
-            - "subsidiary.com"
-          excludedURLs:
-            - "/health"
-            - "/metrics"
-            - "/api/public"
-          forceHTTPS: true
-          logLevel: "info"</code></pre>
+
+                        <!-- Docker -->
+                        <pre class="platform-example-docker bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># docker-compose.yml labels
+labels:
+  - "traefik.http.middlewares.google-oidc.plugin.traefikoidc.providerURL=https://accounts.google.com"
+  - "traefik.http.middlewares.google-oidc.plugin.traefikoidc.clientID=1234567890.apps.googleusercontent.com"
+  - "traefik.http.middlewares.google-oidc.plugin.traefikoidc.clientSecret=your-client-secret"
+  - "traefik.http.middlewares.google-oidc.plugin.traefikoidc.callbackURL=/oauth2/callback"
+  - "traefik.http.middlewares.google-oidc.plugin.traefikoidc.sessionEncryptionKey=your-32-byte-encryption-key!!"
+  - "traefik.http.middlewares.google-oidc.plugin.traefikoidc.allowedUserDomains=yourcompany.com,subsidiary.com"
+  - "traefik.http.middlewares.google-oidc.plugin.traefikoidc.excludedURLs=/health,/metrics,/api/public"
+  - "traefik.http.middlewares.google-oidc.plugin.traefikoidc.forceHTTPS=true"
+  - "traefik.http.middlewares.google-oidc.plugin.traefikoidc.logLevel=info"</code></pre>
+
+                        <!-- Kubernetes -->
+                        <pre class="platform-example-kubernetes hidden bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: google-oidc
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: 1234567890.apps.googleusercontent.com
+      clientSecret: your-client-secret
+      callbackURL: /oauth2/callback
+      sessionEncryptionKey: your-32-byte-encryption-key!!
+      allowedUserDomains:
+        - yourcompany.com
+        - subsidiary.com
+      excludedURLs:
+        - /health
+        - /metrics
+        - /api/public
+      forceHTTPS: true
+      logLevel: info</code></pre>
+                    </div>
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4">Redis Cache Configuration</h3>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm">For multi-replica deployments, use Redis for distributed session and JTI replay detection:</p>
+                        <div class="overflow-x-auto mb-4">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="border-b border-gray-200 dark:border-gray-700">
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Parameter</th>
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Default</th>
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="text-gray-600 dark:text-gray-400">
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.enabled</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Enable Redis caching</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.address</code></td>
+                                        <td class="py-2 px-3">-</td>
+                                        <td class="py-2 px-3">Redis server address (host:port)</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.password</code></td>
+                                        <td class="py-2 px-3">-</td>
+                                        <td class="py-2 px-3">Redis password</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.db</code></td>
+                                        <td class="py-2 px-3">0</td>
+                                        <td class="py-2 px-3">Redis database number</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.keyPrefix</code></td>
+                                        <td class="py-2 px-3">traefikoidc:</td>
+                                        <td class="py-2 px-3">Key prefix for namespacing</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.cacheMode</code></td>
+                                        <td class="py-2 px-3">redis</td>
+                                        <td class="py-2 px-3">Cache mode: <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">memory</code>, <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis</code>, or <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">hybrid</code></td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.poolSize</code></td>
+                                        <td class="py-2 px-3">10</td>
+                                        <td class="py-2 px-3">Connection pool size</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.enableCircuitBreaker</code></td>
+                                        <td class="py-2 px-3">true</td>
+                                        <td class="py-2 px-3">Enable circuit breaker for Redis failures</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.enableHealthCheck</code></td>
+                                        <td class="py-2 px-3">true</td>
+                                        <td class="py-2 px-3">Enable periodic health checks</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.enableTLS</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Enable TLS for Redis connections</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3">Example: Security Headers with CORS</h3>
+
+                        <!-- Docker -->
+                        <pre class="platform-example-docker bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># docker-compose.yml labels
+labels:
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.providerURL=https://accounts.google.com"
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.clientID=your-client-id"
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.clientSecret=your-client-secret"
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.callbackURL=/oauth2/callback"
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.sessionEncryptionKey=your-32-byte-encryption-key!!"
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.securityHeaders.enabled=true"
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.securityHeaders.profile=api"
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.securityHeaders.corsEnabled=true"
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.securityHeaders.corsAllowCredentials=true"
+  - "traefik.http.middlewares.oidc-secure.plugin.traefikoidc.securityHeaders.strictTransportSecurity=true"</code></pre>
+
+                        <!-- Kubernetes -->
+                        <pre class="platform-example-kubernetes hidden bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-secure
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      callbackURL: /oauth2/callback
+      sessionEncryptionKey: your-32-byte-encryption-key!!
+      securityHeaders:
+        enabled: true
+        profile: api
+        corsEnabled: true
+        corsAllowedOrigins:
+          - https://app.example.com
+          - https://*.example.com
+        corsAllowedMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        corsAllowCredentials: true
+        strictTransportSecurity: true
+        strictTransportSecurityMaxAge: 31536000</code></pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Deployment Section -->
+        <section id="deployment" class="py-12 sm:py-16 md:py-20 bg-white dark:bg-gray-900 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8 sm:mb-12">
+                    <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Deployment Examples</h2>
+                    <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">Production-ready configurations for Docker Compose and Kubernetes</p>
+                </div>
+
+                <!-- Tab Switcher -->
+                <div class="max-w-4xl mx-auto mb-6">
+                    <div class="flex justify-center">
+                        <div class="glass inline-flex rounded-lg p-1">
+                            <button id="tab-docker" class="deployment-tab px-6 py-2 rounded-md text-sm font-medium transition-all duration-200 bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-md" data-platform="docker">
+                                <i class="fab fa-docker mr-2"></i>Docker Compose
+                            </button>
+                            <button id="tab-kubernetes" class="deployment-tab px-6 py-2 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700" data-platform="kubernetes">
+                                <i class="fas fa-dharmachakra mr-2"></i>Kubernetes
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="max-w-4xl mx-auto space-y-6">
+                    <!-- Basic Setup -->
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3 flex items-center">
+                            <span class="deployment-icon-docker"><i class="fab fa-docker mr-2 text-blue-500"></i></span>
+                            <span class="deployment-icon-kubernetes hidden"><i class="fas fa-dharmachakra mr-2 text-blue-500"></i></span>
+                            Basic Setup
+                        </h3>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm deployment-desc-docker">Complete Docker Compose setup with Traefik OIDC middleware:</p>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm deployment-desc-kubernetes hidden">Kubernetes Middleware resource using Traefik's Custom Resource Definitions:</p>
+
+                        <!-- Docker Compose Basic -->
+                        <pre class="deployment-example-docker bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v3.2
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--experimental.plugins.traefikoidc.modulename=github.com/lukaszraczylo/traefikoidc"
+      - "--experimental.plugins.traefikoidc.version=v0.7.10"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - web
+
+  whoami:
+    image: traefik/whoami
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=Host(`app.localhost`)"
+      - "traefik.http.routers.whoami.entrypoints=web"
+      - "traefik.http.routers.whoami.middlewares=oidc-auth"
+      # OIDC Middleware Configuration
+      - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.providerURL=https://accounts.google.com"
+      - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.clientID=YOUR_CLIENT_ID"
+      - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.clientSecret=YOUR_CLIENT_SECRET"
+      - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.callbackURL=/oauth2/callback"
+      - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.sessionEncryptionKey=your-32-byte-encryption-key!!"
+      - "traefik.http.middlewares.oidc-auth.plugin.traefikoidc.forceHTTPS=false"
+    networks:
+      - web
+
+networks:
+  web:
+    external: true</code></pre>
+
+                        <!-- Kubernetes Basic -->
+                        <pre class="deployment-example-kubernetes hidden bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-auth
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+      forceHTTPS: true
+      allowedUserDomains:
+        - yourcompany.com
+      excludedURLs:
+        - /health
+        - /metrics
+      scopes:
+        - roles
+      securityHeaders:
+        enabled: true
+        profile: "default"
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`app.example.com`)
+      kind: Rule
+      middlewares:
+        - name: oidc-auth
+          namespace: traefik
+      services:
+        - name: my-service
+          port: 80
+  tls:
+    certResolver: letsencrypt</code></pre>
+                    </div>
+
+                    <!-- With Redis Cache -->
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3 flex items-center">
+                            <span class="deployment-icon-docker"><i class="fab fa-docker mr-2 text-blue-500"></i></span>
+                            <span class="deployment-icon-kubernetes hidden"><i class="fas fa-dharmachakra mr-2 text-blue-500"></i></span>
+                            With Redis Cache (Multi-Replica)
+                        </h3>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm deployment-desc-docker">Multi-replica deployment with Redis for distributed session management:</p>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm deployment-desc-kubernetes hidden">Production-ready Kubernetes deployment with Redis for high availability:</p>
+
+                        <!-- Docker Compose with Redis -->
+                        <pre class="deployment-example-docker bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>version: "3.8"
+
+services:
+  redis:
+    image: redis:alpine
+    command: redis-server --requirepass yourpassword
+    networks:
+      - web
+
+  traefik:
+    image: traefik:v3.2
+    deploy:
+      replicas: 3
+    labels:
+      # OIDC Middleware with Redis
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.providerURL=https://accounts.google.com"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.clientID=YOUR_CLIENT_ID"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.clientSecret=YOUR_CLIENT_SECRET"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.callbackURL=/oauth2/callback"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.sessionEncryptionKey=your-64-char-key"
+      # Redis Configuration
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.enabled=true"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.address=redis:6379"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.password=yourpassword"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.cacheMode=hybrid"
+    networks:
+      - web
+
+networks:
+  web:
+    external: true</code></pre>
+
+                        <!-- Kubernetes with Redis -->
+                        <pre class="deployment-example-kubernetes hidden bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-with-redis
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: your-encryption-key
+      callbackURL: /oauth2/callback
+      forceHTTPS: true
+      # Redis Configuration for multi-replica deployments
+      redis:
+        enabled: true
+        address: "redis-service.redis-namespace:6379"
+        password: "your-redis-password"
+        db: 0
+        keyPrefix: "traefikoidc:"
+        cacheMode: "hybrid"
+        enableCircuitBreaker: true
+        circuitBreakerThreshold: 5
+        enableHealthCheck: true
+        healthCheckInterval: 30</code></pre>
                     </div>
                 </div>
             </div>
         </section>
 
         <!-- Security Section -->
-        <section id="security" class="py-12 sm:py-16 md:py-20 bg-white dark:bg-gray-900 theme-transition">
+        <section id="security" class="py-12 sm:py-16 md:py-20 bg-gray-50 dark:bg-gray-800 theme-transition">
             <div class="max-w-6xl mx-auto px-4 sm:px-6">
                 <div class="text-center mb-8 sm:mb-12">
                     <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Security First</h2>
@@ -826,6 +1322,52 @@ http:
                     document.getElementById('menu-close-icon').classList.add('hidden');
                 });
             });
+
+            // Platform tab switching (unified across all sections)
+            function switchPlatform(platform) {
+                // Update all tab buttons
+                document.querySelectorAll('.platform-tab, .deployment-tab').forEach(tab => {
+                    if (tab.dataset.platform === platform) {
+                        tab.classList.add('bg-gradient-to-r', 'from-blue-600', 'to-purple-600', 'text-white', 'shadow-md');
+                        tab.classList.remove('text-gray-600', 'dark:text-gray-300', 'hover:bg-gray-100', 'dark:hover:bg-gray-700');
+                    } else {
+                        tab.classList.remove('bg-gradient-to-r', 'from-blue-600', 'to-purple-600', 'text-white', 'shadow-md');
+                        tab.classList.add('text-gray-600', 'dark:text-gray-300', 'hover:bg-gray-100', 'dark:hover:bg-gray-700');
+                    }
+                });
+
+                // Show/hide all platform-specific content (Installation, Configuration sections)
+                document.querySelectorAll('.platform-example-docker, .platform-desc-docker').forEach(el => {
+                    el.classList.toggle('hidden', platform !== 'docker');
+                });
+                document.querySelectorAll('.platform-example-kubernetes, .platform-desc-kubernetes').forEach(el => {
+                    el.classList.toggle('hidden', platform !== 'kubernetes');
+                });
+
+                // Show/hide deployment section content
+                document.querySelectorAll('.deployment-example-docker, .deployment-desc-docker, .deployment-icon-docker').forEach(el => {
+                    el.classList.toggle('hidden', platform !== 'docker');
+                });
+                document.querySelectorAll('.deployment-example-kubernetes, .deployment-desc-kubernetes, .deployment-icon-kubernetes').forEach(el => {
+                    el.classList.toggle('hidden', platform !== 'kubernetes');
+                });
+
+                // Save preference
+                localStorage.setItem('selected-platform', platform);
+            }
+
+            // Initialize all platform tabs
+            document.querySelectorAll('.platform-tab, .deployment-tab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    switchPlatform(this.dataset.platform);
+                });
+            });
+
+            // Restore saved preference
+            const savedPlatform = localStorage.getItem('selected-platform');
+            if (savedPlatform) {
+                switchPlatform(savedPlatform);
+            }
         </script>
     </body>
 </html>

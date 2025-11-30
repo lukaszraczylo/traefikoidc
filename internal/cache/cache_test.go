@@ -1880,19 +1880,20 @@ func TestConcurrentManagerOperations(t *testing.T) {
 // TestTTLExpirationAndCleanup tests TTL expiration and cleanup routines comprehensively
 func TestTTLExpirationAndCleanup(t *testing.T) {
 	config := DefaultConfig()
-	config.CleanupInterval = 10 * time.Millisecond
+	config.CleanupInterval = 50 * time.Millisecond
 	config.EnableAutoCleanup = true
 	cache := New(config)
 	defer cache.Close()
 
 	// Test various TTL scenarios
+	// Note: Timing increased 5x to account for race detector overhead
 	testCases := []struct {
 		key string
 		ttl time.Duration
 	}{
-		{"very-short", 5 * time.Millisecond},
-		{"short", 25 * time.Millisecond},
-		{"medium", 100 * time.Millisecond},
+		{"very-short", 25 * time.Millisecond},
+		{"short", 125 * time.Millisecond},
+		{"medium", 500 * time.Millisecond},
 		{"long", 1 * time.Hour},
 	}
 
@@ -1908,13 +1909,13 @@ func TestTTLExpirationAndCleanup(t *testing.T) {
 	}
 
 	// Wait for very short items to expire
-	time.Sleep(15 * time.Millisecond)
+	time.Sleep(75 * time.Millisecond)
 	if _, exists := cache.Get("very-short"); exists {
 		t.Error("Very short item should be expired")
 	}
 
 	// Wait for short items to expire
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 	if _, exists := cache.Get("short"); exists {
 		t.Error("Short item should be expired")
 	}
@@ -1930,16 +1931,16 @@ func TestTTLExpirationAndCleanup(t *testing.T) {
 	}
 
 	// Test manual cleanup
-	cache.Set("manual-cleanup", "value", 1*time.Millisecond)
-	time.Sleep(5 * time.Millisecond)
+	cache.Set("manual-cleanup", "value", 5*time.Millisecond)
+	time.Sleep(25 * time.Millisecond)
 	cache.Cleanup()
 
 	// Add many expired items to test bulk cleanup
 	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("bulk-%d", i)
-		cache.Set(key, fmt.Sprintf("value-%d", i), 1*time.Millisecond)
+		cache.Set(key, fmt.Sprintf("value-%d", i), 5*time.Millisecond)
 	}
-	time.Sleep(5 * time.Millisecond)
+	time.Sleep(25 * time.Millisecond)
 
 	sizeBefore := cache.Size()
 	cache.Cleanup()
@@ -2037,4 +2038,89 @@ func TestCacheStatisticsAndMetrics(t *testing.T) {
 	if newMemoryUsage <= memoryUsage {
 		t.Error("Memory usage should increase after adding large item")
 	}
+}
+
+// ============================================================================
+// noOpLogger Tests
+// ============================================================================
+
+// TestNoOpLogger_AllMethods tests all noOpLogger methods to ensure they don't panic
+func TestNoOpLogger_AllMethods(t *testing.T) {
+	logger := &noOpLogger{}
+
+	// Test simple message methods
+	logger.Debug("test debug message")
+	logger.Info("test info message")
+	logger.Error("test error message")
+	logger.Warn("test warn message")
+	logger.Fatal("test fatal message")
+
+	// Test formatted message methods
+	logger.Debugf("test debug: %s", "value")
+	logger.Infof("test info: %s", "value")
+	logger.Errorf("test error: %s", "value")
+	logger.Warnf("test warn: %s", "value")
+	logger.Fatalf("test fatal: %s", "value")
+
+	// If we reach here, all methods executed without panicking
+	// This is expected behavior for a no-op logger
+}
+
+// TestNoOpLogger_WithField verifies WithField returns the same logger
+func TestNoOpLogger_WithField(t *testing.T) {
+	logger := &noOpLogger{}
+
+	result := logger.WithField("key", "value")
+
+	if result != logger {
+		t.Error("WithField should return the same logger instance")
+	}
+
+	// Verify the returned logger works
+	result.Info("test message after WithField")
+}
+
+// TestNoOpLogger_WithFields verifies WithFields returns the same logger
+func TestNoOpLogger_WithFields(t *testing.T) {
+	logger := &noOpLogger{}
+
+	fields := map[string]interface{}{
+		"key1": "value1",
+		"key2": 123,
+		"key3": true,
+	}
+
+	result := logger.WithFields(fields)
+
+	if result != logger {
+		t.Error("WithFields should return the same logger instance")
+	}
+
+	// Verify the returned logger works
+	result.Info("test message after WithFields")
+}
+
+// TestNoOpLogger_Chaining verifies method chaining works
+func TestNoOpLogger_Chaining(t *testing.T) {
+	logger := &noOpLogger{}
+
+	// Use WithField and verify it returns a usable logger
+	result := logger.WithField("key1", "value1")
+
+	// Verify the result can be used for logging (Logger interface methods)
+	result.Info("info after WithField")
+	result.Infof("infof after WithField: %s", "test")
+	result.Debug("debug after WithField")
+	result.Debugf("debugf after WithField: %d", 123)
+	result.Error("error after WithField")
+	result.Errorf("errorf after WithField: %v", true)
+
+	// Use WithFields and verify it returns a usable logger
+	result2 := logger.WithFields(map[string]interface{}{
+		"key2": "value2",
+		"key3": 123,
+	})
+
+	// Verify the result can be used for logging
+	result2.Infof("message after WithFields: %s", "test")
 }

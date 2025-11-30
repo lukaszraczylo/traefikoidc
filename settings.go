@@ -30,6 +30,8 @@ type Config struct {
 	HTTPClient        *http.Client `json:"-"`
 	OIDCEndSessionURL string       `json:"oidcEndSessionURL"`
 	CookieDomain      string       `json:"cookieDomain"`
+	CookiePrefix      string       `json:"cookiePrefix"`  // Prefix for session cookie names (default: "_oidc_raczylo_")
+	SessionMaxAge     int          `json:"sessionMaxAge"` // Maximum session age in seconds (default: 86400 = 24 hours)
 	CallbackURL       string       `json:"callbackURL"`
 	LogoutURL         string       `json:"logoutURL"`
 	ClientID          string       `json:"clientID"`
@@ -90,10 +92,108 @@ type Config struct {
 	DisableReplayDetection bool                   `json:"disableReplayDetection,omitempty"`
 	SecurityHeaders        *SecurityHeadersConfig `json:"securityHeaders,omitempty"`
 
+	// Redis configures the Redis cache backend for distributed caching.
+	// When enabled, provides cache sharing across multiple Traefik replicas.
+	// Default: nil (disabled - uses in-memory caching)
+	Redis *RedisConfig `json:"redis,omitempty"`
+
+	// RoleClaimName specifies the JWT claim name to extract user roles from.
+	// This allows compatibility with different OIDC providers that use different claim names.
+	//
+	// Examples:
+	//   - Default (backward compatible): "roles"
+	//   - Auth0 namespaced: "https://myapp.com/roles"
+	//   - Keycloak realm roles: "realm_access.roles"
+	//   - Custom claim: "user_roles"
+	//
+	// If not specified, defaults to "roles" for backward compatibility.
+	// Supports both simple names and namespaced URIs per OIDC specification.
+	//
+	// Default: "roles"
+	RoleClaimName string `json:"roleClaimName,omitempty"`
+
+	// GroupClaimName specifies the JWT claim name to extract user groups from.
+	// This allows compatibility with different OIDC providers that use different claim names.
+	//
+	// Examples:
+	//   - Default (backward compatible): "groups"
+	//   - Auth0 namespaced: "https://myapp.com/groups"
+	//   - Azure AD groups: "groups"
+	//   - Custom claim: "user_groups"
+	//
+	// If not specified, defaults to "groups" for backward compatibility.
+	// Supports both simple names and namespaced URIs per OIDC specification.
+	//
+	// Default: "groups"
+	GroupClaimName string `json:"groupClaimName,omitempty"`
+
 	// DynamicClientRegistration enables OIDC Dynamic Client Registration (RFC 7591)
 	// When enabled, the middleware will automatically register as a client with
 	// the OIDC provider if ClientID/ClientSecret are not provided.
 	DynamicClientRegistration *DynamicClientRegistrationConfig `json:"dynamicClientRegistration,omitempty"`
+}
+
+// RedisConfig configures Redis cache backend settings for distributed caching.
+// All fields support both JSON and YAML configuration for compatibility with Traefik's
+// dynamic configuration (labels, YAML files, etc.)
+type RedisConfig struct {
+	// Enabled indicates if Redis caching should be used (default: false)
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// Address is the Redis server address (e.g., "localhost:6379", "redis:6379")
+	Address string `json:"address" yaml:"address"`
+
+	// Password for Redis authentication (optional, leave empty for no auth)
+	Password string `json:"password,omitempty" yaml:"password,omitempty"`
+
+	// DB is the Redis database number to use (default: 0)
+	DB int `json:"db" yaml:"db"`
+
+	// KeyPrefix is the prefix for all Redis keys (default: "traefikoidc:")
+	KeyPrefix string `json:"keyPrefix" yaml:"keyPrefix"`
+
+	// PoolSize is the maximum number of socket connections (default: 10)
+	PoolSize int `json:"poolSize" yaml:"poolSize"`
+
+	// ConnectTimeout is the timeout for establishing connections in seconds (default: 5)
+	ConnectTimeout int `json:"connectTimeout" yaml:"connectTimeout"`
+
+	// ReadTimeout is the timeout for read operations in seconds (default: 3)
+	ReadTimeout int `json:"readTimeout" yaml:"readTimeout"`
+
+	// WriteTimeout is the timeout for write operations in seconds (default: 3)
+	WriteTimeout int `json:"writeTimeout" yaml:"writeTimeout"`
+
+	// EnableTLS indicates if TLS should be used for Redis connections (default: false)
+	EnableTLS bool `json:"enableTLS" yaml:"enableTLS"`
+
+	// TLSSkipVerify skips TLS certificate verification (not recommended for production)
+	TLSSkipVerify bool `json:"tlsSkipVerify" yaml:"tlsSkipVerify"`
+
+	// CacheMode determines the caching strategy: "redis" (Redis only), "hybrid" (Memory+Redis), "memory" (Memory only)
+	// Default: "redis" when enabled
+	CacheMode string `json:"cacheMode" yaml:"cacheMode"`
+
+	// HybridL1Size is the maximum number of items in L1 cache for hybrid mode (default: 500)
+	HybridL1Size int `json:"hybridL1Size" yaml:"hybridL1Size"`
+
+	// HybridL1MemoryMB is the maximum memory in MB for L1 cache in hybrid mode (default: 10)
+	HybridL1MemoryMB int64 `json:"hybridL1MemoryMB" yaml:"hybridL1MemoryMB"`
+
+	// EnableCircuitBreaker enables circuit breaker for Redis failures (default: true)
+	EnableCircuitBreaker bool `json:"enableCircuitBreaker" yaml:"enableCircuitBreaker"`
+
+	// CircuitBreakerThreshold is the number of failures before opening circuit (default: 5)
+	CircuitBreakerThreshold int `json:"circuitBreakerThreshold" yaml:"circuitBreakerThreshold"`
+
+	// CircuitBreakerTimeout is the timeout in seconds before attempting to close circuit (default: 60)
+	CircuitBreakerTimeout int `json:"circuitBreakerTimeout" yaml:"circuitBreakerTimeout"`
+
+	// EnableHealthCheck enables periodic health checks for Redis (default: true)
+	EnableHealthCheck bool `json:"enableHealthCheck" yaml:"enableHealthCheck"`
+
+	// HealthCheckInterval is the interval in seconds between health checks (default: 30)
+	HealthCheckInterval int `json:"healthCheckInterval" yaml:"healthCheckInterval"`
 }
 
 // DynamicClientRegistrationConfig configures OIDC Dynamic Client Registration (RFC 7591)
@@ -252,11 +352,14 @@ const (
 //   - PostLogoutRedirectURI: "/"
 //   - ForceHTTPS: true (for security)
 //   - EnablePKCE: false (PKCE is opt-in)
+//   - Redis: nil (disabled by default, can be configured via Traefik config or env vars)
 //
 // CreateConfig initializes a new Config struct with default values for optional fields.
 // It sets default scopes, log level, rate limit, enables ForceHTTPS, and sets the
 // default refresh grace period. Required fields like ProviderURL, ClientID, ClientSecret,
 // CallbackURL, and SessionEncryptionKey must be set explicitly after creation.
+// Redis configuration can be provided through Traefik's dynamic configuration or
+// as a fallback through environment variables.
 //
 // Returns:
 //   - A pointer to a new Config struct with default settings applied.
@@ -270,6 +373,7 @@ func CreateConfig() *Config {
 		OverrideScopes:            false, // Default to appending scopes, not overriding
 		RefreshGracePeriodSeconds: 60,    // Default grace period of 60 seconds
 		SecurityHeaders:           createDefaultSecurityConfig(),
+		Redis:                     nil, // Redis is disabled by default, configure via Traefik or env vars
 	}
 
 	return c
@@ -411,6 +515,13 @@ func (c *Config) Validate() error {
 		// Validate that audience doesn't contain obvious injection patterns
 		if strings.ContainsAny(c.Audience, "\n\r\t\x00") {
 			return fmt.Errorf("audience contains invalid characters")
+		}
+	}
+
+	// Validate Redis configuration if provided
+	if c.Redis != nil && c.Redis.Enabled {
+		if err := c.Redis.Validate(); err != nil {
+			return fmt.Errorf("redis configuration error: %w", err)
 		}
 	}
 
@@ -888,6 +999,341 @@ func (c *Config) GetSecurityHeadersApplier() func(http.ResponseWriter, *http.Req
 }
 
 // isOriginAllowed checks if an origin is in the allowed list
+// Validate checks if the Redis configuration is valid
+func (rc *RedisConfig) Validate() error {
+	if !rc.Enabled {
+		return nil
+	}
+
+	if rc.Address == "" {
+		return fmt.Errorf("redis address is required when Redis is enabled")
+	}
+
+	// Validate cache mode
+	if rc.CacheMode != "" {
+		validModes := map[string]bool{
+			"redis":  true,
+			"hybrid": true,
+			"memory": true,
+		}
+		if !validModes[rc.CacheMode] {
+			return fmt.Errorf("invalid cache mode: %s (must be 'redis', 'hybrid', or 'memory')", rc.CacheMode)
+		}
+	}
+
+	// Validate connection settings
+	if rc.PoolSize < 0 {
+		return fmt.Errorf("pool size cannot be negative")
+	}
+	if rc.ConnectTimeout < 0 {
+		return fmt.Errorf("connect timeout cannot be negative")
+	}
+	if rc.ReadTimeout < 0 {
+		return fmt.Errorf("read timeout cannot be negative")
+	}
+	if rc.WriteTimeout < 0 {
+		return fmt.Errorf("write timeout cannot be negative")
+	}
+
+	// Validate hybrid mode settings
+	if rc.CacheMode == "hybrid" {
+		if rc.HybridL1Size < 0 {
+			return fmt.Errorf("hybrid L1 size cannot be negative")
+		}
+		if rc.HybridL1MemoryMB < 0 {
+			return fmt.Errorf("hybrid L1 memory cannot be negative")
+		}
+	}
+
+	// Validate circuit breaker settings
+	if rc.CircuitBreakerThreshold < 0 {
+		return fmt.Errorf("circuit breaker threshold cannot be negative")
+	}
+	if rc.CircuitBreakerTimeout < 0 {
+		return fmt.Errorf("circuit breaker timeout cannot be negative")
+	}
+
+	// Validate health check settings
+	if rc.HealthCheckInterval < 0 {
+		return fmt.Errorf("health check interval cannot be negative")
+	}
+
+	return nil
+}
+
+// ApplyDefaults sets default values for Redis configuration when fields are not explicitly set.
+// This ensures reasonable defaults while allowing full customization through configuration.
+func (rc *RedisConfig) ApplyDefaults() {
+	// Only apply defaults if Redis is enabled
+	if !rc.Enabled {
+		return
+	}
+
+	// Connection defaults
+	if rc.KeyPrefix == "" {
+		rc.KeyPrefix = "traefikoidc:"
+	}
+	if rc.PoolSize == 0 {
+		rc.PoolSize = 10
+	}
+	if rc.ConnectTimeout == 0 {
+		rc.ConnectTimeout = 5
+	}
+	if rc.ReadTimeout == 0 {
+		rc.ReadTimeout = 3
+	}
+	if rc.WriteTimeout == 0 {
+		rc.WriteTimeout = 3
+	}
+
+	// Cache mode defaults
+	if rc.CacheMode == "" {
+		rc.CacheMode = "redis" // Default to redis-only mode for simplicity
+	}
+
+	// Hybrid mode specific defaults
+	if rc.CacheMode == "hybrid" {
+		if rc.HybridL1Size == 0 {
+			rc.HybridL1Size = 500
+		}
+		if rc.HybridL1MemoryMB == 0 {
+			rc.HybridL1MemoryMB = 10
+		}
+	}
+
+	// Resilience features - these use a different pattern to detect if they were explicitly set
+	// Since bool fields default to false, we need to be careful about defaults
+	// For now, we'll enable by default only if not explicitly disabled via environment
+	if rc.CircuitBreakerThreshold == 0 {
+		rc.CircuitBreakerThreshold = 5
+	}
+	if rc.CircuitBreakerTimeout == 0 {
+		rc.CircuitBreakerTimeout = 60
+	}
+	if rc.HealthCheckInterval == 0 {
+		rc.HealthCheckInterval = 30
+	}
+}
+
+// ApplyEnvFallbacks applies environment variable values as fallbacks for empty config fields.
+// This allows environment variables to be used as optional overrides only when the
+// corresponding config field is not set through Traefik's dynamic configuration.
+// The plugin configuration takes precedence over environment variables.
+func (rc *RedisConfig) ApplyEnvFallbacks() {
+	// Only apply env fallbacks if Redis is not already configured
+	if !rc.Enabled {
+		// Check if Redis should be enabled from environment
+		enabledStr := os.Getenv("REDIS_ENABLED")
+		if enabledStr == "true" || enabledStr == "1" {
+			rc.Enabled = true
+		}
+	}
+
+	// Only apply other env vars if Redis is enabled
+	if !rc.Enabled {
+		return
+	}
+
+	// Apply environment variables only for empty fields
+	if rc.Address == "" {
+		if addr := os.Getenv("REDIS_ADDRESS"); addr != "" {
+			rc.Address = addr
+		}
+	}
+
+	if rc.Password == "" {
+		rc.Password = os.Getenv("REDIS_PASSWORD")
+	}
+
+	if rc.KeyPrefix == "" {
+		if prefix := os.Getenv("REDIS_KEY_PREFIX"); prefix != "" {
+			rc.KeyPrefix = prefix
+		}
+	}
+
+	if rc.CacheMode == "" {
+		if mode := os.Getenv("REDIS_CACHE_MODE"); mode != "" {
+			rc.CacheMode = mode
+		}
+	}
+
+	// Apply numeric values only if not already set
+	if rc.DB == 0 {
+		if dbStr := os.Getenv("REDIS_DB"); dbStr != "" {
+			if db, err := strconv.Atoi(dbStr); err == nil && db > 0 {
+				rc.DB = db
+			}
+		}
+	}
+
+	if rc.PoolSize == 0 {
+		if poolSizeStr := os.Getenv("REDIS_POOL_SIZE"); poolSizeStr != "" {
+			if poolSize, err := strconv.Atoi(poolSizeStr); err == nil && poolSize > 0 {
+				rc.PoolSize = poolSize
+			}
+		}
+	}
+
+	if rc.ConnectTimeout == 0 {
+		if timeoutStr := os.Getenv("REDIS_CONNECT_TIMEOUT"); timeoutStr != "" {
+			if timeout, err := strconv.Atoi(timeoutStr); err == nil && timeout > 0 {
+				rc.ConnectTimeout = timeout
+			}
+		}
+	}
+
+	if rc.ReadTimeout == 0 {
+		if timeoutStr := os.Getenv("REDIS_READ_TIMEOUT"); timeoutStr != "" {
+			if timeout, err := strconv.Atoi(timeoutStr); err == nil && timeout > 0 {
+				rc.ReadTimeout = timeout
+			}
+		}
+	}
+
+	if rc.WriteTimeout == 0 {
+		if timeoutStr := os.Getenv("REDIS_WRITE_TIMEOUT"); timeoutStr != "" {
+			if timeout, err := strconv.Atoi(timeoutStr); err == nil && timeout > 0 {
+				rc.WriteTimeout = timeout
+			}
+		}
+	}
+
+	// Apply boolean values from env only if not already set in config
+	if !rc.EnableTLS {
+		if tlsStr := os.Getenv("REDIS_ENABLE_TLS"); tlsStr == "true" || tlsStr == "1" {
+			rc.EnableTLS = true
+		}
+	}
+
+	if !rc.TLSSkipVerify {
+		if skipStr := os.Getenv("REDIS_TLS_SKIP_VERIFY"); skipStr == "true" || skipStr == "1" {
+			rc.TLSSkipVerify = true
+		}
+	}
+
+	// Hybrid mode settings
+	if rc.HybridL1Size == 0 {
+		if sizeStr := os.Getenv("REDIS_HYBRID_L1_SIZE"); sizeStr != "" {
+			if size, err := strconv.Atoi(sizeStr); err == nil && size > 0 {
+				rc.HybridL1Size = size
+			}
+		}
+	}
+
+	if rc.HybridL1MemoryMB == 0 {
+		if memStr := os.Getenv("REDIS_HYBRID_L1_MEMORY_MB"); memStr != "" {
+			if mem, err := strconv.ParseInt(memStr, 10, 64); err == nil && mem > 0 {
+				rc.HybridL1MemoryMB = mem
+			}
+		}
+	}
+}
+
+// LoadRedisConfigFromEnv loads Redis configuration from environment variables.
+// Deprecated: Use RedisConfig.ApplyEnvFallbacks() on an existing config instead.
+// This function is kept for backward compatibility but should not be used directly.
+func LoadRedisConfigFromEnv() *RedisConfig {
+	// Check if Redis is enabled
+	enabledStr := os.Getenv("REDIS_ENABLED")
+	if enabledStr == "" || enabledStr == "false" || enabledStr == "0" {
+		return nil
+	}
+
+	config := &RedisConfig{
+		Enabled: true,
+	}
+
+	// Parse numeric values
+	if dbStr := os.Getenv("REDIS_DB"); dbStr != "" {
+		if db, err := strconv.Atoi(dbStr); err == nil {
+			config.DB = db
+		}
+	}
+
+	if poolSizeStr := os.Getenv("REDIS_POOL_SIZE"); poolSizeStr != "" {
+		if poolSize, err := strconv.Atoi(poolSizeStr); err == nil {
+			config.PoolSize = poolSize
+		}
+	}
+
+	if connectTimeoutStr := os.Getenv("REDIS_CONNECT_TIMEOUT"); connectTimeoutStr != "" {
+		if timeout, err := strconv.Atoi(connectTimeoutStr); err == nil {
+			config.ConnectTimeout = timeout
+		}
+	}
+
+	if readTimeoutStr := os.Getenv("REDIS_READ_TIMEOUT"); readTimeoutStr != "" {
+		if timeout, err := strconv.Atoi(readTimeoutStr); err == nil {
+			config.ReadTimeout = timeout
+		}
+	}
+
+	if writeTimeoutStr := os.Getenv("REDIS_WRITE_TIMEOUT"); writeTimeoutStr != "" {
+		if timeout, err := strconv.Atoi(writeTimeoutStr); err == nil {
+			config.WriteTimeout = timeout
+		}
+	}
+
+	// Parse boolean values
+	if enableTLSStr := os.Getenv("REDIS_ENABLE_TLS"); enableTLSStr == "true" || enableTLSStr == "1" {
+		config.EnableTLS = true
+	}
+
+	if skipVerifyStr := os.Getenv("REDIS_TLS_SKIP_VERIFY"); skipVerifyStr == "true" || skipVerifyStr == "1" {
+		config.TLSSkipVerify = true
+	}
+
+	// Parse hybrid mode settings
+	if l1SizeStr := os.Getenv("REDIS_HYBRID_L1_SIZE"); l1SizeStr != "" {
+		if size, err := strconv.Atoi(l1SizeStr); err == nil {
+			config.HybridL1Size = size
+		}
+	}
+
+	if l1MemoryStr := os.Getenv("REDIS_HYBRID_L1_MEMORY_MB"); l1MemoryStr != "" {
+		if memory, err := strconv.ParseInt(l1MemoryStr, 10, 64); err == nil {
+			config.HybridL1MemoryMB = memory
+		}
+	}
+
+	// Parse circuit breaker settings
+	if enableCBStr := os.Getenv("REDIS_ENABLE_CIRCUIT_BREAKER"); enableCBStr == "false" || enableCBStr == "0" {
+		config.EnableCircuitBreaker = false
+	} else {
+		config.EnableCircuitBreaker = true // Default to enabled
+	}
+
+	if cbThresholdStr := os.Getenv("REDIS_CIRCUIT_BREAKER_THRESHOLD"); cbThresholdStr != "" {
+		if threshold, err := strconv.Atoi(cbThresholdStr); err == nil {
+			config.CircuitBreakerThreshold = threshold
+		}
+	}
+
+	if cbTimeoutStr := os.Getenv("REDIS_CIRCUIT_BREAKER_TIMEOUT"); cbTimeoutStr != "" {
+		if timeout, err := strconv.Atoi(cbTimeoutStr); err == nil {
+			config.CircuitBreakerTimeout = timeout
+		}
+	}
+
+	// Parse health check settings
+	if enableHCStr := os.Getenv("REDIS_ENABLE_HEALTH_CHECK"); enableHCStr == "false" || enableHCStr == "0" {
+		config.EnableHealthCheck = false
+	} else {
+		config.EnableHealthCheck = true // Default to enabled
+	}
+
+	if hcIntervalStr := os.Getenv("REDIS_HEALTH_CHECK_INTERVAL"); hcIntervalStr != "" {
+		if interval, err := strconv.Atoi(hcIntervalStr); err == nil {
+			config.HealthCheckInterval = interval
+		}
+	}
+
+	// Apply defaults after loading from env
+	config.ApplyDefaults()
+
+	return config
+}
+
 func isOriginAllowed(origin string, allowedOrigins []string) bool {
 	for _, allowed := range allowedOrigins {
 		if origin == allowed || allowed == "*" {

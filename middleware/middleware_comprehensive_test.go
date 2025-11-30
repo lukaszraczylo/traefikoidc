@@ -730,9 +730,9 @@ func TestServeHTTP_ComprehensiveCoverage(t *testing.T) {
 		}
 	})
 
-	t.Run("jwt_token_validation_failure", func(t *testing.T) {
+	t.Run("authenticated_user_proceeds_to_authorized_request", func(t *testing.T) {
 		logger := &mockLogger{}
-		handleExpiredCalled := false
+		nextHandlerCalled := false
 
 		initComplete := make(chan struct{})
 		close(initComplete)
@@ -741,11 +741,14 @@ func TestServeHTTP_ComprehensiveCoverage(t *testing.T) {
 			logger:       logger,
 			issuerURL:    "https://issuer.example.com",
 			initComplete: initComplete,
+			next: http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+				nextHandlerCalled = true
+			}),
 			sessionManager: &mockSessionManager{
 				getSessionFunc: func(req *http.Request) (SessionData, error) {
 					return &mockSessionData{
 						email:       "user@example.com",
-						accessToken: "invalid.jwt.token", // JWT format (has dots)
+						accessToken: "valid.jwt.token", // JWT format (has dots)
 					}, nil
 				},
 				cleanupOldCookiesFunc: func(rw http.ResponseWriter, req *http.Request) {},
@@ -762,34 +765,28 @@ func TestServeHTTP_ComprehensiveCoverage(t *testing.T) {
 				},
 			},
 			isUserAuthenticatedFunc: func(session SessionData) (bool, bool, bool) {
+				// When authenticated=true, it means provider-specific validation already passed
 				return true, false, false // authenticated, no refresh needed
 			},
 			isAllowedDomainFunc: func(email string) bool {
 				return true
 			},
-			tokenVerifier: &mockTokenVerifier{
-				verifyFunc: func(token string) error {
-					return errors.New("token validation failed")
-				},
+			extractClaimsFunc: func(token string) (map[string]interface{}, error) {
+				return map[string]interface{}{"email": "user@example.com"}, nil
 			},
-			authHandler: &mockAuthHandler{
-				initiateAuthFunc: func(rw http.ResponseWriter, req *http.Request, session SessionData, redirectURL string,
-					genNonce, genVerifier, deriveChallenge func() (string, error)) {
-					handleExpiredCalled = true
-				},
+			extractGroupsAndRolesFunc: func(token string) ([]string, []string, error) {
+				return []string{}, []string{}, nil
 			},
 			firstRequestReceived: true,
 		}
-
-		// We'll track this through the authHandler's InitiateAuthentication call
 
 		req := httptest.NewRequest("GET", "/test", nil)
 		rw := httptest.NewRecorder()
 
 		m.ServeHTTP(rw, req)
 
-		if !handleExpiredCalled {
-			t.Error("Expected handleExpiredToken for invalid JWT")
+		if !nextHandlerCalled {
+			t.Error("Expected next handler to be called when user is authenticated")
 		}
 	})
 

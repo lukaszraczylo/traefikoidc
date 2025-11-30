@@ -5,6 +5,7 @@ package traefikoidc
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"runtime"
 	"strings"
@@ -144,6 +145,8 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 	t.logger.Debugf("Sending HTML error response (code %d): %s", code, message)
 
 	returnURL := "/"
+	// Escape message to prevent XSS attacks
+	escapedMessage := html.EscapeString(message)
 
 	htmlBody := fmt.Sprintf(`
 <!DOCTYPE html>
@@ -165,7 +168,7 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
         <p><a href="%s">Return to application</a></p>
     </div>
 </body>
-</html>`, message, returnURL)
+</html>`, escapedMessage, returnURL)
 
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(code)

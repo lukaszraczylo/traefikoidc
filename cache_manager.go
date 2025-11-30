@@ -21,10 +21,37 @@ var (
 )
 
 // GetGlobalCacheManager returns a singleton CacheManager instance
+// Deprecated: Use GetGlobalCacheManagerWithConfig instead
 func GetGlobalCacheManager(wg *sync.WaitGroup) *CacheManager {
+	return GetGlobalCacheManagerWithConfig(wg, nil)
+}
+
+// GetGlobalCacheManagerWithConfig returns a singleton CacheManager instance with optional Redis configuration
+func GetGlobalCacheManagerWithConfig(wg *sync.WaitGroup, config *Config) *CacheManager {
 	cacheManagerInitOnce.Do(func() {
+		var redisConfig *RedisConfig
+		var logger *Logger
+
+		if config != nil {
+			logger = NewLogger(config.LogLevel)
+
+			// Initialize Redis config if not present
+			if config.Redis == nil {
+				config.Redis = &RedisConfig{}
+			}
+
+			// Apply environment variable fallbacks for fields not set in config
+			// This allows env vars to be used as optional overrides
+			config.Redis.ApplyEnvFallbacks()
+
+			// Apply defaults after env fallbacks
+			config.Redis.ApplyDefaults()
+
+			redisConfig = config.Redis
+		}
+
 		globalCacheManagerInstance = &CacheManager{
-			manager: GetUniversalCacheManager(nil),
+			manager: GetUniversalCacheManagerWithConfig(logger, redisConfig),
 		}
 	})
 	return globalCacheManagerInstance

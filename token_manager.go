@@ -1214,32 +1214,34 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 	var groups []string
 	var roles []string
 
-	if groupsClaim, exists := claims["groups"]; exists {
+	// Extract groups using configurable claim name (defaults to "groups")
+	if groupsClaim, exists := claims[t.groupClaimName]; exists {
 		groupsSlice, ok := groupsClaim.([]interface{})
 		if !ok {
-			return nil, nil, fmt.Errorf("groups claim is not an array")
+			return nil, nil, fmt.Errorf("%s claim is not an array", t.groupClaimName)
 		}
 		for _, group := range groupsSlice {
 			if groupStr, ok := group.(string); ok {
-				t.logger.Debugf("Found group: %s", groupStr)
+				t.logger.Debugf("Found group from %s claim: %s", t.groupClaimName, groupStr)
 				groups = append(groups, groupStr)
 			} else {
-				t.logger.Errorf("Non-string value found in groups claim array: %v", group)
+				t.logger.Errorf("Non-string value found in %s claim array: %v", t.groupClaimName, group)
 			}
 		}
 	}
 
-	if rolesClaim, exists := claims["roles"]; exists {
+	// Extract roles using configurable claim name (defaults to "roles")
+	if rolesClaim, exists := claims[t.roleClaimName]; exists {
 		rolesSlice, ok := rolesClaim.([]interface{})
 		if !ok {
-			return nil, nil, fmt.Errorf("roles claim is not an array")
+			return nil, nil, fmt.Errorf("%s claim is not an array", t.roleClaimName)
 		}
 		for _, role := range rolesSlice {
 			if roleStr, ok := role.(string); ok {
-				t.logger.Debugf("Found role: %s", roleStr)
+				t.logger.Debugf("Found role from %s claim: %s", t.roleClaimName, roleStr)
 				roles = append(roles, roleStr)
 			} else {
-				t.logger.Errorf("Non-string value found in roles claim array: %v", role)
+				t.logger.Errorf("Non-string value found in %s claim array: %v", t.roleClaimName, role)
 			}
 		}
 	}

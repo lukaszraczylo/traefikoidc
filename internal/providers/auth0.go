@@ -39,25 +39,25 @@ func (p *Auth0Provider) BuildAuthParams(baseParams url.Values, scopes []string) 
 	// Ensure offline_access scope is present for refresh tokens
 	hasOfflineAccess := false
 	for _, scope := range scopes {
-		if scope == "offline_access" {
+		if scope == ScopeOfflineAccess {
 			hasOfflineAccess = true
 			break
 		}
 	}
 	if !hasOfflineAccess {
-		scopes = append(scopes, "offline_access")
+		scopes = append(scopes, ScopeOfflineAccess)
 	}
 
 	// Ensure openid scope is present
 	hasOpenID := false
 	for _, scope := range scopes {
-		if scope == "openid" {
+		if scope == ScopeOpenID {
 			hasOpenID = true
 			break
 		}
 	}
 	if !hasOpenID {
-		scopes = append(scopes, "openid")
+		scopes = append(scopes, ScopeOpenID)
 	}
 
 	return &AuthParams{

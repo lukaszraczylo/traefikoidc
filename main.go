@@ -124,7 +124,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		httpClient = CreateDefaultHTTPClient()
 	}
 	goroutineWG := &sync.WaitGroup{}
-	cacheManager := GetGlobalCacheManager(goroutineWG)
+	cacheManager := GetGlobalCacheManagerWithConfig(goroutineWG, config)
 
 	// Use provided context instead of creating new one
 	var pluginCtx context.Context
@@ -164,6 +164,18 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 				return config.Audience
 			}
 			return config.ClientID
+		}(),
+		roleClaimName: func() string {
+			if config.RoleClaimName != "" {
+				return config.RoleClaimName
+			}
+			return "roles" // Backward compatible default
+		}(),
+		groupClaimName: func() string {
+			if config.GroupClaimName != "" {
+				return config.GroupClaimName
+			}
+			return "groups" // Backward compatible default
 		}(),
 		forceHTTPS:                config.ForceHTTPS,
 		enablePKCE:                config.EnablePKCE,
@@ -215,7 +227,9 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		t.logger.Debugf("No custom audience specified, using clientID as audience: %s", t.clientID)
 	}
 
-	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, t.logger) // Safe to ignore: session manager creation with fallback to defaults
+	// Convert sessionMaxAge from seconds to duration (0 will use default 24 hours)
+	sessionMaxAge := time.Duration(config.SessionMaxAge) * time.Second
+	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, config.CookiePrefix, sessionMaxAge, t.logger) // Safe to ignore: session manager creation with fallback to defaults
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 
 	// Initialize token resilience manager with default configuration

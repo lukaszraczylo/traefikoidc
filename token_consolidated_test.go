@@ -164,7 +164,7 @@ func TestTokenTypes(t *testing.T) {
 func TestTokenCorruption(t *testing.T) {
 	t.Run("TokenCorruptionScenario", func(t *testing.T) {
 		logger := NewLogger("debug")
-		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 		if err != nil {
 			t.Fatalf("Failed to create session manager: %v", err)
 		}
@@ -291,7 +291,7 @@ func TestTokenCorruption(t *testing.T) {
 func TestTokenResilience(t *testing.T) {
 	t.Run("ConcurrentTokenAccess", func(t *testing.T) {
 		logger := NewLogger("debug")
-		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 		if err != nil {
 			t.Fatalf("Failed to create session manager: %v", err)
 		}
@@ -337,7 +337,7 @@ func TestTokenResilience(t *testing.T) {
 
 	t.Run("TokenSizeHandling", func(t *testing.T) {
 		logger := NewLogger("debug")
-		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+		sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
 		if err != nil {
 			t.Fatalf("Failed to create session manager: %v", err)
 		}

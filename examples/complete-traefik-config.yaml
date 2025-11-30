@@ -1,0 +1,486 @@
+# ============================================================================
+# Complete Traefik Configuration Example with TraefikOIDC Plugin + Redis
+# ============================================================================
+#
+# This example shows a complete, production-ready configuration for using
+# the TraefikOIDC plugin with Redis caching in a multi-replica deployment.
+#
+
+# ============================================================================
+# Part 1: Traefik Static Configuration (traefik.yml)
+# ============================================================================
+# This file configures Traefik itself and enables the plugin.
+# Place this in /etc/traefik/traefik.yml or mount it in your container.
+
+---
+# Static Configuration
+api:
+  dashboard: true
+  insecure: false  # Set to true only for local development
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: admin@example.com
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+# Enable the TraefikOIDC plugin
+experimental:
+  plugins:
+    traefikoidc:
+      moduleName: github.com/lukaszraczylo/traefikoidc
+      version: v0.8.0
+
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+
+
+# ============================================================================
+# Part 2: Traefik Dynamic Configuration (dynamic.yml)
+# ============================================================================
+# This file defines your routes, services, and middleware.
+# Place this in /etc/traefik/dynamic.yml
+
+---
+http:
+  # -------------------------------------------------------------------------
+  # Middleware Definitions
+  # -------------------------------------------------------------------------
+  middlewares:
+    # Example 1: Minimal Redis Configuration
+    # Perfect for getting started quickly
+    oidc-minimal:
+      plugin:
+        traefikoidc:
+          # Required OIDC settings
+          clientID: "your-application-client-id"
+          clientSecret: "your-client-secret-from-provider"
+          providerURL: "https://auth.example.com"
+          callbackURL: "/oauth2/callback"
+          sessionEncryptionKey: "your-secure-64-character-encryption-key-must-be-kept-secret"
+
+          # Minimal Redis configuration
+          redis:
+            enabled: true
+            address: "redis:6379"
+
+    # Example 2: Production Redis Configuration
+    # Recommended for production deployments with multiple Traefik replicas
+    oidc-production:
+      plugin:
+        traefikoidc:
+          # OIDC Provider Configuration
+          clientID: "prod-client-id"
+          clientSecret: "prod-client-secret"
+          providerURL: "https://auth.example.com"
+          callbackURL: "/oauth2/callback"
+
+          # Session Configuration
+          sessionEncryptionKey: "prod-encryption-key-64-chars-long-keep-it-secret-and-safe"
+          sessionMaxAge: 28800  # 8 hours
+
+          # Security Settings
+          forceHTTPS: true
+          strictAudienceValidation: true
+
+          # Redis Configuration for Multi-Replica Deployment
+          redis:
+            enabled: true
+            address: "redis-master.redis-namespace.svc.cluster.local:6379"
+            password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
+            db: 0
+            keyPrefix: "traefikoidc:prod:"
+
+            # Cache Strategy
+            cacheMode: "hybrid"  # Fast local cache + shared Redis
+
+            # Connection Pooling
+            poolSize: 20
+            connectTimeout: 5
+            readTimeout: 3
+            writeTimeout: 3
+
+            # Resilience Features
+            enableCircuitBreaker: true
+            circuitBreakerThreshold: 5
+            circuitBreakerTimeout: 60
+            enableHealthCheck: true
+            healthCheckInterval: 30
+
+    # Example 3: Redis with TLS (for production security)
+    oidc-secure:
+      plugin:
+        traefikoidc:
+          clientID: "secure-client-id"
+          clientSecret: "secure-client-secret"
+          providerURL: "https://auth.example.com"
+          callbackURL: "/oauth2/callback"
+          sessionEncryptionKey: "secure-64-character-encryption-key-for-production-use-only"
+
+          redis:
+            enabled: true
+            address: "redis.example.com:6380"
+            password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
+            enableTLS: true
+            tlsSkipVerify: false  # Verify certificates in production
+            cacheMode: "redis"
+
+    # Example 4: Hybrid Mode (Best Performance + Consistency)
+    # Local cache for hot data, Redis for consistency across replicas
+    oidc-hybrid:
+      plugin:
+        traefikoidc:
+          clientID: "app-client-id"
+          clientSecret: "app-client-secret"
+          providerURL: "https://auth.example.com"
+          callbackURL: "/oauth2/callback"
+          sessionEncryptionKey: "hybrid-mode-encryption-key-64-characters-long-and-secure"
+
+          redis:
+            enabled: true
+            address: "redis:6379"
+            password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
+            cacheMode: "hybrid"
+
+            # Hybrid mode L1 cache settings
+            hybridL1Size: 1000        # Number of items in local cache
+            hybridL1MemoryMB: 20      # MB of memory for local cache
+
+  # -------------------------------------------------------------------------
+  # Router Definitions
+  # -------------------------------------------------------------------------
+  routers:
+    # Protected application using OIDC authentication
+    my-app:
+      rule: "Host(`app.example.com`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - oidc-production  # Use the OIDC middleware
+      service: my-app-service
+      tls:
+        certResolver: letsencrypt
+
+    # Another app with minimal OIDC config
+    simple-app:
+      rule: "Host(`simple.example.com`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - oidc-minimal
+      service: simple-app-service
+      tls:
+        certResolver: letsencrypt
+
+  # -------------------------------------------------------------------------
+  # Service Definitions
+  # -------------------------------------------------------------------------
+  services:
+    my-app-service:
+      loadBalancer:
+        servers:
+          - url: "http://my-app:8080"
+        healthCheck:
+          path: /health
+          interval: 30s
+          timeout: 5s
+
+    simple-app-service:
+      loadBalancer:
+        servers:
+          - url: "http://simple-app:3000"
+
+
+# ============================================================================
+# Part 3: Docker Compose Example
+# ============================================================================
+
+---
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # Redis service for shared caching
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass yourredispassword --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - traefik-network
+
+  # Traefik with TraefikOIDC plugin
+  traefik:
+    image: traefik:v3.2
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--experimental.plugins.traefikoidc.modulename=github.com/lukaszraczylo/traefikoidc"
+      - "--experimental.plugins.traefikoidc.version=v0.8.0"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./letsencrypt:/letsencrypt
+    depends_on:
+      - redis
+    networks:
+      - traefik-network
+
+  # Your application
+  my-app:
+    image: my-app:latest
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.my-app.rule=Host(`app.example.com`)"
+      - "traefik.http.routers.my-app.entrypoints=websecure"
+      - "traefik.http.routers.my-app.tls.certresolver=letsencrypt"
+
+      # OIDC Middleware Configuration with Redis (using labels)
+      - "traefik.http.routers.my-app.middlewares=my-oidc@docker"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.clientID=your-client-id"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.clientSecret=your-client-secret"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.providerURL=https://auth.example.com"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.callbackURL=/oauth2/callback"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.sessionEncryptionKey=your-64-character-encryption-key-here"
+
+      # Redis configuration
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.enabled=true"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.address=redis:6379"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.password=yourredispassword"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.db=0"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.keyPrefix=traefikoidc:"
+      - "traefik.http.middlewares.my-oidc.plugin.traefikoidc.redis.cacheMode=hybrid"
+    networks:
+      - traefik-network
+    deploy:
+      replicas: 3  # Multiple replicas sharing Redis cache
+
+volumes:
+  redis-data:
+
+networks:
+  traefik-network:
+    driver: bridge
+
+
+# ============================================================================
+# Part 4: Kubernetes Example
+# ============================================================================
+
+---
+# kubernetes-example.yaml
+
+# Redis Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: traefik
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        args:
+          - redis-server
+          - --requirepass
+          - $(REDIS_PASSWORD)
+          - --maxmemory
+          - 512mb
+          - --maxmemory-policy
+          - allkeys-lru
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: password
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: traefik
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+# Redis Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-secret
+  namespace: traefik
+type: Opaque
+stringData:
+  password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
+---
+# OIDC Middleware with Redis
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-auth
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      # OIDC Configuration
+      clientID: "kubernetes-client-id"
+      clientSecret: "kubernetes-client-secret"
+      providerURL: "https://auth.example.com"
+      callbackURL: "/oauth2/callback"
+      sessionEncryptionKey: "kubernetes-64-character-session-encryption-key-keep-secret"
+
+      # Redis Configuration
+      redis:
+        enabled: true
+        address: "redis.traefik.svc.cluster.local:6379"
+        password: "REPLACE_WITH_YOUR_REDIS_PASSWORD"
+        db: 0
+        keyPrefix: "traefikoidc:k8s:"
+        cacheMode: "hybrid"
+        poolSize: 20
+        enableCircuitBreaker: true
+        enableHealthCheck: true
+---
+# IngressRoute using the middleware
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+  - match: Host(`app.example.com`)
+    kind: Rule
+    middlewares:
+    - name: oidc-auth
+      namespace: traefik
+    services:
+    - name: my-app
+      port: 80
+  tls:
+    certResolver: letsencrypt
+
+
+# ============================================================================
+# Part 5: Environment Variables (Optional Fallback)
+# ============================================================================
+
+# If you prefer environment variables as fallback (not recommended for production),
+# you can set these. NOTE: Plugin configuration takes precedence!
+
+# Docker Compose env file (.env)
+---
+# OIDC Configuration
+OIDC_CLIENT_ID=your-client-id
+OIDC_CLIENT_SECRET=your-client-secret
+OIDC_PROVIDER_URL=https://auth.example.com
+
+# Redis Configuration (fallback)
+REDIS_ENABLED=true
+REDIS_ADDRESS=redis:6379
+REDIS_PASSWORD=yourredispassword
+REDIS_DB=0
+REDIS_KEY_PREFIX=traefikoidc:
+REDIS_CACHE_MODE=hybrid
+REDIS_POOL_SIZE=20
+REDIS_ENABLE_CIRCUIT_BREAKER=true
+REDIS_ENABLE_HEALTH_CHECK=true
+
+
+# ============================================================================
+# Configuration Cheat Sheet
+# ============================================================================
+
+# Minimal Setup (Quick Start):
+#   redis:
+#     enabled: true
+#     address: "redis:6379"
+
+# Production Setup (Recommended):
+#   redis:
+#     enabled: true
+#     address: "redis-master:6379"
+#     password: "strong-password"
+#     cacheMode: "hybrid"
+#     enableCircuitBreaker: true
+#     enableHealthCheck: true
+
+# High Security Setup:
+#   redis:
+#     enabled: true
+#     address: "redis.example.com:6380"
+#     password: "strong-password"
+#     enableTLS: true
+#     tlsSkipVerify: false
+#     cacheMode: "redis"
+
+# Cache Modes:
+#   - "memory": Local cache only (default, no Redis needed)
+#   - "redis": Redis only (consistent, shared across replicas)
+#   - "hybrid": Local L1 + Redis L2 (best performance + consistency)

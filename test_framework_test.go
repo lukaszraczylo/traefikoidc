@@ -279,6 +279,8 @@ func (tf *TestFramework) CreateAuthenticatedRequest(method, path string) (*http.
 		tf.fixtures.EncryptionKey,
 		false,
 		"",
+		"",
+		0,
 		tf.oidc.logger,
 	)
 	if err != nil {
@@ -323,6 +325,8 @@ func (tf *TestFramework) CreateCallbackRequest() *http.Request {
 		tf.fixtures.EncryptionKey,
 		false,
 		"",
+		"",
+		0,
 		tf.oidc.logger,
 	)
 

@@ -102,17 +102,17 @@ func (p *BaseProvider) ValidateTokenExpiry(session Session, token string, tokenC
 }
 
 // BuildAuthParams constructs authorization parameters for the provider.
-// It includes the "offline_access" scope by default for refresh token support.
+// It includes the offline_access scope by default for refresh token support.
 func (p *BaseProvider) BuildAuthParams(baseParams url.Values, scopes []string) (*AuthParams, error) {
 	hasOfflineAccess := false
 	for _, scope := range scopes {
-		if scope == "offline_access" {
+		if scope == ScopeOfflineAccess {
 			hasOfflineAccess = true
 			break
 		}
 	}
 	if !hasOfflineAccess {
-		scopes = append(scopes, "offline_access")
+		scopes = append(scopes, ScopeOfflineAccess)
 	}
 
 	return &AuthParams{

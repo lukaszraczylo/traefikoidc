@@ -122,11 +122,15 @@ The middleware supports the following configuration options:
 | `allowedUserDomains` | Restricts access to specific email domains | none | `["company.com", "subsidiary.com"]` |
 | `allowedUsers` | A list of specific email addresses that are allowed access | none | `["user1@example.com", "user2@another.org"]` |
 | `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
+| `roleClaimName` | JWT claim name for extracting user roles (supports namespaced claims for Auth0) | `"roles"` | `"https://myapp.com/roles"`, `"user_roles"` |
+| `groupClaimName` | JWT claim name for extracting user groups (supports namespaced claims for Auth0) | `"groups"` | `"https://myapp.com/groups"`, `"user_groups"` |
 | `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |
 | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
 | `refreshGracePeriodSeconds` | Seconds before token expiry to attempt proactive refresh | `60` | `120` |
 | `cookieDomain` | Explicit domain for session cookies (important for multi-subdomain setups) | auto-detected | `.example.com`, `app.example.com` |
+| `cookiePrefix` | Custom prefix for session cookie names (for isolating multiple middleware instances) | `_oidc_raczylo_` | `_oidc_userauth_`, `_oidc_admin_` |
+| `sessionMaxAge` | Maximum session age in seconds before requiring re-authentication | `86400` (24 hours) | `3600` (1 hour), `604800` (7 days) |
 | `audience` | Custom audience for access token validation (for Auth0 custom APIs, etc.) | `clientID` | `https://my-api.example.com` |
 | `strictAudienceValidation` | Reject sessions with access token audience mismatch (prevents token confusion attacks) | `false` | `true` |
 | `allowOpaqueTokens` | Enable opaque (non-JWT) access token support via RFC 7662 introspection | `false` | `true` |
@@ -134,6 +138,7 @@ The middleware supports the following configuration options:
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 | `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
 | `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
+| `redis` | Redis cache configuration for distributed deployments | disabled | See "Redis Cache" section |
 
 > **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
 >
@@ -521,11 +526,13 @@ When running multiple Traefik replicas with the OIDC plugin, you may encounter f
 - Request → Replica B → JTI NOT in Replica B's cache ✓
 - Request → Replica A → ❌ **FALSE POSITIVE**: "token replay detected"
 
-**Solution**: Disable replay detection for distributed deployments:
+**Solution 1 (Simple)**: Disable replay detection for distributed deployments:
 
 ```yaml
 disableReplayDetection: true  # Disable JTI replay detection for multi-replica setups
 ```
+
+**Solution 2 (Recommended)**: Use Redis cache backend for shared state (see [Redis Cache](#redis-cache-optional) section)
 
 **Security Note**: When `disableReplayDetection: true`:
 - ✅ Token signatures still validated
@@ -548,10 +555,160 @@ spec:
       clientSecret: your-client-secret
       sessionEncryptionKey: your-secure-encryption-key-min-32-chars
       callbackURL: /oauth2/callback
-      disableReplayDetection: true  # Required for multi-replica deployments
+      disableReplayDetection: true  # Required for multi-replica deployments without Redis
 ```
 
-**Recommendation**: For single-instance deployments, leave this setting at `false` (default) to maintain replay attack protection. For multi-replica deployments, set to `true` and consider implementing a shared cache backend (Redis/Memcached) if replay detection is required.
+**Recommendation**: For single-instance deployments, leave this setting at `false` (default) to maintain replay attack protection. For multi-replica deployments, use the Redis cache backend for proper replay detection across all instances.
+
+## Redis Cache (Optional)
+
+The plugin supports optional Redis caching for multi-replica deployments. This solves issues with JTI replay detection and session management when running multiple Traefik instances behind a load balancer.
+
+> **✨ Yaegi Compatible**: Redis support is implemented using a pure-Go RESP protocol client that works seamlessly with Traefik's Yaegi interpreter (no `unsafe` package). Full Redis functionality is available for both dynamic plugin loading and pre-compiled deployments.
+
+### Why Use Redis Cache?
+
+When running multiple Traefik replicas, each instance maintains its own in-memory cache for:
+- JTI (JWT Token ID) replay detection
+- Session data
+- Token metadata
+
+Without a shared cache, you may experience:
+- False positive replay detection errors
+- Session inconsistencies between replicas
+- Users needing to re-authenticate when hitting different instances
+
+### Basic Configuration
+
+Redis is configured through Traefik's dynamic configuration (YAML, labels, etc.):
+
+```yaml
+# Enable Redis cache in your middleware configuration
+redis:
+  enabled: true
+  address: "localhost:6379"
+  password: "your-password"  # Optional
+  db: 0
+  keyPrefix: "traefikoidc:"
+```
+
+### Configuration Priority
+
+The plugin uses the following priority for Redis configuration:
+
+1. **Traefik Dynamic Configuration** (PRIMARY) - Configure via YAML files or Docker/Kubernetes labels
+2. **Environment Variables** (FALLBACK) - Used only when not set in Traefik config
+
+This approach allows you to manage all settings through Traefik's configuration system while maintaining backward compatibility with environment variables.
+
+### Configuration Options
+
+| Parameter | Description | Default | Example |
+|-----------|-------------|---------|---------|
+| `enabled` | Enable Redis caching | `false` | `true` |
+| `address` | Redis server address | - | `redis:6379` |
+| `password` | Redis password | - | `YOUR_PASSWORD` |
+| `db` | Database number | `0` | `1` |
+| `keyPrefix` | Key prefix for namespacing | `traefikoidc:` | `myapp:` |
+| `cacheMode` | Cache mode: `redis`, `hybrid`, `memory` | `redis` | `hybrid` |
+| `poolSize` | Connection pool size | `10` | `20` |
+| `connectTimeout` | Connection timeout (seconds) | `5` | `10` |
+| `readTimeout` | Read timeout (seconds) | `3` | `5` |
+| `writeTimeout` | Write timeout (seconds) | `3` | `5` |
+| `enableTLS` | Enable TLS | `false` | `true` |
+| `tlsSkipVerify` | Skip TLS verification | `false` | `true` |
+| `enableCircuitBreaker` | Circuit breaker for failures | `true` | `true` |
+| `circuitBreakerThreshold` | Failures before circuit opens | `5` | `10` |
+| `circuitBreakerTimeout` | Circuit reset timeout (seconds) | `60` | `30` |
+| `enableHealthCheck` | Periodic health checks | `true` | `true` |
+| `healthCheckInterval` | Health check interval (seconds) | `30` | `60` |
+
+### Environment Variables (Fallback)
+
+If not configured through Traefik, these environment variables can be used as fallback:
+
+- `REDIS_ENABLED` - Enable Redis cache
+- `REDIS_ADDRESS` - Redis server address
+- `REDIS_PASSWORD` - Redis password
+- `REDIS_DB` - Database number
+- `REDIS_KEY_PREFIX` - Key prefix
+- `REDIS_CACHE_MODE` - Cache mode
+- `REDIS_POOL_SIZE` - Connection pool size
+- `REDIS_CONNECT_TIMEOUT` - Connection timeout
+- `REDIS_READ_TIMEOUT` - Read timeout
+- `REDIS_WRITE_TIMEOUT` - Write timeout
+- `REDIS_ENABLE_TLS` - Enable TLS
+- `REDIS_TLS_SKIP_VERIFY` - Skip TLS verification
+
+### Cache Modes
+
+The plugin supports three cache modes:
+
+- **memory** (default): In-memory cache only, suitable for single-instance deployments
+- **redis**: Redis-only cache, all data stored in Redis
+- **hybrid**: Two-tier caching with local memory cache + Redis backend for optimal performance
+
+### Example Configurations
+
+#### Docker Compose with Redis
+
+```yaml
+services:
+  redis:
+    image: redis:alpine
+    command: redis-server --requirepass yourpassword
+
+  traefik:
+    image: traefik:v3.2
+    # ... rest of your Traefik configuration
+    labels:
+      # Configure the OIDC middleware with Redis
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.clientID=your-client-id"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.clientSecret=your-secret"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.providerURL=https://auth.example.com"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.callbackURL=/oauth2/callback"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.sessionEncryptionKey=your-64-char-key"
+      # Redis configuration via labels
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.enabled=true"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.address=redis:6379"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.password=yourpassword"
+      - "traefik.http.middlewares.oidc.plugin.traefikoidc.redis.cacheMode=hybrid"
+```
+
+#### Kubernetes with Redis
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-with-redis
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://accounts.google.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: your-encryption-key
+      callbackURL: /oauth2/callback
+      redis:
+        enabled: true
+        address: "redis-service.redis-namespace:6379"
+        password: "urn:k8s:secret:redis-secret:password"
+        db: 0
+        keyPrefix: "traefikoidc"
+        cacheMode: "hybrid"
+```
+
+### Advanced Redis Configuration
+
+See [Redis Cache Documentation](docs/REDIS_CACHE.md) for:
+- Detailed architecture overview
+- High availability setup with Redis Sentinel
+- Redis Cluster configuration
+- Performance tuning guidelines
+- Monitoring and observability
+- Troubleshooting guide
+- Migration from memory-only cache
 
 ## Dynamic Client Registration (RFC 7591)
 
@@ -848,6 +1005,87 @@ spec:
 
 **Important**: The `cookieDomain` parameter is crucial when running behind a reverse proxy or when your application serves multiple subdomains. Without it, cookies may be created with inconsistent domains, leading to authentication issues like "CSRF token missing in session" errors.
 
+### With Multiple Middleware Instances (Session Isolation)
+
+When running multiple middleware instances with different authorization requirements (e.g., one for general users and one for admins), you must use different `cookiePrefix` values to prevent session sharing between instances:
+
+```yaml
+# Middleware for general user authentication
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-userauth
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://auth.example.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: user-key-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      cookiePrefix: "_oidc_userauth_"  # Unique prefix for this instance
+---
+# Middleware for admin authentication with stricter requirements
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-adminauth
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://auth.example.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: admin-key-at-least-32-bytes-long  # Different encryption key
+      callbackURL: /oauth2/admin/callback  # Different callback URL
+      cookiePrefix: "_oidc_adminauth_"  # Different prefix for isolation
+      allowedUsers:  # Restricted to specific admin users
+        - admin@example.com
+        - superadmin@example.com
+```
+
+**Security Note**: When running multiple instances, ensure you use:
+1. **Different `cookiePrefix`** values to prevent cookie name collisions
+2. **Different `sessionEncryptionKey`** values for complete session isolation
+3. **Different `callbackURL`** paths to avoid routing conflicts
+
+This configuration prevents authorization bypass issues where a user authenticated via the general middleware could access admin-protected routes. See [issue #87](https://github.com/lukaszraczylo/traefikoidc/issues/87) for more details.
+
+### With Extended Session Duration
+
+For applications that users access infrequently (weekly or monthly), you can extend the session duration beyond the default 24 hours to reduce authentication friction:
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-long-session
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://auth.example.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: your-key-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      sessionMaxAge: 604800  # 7 days (in seconds)
+      # Other common values:
+      # 259200   - 3 days
+      # 604800   - 7 days
+      # 1209600  - 14 days
+      # 2592000  - 30 days
+```
+
+**Security Note**: Longer session durations improve user experience but increase security risk. Consider your application's security requirements:
+- **High-security apps**: Use shorter sessions (3600 = 1 hour)
+- **Standard apps**: Default 24 hours balances security and UX
+- **Low-frequency access apps**: Extend to 7-30 days for better UX
+
+See [issue #91](https://github.com/lukaszraczylo/traefikoidc/issues/91) for more details.
+
 ### With Custom Logging and Rate Limiting
 
 ```yaml
@@ -1027,8 +1265,13 @@ spec:
 
       scopes:
         - read:custom_data  # Custom scopes as needed
+
+      # Custom claim names for Auth0 namespaced claims
+      roleClaimName: "https://your-app.com/roles"   # Auth0 requires namespaced custom claims
+      groupClaimName: "https://your-app.com/groups" # Must match claims added in Auth0 Actions
+
       allowedRolesAndGroups:
-        - "https://your-app.com/roles:admin"  # Namespaced claims from Actions
+        - admin    # Will match "admin" in https://your-app.com/roles claim
         - editor
       postLogoutRedirectURI: /logged-out-page  # Must be in Auth0 Allowed Logout URLs
 ```
