@@ -91,6 +91,7 @@ type Config struct {
 	// Recommended: true for multi-replica deployments
 	DisableReplayDetection bool                   `json:"disableReplayDetection,omitempty"`
 	SecurityHeaders        *SecurityHeadersConfig `json:"securityHeaders,omitempty"`
+
 	// Redis configures the Redis cache backend for distributed caching.
 	// When enabled, provides cache sharing across multiple Traefik replicas.
 	// Default: nil (disabled - uses in-memory caching)
@@ -125,6 +126,11 @@ type Config struct {
 	//
 	// Default: "groups"
 	GroupClaimName string `json:"groupClaimName,omitempty"`
+
+	// DynamicClientRegistration enables OIDC Dynamic Client Registration (RFC 7591)
+	// When enabled, the middleware will automatically register as a client with
+	// the OIDC provider if ClientID/ClientSecret are not provided.
+	DynamicClientRegistration *DynamicClientRegistrationConfig `json:"dynamicClientRegistration,omitempty"`
 }
 
 // RedisConfig configures Redis cache backend settings for distributed caching.
@@ -188,6 +194,86 @@ type RedisConfig struct {
 
 	// HealthCheckInterval is the interval in seconds between health checks (default: 30)
 	HealthCheckInterval int `json:"healthCheckInterval" yaml:"healthCheckInterval"`
+}
+
+// DynamicClientRegistrationConfig configures OIDC Dynamic Client Registration (RFC 7591)
+type DynamicClientRegistrationConfig struct {
+	// Enabled enables automatic client registration with the OIDC provider
+	Enabled bool `json:"enabled"`
+
+	// InitialAccessToken is an optional bearer token for protected registration endpoints
+	// Some providers require this token to authorize new client registrations
+	InitialAccessToken string `json:"initialAccessToken,omitempty"`
+
+	// RegistrationEndpoint overrides the endpoint discovered from provider metadata
+	// If empty, uses the registration_endpoint from .well-known/openid-configuration
+	RegistrationEndpoint string `json:"registrationEndpoint,omitempty"`
+
+	// ClientMetadata contains the client metadata to register
+	ClientMetadata *ClientRegistrationMetadata `json:"clientMetadata,omitempty"`
+
+	// PersistCredentials determines whether to save registered credentials to a file
+	// This allows reusing the same client_id/client_secret across restarts
+	PersistCredentials bool `json:"persistCredentials"`
+
+	// CredentialsFile is the path to store/load registered client credentials
+	// Defaults to "/tmp/oidc-client-credentials.json" if not specified
+	CredentialsFile string `json:"credentialsFile,omitempty"`
+}
+
+// ClientRegistrationMetadata contains client metadata for dynamic registration (RFC 7591)
+type ClientRegistrationMetadata struct {
+	// RedirectURIs is REQUIRED - array of redirect URIs for authorization
+	RedirectURIs []string `json:"redirect_uris"`
+
+	// ResponseTypes specifies OAuth 2.0 response types (default: ["code"])
+	ResponseTypes []string `json:"response_types,omitempty"`
+
+	// GrantTypes specifies OAuth 2.0 grant types (default: ["authorization_code"])
+	GrantTypes []string `json:"grant_types,omitempty"`
+
+	// ApplicationType is either "web" (default) or "native"
+	ApplicationType string `json:"application_type,omitempty"`
+
+	// Contacts is an array of email addresses for responsible parties
+	Contacts []string `json:"contacts,omitempty"`
+
+	// ClientName is a human-readable name for the client
+	ClientName string `json:"client_name,omitempty"`
+
+	// LogoURI is a URL pointing to a logo for the client
+	LogoURI string `json:"logo_uri,omitempty"`
+
+	// ClientURI is a URL of the home page of the client
+	ClientURI string `json:"client_uri,omitempty"`
+
+	// PolicyURI is a URL pointing to the client's privacy policy
+	PolicyURI string `json:"policy_uri,omitempty"`
+
+	// TOSURI is a URL pointing to the client's terms of service
+	TOSURI string `json:"tos_uri,omitempty"`
+
+	// JWKSURI is a URL for the client's JSON Web Key Set
+	JWKSURI string `json:"jwks_uri,omitempty"`
+
+	// SubjectType is "pairwise" or "public" (provider-specific)
+	SubjectType string `json:"subject_type,omitempty"`
+
+	// TokenEndpointAuthMethod specifies how the client authenticates at token endpoint
+	// Values: "client_secret_basic", "client_secret_post", "client_secret_jwt", "private_key_jwt", "none"
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
+
+	// DefaultMaxAge is the default maximum authentication age in seconds
+	DefaultMaxAge int `json:"default_max_age,omitempty"`
+
+	// RequireAuthTime specifies whether auth_time claim is required in ID token
+	RequireAuthTime bool `json:"require_auth_time,omitempty"`
+
+	// DefaultACRValues specifies default ACR values
+	DefaultACRValues []string `json:"default_acr_values,omitempty"`
+
+	// Scope is a space-separated list of scopes (alternative to config.Scopes)
+	Scope string `json:"scope,omitempty"`
 }
 
 // SecurityHeadersConfig configures security headers for the plugin

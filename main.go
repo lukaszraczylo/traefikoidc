@@ -217,6 +217,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		suppressDiagnosticLogs:  isTestMode(),
 		securityHeadersApplier:  config.GetSecurityHeadersApplier(),
 		scopeFilter:             NewScopeFilter(logger), // NEW - for discovery-based scope filtering
+		dcrConfig:               config.DynamicClientRegistration,
 	}
 
 	// Log audience configuration
@@ -375,12 +376,13 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 
 // updateMetadataEndpoints updates internal endpoint URLs with discovered metadata.
 // It sets the authorization URL, token URL, JWKS URL, issuer URL, revocation URL,
-// end session URL, and introspection URL based on the provider's metadata.
+// end session URL, introspection URL, and registration URL based on the provider's metadata.
+// If Dynamic Client Registration is enabled and no ClientID is configured, it will
+// automatically register the client with the provider.
 // Parameters:
 //   - metadata: A pointer to the ProviderMetadata struct containing the discovered endpoints.
 func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	t.metadataMu.Lock()
-	defer t.metadataMu.Unlock()
 
 	t.jwksURL = metadata.JWKSURL
 	t.scopesSupported = metadata.ScopesSupported // Store supported scopes from discovery
@@ -390,6 +392,9 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	t.revocationURL = metadata.RevokeURL
 	t.endSessionURL = metadata.EndSessionURL
 	t.introspectionURL = metadata.IntrospectionURL // OAuth 2.0 Token Introspection endpoint (RFC 7662)
+	t.registrationURL = metadata.RegistrationURL   // OIDC Dynamic Client Registration endpoint (RFC 7591)
+
+	t.metadataMu.Unlock()
 
 	// Log introspection endpoint availability for opaque token support
 	if t.introspectionURL != "" {
@@ -399,6 +404,67 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 		}
 	} else if t.allowOpaqueTokens || t.requireTokenIntrospection {
 		t.logger.Infof("⚠️  Opaque tokens enabled but no introspection endpoint available from provider")
+	}
+
+	// Log registration endpoint availability
+	if t.registrationURL != "" {
+		t.logger.Debugf("Dynamic client registration endpoint discovered: %s", t.registrationURL)
+	}
+
+	// Perform Dynamic Client Registration if enabled and ClientID is not set
+	if t.dcrConfig != nil && t.dcrConfig.Enabled && t.clientID == "" {
+		t.performDynamicClientRegistration()
+	}
+}
+
+// performDynamicClientRegistration performs automatic client registration with the OIDC provider
+func (t *TraefikOidc) performDynamicClientRegistration() {
+	t.logger.Info("Dynamic Client Registration enabled - registering client with provider")
+
+	// Initialize the DCR registrar if not already done
+	if t.dynamicClientRegistrar == nil {
+		t.dynamicClientRegistrar = NewDynamicClientRegistrar(
+			t.httpClient,
+			t.logger,
+			t.dcrConfig,
+			t.providerURL,
+		)
+	}
+
+	// Get registration endpoint (from metadata or config override)
+	registrationEndpoint := t.registrationURL
+	if t.dcrConfig.RegistrationEndpoint != "" {
+		registrationEndpoint = t.dcrConfig.RegistrationEndpoint
+	}
+
+	// Perform registration
+	ctx, cancel := context.WithTimeout(t.ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := t.dynamicClientRegistrar.RegisterClient(ctx, registrationEndpoint)
+	if err != nil {
+		t.logger.Errorf("Dynamic Client Registration failed: %v", err)
+		return
+	}
+
+	// Update client credentials from registration response
+	t.metadataMu.Lock()
+	t.clientID = resp.ClientID
+	t.clientSecret = resp.ClientSecret
+	if t.audience == "" {
+		t.audience = resp.ClientID // Default audience to client ID
+	}
+	t.metadataMu.Unlock()
+
+	t.logger.Infof("Dynamic Client Registration successful - client_id: %s", resp.ClientID)
+
+	// Log additional registration details
+	if resp.ClientSecretExpiresAt > 0 {
+		expiresAt := time.Unix(resp.ClientSecretExpiresAt, 0)
+		t.logger.Infof("Client secret expires at: %s", expiresAt.Format(time.RFC3339))
+	}
+	if resp.RegistrationClientURI != "" {
+		t.logger.Debugf("Registration management URI: %s", resp.RegistrationClientURI)
 	}
 }
 

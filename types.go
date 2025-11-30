@@ -57,6 +57,7 @@ type ProviderMetadata struct {
 	EndSessionURL    string   `json:"end_session_endpoint"`
 	IntrospectionURL string   `json:"introspection_endpoint,omitempty"` // OAuth 2.0 Token Introspection (RFC 7662)
 	ScopesSupported  []string `json:"scopes_supported,omitempty"`       // Supported scopes from discovery
+	RegistrationURL  string   `json:"registration_endpoint,omitempty"`  // OIDC Dynamic Client Registration (RFC 7591)
 }
 
 // TraefikOidc is the main middleware struct that implements OIDC authentication for Traefik.
@@ -130,4 +131,9 @@ type TraefikOidc struct {
 	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
 	scopeFilter                *ScopeFilter // NEW - for discovery-based scope filtering
 	scopesSupported            []string     // NEW - from provider metadata
+
+	// Dynamic Client Registration (RFC 7591)
+	dynamicClientRegistrar *DynamicClientRegistrar
+	dcrConfig              *DynamicClientRegistrationConfig
+	registrationURL        string // OIDC Dynamic Client Registration endpoint
 }

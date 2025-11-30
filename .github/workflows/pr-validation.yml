@@ -211,11 +211,6 @@ jobs:
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "Total Coverage: $COVERAGE%"
 
-          # Get per-package coverage
-          echo "## Coverage by Package" >> coverage_report.md
-          echo "" >> coverage_report.md
-          go tool cover -func=coverage.out | grep -v "total:" | awk '{print "- " $1 ": " $3}' >> coverage_report.md || true
-
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
@@ -230,21 +225,19 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
-            const fs = require('fs');
             const coverage = '${{ steps.coverage.outputs.coverage }}';
-            let coverageReport = '';
-
-            try {
-              coverageReport = fs.readFileSync('coverage_report.md', 'utf8');
-            } catch (e) {
-              coverageReport = 'Coverage details not available';
-            }
-
             const threshold = 70;
             const coverageNum = parseFloat(coverage);
             const emoji = coverageNum >= threshold ? '✅' : '⚠️';
+            const status = coverageNum >= threshold ? 'meets' : 'below';
 
-            const body = `## ${emoji} Test Coverage Report\n\n**Total Coverage:** ${coverage}%\n**Threshold:** ${threshold}%\n\n${coverageReport}`;
+            const body = `## ${emoji} Test Coverage Report
+
+            | Metric | Value |
+            |--------|-------|
+            | **Total Coverage** | ${coverage}% |
+            | **Threshold** | ${threshold}% |
+            | **Status** | ${emoji} Coverage ${status} threshold |`;
 
             // Find existing comment
             const { data: comments } = await github.rest.issues.listComments({
