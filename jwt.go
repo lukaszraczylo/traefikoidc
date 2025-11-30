@@ -18,13 +18,16 @@ import (
 	"github.com/lukaszraczylo/traefikoidc/internal/pool"
 )
 
-// Replay attack protection cache and synchronization primitives.
+// Replay attack protection cache using sharded design for reduced lock contention.
 // This cache tracks JWT IDs (jti claims) to prevent token reuse attacks.
+// Under high load (500+ req/sec), the sharded design reduces contention significantly.
 var (
-	// replayCacheMu protects access to the replay cache instance
+	// replayCacheMu protects access to the replay cache instance (only used for initialization)
 	replayCacheMu sync.RWMutex
-	// replayCache stores JWT IDs with expiration to prevent replay attacks
+	// replayCache stores JWT IDs with expiration to prevent replay attacks (legacy interface)
 	replayCache CacheInterface
+	// shardedReplayCache is the new high-performance sharded cache for replay detection
+	shardedReplayCache *ShardedCache
 	// replayCacheOnce ensures the replay cache is initialized only once
 	replayCacheOnce sync.Once
 	// replayCacheCleanupWG waits for cleanup goroutine to finish
@@ -36,10 +39,20 @@ var (
 )
 
 // initReplayCache initializes the JWT replay protection cache with bounded size.
+// Uses a sharded cache design with 64 shards for reduced lock contention under high load.
 // The cache is bounded to 10,000 entries to prevent unbounded memory growth.
 // This function uses sync.Once to ensure thread-safe single initialization.
 func initReplayCache() {
 	replayCacheOnce.Do(func() {
+		// Hold mutex during initialization to synchronize with cleanup goroutine
+		replayCacheMu.Lock()
+		defer replayCacheMu.Unlock()
+
+		// Create sharded cache with 64 shards for reduced contention
+		// Under 500 req/sec, this reduces lock contention by ~64x compared to single mutex
+		shardedReplayCache = NewShardedCache(64, 10000)
+
+		// Also initialize legacy cache for backward compatibility
 		replayCache = NewCache()
 		replayCache.SetMaxSize(10000)
 	})
@@ -65,18 +78,32 @@ func cleanupReplayCache() {
 	replayCacheMu.Lock()
 	defer replayCacheMu.Unlock()
 
+	// Clear sharded cache
+	if shardedReplayCache != nil {
+		shardedReplayCache.Clear()
+		shardedReplayCache = nil
+	}
+
+	// Clear legacy cache
 	if replayCache != nil {
 		replayCache.Close()
 		replayCache = nil
-		replayCacheOnce = sync.Once{}
 	}
+
+	replayCacheOnce = sync.Once{}
 }
 
 // getReplayCacheStats returns statistics about the replay cache state.
 // Returns:
-//   - size: Current number of entries in the cache (currently always 0 due to interface limitations)
+//   - size: Current number of entries in the cache
 //   - maxSize: Maximum allowed entries (10,000)
 func getReplayCacheStats() (size int, maxSize int) {
+	// Use sharded cache if available (no mutex needed due to internal sharding)
+	if shardedReplayCache != nil {
+		return shardedReplayCache.Size(), 10000
+	}
+
+	// Fall back to legacy cache
 	replayCacheMu.RLock()
 	defer replayCacheMu.RUnlock()
 
@@ -98,16 +125,31 @@ func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
 
 	// Define the cleanup task function
 	cleanupFunc := func() {
+		// Use mutex to safely access cache pointers - this prevents race with initReplayCache
+		replayCacheMu.RLock()
+		shardedCache := shardedReplayCache
+		legacyCache := replayCache
+		replayCacheMu.RUnlock()
+
+		// Only proceed if caches have been initialized
+		if shardedCache == nil && legacyCache == nil {
+			return
+		}
+
 		size, maxSize := getReplayCacheStats()
 		if logger != nil {
 			logger.Debugf("Replay cache stats: size=%d, maxSize=%d", size, maxSize)
 		}
 
-		replayCacheMu.RLock()
-		if replayCache != nil {
-			replayCache.Cleanup()
+		// Clean up sharded cache
+		if shardedCache != nil {
+			shardedCache.Cleanup()
 		}
-		replayCacheMu.RUnlock()
+
+		// Also clean up legacy cache for backward compatibility
+		if legacyCache != nil {
+			legacyCache.Cleanup()
+		}
 	}
 
 	// Create or get singleton cleanup task
@@ -323,29 +365,51 @@ func (j *JWT) Verify(issuerURL, expectedAudience string, skipReplayCheck ...bool
 	if jtiOk && !shouldSkipReplay && jtiValue != "" {
 		initReplayCache()
 
-		replayCacheMu.RLock()
-		_, exists := replayCache.Get(jtiValue)
-		replayCacheMu.RUnlock()
-
-		if exists {
-			return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
-		}
-
-		expFloat, ok := claims["exp"].(float64)
-		var expTime time.Time
-		if ok {
-			expTime = time.Unix(int64(expFloat), 0)
-		} else {
-			expTime = time.Now().Add(10 * time.Minute)
-		}
-
-		duration := time.Until(expTime)
-		if duration > 0 {
-			replayCacheMu.Lock()
-			if replayCache != nil {
-				replayCache.Set(jtiValue, true, duration)
+		// Use sharded cache for replay detection - no global mutex needed
+		// This reduces lock contention by ~64x under high load
+		if shardedReplayCache != nil {
+			if shardedReplayCache.Exists(jtiValue) {
+				return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
 			}
-			replayCacheMu.Unlock()
+
+			expFloat, ok := claims["exp"].(float64)
+			var expTime time.Time
+			if ok {
+				expTime = time.Unix(int64(expFloat), 0)
+			} else {
+				expTime = time.Now().Add(10 * time.Minute)
+			}
+
+			duration := time.Until(expTime)
+			if duration > 0 {
+				shardedReplayCache.Set(jtiValue, true, duration)
+			}
+		} else {
+			// Fall back to legacy cache with mutex (should rarely happen)
+			replayCacheMu.RLock()
+			_, exists := replayCache.Get(jtiValue)
+			replayCacheMu.RUnlock()
+
+			if exists {
+				return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
+			}
+
+			expFloat, ok := claims["exp"].(float64)
+			var expTime time.Time
+			if ok {
+				expTime = time.Unix(int64(expFloat), 0)
+			} else {
+				expTime = time.Now().Add(10 * time.Minute)
+			}
+
+			duration := time.Until(expTime)
+			if duration > 0 {
+				replayCacheMu.Lock()
+				if replayCache != nil {
+					replayCache.Set(jtiValue, true, duration)
+				}
+				replayCacheMu.Unlock()
+			}
 		}
 	}
 

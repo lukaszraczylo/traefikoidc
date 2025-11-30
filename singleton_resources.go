@@ -345,6 +345,10 @@ type GoroutinePool struct {
 	shutdownChan chan struct{}
 	logger       *Logger
 	started      int32
+
+	// Condition variable for efficient Wait() without busy-polling
+	taskCond     *sync.Cond
+	pendingTasks int64 // atomic counter for pending tasks
 }
 
 // NewGoroutinePool creates a new goroutine pool with the specified max workers
@@ -354,6 +358,8 @@ func NewGoroutinePool(maxWorkers int, logger *Logger) *GoroutinePool {
 		taskQueue:    make(chan func(), maxWorkers*2), // Buffer for queuing
 		shutdownChan: make(chan struct{}),
 		logger:       logger,
+		taskCond:     sync.NewCond(&sync.Mutex{}),
+		pendingTasks: 0,
 	}
 
 	// Start workers
@@ -390,6 +396,14 @@ func (p *GoroutinePool) worker(id int) {
 					}()
 					task()
 				}()
+
+				// Signal that task is complete - decrement pending count and notify waiters
+				newCount := atomic.AddInt64(&p.pendingTasks, -1)
+				if newCount == 0 {
+					p.taskCond.L.Lock()
+					p.taskCond.Broadcast() // Wake up all waiters when queue is empty
+					p.taskCond.L.Unlock()
+				}
 			}
 		case <-p.shutdownChan:
 			if p.logger != nil {
@@ -406,10 +420,15 @@ func (p *GoroutinePool) Submit(task func()) error {
 		return fmt.Errorf("pool is shutdown")
 	}
 
+	// Increment pending task count BEFORE queuing to avoid race with Wait()
+	atomic.AddInt64(&p.pendingTasks, 1)
+
 	select {
 	case p.taskQueue <- task:
 		return nil
 	case <-p.shutdownChan:
+		// Decrement since task won't be processed
+		atomic.AddInt64(&p.pendingTasks, -1)
 		return fmt.Errorf("pool is shutting down")
 	default:
 		// Queue is full, try with a small timeout
@@ -417,19 +436,51 @@ func (p *GoroutinePool) Submit(task func()) error {
 		case p.taskQueue <- task:
 			return nil
 		case <-time.After(100 * time.Millisecond):
+			// Decrement since task won't be processed
+			atomic.AddInt64(&p.pendingTasks, -1)
 			return fmt.Errorf("task queue is full")
 		case <-p.shutdownChan:
+			// Decrement since task won't be processed
+			atomic.AddInt64(&p.pendingTasks, -1)
 			return fmt.Errorf("pool is shutting down")
 		}
 	}
 }
 
-// Wait waits for all submitted tasks to complete
+// Wait waits for all submitted tasks to complete using condition variable
+// This is efficient and does not busy-poll, avoiding CPU spikes
 func (p *GoroutinePool) Wait() {
-	// Drain the task queue
-	for len(p.taskQueue) > 0 {
-		time.Sleep(10 * time.Millisecond)
+	p.taskCond.L.Lock()
+	defer p.taskCond.L.Unlock()
+
+	// Wait until all pending tasks are complete
+	// Uses condition variable to sleep efficiently instead of busy-polling
+	for atomic.LoadInt64(&p.pendingTasks) > 0 {
+		p.taskCond.Wait() // Efficiently blocks until signaled
 	}
+}
+
+// WaitWithTimeout waits for all submitted tasks to complete with a timeout
+// Returns true if all tasks completed, false if timeout occurred
+func (p *GoroutinePool) WaitWithTimeout(timeout time.Duration) bool {
+	done := make(chan struct{})
+
+	go func() {
+		p.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// PendingTasks returns the number of tasks currently pending (queued or in-progress)
+func (p *GoroutinePool) PendingTasks() int64 {
+	return atomic.LoadInt64(&p.pendingTasks)
 }
 
 // Shutdown gracefully shuts down the pool

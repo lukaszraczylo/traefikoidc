@@ -8,6 +8,7 @@ The Traefik OIDC middleware provides a complete OIDC authentication solution wit
 
 - **Universal provider support**: Works with 9+ OIDC providers including Google, Azure AD, Auth0, Okta, Keycloak, AWS Cognito, GitLab, and more
 - **Automatic provider detection**: Automatically detects and configures provider-specific settings
+- **Dynamic Client Registration (RFC 7591)**: Automatic client registration with OIDC providers without manual pre-registration
 - **Automatic scope filtering**: Intelligently filters OAuth scopes based on provider capabilities declared in OIDC discovery documents, preventing authentication failures with unsupported scopes
 - **Security headers**: Comprehensive security headers with CORS, CSP, HSTS, and custom profiles
 - **Domain restrictions**: Limit access to specific email domains or individual users
@@ -551,6 +552,123 @@ spec:
 ```
 
 **Recommendation**: For single-instance deployments, leave this setting at `false` (default) to maintain replay attack protection. For multi-replica deployments, set to `true` and consider implementing a shared cache backend (Redis/Memcached) if replay detection is required.
+
+## Dynamic Client Registration (RFC 7591)
+
+The middleware supports **OIDC Dynamic Client Registration** (RFC 7591), allowing automatic client registration with OIDC providers without manual pre-registration. This is useful for:
+
+- **Multi-tenant deployments**: Automatically register clients per tenant
+- **Development environments**: Quick setup without manual OAuth app creation
+- **Self-service integrations**: Allow applications to self-register
+
+### How It Works
+
+1. When enabled, the middleware discovers the `registration_endpoint` from the provider's `.well-known/openid-configuration`
+2. If no `clientID` is configured, it automatically registers a new client with the provider
+3. The registered `client_id` and `client_secret` are cached and optionally persisted to a file
+4. Subsequent requests use the registered credentials
+
+### Configuration
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-dynamic-registration
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://your-oidc-provider.com
+      # clientID and clientSecret are NOT required when using DCR
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+
+      dynamicClientRegistration:
+        enabled: true
+
+        # Optional: Initial access token for protected registration endpoints
+        initialAccessToken: "your-initial-access-token"
+
+        # Optional: Override the registration endpoint (auto-discovered by default)
+        registrationEndpoint: "https://your-provider.com/register"
+
+        # Optional: Persist credentials to file for reuse across restarts
+        persistCredentials: true
+        credentialsFile: "/tmp/oidc-client-credentials.json"
+
+        # Client metadata for registration
+        clientMetadata:
+          redirect_uris:
+            - "https://your-app.com/oauth2/callback"
+          client_name: "My Application"
+          application_type: "web"
+          grant_types:
+            - "authorization_code"
+            - "refresh_token"
+          response_types:
+            - "code"
+          token_endpoint_auth_method: "client_secret_basic"
+          contacts:
+            - "admin@your-app.com"
+```
+
+### DCR Configuration Parameters
+
+| Parameter | Description | Required | Default |
+|-----------|-------------|----------|---------|
+| `enabled` | Enable dynamic client registration | Yes | `false` |
+| `initialAccessToken` | Bearer token for protected registration endpoints | No | - |
+| `registrationEndpoint` | Override auto-discovered registration endpoint | No | From discovery |
+| `persistCredentials` | Save registered credentials to file | No | `false` |
+| `credentialsFile` | Path to store/load credentials | No | `/tmp/oidc-client-credentials.json` |
+| `clientMetadata.redirect_uris` | **REQUIRED** - Redirect URIs for OAuth flow | Yes | - |
+| `clientMetadata.client_name` | Human-readable client name | No | - |
+| `clientMetadata.application_type` | `web` or `native` | No | `web` |
+| `clientMetadata.grant_types` | OAuth grant types | No | `["authorization_code", "refresh_token"]` |
+| `clientMetadata.response_types` | OAuth response types | No | `["code"]` |
+| `clientMetadata.token_endpoint_auth_method` | Authentication method | No | `client_secret_basic` |
+| `clientMetadata.contacts` | Contact email addresses | No | - |
+| `clientMetadata.logo_uri` | URL to client logo | No | - |
+| `clientMetadata.client_uri` | URL to client homepage | No | - |
+| `clientMetadata.policy_uri` | URL to privacy policy | No | - |
+| `clientMetadata.tos_uri` | URL to terms of service | No | - |
+| `clientMetadata.scope` | Space-separated scopes | No | - |
+
+### Provider Support
+
+DCR support varies by provider:
+
+| Provider | DCR Support | Notes |
+|----------|-------------|-------|
+| Keycloak | ✅ Full | Enable in realm settings |
+| Auth0 | ✅ Full | Requires Management API token |
+| Okta | ✅ Full | Enable Dynamic Client Registration |
+| Azure AD | ⚠️ Limited | App Registration API instead |
+| Google | ❌ No | Manual registration required |
+| AWS Cognito | ❌ No | Manual registration required |
+
+### Security Considerations
+
+1. **HTTPS Required**: Registration endpoints must use HTTPS (except localhost for development)
+2. **Initial Access Token**: Recommended for production to prevent unauthorized registrations
+3. **Credential Persistence**: If enabled, ensure the credentials file has appropriate permissions (0600)
+4. **Secret Expiration**: Monitor `client_secret_expires_at` and handle rotation if needed
+
+### Example: Keycloak with DCR
+
+```yaml
+dynamicClientRegistration:
+  enabled: true
+  clientMetadata:
+    redirect_uris:
+      - "https://myapp.example.com/oauth2/callback"
+    client_name: "My App - Production"
+    application_type: "web"
+    grant_types:
+      - "authorization_code"
+      - "refresh_token"
+```
 
 ## Usage Examples
 

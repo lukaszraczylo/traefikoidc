@@ -34,6 +34,11 @@ type UniversalCacheConfig struct {
 	Logger            *Logger
 	Strategy          CacheStrategy // For backward compatibility
 
+	// SkipAutoCleanup skips starting the per-cache cleanup goroutine.
+	// Use this when cleanup is managed externally (e.g., by UniversalCacheManager)
+	// to reduce goroutine count and consolidate cleanup operations.
+	SkipAutoCleanup bool
+
 	// Type-specific configurations
 	TokenConfig    *TokenCacheConfig
 	MetadataConfig *MetadataCacheConfig
@@ -143,8 +148,12 @@ func createUniversalCache(config UniversalCacheConfig) *UniversalCache {
 		cancel:  cancel,
 	}
 
-	// Start cleanup routine
-	cache.startCleanup()
+	// Start cleanup routine only if not skipped
+	// When cleanup is managed externally (e.g., by UniversalCacheManager),
+	// skip per-cache cleanup to reduce goroutine count
+	if !config.SkipAutoCleanup {
+		cache.startCleanup()
+	}
 
 	return cache
 }
