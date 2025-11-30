@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Traefik OIDC - OpenID Connect Authentication Middleware</title>
+        <meta
+            name="description"
+            content="Production-ready OIDC authentication middleware for Traefik. Supports Google, Azure AD, Auth0, Okta, Keycloak, and more. Drop-in replacement for oauth2-proxy."
+        />
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>
+            tailwind.config = {
+                darkMode: 'class'
+            }
+        </script>
+        <link
+            rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+            rel="stylesheet"
+        />
+        <style>
+            body { font-family: "Inter", sans-serif; }
+            code, pre { font-family: "JetBrains Mono", monospace; }
+            .theme-transition {
+                transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+            }
+            @keyframes fadeInUp {
+                from { opacity: 0; transform: translateY(20px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            @keyframes float {
+                0%, 100% { transform: translateY(0px); }
+                50% { transform: translateY(-10px); }
+            }
+            .animate-fade-in-up { animation: fadeInUp 0.6s ease-out; }
+            .animate-float { animation: float 3s ease-in-out infinite; }
+            .glass {
+                background: rgba(255, 255, 255, 0.7);
+                backdrop-filter: blur(10px);
+                -webkit-backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }
+            .dark .glass {
+                background: rgba(17, 24, 39, 0.7);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            .gradient-text {
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #06b6d4 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+            .dark .gradient-text {
+                background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 50%, #22d3ee 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+            .shadow-modern { box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.1); }
+            .dark .shadow-modern { box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.4); }
+            html { scroll-behavior: smooth; }
+        </style>
+        <script>
+            if (localStorage.theme === "dark" || (!("theme" in localStorage) && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
+                document.documentElement.classList.add("dark");
+            } else {
+                document.documentElement.classList.remove("dark");
+            }
+        </script>
+    </head>
+    <body class="bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 theme-transition">
+        <!-- Navigation -->
+        <nav class="fixed w-full glass shadow-modern z-50 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="flex justify-between h-16 items-center">
+                    <a href="#" class="flex items-center hover:opacity-80 transition-opacity duration-300 gap-2">
+                        <i class="fas fa-shield-alt text-2xl text-blue-500"></i>
+                        <span class="text-xl font-bold gradient-text">Traefik OIDC</span>
+                    </a>
+                    <div class="hidden md:flex space-x-6">
+                        <a href="#features" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Features</a>
+                        <a href="#providers" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Providers</a>
+                        <a href="#installation" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Installation</a>
+                        <a href="#configuration" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Configuration</a>
+                        <a href="#security" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Security</a>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <button id="theme-toggle" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Toggle theme">
+                            <i class="fas fa-moon dark:hidden text-xl"></i>
+                            <i class="fas fa-sun hidden dark:inline text-xl"></i>
+                        </button>
+                        <a href="https://github.com/lukaszraczylo/traefikoidc" target="_blank" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="View on GitHub">
+                            <i class="fab fa-github text-xl"></i>
+                        </a>
+                        <button id="mobile-menu-toggle" class="md:hidden text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Toggle menu">
+                            <i class="fas fa-bars text-xl" id="menu-open-icon"></i>
+                            <i class="fas fa-times text-xl hidden" id="menu-close-icon"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div id="mobile-menu" class="hidden md:hidden border-t border-gray-200 dark:border-gray-700">
+                <div class="px-4 py-3 space-y-1 bg-white dark:bg-gray-800">
+                    <a href="#features" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Features</a>
+                    <a href="#providers" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Providers</a>
+                    <a href="#installation" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Installation</a>
+                    <a href="#configuration" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Configuration</a>
+                    <a href="#security" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Security</a>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Hero Section -->
+        <section class="relative pt-24 sm:pt-32 pb-12 sm:pb-20 overflow-hidden">
+            <div class="absolute inset-0 bg-gradient-to-br from-blue-50 via-purple-50 to-cyan-50 dark:from-gray-900 dark:via-blue-900/20 dark:to-purple-900/20 theme-transition"></div>
+            <div class="absolute top-0 -left-4 w-72 h-72 bg-blue-300 dark:bg-blue-500 rounded-full mix-blend-multiply dark:mix-blend-soft-light filter blur-xl opacity-20 animate-float"></div>
+            <div class="absolute top-0 -right-4 w-72 h-72 bg-purple-300 dark:bg-purple-500 rounded-full mix-blend-multiply dark:mix-blend-soft-light filter blur-xl opacity-20 animate-float" style="animation-delay: 1s;"></div>
+            <div class="absolute -bottom-8 left-20 w-72 h-72 bg-cyan-300 dark:bg-cyan-500 rounded-full mix-blend-multiply dark:mix-blend-soft-light filter blur-xl opacity-20 animate-float" style="animation-delay: 2s;"></div>
+
+            <div class="relative max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="text-center">
+                    <div class="mb-6 sm:mb-8 flex justify-center animate-fade-in-up">
+                        <div class="w-24 h-24 sm:w-32 sm:h-32 rounded-2xl bg-gradient-to-br from-blue-500 via-purple-500 to-cyan-500 flex items-center justify-center shadow-xl animate-float">
+                            <i class="fas fa-shield-alt text-white text-4xl sm:text-5xl"></i>
+                        </div>
+                    </div>
+                    <h1 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6 leading-tight animate-fade-in-up" style="animation-delay: 0.1s;">
+                        OpenID Connect for<br /><span class="gradient-text">Traefik</span>
+                    </h1>
+                    <p class="text-base sm:text-lg md:text-xl text-gray-600 dark:text-gray-300 mb-8 sm:mb-10 max-w-2xl mx-auto leading-relaxed px-4 animate-fade-in-up" style="animation-delay: 0.2s;">
+                        Production-ready OIDC authentication middleware. Drop-in replacement for oauth2-proxy and forward-auth with support for 9+ identity providers.
+                    </p>
+                    <div class="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center mb-8 sm:mb-12 px-4 animate-fade-in-up" style="animation-delay: 0.3s;">
+                        <a href="#installation" class="group relative bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-8 py-3 rounded-lg font-medium transition-all duration-300 min-h-[48px] flex items-center justify-center shadow-lg hover:shadow-xl hover:scale-105">
+                            <span class="relative z-10">Get Started</span>
+                        </a>
+                        <a href="https://github.com/lukaszraczylo/traefikoidc" class="group glass hover:shadow-lg text-gray-900 dark:text-gray-100 px-8 py-3 rounded-lg font-medium transition-all duration-300 min-h-[48px] flex items-center justify-center hover:scale-105">
+                            <i class="fab fa-github mr-2"></i>View on GitHub
+                        </a>
+                    </div>
+                    <div class="flex flex-wrap justify-center gap-2 sm:gap-4 text-sm px-4 animate-fade-in-up" style="animation-delay: 0.4s;">
+                        <img src="https://img.shields.io/github/v/release/lukaszraczylo/traefikoidc" alt="Version" class="h-5" />
+                        <img src="https://img.shields.io/github/license/lukaszraczylo/traefikoidc" alt="License" class="h-5" />
+                        <img src="https://goreportcard.com/badge/github.com/lukaszraczylo/traefikoidc" alt="Go Report" class="h-5" />
+                        <img src="https://codecov.io/gh/lukaszraczylo/traefikoidc/branch/main/graph/badge.svg" alt="Coverage" class="h-5" />
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Features Section -->
+        <section id="features" class="py-12 sm:py-16 md:py-20 bg-white dark:bg-gray-900 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8 sm:mb-12">
+                    <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Features</h2>
+                    <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">Enterprise-grade authentication for your Traefik deployments</p>
+                </div>
+                <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-globe text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Universal Provider Support</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Works with Google, Azure AD, Auth0, Okta, Keycloak, Cognito, GitLab, and any OIDC-compliant provider</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-magic text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Auto-Detection</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Automatically detects and configures provider-specific settings from OIDC discovery</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-cyan-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-user-plus text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Dynamic Registration</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">RFC 7591 Dynamic Client Registration for automatic client setup without manual configuration</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-filter text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Automatic Scope Filtering</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Intelligently filters OAuth scopes based on provider capabilities from discovery documents</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-shield-alt text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Security Headers</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Comprehensive security headers including CORS, CSP, HSTS, and customizable profiles</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-rose-500 to-rose-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-user-lock text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Domain & User Restrictions</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Limit access to specific email domains, individual users, or role-based groups</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-users-cog text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Role-Based Access</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Restrict access based on roles and groups from OIDC claims</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-teal-500 to-teal-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-sync-alt text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Automatic Token Refresh</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Secure session handling with proactive token refresh before expiry</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-pink-500 to-pink-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-tachometer-alt text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Rate Limiting</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Built-in protection against brute force attacks with configurable limits</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-code text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Custom Headers</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Template-based headers using OIDC claims and tokens for downstream services</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-slate-500 to-slate-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-key text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">PKCE Support</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Proof Key for Code Exchange for enhanced security in authorization code flow</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass p-5 rounded-xl group hover:shadow-lg transition-all duration-300">
+                        <div class="flex items-start gap-4">
+                            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500 to-violet-600 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                <i class="fas fa-memory text-white"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Memory Management</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">Bounded caches with LRU eviction, automatic cleanup, and zero goroutine leaks</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Providers Section -->
+        <section id="providers" class="py-12 sm:py-16 md:py-20 bg-gray-50 dark:bg-gray-800 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8 sm:mb-12">
+                    <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Supported Providers</h2>
+                    <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">Works with all major identity providers out of the box</p>
+                </div>
+
+                <!-- Provider Grid -->
+                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 mb-8">
+                    <div class="glass p-4 rounded-xl text-center group hover:shadow-lg transition-all duration-300">
+                        <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-red-500 to-yellow-500 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <i class="fab fa-google text-white text-xl"></i>
+                        </div>
+                        <h4 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">Google</h4>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Full OIDC</p>
+                    </div>
+                    <div class="glass p-4 rounded-xl text-center group hover:shadow-lg transition-all duration-300">
+                        <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <i class="fab fa-microsoft text-white text-xl"></i>
+                        </div>
+                        <h4 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">Azure AD</h4>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Full OIDC</p>
+                    </div>
+                    <div class="glass p-4 rounded-xl text-center group hover:shadow-lg transition-all duration-300">
+                        <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <span class="text-white font-bold text-sm">A0</span>
+                        </div>
+                        <h4 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">Auth0</h4>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Full OIDC</p>
+                    </div>
+                    <div class="glass p-4 rounded-xl text-center group hover:shadow-lg transition-all duration-300">
+                        <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <span class="text-white font-bold text-sm">OK</span>
+                        </div>
+                        <h4 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">Okta</h4>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Full OIDC</p>
+                    </div>
+                    <div class="glass p-4 rounded-xl text-center group hover:shadow-lg transition-all duration-300">
+                        <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-red-600 to-red-700 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <span class="text-white font-bold text-sm">KC</span>
+                        </div>
+                        <h4 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">Keycloak</h4>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Full OIDC</p>
+                    </div>
+                    <div class="glass p-4 rounded-xl text-center group hover:shadow-lg transition-all duration-300">
+                        <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <i class="fab fa-aws text-white text-xl"></i>
+                        </div>
+                        <h4 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">AWS Cognito</h4>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Full OIDC</p>
+                    </div>
+                    <div class="glass p-4 rounded-xl text-center group hover:shadow-lg transition-all duration-300">
+                        <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-orange-600 to-orange-700 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <i class="fab fa-gitlab text-white text-xl"></i>
+                        </div>
+                        <h4 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">GitLab</h4>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Full OIDC</p>
+                    </div>
+                    <div class="glass p-4 rounded-xl text-center group hover:shadow-lg transition-all duration-300">
+                        <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <i class="fab fa-github text-white text-xl"></i>
+                        </div>
+                        <h4 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">GitHub</h4>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">OAuth 2.0</p>
+                    </div>
+                </div>
+
+                <!-- Comparison Table -->
+                <div class="glass rounded-xl overflow-hidden shadow-modern">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gradient-to-r from-blue-600 to-purple-600 text-white">
+                                <tr>
+                                    <th class="px-4 py-3 text-left font-semibold">Feature</th>
+                                    <th class="px-4 py-3 text-center font-semibold">Google</th>
+                                    <th class="px-4 py-3 text-center font-semibold">Azure AD</th>
+                                    <th class="px-4 py-3 text-center font-semibold">Auth0</th>
+                                    <th class="px-4 py-3 text-center font-semibold">Okta</th>
+                                    <th class="px-4 py-3 text-center font-semibold">Keycloak</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+                                <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                    <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">ID Tokens</td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                </tr>
+                                <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                    <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Refresh Tokens</td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                </tr>
+                                <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                    <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Auto-Configuration</td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                </tr>
+                                <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                    <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Custom Claims</td>
+                                    <td class="px-4 py-3 text-center text-gray-400">Limited</td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                </tr>
+                                <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                    <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Group/Role Claims</td>
+                                    <td class="px-4 py-3 text-center text-gray-400">Limited</td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                </tr>
+                                <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                    <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Self-Hosted</td>
+                                    <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Installation Section -->
+        <section id="installation" class="py-12 sm:py-16 md:py-20 bg-white dark:bg-gray-900 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8 sm:mb-12">
+                    <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Installation</h2>
+                    <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">Get started in under 5 minutes</p>
+                </div>
+                <div class="max-w-3xl mx-auto space-y-6">
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3 flex items-center">
+                            <span class="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-bold mr-3">1</span>
+                            Enable the Plugin
+                        </h3>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm">Add to your Traefik static configuration:</p>
+                        <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># traefik.yml
+experimental:
+  plugins:
+    traefikoidc:
+      moduleName: github.com/lukaszraczylo/traefikoidc
+      version: v0.7.10</code></pre>
+                    </div>
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3 flex items-center">
+                            <span class="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-bold mr-3">2</span>
+                            Configure the Middleware
+                        </h3>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm">Create your middleware configuration:</p>
+                        <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># dynamic/middleware.yml
+http:
+  middlewares:
+    oidc-auth:
+      plugin:
+        traefikoidc:
+          providerURL: "https://accounts.google.com"
+          clientID: "your-client-id"
+          clientSecret: "your-client-secret"
+          callbackURL: "/oauth2/callback"
+          sessionEncryptionKey: "your-32-byte-secret-key-here!!"
+          scopes:
+            - "openid"
+            - "profile"
+            - "email"</code></pre>
+                    </div>
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3 flex items-center">
+                            <span class="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-bold mr-3">3</span>
+                            Apply to Your Routes
+                        </h3>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm">Use the middleware on your services:</p>
+                        <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code># dynamic/routers.yml
+http:
+  routers:
+    my-secure-app:
+      rule: "Host(`app.example.com`)"
+      service: my-service
+      middlewares:
+        - oidc-auth
+      tls:
+        certResolver: letsencrypt</code></pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Configuration Section -->
+        <section id="configuration" class="py-12 sm:py-16 md:py-20 bg-gray-50 dark:bg-gray-800 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8 sm:mb-12">
+                    <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Configuration</h2>
+                    <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">Flexible options for any deployment scenario</p>
+                </div>
+                <div class="max-w-4xl mx-auto space-y-6">
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4">Required Parameters</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="border-b border-gray-200 dark:border-gray-700">
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Parameter</th>
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="text-gray-600 dark:text-gray-400">
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">providerURL</code></td>
+                                        <td class="py-2 px-3">Base URL of your OIDC provider</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">clientID</code></td>
+                                        <td class="py-2 px-3">OAuth 2.0 client identifier</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">clientSecret</code></td>
+                                        <td class="py-2 px-3">OAuth 2.0 client secret</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">sessionEncryptionKey</code></td>
+                                        <td class="py-2 px-3">32+ byte key for session encryption</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">callbackURL</code></td>
+                                        <td class="py-2 px-3">OAuth callback path (e.g., /oauth2/callback)</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4">Popular Optional Parameters</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="border-b border-gray-200 dark:border-gray-700">
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Parameter</th>
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Default</th>
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="text-gray-600 dark:text-gray-400">
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">forceHTTPS</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Required for TLS termination at load balancer</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">allowedUserDomains</code></td>
+                                        <td class="py-2 px-3">none</td>
+                                        <td class="py-2 px-3">Restrict to specific email domains</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">allowedRolesAndGroups</code></td>
+                                        <td class="py-2 px-3">none</td>
+                                        <td class="py-2 px-3">Restrict to users with specific roles</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">excludedURLs</code></td>
+                                        <td class="py-2 px-3">none</td>
+                                        <td class="py-2 px-3">Paths that bypass authentication</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">enablePKCE</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Enable PKCE for enhanced security</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">rateLimit</code></td>
+                                        <td class="py-2 px-3">100</td>
+                                        <td class="py-2 px-3">Maximum requests per second</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3">Example: Google Workspace with Domain Restriction</h3>
+                        <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>http:
+  middlewares:
+    google-oidc:
+      plugin:
+        traefikoidc:
+          providerURL: "https://accounts.google.com"
+          clientID: "1234567890.apps.googleusercontent.com"
+          clientSecret: "your-client-secret"
+          callbackURL: "/oauth2/callback"
+          sessionEncryptionKey: "your-32-byte-encryption-key!!"
+          allowedUserDomains:
+            - "yourcompany.com"
+            - "subsidiary.com"
+          excludedURLs:
+            - "/health"
+            - "/metrics"
+            - "/api/public"
+          forceHTTPS: true
+          logLevel: "info"</code></pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Security Section -->
+        <section id="security" class="py-12 sm:py-16 md:py-20 bg-white dark:bg-gray-900 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8 sm:mb-12">
+                    <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Security First</h2>
+                    <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">Built with enterprise security requirements in mind</p>
+                </div>
+                <div class="max-w-4xl mx-auto">
+                    <div class="grid md:grid-cols-2 gap-6">
+                        <div class="glass p-6 rounded-xl">
+                            <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                                <i class="fas fa-lock mr-2 text-blue-500"></i>
+                                Token Security
+                            </h3>
+                            <ul class="text-gray-600 dark:text-gray-400 space-y-2 text-sm">
+                                <li>&#8226; JWT signature verification with JWK rotation</li>
+                                <li>&#8226; Replay attack detection via JTI claims</li>
+                                <li>&#8226; Strict audience and issuer validation</li>
+                                <li>&#8226; Automatic token refresh before expiry</li>
+                                <li>&#8226; Token revocation on logout</li>
+                            </ul>
+                        </div>
+                        <div class="glass p-6 rounded-xl">
+                            <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                                <i class="fas fa-shield-alt mr-2 text-purple-500"></i>
+                                Session Security
+                            </h3>
+                            <ul class="text-gray-600 dark:text-gray-400 space-y-2 text-sm">
+                                <li>&#8226; AES-256-GCM encrypted session cookies</li>
+                                <li>&#8226; CSRF protection with state parameter</li>
+                                <li>&#8226; Secure, HttpOnly, SameSite cookies</li>
+                                <li>&#8226; Configurable session timeouts</li>
+                                <li>&#8226; Bounded session cache with LRU eviction</li>
+                            </ul>
+                        </div>
+                        <div class="glass p-6 rounded-xl">
+                            <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                                <i class="fas fa-globe mr-2 text-cyan-500"></i>
+                                Security Headers
+                            </h3>
+                            <ul class="text-gray-600 dark:text-gray-400 space-y-2 text-sm">
+                                <li>&#8226; Content Security Policy (CSP)</li>
+                                <li>&#8226; HTTP Strict Transport Security (HSTS)</li>
+                                <li>&#8226; X-Frame-Options, X-Content-Type-Options</li>
+                                <li>&#8226; CORS configuration</li>
+                                <li>&#8226; Customizable header profiles</li>
+                            </ul>
+                        </div>
+                        <div class="glass p-6 rounded-xl">
+                            <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                                <i class="fas fa-tachometer-alt mr-2 text-emerald-500"></i>
+                                Rate Limiting
+                            </h3>
+                            <ul class="text-gray-600 dark:text-gray-400 space-y-2 text-sm">
+                                <li>&#8226; Configurable request rate limits</li>
+                                <li>&#8226; Protection against brute force attacks</li>
+                                <li>&#8226; Per-client rate limiting</li>
+                                <li>&#8226; Graceful handling of limit exceeded</li>
+                                <li>&#8226; Customizable response codes</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Why Choose Section -->
+        <section class="py-12 sm:py-16 md:py-20 bg-gray-50 dark:bg-gray-800 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8 sm:mb-12">
+                    <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Why Choose Traefik OIDC?</h2>
+                    <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">A better alternative to oauth2-proxy and forward-auth</p>
+                </div>
+                <div class="max-w-4xl mx-auto">
+                    <div class="glass rounded-xl overflow-hidden shadow-modern">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead class="bg-gradient-to-r from-blue-600 to-purple-600 text-white">
+                                    <tr>
+                                        <th class="px-4 py-3 text-left font-semibold">Feature</th>
+                                        <th class="px-4 py-3 text-center font-semibold">Traefik OIDC</th>
+                                        <th class="px-4 py-3 text-center font-semibold">oauth2-proxy</th>
+                                        <th class="px-4 py-3 text-center font-semibold">forward-auth</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+                                    <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                        <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Native Plugin</td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    </tr>
+                                    <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                        <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">No Extra Service</td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    </tr>
+                                    <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                        <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Auto Provider Detection</td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    </tr>
+                                    <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                        <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Dynamic Client Registration</td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    </tr>
+                                    <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                        <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Automatic Scope Filtering</td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    </tr>
+                                    <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                        <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Built-in Security Headers</td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-red-500">&#10007;</span></td>
+                                    </tr>
+                                    <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                        <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Template Headers</td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span></td>
+                                    </tr>
+                                    <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                        <td class="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium">Memory Efficient</td>
+                                        <td class="px-4 py-3 text-center"><span class="text-green-500">&#10003;</span> <span class="text-xs text-gray-500">LRU caches</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-gray-400">Varies</span></td>
+                                        <td class="px-4 py-3 text-center"><span class="text-gray-400">Varies</span></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CTA Section -->
+        <section class="py-12 sm:py-16 md:py-20 bg-gradient-to-r from-blue-600 to-purple-600">
+            <div class="max-w-4xl mx-auto px-4 sm:px-6 text-center">
+                <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-white mb-4">Ready to Secure Your Applications?</h2>
+                <p class="text-lg text-blue-100 mb-8 max-w-2xl mx-auto">
+                    Get started with Traefik OIDC in minutes. Full documentation and examples available on GitHub.
+                </p>
+                <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                    <a href="https://github.com/lukaszraczylo/traefikoidc" class="bg-white hover:bg-gray-100 text-blue-600 px-8 py-3 rounded-lg font-medium transition-all duration-300 min-h-[48px] flex items-center justify-center shadow-lg hover:shadow-xl hover:scale-105">
+                        <i class="fab fa-github mr-2"></i>View on GitHub
+                    </a>
+                    <a href="https://github.com/lukaszraczylo/traefikoidc/blob/main/README.md" class="bg-transparent border-2 border-white hover:bg-white/10 text-white px-8 py-3 rounded-lg font-medium transition-all duration-300 min-h-[48px] flex items-center justify-center hover:scale-105">
+                        <i class="fas fa-book mr-2"></i>Documentation
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="py-8 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="flex flex-col md:flex-row justify-between items-center gap-4">
+                    <div class="flex items-center gap-2">
+                        <i class="fas fa-shield-alt text-xl text-blue-500"></i>
+                        <span class="text-xl font-bold gradient-text">Traefik OIDC</span>
+                    </div>
+                    <div class="flex items-center space-x-6">
+                        <a href="https://github.com/lukaszraczylo/traefikoidc" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100">
+                            <i class="fab fa-github text-xl"></i>
+                        </a>
+                        <a href="https://github.com/lukaszraczylo/traefikoidc/issues" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 text-sm">Issues</a>
+                        <a href="https://github.com/lukaszraczylo/traefikoidc/releases" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 text-sm">Releases</a>
+                    </div>
+                    <p class="text-gray-500 dark:text-gray-400 text-sm">Apache 2.0 License</p>
+                </div>
+            </div>
+        </footer>
+
+        <script>
+            // Theme toggle
+            document.getElementById('theme-toggle').addEventListener('click', function() {
+                if (document.documentElement.classList.contains('dark')) {
+                    document.documentElement.classList.remove('dark');
+                    localStorage.theme = 'light';
+                } else {
+                    document.documentElement.classList.add('dark');
+                    localStorage.theme = 'dark';
+                }
+            });
+
+            // Mobile menu toggle
+            document.getElementById('mobile-menu-toggle').addEventListener('click', function() {
+                const menu = document.getElementById('mobile-menu');
+                const openIcon = document.getElementById('menu-open-icon');
+                const closeIcon = document.getElementById('menu-close-icon');
+
+                menu.classList.toggle('hidden');
+                openIcon.classList.toggle('hidden');
+                closeIcon.classList.toggle('hidden');
+            });
+
+            // Close mobile menu on link click
+            document.querySelectorAll('#mobile-menu a').forEach(link => {
+                link.addEventListener('click', function() {
+                    document.getElementById('mobile-menu').classList.add('hidden');
+                    document.getElementById('menu-open-icon').classList.remove('hidden');
+                    document.getElementById('menu-close-icon').classList.add('hidden');
+                });
+            });
+        </script>
+    </body>
+</html>
