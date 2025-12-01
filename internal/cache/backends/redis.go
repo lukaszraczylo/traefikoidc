@@ -43,14 +43,17 @@ func NewRedisBackend(config *Config) (*RedisBackend, error) {
 	}
 
 	// Create connection pool with health checks enabled
+	// Timeouts are kept short to prevent request pileup when Redis is slow/stalled.
+	// The UniversalCache uses 200ms context timeout, so socket timeouts should be
+	// shorter to allow proper context cancellation handling.
 	poolConfig := &PoolConfig{
 		Address:           config.RedisAddr,
 		Password:          config.RedisPassword,
 		DB:                config.RedisDB,
 		MaxConnections:    config.PoolSize,
-		ConnectTimeout:    5 * time.Second,
-		ReadTimeout:       3 * time.Second,
-		WriteTimeout:      3 * time.Second,
+		ConnectTimeout:    2 * time.Second,
+		ReadTimeout:       500 * time.Millisecond,
+		WriteTimeout:      500 * time.Millisecond,
 		EnableHealthCheck: true,
 		MaxRetries:        3,
 		RetryDelay:        100 * time.Millisecond,
@@ -340,12 +343,19 @@ func (r *RedisBackend) prefixKey(key string) string {
 	return r.config.RedisPrefix + key
 }
 
-// executeWithRetry executes a Redis operation with exponential backoff retry logic
+// executeWithRetry executes a Redis operation with exponential backoff retry logic.
+// It checks context cancellation at multiple points to ensure fast abort when the
+// caller's context is cancelled (e.g., due to request timeout).
 func (r *RedisBackend) executeWithRetry(ctx context.Context, operation func(*RedisConn) error) error {
 	maxRetries := 3
-	baseDelay := 100 * time.Millisecond
+	baseDelay := 50 * time.Millisecond // Reduced from 100ms to fail faster
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Check context before each attempt to fail fast
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		conn, err := r.pool.Get(ctx)
 		if err != nil {
 			// If we can't get a connection and this is the last attempt, fail
@@ -366,6 +376,11 @@ func (r *RedisBackend) executeWithRetry(ctx context.Context, operation func(*Red
 		// Execute the operation
 		err = operation(conn)
 		r.pool.Put(conn)
+
+		// Check context after operation - if cancelled, don't bother retrying
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 
 		// If successful, return
 		if err == nil {

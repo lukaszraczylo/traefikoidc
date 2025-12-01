@@ -902,7 +902,25 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 		// Try introspection first if opaque tokens are allowed
 		if t.allowOpaqueTokens {
 			if err := t.validateOpaqueToken(accessToken); err != nil {
+				errMsg := err.Error()
 				t.logger.Infof("⚠️  Opaque access token validation via introspection failed: %v", err)
+
+				// Check if the token was explicitly marked as inactive/revoked/expired by the provider
+				// In these cases, we should NOT fall back to ID token - the provider has explicitly
+				// told us this token is no longer valid. We must refresh or re-authenticate.
+				isTokenInvalid := strings.Contains(errMsg, "token is not active") ||
+					strings.Contains(errMsg, "revoked") ||
+					strings.Contains(errMsg, "token has expired")
+
+				if isTokenInvalid {
+					t.logger.Infof("⚠️  Token explicitly marked as invalid by provider, cannot fall back to ID token")
+					if session.GetRefreshToken() != "" {
+						t.logger.Debug("Refresh token available, attempting refresh")
+						return false, true, false
+					}
+					t.logger.Debug("No refresh token available, must re-authenticate")
+					return false, false, true
+				}
 
 				// If introspection required, reject the session
 				if t.requireTokenIntrospection {
@@ -913,8 +931,9 @@ func (t *TraefikOidc) validateStandardTokens(session *SessionData) (bool, bool, 
 					return false, false, true
 				}
 
-				// Otherwise fall back to ID token validation (Scenario 3 backward compatibility)
-				t.logger.Infof("⚠️  Falling back to ID token validation for opaque access token")
+				// Only fall back to ID token validation for transient errors (network issues, etc.)
+				// where the introspection endpoint couldn't be reached
+				t.logger.Infof("⚠️  Falling back to ID token validation for opaque access token (transient error)")
 			} else {
 				// Introspection successful
 				t.logger.Debugf("✓ Opaque access token validated via introspection")
