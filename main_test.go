@@ -152,7 +152,6 @@ func (ts *TestSuite) Setup() {
 		metadataRefreshStopChan: make(chan struct{}),
 	}
 	close(ts.tOidc.initComplete)
-	// ts.tOidc.exchangeCodeForTokenFunc = ts.exchangeCodeForTokenFunc // Removed
 	ts.tOidc.tokenVerifier = ts.tOidc
 	ts.tOidc.jwtVerifier = ts.tOidc
 	// Set default mock exchanger
@@ -1183,14 +1182,6 @@ func TestHandleCallback(t *testing.T) {
 					RefreshToken: "test-refresh-token-disallowed",
 				}, nil
 			},
-			// Remove mock extractClaimsFunc - let the real one parse the disallowedToken
-			// The test should still fail correctly on the email check later.
-			// extractClaimsFunc: func(tokenString string) (map[string]interface{}, error) {
-			// 	return map[string]interface{}{
-			// 		"email": "user@disallowed.com",
-			// 		"nonce": "test-nonce",
-			// 	}, nil
-			// },
 			sessionSetupFunc: func(session *SessionData) {
 				session.SetCSRF("test-csrf-token")
 				session.SetNonce("test-nonce")

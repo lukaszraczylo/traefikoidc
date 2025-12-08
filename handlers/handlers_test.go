@@ -157,15 +157,6 @@ func TestOAuthHandler(t *testing.T) {
 
 func TestAuthHandler(t *testing.T) {
 	t.Run("HandleAuthentication", func(t *testing.T) {
-		// Test authentication handling with mock types
-		// validator := &MockTokenValidator{valid: true} // Currently unused
-		/*
-			handler := &MockAuthHandler{
-				logger: &MockLogger{},
-				sessionManager: NewMockSessionManager(),
-			}
-		*/
-
 		tests := []struct {
 			name           string
 			setupSession   func(*MockSession)
@@ -213,9 +204,6 @@ func TestAuthHandler(t *testing.T) {
 	})
 
 	t.Run("HandleRefreshToken", func(t *testing.T) {
-		// Test authentication handling with mock types
-		// validator := &MockTokenValidator{valid: true} // Currently unused
-
 		tests := []struct {
 			name          string
 			refreshToken  string

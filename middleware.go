@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-// ============================================================================
-// HTTP MIDDLEWARE
-// ============================================================================
-
 // ServeHTTP implements the main middleware logic for processing HTTP requests.
 // It handles the complete OIDC authentication flow including:
 //   - Excluded URL bypass
@@ -232,10 +228,6 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	session.ResetRedirectCount()
 	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 }
-
-// ============================================================================
-// REQUEST PROCESSING
-// ============================================================================
 
 // processAuthorizedRequest processes requests for authenticated users.
 // It extracts claims, validates roles/groups if configured, sets authentication headers,

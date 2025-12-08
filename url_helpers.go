@@ -11,10 +11,6 @@ import (
 	"strings"
 )
 
-// =============================================================================
-// URL Exclusion Methods
-// =============================================================================
-
 // determineExcludedURL checks if a URL path should bypass OIDC authentication.
 // It compares the request path against configured excluded URL prefixes.
 // Parameters:
@@ -31,10 +27,6 @@ func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 	}
 	return false
 }
-
-// =============================================================================
-// Request Analysis Methods
-// =============================================================================
 
 // determineScheme determines the URL scheme for building redirect URLs.
 // Priority order (highest to lowest):
@@ -83,10 +75,6 @@ func (t *TraefikOidc) determineHost(req *http.Request) string {
 	}
 	return req.Host
 }
-
-// =============================================================================
-// URL Building Methods
-// =============================================================================
 
 // buildAuthURL constructs the OIDC provider authorization URL.
 // It builds the URL with all necessary parameters including client_id, scopes,
@@ -277,10 +265,6 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 	u.RawQuery = params.Encode()
 	return u.String()
 }
-
-// =============================================================================
-// URL Validation Methods
-// =============================================================================
 
 // validateURL performs security validation on URLs to prevent SSRF attacks.
 // It checks for allowed schemes, validates hosts, and prevents access to private networks.

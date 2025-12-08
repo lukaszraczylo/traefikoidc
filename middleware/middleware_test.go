@@ -75,17 +75,17 @@ func TestBuildFullURLFunction(t *testing.T) {
 			t.Errorf("Expected URL %s, got %s", expected, url)
 		}
 
-		// Test with path that doesn't start with / (function just concatenates)
+		// Test with path that doesn't start with / (function adds leading /)
 		url2 := buildFullURL(scheme, host, "callback")
-		expected2 := "https://example.comcallback"
+		expected2 := "https://example.com/callback"
 
 		if url2 != expected2 {
 			t.Errorf("Expected URL %s, got %s", expected2, url2)
 		}
 
-		// Test with empty path
+		// Test with empty path (function adds leading /)
 		url3 := buildFullURL(scheme, host, "")
-		expected3 := "https://example.com"
+		expected3 := "https://example.com/"
 
 		if url3 != expected3 {
 			t.Errorf("Expected URL %s, got %s", expected3, url3)
@@ -107,9 +107,9 @@ func TestBuildFullURLFunction(t *testing.T) {
 			t.Errorf("Expected URL %s, got %s", expected5, url5)
 		}
 
-		// Test with empty components
+		// Test with empty components (function adds leading /)
 		url6 := buildFullURL("", "", "")
-		expected6 := "://"
+		expected6 := ":///"
 
 		if url6 != expected6 {
 			t.Errorf("Expected URL %s, got %s", expected6, url6)

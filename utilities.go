@@ -12,10 +12,6 @@ import (
 	"time"
 )
 
-// =============================================================================
-// LOGGING UTILITIES
-// =============================================================================
-
 // safeLogDebug provides nil-safe logging for debug messages
 func (t *TraefikOidc) safeLogDebug(msg string) {
 	if t.logger != nil {
@@ -50,10 +46,6 @@ func (t *TraefikOidc) safeLogInfo(msg string) {
 		t.logger.Info("%s", msg)
 	}
 }
-
-// =============================================================================
-// DOMAIN VALIDATION
-// =============================================================================
 
 // isAllowedUser checks if a user identifier is authorized based on the configured user identifier claim.
 // When using email as the identifier (default), it validates against allowedUsers and allowedUserDomains.
@@ -161,10 +153,6 @@ func keysFromMap(m map[string]struct{}) []string {
 	return keys
 }
 
-// =============================================================================
-// ERROR HANDLING
-// =============================================================================
-
 // sendErrorResponse sends an appropriate error response based on the request's Accept header.
 // It sends JSON responses for clients that accept JSON, otherwise sends HTML error pages.
 // Parameters:
@@ -219,10 +207,6 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 	rw.WriteHeader(code)
 	_, _ = rw.Write([]byte(htmlBody)) // Safe to ignore: error response write
 }
-
-// =============================================================================
-// CLEANUP
-// =============================================================================
 
 // Close gracefully shuts down the TraefikOidc middleware instance.
 // It cancels contexts, stops background goroutines, closes HTTP connections,

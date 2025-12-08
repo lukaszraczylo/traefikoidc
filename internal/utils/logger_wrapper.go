@@ -12,10 +12,6 @@ type LoggerInterface interface {
 	Errorf(format string, args ...interface{})
 }
 
-// ============================================================================
-// RECOVERY LOGGER WRAPPER
-// ============================================================================
-
 // recoveryLoggerWrapper wraps a logger to match recovery.Logger interface
 type recoveryLoggerWrapper struct {
 	logger LoggerInterface
@@ -47,10 +43,6 @@ func (lw *recoveryLoggerWrapper) DebugLogf(format string, args ...interface{}) {
 	}
 }
 
-// ============================================================================
-// CLEANUP LOGGER WRAPPER
-// ============================================================================
-
 // cleanupLoggerWrapper wraps a logger to match cleanup.Logger interface
 type cleanupLoggerWrapper struct {
 	logger LoggerInterface
@@ -81,10 +73,6 @@ func (lw *cleanupLoggerWrapper) DebugLogf(format string, args ...interface{}) {
 		lw.logger.Debugf(format, args...)
 	}
 }
-
-// ============================================================================
-// SESSION LOGGER WRAPPER
-// ============================================================================
 
 // Note: Session logger wrapper is not included here because session.Logger
 // has a different interface (Debug/Info/Warn/Error instead of Logf/ErrorLogf/DebugLogf).

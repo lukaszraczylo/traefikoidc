@@ -430,8 +430,17 @@ func (m *AuthMiddleware) processAuthorizedRequest(rw http.ResponseWriter, req *h
 	m.next.ServeHTTP(rw, req)
 }
 
-// buildFullURL constructs a full URL from scheme, host, and path components
+// buildFullURL constructs a full URL from scheme, host, and path components.
+// It handles absolute URLs in the path and ensures proper URL formatting.
 func buildFullURL(scheme, host, path string) string {
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
 	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }
 

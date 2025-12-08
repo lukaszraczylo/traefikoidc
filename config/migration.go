@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -265,7 +266,7 @@ func (m *ConfigMigrator) MigrateFile(filePath string) (*UnifiedConfig, error) {
 
 	// Log warnings
 	for _, warning := range warnings {
-		fmt.Printf("Migration Warning: %s\n", warning)
+		log.Printf("[WARN] Migration: %s", warning)
 	}
 
 	return config, nil

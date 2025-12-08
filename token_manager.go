@@ -15,10 +15,6 @@ import (
 	"time"
 )
 
-// ============================================================================
-// TOKEN VERIFICATION
-// ============================================================================
-
 // VerifyToken verifies the validity of an ID token or access token.
 // It performs comprehensive validation including format checks, blacklist verification,
 // signature validation using JWKs, and standard claims validation. It also caches
@@ -413,10 +409,6 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	return nil
 }
 
-// ============================================================================
-// TOKEN REFRESH & MANAGEMENT
-// ============================================================================
-
 // refreshToken attempts to refresh authentication tokens using the refresh token.
 // It handles provider-specific refresh logic, validates new tokens, updates the session,
 // and includes concurrency protection to prevent race conditions.
@@ -562,10 +554,6 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	return true
 }
 
-// ============================================================================
-// TOKEN REVOCATION
-// ============================================================================
-
 // RevokeToken revokes a token locally by adding it to the blacklist cache.
 // It removes the token from the verification cache and adds both the token
 // and its JTI (if present) to the blacklist to prevent future use.
@@ -668,10 +656,6 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	return nil
 }
 
-// ============================================================================
-// TOKEN EXCHANGE OPERATIONS
-// ============================================================================
-
 // ExchangeCodeForToken exchanges an authorization code for tokens.
 // This is a wrapper method that delegates to the internal token exchange logic
 // while still allowing mocking for tests.
@@ -702,10 +686,6 @@ func (t *TraefikOidc) GetNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 	return t.getNewTokenWithRefreshToken(refreshToken)
 }
 
-// ============================================================================
-// PROVIDER DETECTION
-// ============================================================================
-
 // isGoogleProvider detects if the configured OIDC provider is Google.
 // It checks the issuer URL for Google-specific domains.
 // Returns:
@@ -733,10 +713,6 @@ func (t *TraefikOidc) isAzureProvider() bool {
 		strings.Contains(issuerURL, "sts.windows.net") ||
 		strings.Contains(issuerURL, "login.windows.net")
 }
-
-// ============================================================================
-// PROVIDER VALIDATION
-// ============================================================================
 
 // validateAzureTokens validates tokens with Azure AD-specific logic.
 // Azure tokens may be opaque access tokens that cannot be verified as JWTs,
@@ -1145,10 +1121,6 @@ func (t *TraefikOidc) validateTokenExpiry(session *SessionData, token string) (b
 	return true, false, false
 }
 
-// ============================================================================
-// BACKGROUND TASKS & CLEANUP
-// ============================================================================
-
 // startTokenCleanup starts background cleanup goroutines for cache maintenance.
 // It runs periodic cleanup of token cache, JWK cache, and session chunks.
 // Includes panic recovery to ensure stability.
@@ -1209,10 +1181,6 @@ func (t *TraefikOidc) startTokenCleanup() {
 		logger.Debug("Token cleanup task already running, skipping duplicate")
 	}
 }
-
-// ============================================================================
-// AUTHORIZATION & ACCESS CONTROL
-// ============================================================================
 
 // extractGroupsAndRoles extracts group and role information from token claims.
 // It parses the 'groups' and 'roles' claims from the ID token and validates their format.

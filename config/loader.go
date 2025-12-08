@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -121,8 +122,7 @@ func (l *ConfigLoader) loadFile(path string) (*UnifiedConfig, error) {
 
 		// Log warnings
 		for _, warning := range warnings {
-			// In production, use proper logging
-			fmt.Printf("Config Warning (%s): %s\n", path, warning)
+			log.Printf("[WARN] Config (%s): %s", path, warning)
 		}
 
 		return config, nil
