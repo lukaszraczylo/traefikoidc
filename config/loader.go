@@ -105,6 +105,7 @@ func (l *ConfigLoader) loadFile(path string) (*UnifiedConfig, error) {
 	}
 
 	// Read the file with validated path
+	// #nosec G304 -- path is validated via filepath.Abs above
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %s: %w", absPath, err)

@@ -191,6 +191,7 @@ func (re *RetryExecutor) calculateDelay(attempt int) time.Duration {
 	}
 
 	// Add jitter
+	// #nosec G404 -- math/rand is acceptable for jitter timing, not security-sensitive
 	if re.config.RandomizationFactor > 0 {
 		jitter := delay * re.config.RandomizationFactor
 		minDelay := delay - jitter

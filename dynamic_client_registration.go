@@ -348,6 +348,7 @@ func (r *DynamicClientRegistrar) saveCredentials(resp *ClientRegistrationRespons
 func (r *DynamicClientRegistrar) loadCredentials() (*ClientRegistrationResponse, error) {
 	filePath := r.credentialsFilePath()
 
+	// #nosec G304 -- path is constructed from trusted config values via credentialsFilePath()
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {

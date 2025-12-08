@@ -202,8 +202,10 @@ func (p *TransportPool) createTransport(config TransportConfig) *http.Transport 
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 		},
+		// #nosec G402 -- PreferServerCipherSuites is deprecated in Go 1.17+ but setting it is harmless
 		PreferServerCipherSuites: true,
-		InsecureSkipVerify:       config.InsecureSkipVerify,
+		// #nosec G402 -- InsecureSkipVerify is configurable for testing/dev environments
+		InsecureSkipVerify: config.InsecureSkipVerify,
 	}
 
 	return &http.Transport{

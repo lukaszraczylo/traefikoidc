@@ -107,6 +107,7 @@ const (
 	JWTPattern = `^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`
 
 	// Bearer token pattern (Authorization header)
+	// #nosec G101 -- This is a regex pattern for validation, not a hardcoded credential
 	BearerTokenPattern = `^Bearer\s+([A-Za-z0-9._~+/-]+=*)$`
 
 	// Client ID pattern (alphanumeric with common separators)
@@ -119,6 +120,7 @@ const (
 	SessionIDPattern = `^[a-fA-F0-9]{32,128}$`
 
 	// CSRF token pattern (base64url)
+	// #nosec G101 -- This is a regex pattern for validation, not a hardcoded credential
 	CSRFTokenPattern = `^[A-Za-z0-9_-]+$`
 
 	// Nonce pattern (base64url)

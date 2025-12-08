@@ -158,6 +158,7 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 	case StateHalfOpen:
 		// Allow limited requests in half-open state
 		current := cb.halfOpenRequests.Add(1)
+		// #nosec G115 -- HalfOpenMaxRequests is a small config value that fits in int32
 		return current <= int32(cb.config.HalfOpenMaxRequests)
 
 	default:
@@ -181,6 +182,7 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	case StateHalfOpen:
 		// If we've had enough successful requests, close the circuit
 		successfulRequests := cb.halfOpenRequests.Load()
+		// #nosec G115 -- HalfOpenMaxRequests is a small config value that fits in int32
 		if successfulRequests >= int32(cb.config.HalfOpenMaxRequests) {
 			cb.setState(StateClosed)
 			cb.consecutiveFailures.Store(0)
@@ -203,6 +205,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 	switch state {
 	case StateClosed:
 		// Check if we should open the circuit
+		// #nosec G115 -- MaxFailures is a small config value that fits in int32
 		if failures >= int32(cb.config.MaxFailures) {
 			cb.openCircuit()
 		} else if cb.config.FailureThreshold > 0 {

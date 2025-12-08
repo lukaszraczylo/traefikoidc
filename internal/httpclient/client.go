@@ -304,7 +304,8 @@ func (f *Factory) createSecureTLSConfig() *tls.Config {
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 		},
-		InsecureSkipVerify:       false, // SECURITY: Always verify certificates
+		InsecureSkipVerify: false, // SECURITY: Always verify certificates
+		// #nosec G402 -- PreferServerCipherSuites is deprecated in Go 1.17+ but setting it to false is safe
 		PreferServerCipherSuites: false, // Let client choose best cipher
 	}
 }
