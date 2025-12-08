@@ -1,0 +1,49 @@
+version: 2
+
+# Traefik plugins are source-only - no binary builds
+# Traefik loads plugins via Yaegi interpreter at runtime
+builds:
+  - skip: true
+
+# Create source archive for GitHub releases
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+    files:
+      - "*.go"
+      - "**/*.go"
+      - go.mod
+      - go.sum
+      - .traefik.yml
+      - LICENSE*
+      - README*
+      # Exclude test files and vendor from release archive
+      - "!**/*_test.go"
+      - "!vendor/**"
+      - "!docker/**"
+      - "!integration/**"
+      - "!regression/**"
+      - "!examples/**"
+      - "!docs/**"
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^Merge"
+      - "^WIP"
+      - "^chore:"
+
+release:
+  github:
+    owner: lukaszraczylo
+    name: traefikoidc
+  name_template: "v{{ .Version }}"
+  draft: false
+  prerelease: auto

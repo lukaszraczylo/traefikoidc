@@ -1,0 +1,23 @@
+name: Pull Request
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - "**"
+      - "!main"
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  pr-checks:
+    uses: lukaszraczylo/shared-actions/.github/workflows/go-pr.yaml@main
+    with:
+      go-version: "1.24"
+      coverage-threshold: 70
+    secrets: inherit
