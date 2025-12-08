@@ -247,14 +247,7 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	defer c.mu.Unlock()
 
 	// Build command arguments
-	// Check for overflow: ensure len(args)+1 doesn't cause allocation overflow
-	// Limit to a safe value that prevents integer overflow in allocation size calculation
-	// (capacity * sizeof(string) must fit in int/size_t)
-	argsLen := len(args)
-	const maxSafeArgs = (1 << 20) - 2 // Leave room for +1 without overflow concern
-	if argsLen < 0 || argsLen > maxSafeArgs {
-		return nil, errors.New("too many arguments")
-	}
+	// Validate total argument size to prevent memory exhaustion
 	const maxTotalArgBytes = 64 << 20 // 64 MiB max total size
 	totalBytes := len(command)
 	for _, s := range args {
@@ -267,11 +260,9 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 			return nil, errors.New("total argument size exceeds maximum allowed")
 		}
 	}
-	// Safe: argsLen is validated above, and capacity is argsLen+1 which cannot overflow
-	capacity := argsLen + 1
-	cmdArgs := make([]string, 0, capacity)
-	cmdArgs = append(cmdArgs, command)
-	cmdArgs = append(cmdArgs, args...)
+	// Build command slice: prepend command to args
+	// Using append avoids arithmetic on potentially large len(args)
+	cmdArgs := append([]string{command}, args...)
 
 	// Set write timeout
 	if c.writeTimeout > 0 {
