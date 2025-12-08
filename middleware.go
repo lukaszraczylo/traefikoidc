@@ -308,10 +308,13 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 
 	req.Header.Set("X-Forwarded-User", email)
 
-	req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
-	req.Header.Set("X-Auth-Request-User", email)
-	if idToken := session.GetIDToken(); idToken != "" {
-		req.Header.Set("X-Auth-Request-Token", idToken)
+	// When minimalHeaders is enabled, skip extra headers to prevent 431 errors
+	if !t.minimalHeaders {
+		req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
+		req.Header.Set("X-Auth-Request-User", email)
+		if idToken := session.GetIDToken(); idToken != "" {
+			req.Header.Set("X-Auth-Request-Token", idToken)
+		}
 	}
 
 	if len(t.headerTemplates) > 0 {

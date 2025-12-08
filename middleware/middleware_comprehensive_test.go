@@ -66,6 +66,7 @@ func TestNewAuthMiddleware(t *testing.T) {
 		wg,
 		startTokenCleanup,
 		startMetadataRefresh,
+		false, // minimalHeaders
 	)
 
 	if m == nil {

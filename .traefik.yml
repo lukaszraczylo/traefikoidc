@@ -122,6 +122,7 @@ testData:
   requireTokenIntrospection: false # Force introspection for opaque tokens (requires introspection endpoint)
   disableReplayDetection: false # Disable JTI replay detection for multi-replica deployments (default: false)
   allowPrivateIPAddresses: false # Allow private IP addresses in provider URLs for internal networks (default: false)
+  minimalHeaders: false # Reduce forwarded headers to prevent 431 errors (default: false)
 
   # Security Headers Configuration (enabled by default with 'default' profile)
   securityHeaders:
@@ -985,6 +986,39 @@ configuration:
 
       Default: false (private IPs are blocked for security)
       See: https://github.com/lukaszraczylo/traefikoidc/issues/97
+    required: false
+
+  minimalHeaders:
+    type: boolean
+    description: |
+      Reduce forwarded headers to prevent "431 Request Header Fields Too Large" errors.
+
+      When enabled, the middleware only forwards the X-Forwarded-User header and skips
+      the larger authentication headers that can cause downstream services to reject
+      requests due to header size limits (typically 8KB).
+
+      Headers when disabled (default):
+      - X-Forwarded-User: User's email address (always set)
+      - X-Auth-Request-Redirect: Original request URI
+      - X-Auth-Request-User: User's email address
+      - X-Auth-Request-Token: Full ID token (can be very large with many claims)
+      - X-User-Groups: Comma-separated user groups (if configured)
+      - X-User-Roles: Comma-separated user roles (if configured)
+
+      Headers when enabled:
+      - X-Forwarded-User: User's email address (always set)
+      - X-User-Groups: Comma-separated user groups (if configured, still forwarded)
+      - X-User-Roles: Comma-separated user roles (if configured, still forwarded)
+      - Custom templated headers (still processed)
+
+      Use this option when:
+      - Downstream services return "431 Request Header Fields Too Large" errors
+      - Your ID tokens are large (many claims, long group lists)
+      - You don't need the full ID token forwarded to backend services
+      - You want to reduce request overhead
+
+      Default: false (all headers forwarded for backward compatibility)
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/64
     required: false
 
   headers:

@@ -162,6 +162,28 @@ type Config struct {
 	//
 	// Default: false (private IPs are blocked for security)
 	AllowPrivateIPAddresses bool `json:"allowPrivateIPAddresses,omitempty"`
+
+	// MinimalHeaders reduces the number of headers forwarded to downstream services.
+	// This helps prevent "431 Request Header Fields Too Large" errors when downstream
+	// services have limited header buffer sizes.
+	//
+	// When enabled (true):
+	//   - Only forwards: X-Forwarded-User
+	//   - Skips: X-Auth-Request-Token (full ID token), X-Auth-Request-Redirect
+	//   - Groups/roles headers (X-User-Groups, X-User-Roles) are still forwarded if configured
+	//   - Custom templated headers are still processed
+	//
+	// When disabled (false, default):
+	//   - Forwards all headers: X-Forwarded-User, X-Auth-Request-User, X-Auth-Request-Redirect,
+	//     X-Auth-Request-Token (full ID token)
+	//
+	// Use this option when:
+	//   - Downstream services return "431 Request Header Fields Too Large" errors
+	//   - You don't need the full ID token forwarded to backend services
+	//   - You want to reduce request overhead
+	//
+	// Default: false (all headers forwarded for backward compatibility)
+	MinimalHeaders bool `json:"minimalHeaders,omitempty"`
 }
 
 // RedisConfig configures Redis cache backend settings for distributed caching.

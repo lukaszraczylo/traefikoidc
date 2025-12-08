@@ -140,6 +140,7 @@ The middleware supports the following configuration options:
 | `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
 | `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
 | `allowPrivateIPAddresses` | Allow private IP addresses in provider URLs (for internal networks with Keycloak, etc.) | `false` | `true` |
+| `minimalHeaders` | Reduce forwarded headers to prevent "431 Request Header Fields Too Large" errors | `false` | `true` |
 | `redis` | Redis cache configuration for distributed deployments | disabled | See "Redis Cache" section |
 
 > **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
@@ -1674,12 +1675,39 @@ headers:
 
 When a user is authenticated, the middleware sets the following headers for downstream services:
 
-- `X-Forwarded-User`: The user's email address
+- `X-Forwarded-User`: The user's email address (always set)
 - `X-User-Groups`: Comma-separated list of user groups (if available)
 - `X-User-Roles`: Comma-separated list of user roles (if available)
 - `X-Auth-Request-Redirect`: The original request URI
 - `X-Auth-Request-User`: The user's email address
-- `X-Auth-Request-Token`: The user's access token
+- `X-Auth-Request-Token`: The user's ID token (can be large)
+
+#### Minimal Headers Mode
+
+If your downstream services return **"431 Request Header Fields Too Large"** errors, you can enable minimal headers mode to reduce header overhead:
+
+```yaml
+http:
+  middlewares:
+    my-auth:
+      plugin:
+        traefikoidc:
+          minimalHeaders: true
+          # ... other config
+```
+
+When `minimalHeaders: true` is set:
+- **Only forwards**: `X-Forwarded-User`
+- **Skips**: `X-Auth-Request-Token` (the full ID token - often the largest header), `X-Auth-Request-User`, `X-Auth-Request-Redirect`
+- **Still forwards**: `X-User-Groups` and `X-User-Roles` (if configured)
+- **Still processes**: Custom templated headers
+
+This is particularly useful when:
+- Your ID tokens are large (many claims, long group lists)
+- Downstream services have limited header buffer sizes (default 8KB in many servers)
+- You don't need the full token forwarded to backend services
+
+See [GitHub Issue #64](https://github.com/lukaszraczylo/traefikoidc/issues/64) for details.
 
 ### Security Headers
 

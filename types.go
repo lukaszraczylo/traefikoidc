@@ -130,6 +130,7 @@ type TraefikOidc struct {
 	firstRequestReceived       bool
 	metadataRefreshStarted     bool
 	allowPrivateIPAddresses    bool // Allow private IP addresses in URLs (for internal networks)
+	minimalHeaders             bool // Reduce headers to prevent 431 errors
 	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
 	scopeFilter                *ScopeFilter // NEW - for discovery-based scope filtering
 	scopesSupported            []string     // NEW - from provider metadata
