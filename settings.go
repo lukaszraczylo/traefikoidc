@@ -127,6 +127,22 @@ type Config struct {
 	// Default: "groups"
 	GroupClaimName string `json:"groupClaimName,omitempty"`
 
+	// UserIdentifierClaim specifies the JWT claim to use as the user identifier.
+	// This allows authentication for users without email addresses (e.g., Azure AD service accounts).
+	//
+	// Examples:
+	//   - Default (backward compatible): "email"
+	//   - Azure AD without email: "sub", "oid", "upn", or "preferred_username"
+	//   - Generic OIDC: "sub" (always present per OIDC spec)
+	//
+	// When set to a non-email claim:
+	//   - AllowedUsers will match against this claim value instead of email
+	//   - AllowedUserDomains validation is skipped (domains only apply to email)
+	//   - The session will store this identifier as the user's identity
+	//
+	// Default: "email"
+	UserIdentifierClaim string `json:"userIdentifierClaim,omitempty"`
+
 	// DynamicClientRegistration enables OIDC Dynamic Client Registration (RFC 7591)
 	// When enabled, the middleware will automatically register as a client with
 	// the OIDC provider if ClientID/ClientSecret are not provided.

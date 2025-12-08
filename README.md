@@ -124,6 +124,7 @@ The middleware supports the following configuration options:
 | `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
 | `roleClaimName` | JWT claim name for extracting user roles (supports namespaced claims for Auth0) | `"roles"` | `"https://myapp.com/roles"`, `"user_roles"` |
 | `groupClaimName` | JWT claim name for extracting user groups (supports namespaced claims for Auth0) | `"groups"` | `"https://myapp.com/groups"`, `"user_groups"` |
+| `userIdentifierClaim` | JWT claim to use as user identifier (for users without email, e.g., Azure AD service accounts) | `"email"` | `"sub"`, `"oid"`, `"upn"`, `"preferred_username"` |
 | `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |
 | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
@@ -1241,6 +1242,45 @@ spec:
         - "group-object-id-1"  # Azure AD group Object IDs
         - "AppRoleName"        # Application role names
 ```
+
+### Azure AD Configuration (Users Without Email)
+
+For Azure AD users without email addresses (service accounts, organizational accounts without mail attributes):
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-azure-no-email
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://login.microsoftonline.com/your-tenant-id/v2.0
+      clientID: your-azure-ad-client-id
+      clientSecret: your-azure-ad-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+
+      # Use 'sub' instead of 'email' for user identification
+      userIdentifierClaim: sub  # Can also use: "oid", "upn", "preferred_username"
+
+      overrideScopes: true  # Optional: Don't request email scope if not needed
+      scopes:
+        - openid
+        - profile
+        - groups
+
+      # When using non-email identifiers, allowedUsers matches against the claim value
+      allowedUsers:
+        - "abc12345-6789-0abc-def0-123456789abc"  # Azure AD user object ID
+        - "def67890-1234-5678-90ab-cdef12345678"
+
+      # NOTE: allowedUserDomains is ignored when userIdentifierClaim is not "email"
+```
+
+> **Note**: When `userIdentifierClaim` is set to a non-email claim (like `sub`, `oid`, or `upn`), the `allowedUserDomains` configuration is ignored since domain-based validation only applies to email addresses. Use `allowedUsers` with the actual claim values instead.
 
 ### Auth0 Configuration
 

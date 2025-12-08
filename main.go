@@ -177,6 +177,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return "groups" // Backward compatible default
 		}(),
+		userIdentifierClaim: func() string {
+			if config.UserIdentifierClaim != "" {
+				return config.UserIdentifierClaim
+			}
+			return "email" // Backward compatible default
+		}(),
 		forceHTTPS:                config.ForceHTTPS,
 		enablePKCE:                config.EnablePKCE,
 		overrideScopes:            config.OverrideScopes,

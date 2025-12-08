@@ -15,7 +15,8 @@ type OAuthHandler struct {
 	tokenExchanger        TokenExchanger
 	tokenVerifier         TokenVerifier
 	extractClaimsFunc     func(tokenString string) (map[string]interface{}, error)
-	isAllowedDomainFunc   func(email string) bool
+	isAllowedUserFunc     func(userIdentifier string) bool // validates user authorization
+	userIdentifierClaim   string                           // JWT claim to use for user identification
 	redirURLPath          string
 	sendErrorResponseFunc func(rw http.ResponseWriter, req *http.Request, message string, code int)
 }
@@ -77,8 +78,13 @@ type TokenResponse struct {
 // NewOAuthHandler creates a new OAuth handler
 func NewOAuthHandler(logger Logger, sessionManager SessionManager, tokenExchanger TokenExchanger,
 	tokenVerifier TokenVerifier, extractClaimsFunc func(string) (map[string]interface{}, error),
-	isAllowedDomainFunc func(string) bool, redirURLPath string,
+	isAllowedUserFunc func(string) bool, userIdentifierClaim string, redirURLPath string,
 	sendErrorResponseFunc func(http.ResponseWriter, *http.Request, string, int)) *OAuthHandler {
+
+	// Default to "email" for backward compatibility
+	if userIdentifierClaim == "" {
+		userIdentifierClaim = "email"
+	}
 
 	return &OAuthHandler{
 		logger:                logger,
@@ -86,7 +92,8 @@ func NewOAuthHandler(logger Logger, sessionManager SessionManager, tokenExchange
 		tokenExchanger:        tokenExchanger,
 		tokenVerifier:         tokenVerifier,
 		extractClaimsFunc:     extractClaimsFunc,
-		isAllowedDomainFunc:   isAllowedDomainFunc,
+		isAllowedUserFunc:     isAllowedUserFunc,
+		userIdentifierClaim:   userIdentifierClaim,
 		redirURLPath:          redirURLPath,
 		sendErrorResponseFunc: sendErrorResponseFunc,
 	}
@@ -225,15 +232,25 @@ func (h *OAuthHandler) HandleCallback(rw http.ResponseWriter, req *http.Request,
 		return
 	}
 
-	email, _ := claims["email"].(string)
-	if email == "" {
-		h.logger.Errorf("Email claim missing or empty in token during callback")
-		h.sendErrorResponseFunc(rw, req, "Authentication failed: Email missing in token", http.StatusInternalServerError)
-		return
+	// Extract user identifier from the configured claim (defaults to "email" for backward compatibility)
+	userIdentifier, _ := claims[h.userIdentifierClaim].(string)
+	if userIdentifier == "" {
+		// Try "sub" as fallback since it's required by OIDC spec
+		if h.userIdentifierClaim != "sub" {
+			userIdentifier, _ = claims["sub"].(string)
+		}
+		if userIdentifier == "" {
+			h.logger.Errorf("User identifier claim '%s' missing or empty in token during callback", h.userIdentifierClaim)
+			h.sendErrorResponseFunc(rw, req, "Authentication failed: User identifier missing in token", http.StatusInternalServerError)
+			return
+		}
+		h.logger.Debugf("Configured claim '%s' not found, using 'sub' claim as fallback", h.userIdentifierClaim)
 	}
-	if !h.isAllowedDomainFunc(email) {
-		h.logger.Errorf("Disallowed email domain during callback: %s", email)
-		h.sendErrorResponseFunc(rw, req, "Authentication failed: Email domain not allowed", http.StatusForbidden)
+
+	// Validate user authorization
+	if !h.isAllowedUserFunc(userIdentifier) {
+		h.logger.Errorf("User not authorized during callback: %s", userIdentifier)
+		h.sendErrorResponseFunc(rw, req, "Authentication failed: User not authorized", http.StatusForbidden)
 		return
 	}
 
@@ -242,7 +259,7 @@ func (h *OAuthHandler) HandleCallback(rw http.ResponseWriter, req *http.Request,
 		h.sendErrorResponseFunc(rw, req, "Failed to update session", http.StatusInternalServerError)
 		return
 	}
-	session.SetEmail(email)
+	session.SetEmail(userIdentifier) // SetEmail stores the user identifier (email or other claim)
 	session.SetIDToken(tokenResponse.IDToken)
 	session.SetAccessToken(tokenResponse.AccessToken)
 	session.SetRefreshToken(tokenResponse.RefreshToken)

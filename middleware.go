@@ -125,12 +125,12 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	email := session.GetEmail()
-	// Domain restriction check removed debug output
-	if authenticated && email != "" {
-		if !t.isAllowedDomain(email) {
-			t.logger.Infof("User with email %s is not from an allowed domain", email)
-			errorMsg := fmt.Sprintf("Access denied: Your email domain is not allowed. To log out, visit: %s", t.logoutURLPath)
+	userIdentifier := session.GetEmail() // GetEmail returns the stored user identifier (email or other claim)
+	// User authorization check
+	if authenticated && userIdentifier != "" {
+		if !t.isAllowedUser(userIdentifier) {
+			t.logger.Infof("User %s is not authorized", userIdentifier)
+			errorMsg := fmt.Sprintf("Access denied: You are not authorized to access this resource. To log out, visit: %s", t.logoutURLPath)
 			t.sendErrorResponse(rw, req, errorMsg, http.StatusForbidden)
 			return
 		}
@@ -193,10 +193,10 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		refreshed := t.refreshToken(rw, req, session)
 		if refreshed {
-			email = session.GetEmail()
-			if email != "" && !t.isAllowedDomain(email) {
-				t.logger.Infof("User with refreshed token email %s is not from an allowed domain", email)
-				errorMsg := fmt.Sprintf("Access denied: Your email domain is not allowed. To log out, visit: %s", t.logoutURLPath)
+			userIdentifier = session.GetEmail() // GetEmail returns the stored user identifier
+			if userIdentifier != "" && !t.isAllowedUser(userIdentifier) {
+				t.logger.Infof("User with refreshed token %s is not authorized", userIdentifier)
+				errorMsg := fmt.Sprintf("Access denied: You are not authorized to access this resource. To log out, visit: %s", t.logoutURLPath)
 				t.sendErrorResponse(rw, req, errorMsg, http.StatusForbidden)
 				return
 			}

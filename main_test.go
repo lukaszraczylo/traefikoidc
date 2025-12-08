@@ -122,22 +122,23 @@ func (ts *TestSuite) Setup() {
 
 	// Common TraefikOidc instance
 	ts.tOidc = &TraefikOidc{
-		issuerURL:          "https://test-issuer.com",
-		clientID:           "test-client-id",
-		audience:           "test-client-id",
-		clientSecret:       "test-client-secret",
-		roleClaimName:      "roles",  // Set default for backward compatibility
-		groupClaimName:     "groups", // Set default for backward compatibility
-		jwkCache:           ts.mockJWKCache,
-		jwksURL:            "https://test-jwks-url.com",
-		revocationURL:      "https://revocation-endpoint.com",
-		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
-		tokenBlacklist:     tokenBlacklist,
-		tokenCache:         tokenCache,
-		logger:             logger,
-		allowedUserDomains: map[string]struct{}{"example.com": {}},
-		excludedURLs:       map[string]struct{}{"/favicon": {}, "/health": {}},
-		httpClient:         &http.Client{Timeout: 10 * time.Second},
+		issuerURL:           "https://test-issuer.com",
+		clientID:            "test-client-id",
+		audience:            "test-client-id",
+		clientSecret:        "test-client-secret",
+		roleClaimName:       "roles",  // Set default for backward compatibility
+		groupClaimName:      "groups", // Set default for backward compatibility
+		userIdentifierClaim: "email",  // Set default for backward compatibility
+		jwkCache:            ts.mockJWKCache,
+		jwksURL:             "https://test-jwks-url.com",
+		revocationURL:       "https://revocation-endpoint.com",
+		limiter:             rate.NewLimiter(rate.Every(time.Second), 10),
+		tokenBlacklist:      tokenBlacklist,
+		tokenCache:          tokenCache,
+		logger:              logger,
+		allowedUserDomains:  map[string]struct{}{"example.com": {}},
+		excludedURLs:        map[string]struct{}{"/favicon": {}, "/health": {}},
+		httpClient:          &http.Client{Timeout: 10 * time.Second},
 		// Explicitly set paths as New() is bypassed
 		redirURLPath:            "/callback",                     // Assume default callback path for tests
 		logoutURLPath:           "/callback/logout",              // Assume default logout path for tests
@@ -784,7 +785,7 @@ func TestServeHTTP(t *testing.T) {
 				"Accept": "application/json",
 			},
 			expectedStatus: http.StatusForbidden,
-			expectedBody:   `{"error":"Forbidden","error_description":"Access denied: Your email domain is not allowed. To log out, visit: /callback/logout","status_code":403}`,
+			expectedBody:   `{"error":"Forbidden","error_description":"Access denied: You are not authorized to access this resource. To log out, visit: /callback/logout","status_code":403}`,
 		},
 		{
 			name:        "Disallowed Domain (Accept: HTML)",
@@ -1282,8 +1283,9 @@ func TestHandleCallback(t *testing.T) {
 				instanceExtractClaimsFunc = extractClaims // Default to the real function if not provided by test case
 			}
 			tOidc := &TraefikOidc{
-				allowedUserDomains: map[string]struct{}{"example.com": {}},
-				logger:             logger,
+				allowedUserDomains:  map[string]struct{}{"example.com": {}},
+				logger:              logger,
+				userIdentifierClaim: "email", // Required for claim extraction
 				// exchangeCodeForTokenFunc: tc.exchangeCodeForToken, // Removed field
 				extractClaimsFunc: instanceExtractClaimsFunc, // Use the potentially defaulted function
 				tokenVerifier:     nil,                       // Will be set to self below
@@ -1433,6 +1435,228 @@ func TestIsAllowedDomain(t *testing.T) {
 			allowed := tOidc.isAllowedDomain(tc.email)
 			if allowed != tc.allowed {
 				t.Errorf("Expected allowed=%v, got %v", tc.allowed, allowed)
+			}
+		})
+	}
+}
+
+func TestIsAllowedUser(t *testing.T) {
+	ts := NewTestSuite(t)
+	ts.Setup()
+
+	tests := []struct {
+		allowedDomains      map[string]struct{}
+		allowedUsers        map[string]struct{}
+		userIdentifierClaim string
+		name                string
+		userIdentifier      string
+		allowed             bool
+	}{
+		// Email-based identification (default behavior)
+		{
+			name:                "Email identifier - allowed domain",
+			userIdentifier:      "user@example.com",
+			userIdentifierClaim: "email",
+			allowedDomains:      map[string]struct{}{"example.com": {}},
+			allowedUsers:        map[string]struct{}{},
+			allowed:             true,
+		},
+		{
+			name:                "Email identifier - disallowed domain",
+			userIdentifier:      "user@notallowed.com",
+			userIdentifierClaim: "email",
+			allowedDomains:      map[string]struct{}{"example.com": {}},
+			allowedUsers:        map[string]struct{}{},
+			allowed:             false,
+		},
+		{
+			name:                "Email identifier - specific user allowed",
+			userIdentifier:      "specific.user@otherdomain.com",
+			userIdentifierClaim: "email",
+			allowedDomains:      map[string]struct{}{"example.com": {}},
+			allowedUsers:        map[string]struct{}{"specific.user@otherdomain.com": {}},
+			allowed:             true,
+		},
+
+		// Non-email identifier (sub claim - for Azure AD users without email)
+		{
+			name:                "Sub identifier - allowed in allowedUsers",
+			userIdentifier:      "abc12345-6789-0abc-def0-123456789abc",
+			userIdentifierClaim: "sub",
+			allowedDomains:      map[string]struct{}{},
+			allowedUsers:        map[string]struct{}{"abc12345-6789-0abc-def0-123456789abc": {}},
+			allowed:             true,
+		},
+		{
+			name:                "Sub identifier - not in allowedUsers",
+			userIdentifier:      "xyz-not-allowed-user",
+			userIdentifierClaim: "sub",
+			allowedDomains:      map[string]struct{}{},
+			allowedUsers:        map[string]struct{}{"abc12345-6789-0abc-def0-123456789abc": {}},
+			allowed:             false,
+		},
+		{
+			name:                "Sub identifier - allowedDomains ignored for non-email",
+			userIdentifier:      "user-id-12345",
+			userIdentifierClaim: "sub",
+			allowedDomains:      map[string]struct{}{"example.com": {}}, // Should be ignored
+			allowedUsers:        map[string]struct{}{"user-id-12345": {}},
+			allowed:             true,
+		},
+		{
+			name:                "Sub identifier - no restrictions allows all",
+			userIdentifier:      "any-user-id",
+			userIdentifierClaim: "sub",
+			allowedDomains:      map[string]struct{}{},
+			allowedUsers:        map[string]struct{}{},
+			allowed:             true,
+		},
+		{
+			name:                "Sub identifier - case insensitive matching",
+			userIdentifier:      "ABC12345-6789-0ABC-DEF0-123456789ABC", // Uppercase
+			userIdentifierClaim: "sub",
+			allowedDomains:      map[string]struct{}{},
+			allowedUsers:        map[string]struct{}{"abc12345-6789-0abc-def0-123456789abc": {}}, // Lowercase
+			allowed:             true,
+		},
+
+		// OID claim (Azure AD object ID)
+		{
+			name:                "OID identifier - allowed user",
+			userIdentifier:      "oid-12345-67890",
+			userIdentifierClaim: "oid",
+			allowedDomains:      map[string]struct{}{},
+			allowedUsers:        map[string]struct{}{"oid-12345-67890": {}},
+			allowed:             true,
+		},
+
+		// UPN claim (Azure AD User Principal Name)
+		{
+			name:                "UPN identifier - allowed user (looks like email but use sub logic)",
+			userIdentifier:      "user@tenant.onmicrosoft.com",
+			userIdentifierClaim: "upn",
+			allowedDomains:      map[string]struct{}{"example.com": {}}, // Different domain, should be ignored
+			allowedUsers:        map[string]struct{}{"user@tenant.onmicrosoft.com": {}},
+			allowed:             true,
+		},
+
+		// Edge cases
+		{
+			name:                "Empty identifier - not allowed",
+			userIdentifier:      "",
+			userIdentifierClaim: "sub",
+			allowedDomains:      map[string]struct{}{},
+			allowedUsers:        map[string]struct{}{"some-user": {}},
+			allowed:             false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Configure TraefikOidc instance for this test case
+			tOidc := ts.tOidc
+			tOidc.allowedUserDomains = tc.allowedDomains
+			tOidc.allowedUsers = tc.allowedUsers
+			tOidc.userIdentifierClaim = tc.userIdentifierClaim
+
+			allowed := tOidc.isAllowedUser(tc.userIdentifier)
+			if allowed != tc.allowed {
+				t.Errorf("Expected allowed=%v, got %v for userIdentifier=%q with claim=%q",
+					tc.allowed, allowed, tc.userIdentifier, tc.userIdentifierClaim)
+			}
+		})
+	}
+}
+
+func TestUserIdentifierClaimExtraction(t *testing.T) {
+	// Test that the correct claim is extracted based on userIdentifierClaim config
+	tests := []struct {
+		name                string
+		userIdentifierClaim string
+		claims              map[string]interface{}
+		expectedIdentifier  string
+		shouldFallbackToSub bool
+	}{
+		{
+			name:                "Email claim extraction (default)",
+			userIdentifierClaim: "email",
+			claims: map[string]interface{}{
+				"sub":   "user-sub-id",
+				"email": "user@example.com",
+			},
+			expectedIdentifier:  "user@example.com",
+			shouldFallbackToSub: false,
+		},
+		{
+			name:                "Sub claim extraction",
+			userIdentifierClaim: "sub",
+			claims: map[string]interface{}{
+				"sub":   "user-sub-id",
+				"email": "user@example.com",
+			},
+			expectedIdentifier:  "user-sub-id",
+			shouldFallbackToSub: false,
+		},
+		{
+			name:                "OID claim extraction (Azure AD)",
+			userIdentifierClaim: "oid",
+			claims: map[string]interface{}{
+				"sub":   "user-sub-id",
+				"email": "user@example.com",
+				"oid":   "azure-object-id",
+			},
+			expectedIdentifier:  "azure-object-id",
+			shouldFallbackToSub: false,
+		},
+		{
+			name:                "UPN claim extraction (Azure AD)",
+			userIdentifierClaim: "upn",
+			claims: map[string]interface{}{
+				"sub": "user-sub-id",
+				"upn": "user@tenant.onmicrosoft.com",
+			},
+			expectedIdentifier:  "user@tenant.onmicrosoft.com",
+			shouldFallbackToSub: false,
+		},
+		{
+			name:                "Fallback to sub when configured claim is missing",
+			userIdentifierClaim: "email",
+			claims: map[string]interface{}{
+				"sub": "fallback-sub-id",
+				// email is missing
+			},
+			expectedIdentifier:  "fallback-sub-id",
+			shouldFallbackToSub: true,
+		},
+		{
+			name:                "preferred_username claim extraction",
+			userIdentifierClaim: "preferred_username",
+			claims: map[string]interface{}{
+				"sub":                "user-sub-id",
+				"preferred_username": "jdoe",
+			},
+			expectedIdentifier:  "jdoe",
+			shouldFallbackToSub: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Extract user identifier using the same logic as auth_flow.go
+			userIdentifier, _ := tc.claims[tc.userIdentifierClaim].(string)
+			usedFallback := false
+
+			if userIdentifier == "" && tc.userIdentifierClaim != "sub" {
+				userIdentifier, _ = tc.claims["sub"].(string)
+				usedFallback = true
+			}
+
+			if userIdentifier != tc.expectedIdentifier {
+				t.Errorf("Expected identifier %q, got %q", tc.expectedIdentifier, userIdentifier)
+			}
+
+			if usedFallback != tc.shouldFallbackToSub {
+				t.Errorf("Expected fallback=%v, got %v", tc.shouldFallbackToSub, usedFallback)
 			}
 		})
 	}

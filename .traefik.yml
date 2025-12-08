@@ -77,6 +77,7 @@ testData:
   # Custom claim names for Auth0 and other providers with namespaced claims
   roleClaimName: roles # JWT claim name for extracting user roles (default: "roles")
   groupClaimName: groups # JWT claim name for extracting user groups (default: "groups")
+  userIdentifierClaim: email # JWT claim for user identification (default: "email", alternatives: "sub", "oid", "upn", "preferred_username")
 
   # ⚠️ CRITICAL for TLS termination scenarios (AWS ALB, Cloud Load Balancers, etc.)
   # When NOT specified in config: defaults to FALSE (Go zero value)
@@ -289,6 +290,26 @@ testDataWithRedis:
 #     - "group-object-id-1" # Azure AD group claims can be Object IDs by default
 #     - "AppRoleName"
 #   # See README.md "Provider Configuration Recommendations" for Azure AD.
+
+# --- Azure AD Users Without Email Example (Issue #95) ---
+# testDataAzureADNoEmail:
+#   providerURL: https://login.microsoftonline.com/your-tenant-id/v2.0
+#   clientID: your-azure-ad-client-id
+#   clientSecret: your-azure-ad-client-secret
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-azure"
+#   # Use 'sub' claim instead of 'email' for user identification
+#   userIdentifierClaim: sub  # or "oid", "upn", "preferred_username"
+#   overrideScopes: true  # Remove email scope if not needed
+#   scopes:
+#     - openid
+#     - profile
+#     - groups  # For group-based access control
+#   # When using non-email identifiers, allowedUsers matches against the claim value
+#   allowedUsers:
+#     - "abc12345-6789-0abc-def0-123456789abc"  # Azure AD user object ID (sub or oid claim)
+#   # NOTE: allowedUserDomains is ignored when userIdentifierClaim is not "email"
+#   # See: https://github.com/lukaszraczylo/traefikoidc/issues/95
 
 # --- Google Workspace / Google Cloud Identity Example ---
 # testDataGoogle:
@@ -607,6 +628,38 @@ configuration:
     required: false
     items:
       type: string
+
+  userIdentifierClaim:
+    type: string
+    description: |
+      Specifies the JWT claim to use as the user identifier for authentication and authorization.
+
+      This allows authentication for users without email addresses, such as Azure AD service
+      accounts or organizational accounts that don't have email attributes configured.
+
+      When set to a non-email claim (e.g., "sub", "oid", "upn"):
+      - AllowedUsers will match against this claim value instead of email
+      - AllowedUserDomains validation is skipped (domains only apply to email addresses)
+      - The session stores this identifier as the user's identity
+      - If the configured claim is missing, falls back to "sub" (required by OIDC spec)
+
+      Common values by provider:
+      - Default: "email" (standard email-based identification)
+      - Azure AD: "sub", "oid" (object ID), "upn" (User Principal Name), "preferred_username"
+      - Generic OIDC: "sub" (always present per OIDC specification)
+      - Keycloak: "sub", "preferred_username"
+
+      Example for Azure AD users without email:
+      ```yaml
+      userIdentifierClaim: sub
+      allowedUsers:
+        - "abc123-user-object-id"
+        - "xyz789-another-user-id"
+      ```
+
+      Default: "email"
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/95
+    required: false
 
   revocationURL:
     type: string

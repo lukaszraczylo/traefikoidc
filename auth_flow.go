@@ -223,15 +223,25 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		return
 	}
 
-	email, _ := claims["email"].(string)
-	if email == "" {
-		t.logger.Errorf("Email claim missing or empty in token during callback")
-		t.sendErrorResponse(rw, req, "Authentication failed: Email missing in token", http.StatusInternalServerError)
-		return
+	// Extract user identifier from the configured claim (defaults to "email" for backward compatibility)
+	userIdentifier, _ := claims[t.userIdentifierClaim].(string)
+	if userIdentifier == "" {
+		// Try "sub" as fallback since it's required by OIDC spec
+		if t.userIdentifierClaim != "sub" {
+			userIdentifier, _ = claims["sub"].(string)
+		}
+		if userIdentifier == "" {
+			t.logger.Errorf("User identifier claim '%s' missing or empty in token during callback", t.userIdentifierClaim)
+			t.sendErrorResponse(rw, req, "Authentication failed: User identifier missing in token", http.StatusInternalServerError)
+			return
+		}
+		t.logger.Debugf("Configured claim '%s' not found, using 'sub' claim as fallback", t.userIdentifierClaim)
 	}
-	if !t.isAllowedDomain(email) {
-		t.logger.Errorf("Disallowed email domain during callback: %s", email)
-		t.sendErrorResponse(rw, req, "Authentication failed: Email domain not allowed", http.StatusForbidden)
+
+	// Validate user authorization
+	if !t.isAllowedUser(userIdentifier) {
+		t.logger.Errorf("User not authorized during callback: %s", userIdentifier)
+		t.sendErrorResponse(rw, req, "Authentication failed: User not authorized", http.StatusForbidden)
 		return
 	}
 
@@ -240,7 +250,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		t.sendErrorResponse(rw, req, "Failed to update session", http.StatusInternalServerError)
 		return
 	}
-	session.SetEmail(email)
+	session.SetEmail(userIdentifier) // SetEmail stores the user identifier (email or other claim)
 	session.SetIDToken(tokenResponse.IDToken)
 	session.SetAccessToken(tokenResponse.AccessToken)
 	session.SetRefreshToken(tokenResponse.RefreshToken)
