@@ -251,7 +251,7 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	// Limit to a safe value that prevents integer overflow in allocation size calculation
 	// (capacity * sizeof(string) must fit in int/size_t)
 	argsLen := len(args)
-	const maxSafeArgs = (1 << 20) - 1 // 1M args is already absurdly large for Redis commands
+	const maxSafeArgs = (1 << 20) - 2 // Leave room for +1 without overflow concern
 	if argsLen < 0 || argsLen > maxSafeArgs {
 		return nil, errors.New("too many arguments")
 	}
@@ -267,7 +267,9 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 			return nil, errors.New("total argument size exceeds maximum allowed")
 		}
 	}
-	cmdArgs := make([]string, 0, argsLen+1)
+	// Safe: argsLen is validated above, and capacity is argsLen+1 which cannot overflow
+	capacity := argsLen + 1
+	cmdArgs := make([]string, 0, capacity)
 	cmdArgs = append(cmdArgs, command)
 	cmdArgs = append(cmdArgs, args...)
 
