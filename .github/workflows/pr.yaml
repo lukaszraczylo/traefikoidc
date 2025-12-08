@@ -18,6 +18,6 @@ jobs:
   pr-checks:
     uses: lukaszraczylo/shared-actions/.github/workflows/go-pr.yaml@main
     with:
-      go-version: "1.24"
+      go-version: "1.24.11"
       coverage-threshold: 70
     secrets: inherit

@@ -17,5 +17,5 @@ jobs:
   release:
     uses: lukaszraczylo/shared-actions/.github/workflows/go-release.yaml@main
     with:
-      go-version: "1.24"
+      go-version: "1.24.11"
     secrets: inherit
