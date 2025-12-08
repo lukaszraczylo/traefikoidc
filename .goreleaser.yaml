@@ -7,7 +7,7 @@ builds:
 
 # Create source archive for GitHub releases
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_v{{ .Version }}_source"
     files:
       - "*.go"
