@@ -8,7 +8,7 @@ builds:
 # Create source archive for GitHub releases
 archives:
   - format: tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+    name_template: "{{ .ProjectName }}_v{{ .Version }}_source"
     files:
       - "*.go"
       - "**/*.go"
@@ -27,7 +27,7 @@ archives:
       - "!docs/**"
 
 checksum:
-  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  name_template: "{{ .ProjectName }}_v{{ .Version }}_checksums.txt"
   algorithm: sha256
 
 changelog:
