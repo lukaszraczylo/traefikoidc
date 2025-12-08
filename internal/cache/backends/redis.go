@@ -76,7 +76,7 @@ func NewRedisBackend(config *Config) (*RedisBackend, error) {
 
 	// Test connectivity
 	if err := backend.Ping(context.Background()); err != nil {
-		pool.Close()
+		_ = pool.Close()
 		return nil, fmt.Errorf("failed to ping Redis: %w", err)
 	}
 
@@ -263,7 +263,7 @@ func (r *RedisBackend) Clear(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
-		conn.Do("DEL", key) // Best effort, ignore errors
+		_, _ = conn.Do("DEL", key) // Best effort, ignore errors
 	}
 
 	return nil

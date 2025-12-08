@@ -217,6 +217,7 @@ func (hc *HealthChecker) recordSuccess(latency time.Duration) {
 	newStatus := currentStatus
 
 	// Check if we should become healthy
+	// #nosec G115 -- HealthyThreshold is a small config value that fits in int32
 	if successes >= int32(hc.config.HealthyThreshold) {
 		if latency > hc.config.DegradedThreshold {
 			newStatus = HealthDegraded
@@ -241,6 +242,7 @@ func (hc *HealthChecker) recordFailure() {
 	hc.timeMu.Unlock()
 
 	// Check if we should become unhealthy
+	// #nosec G115 -- UnhealthyThreshold is a small config value that fits in int32
 	if failures >= int32(hc.config.UnhealthyThreshold) {
 		hc.setStatus(HealthUnhealthy)
 	}

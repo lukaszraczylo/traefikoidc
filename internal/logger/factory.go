@@ -144,12 +144,14 @@ func getOrCreateLogFile(filename string) io.Writer {
 	}
 
 	// Ensure log directory exists
+	// #nosec G301 -- log directory needs to be readable by monitoring tools
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		// Fall back to stderr if we can't create the directory
 		return os.Stderr
 	}
 
 	filepath := logDir + "/" + filename
+	// #nosec G302 G304 -- log files need to be readable; path is from trusted env var
 	file, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		// Fall back to stderr if we can't open the file

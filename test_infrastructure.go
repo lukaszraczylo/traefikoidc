@@ -734,6 +734,7 @@ func (r *TestSuiteRunner) RunMemoryLeakTests(t *testing.T, tests []MemoryLeakTes
 			}
 
 			// Check memory growth
+			// #nosec G115 -- memory stats are within int64 range for practical purposes
 			memoryGrowthBytes := int64(finalMem.Alloc) - int64(initialMem.Alloc)
 			memoryGrowthMB := float64(memoryGrowthBytes) / (1024 * 1024)
 

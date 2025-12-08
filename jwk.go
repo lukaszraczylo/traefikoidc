@@ -169,7 +169,10 @@ func (jwk *JWK) ToRSAPublicKey() (*rsa.PublicKey, error) {
 		// Pad to 8 bytes for uint64
 		paddedE := make([]byte, 8)
 		copy(paddedE[8-len(eBytes):], eBytes)
-		e = int(binary.BigEndian.Uint64(paddedE))
+		eUint64 := binary.BigEndian.Uint64(paddedE)
+		// RSA exponents are typically small (65537 is common), so overflow is not a concern
+		// #nosec G115 -- RSA public exponents are small values that fit in int
+		e = int(eUint64)
 	} else {
 		return nil, fmt.Errorf("exponent too large")
 	}

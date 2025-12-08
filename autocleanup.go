@@ -787,6 +787,7 @@ func (mm *TaskMemoryMonitor) ForceGC() (before, after TaskMemoryStats, err error
 	}
 
 	if mm.logger != nil {
+		// #nosec G115 -- heap allocation bytes fit in int64 for practical purposes
 		freed := int64(before.HeapAlloc) - int64(after.HeapAlloc)
 		mm.logger.Infof("Forced GC: freed %d bytes (%.2f MB)", freed, float64(freed)/(1024*1024))
 	}

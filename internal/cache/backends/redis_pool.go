@@ -82,7 +82,7 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 			// Reuse existing connection - validate if health check enabled
 			if p.config.EnableHealthCheck && !p.isConnectionHealthy(conn) {
 				// Connection is stale, close it and try again
-				conn.Close()
+				_ = conn.Close()
 				p.totalConns.Add(-1)
 				continue
 			}
@@ -94,6 +94,7 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 
 		default:
 			// No available connection, create new one if under limit
+			// #nosec G115 -- MaxConnections is a small config value that fits in int32
 			if p.totalConns.Load() < int32(p.config.MaxConnections) {
 				conn, err = p.createConnection()
 				if err != nil {
@@ -115,7 +116,7 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 			case conn = <-p.connections:
 				// Validate connection if health check enabled
 				if p.config.EnableHealthCheck && !p.isConnectionHealthy(conn) {
-					conn.Close()
+					_ = conn.Close()
 					p.totalConns.Add(-1)
 					continue
 				}
@@ -144,7 +145,7 @@ func (p *ConnectionPool) Put(conn *RedisConn) {
 	p.activeConns.Add(-1)
 
 	if p.closed.Load() || conn.closed.Load() {
-		conn.Close()
+		_ = conn.Close()
 		p.totalConns.Add(-1)
 		return
 	}
@@ -155,7 +156,7 @@ func (p *ConnectionPool) Put(conn *RedisConn) {
 		// Successfully returned to pool
 	default:
 		// Pool full, close connection
-		conn.Close()
+		_ = conn.Close()
 		p.totalConns.Add(-1)
 	}
 }
@@ -173,7 +174,7 @@ func (p *ConnectionPool) Close() error {
 
 	// Close all pooled connections
 	for conn := range p.connections {
-		conn.Close()
+		_ = conn.Close()
 	}
 
 	return nil
@@ -212,7 +213,7 @@ func (p *ConnectionPool) createConnection() (*RedisConn, error) {
 	// Authenticate if password is provided
 	if p.config.Password != "" {
 		if _, err := redisConn.Do("AUTH", p.config.Password); err != nil {
-			redisConn.Close()
+			_ = redisConn.Close()
 			return nil, fmt.Errorf("authentication failed: %w", err)
 		}
 	}
@@ -220,7 +221,7 @@ func (p *ConnectionPool) createConnection() (*RedisConn, error) {
 	// Select database
 	if p.config.DB != 0 {
 		if _, err := redisConn.Do("SELECT", fmt.Sprintf("%d", p.config.DB)); err != nil {
-			redisConn.Close()
+			_ = redisConn.Close()
 			return nil, fmt.Errorf("failed to select database: %w", err)
 		}
 	}
@@ -246,15 +247,15 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Build command arguments
-	// Check for overflow: ensure len(args)+1 doesn't cause allocation overflow
-	// Limit to a safe value that prevents integer overflow in allocation size calculation
-	// (capacity * sizeof(string) must fit in int/size_t)
-	argsLen := len(args)
-	const maxSafeArgs = (1 << 20) - 1 // 1M args is already absurdly large for Redis commands
-	if argsLen < 0 || argsLen > maxSafeArgs {
-		return nil, errors.New("too many arguments")
+	// Validate argument count to prevent integer overflow in slice operations
+	// maxSafeArgs is set to (1<<20)-1 = 1,048,575 which is more than any reasonable Redis command
+	const maxSafeArgs = (1 << 20) - 1
+	if len(args) > maxSafeArgs {
+		return nil, errors.New("too many arguments: exceeds maximum safe count")
 	}
+
+	// Build command arguments
+	// Validate total argument size to prevent memory exhaustion
 	const maxTotalArgBytes = 64 << 20 // 64 MiB max total size
 	totalBytes := len(command)
 	for _, s := range args {
@@ -267,13 +268,13 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 			return nil, errors.New("total argument size exceeds maximum allowed")
 		}
 	}
-	cmdArgs := make([]string, 0, argsLen+1)
-	cmdArgs = append(cmdArgs, command)
-	cmdArgs = append(cmdArgs, args...)
+	// Build command slice: prepend command to args
+	// Using append avoids arithmetic on potentially large len(args)
+	cmdArgs := append([]string{command}, args...)
 
 	// Set write timeout
 	if c.writeTimeout > 0 {
-		c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+		_ = c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 	}
 
 	// Write command (using pooled writer for memory efficiency)
@@ -287,7 +288,7 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 
 	// Set read timeout
 	if c.readTimeout > 0 {
-		c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
+		_ = c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 	}
 
 	// Read response (using pooled reader for memory efficiency)
@@ -328,8 +329,8 @@ func (p *ConnectionPool) isConnectionHealthy(conn *RedisConn) bool {
 
 	// Set a read deadline for the ping
 	if conn.conn != nil {
-		conn.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		defer conn.conn.SetReadDeadline(time.Time{}) // Clear deadline
+		_ = conn.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		defer func() { _ = conn.conn.SetReadDeadline(time.Time{}) }() // Clear deadline
 	}
 
 	_, err := conn.Do("PING")

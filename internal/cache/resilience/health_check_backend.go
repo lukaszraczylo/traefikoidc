@@ -150,6 +150,7 @@ func (h *HealthCheckBackend) IsHealthy() bool {
 
 // recordResult records the result of an operation for health tracking
 func (h *HealthCheckBackend) recordResult(success bool) {
+	// #nosec G115 -- threshold config values are small integers that fit in int32
 	if success {
 		fails := h.consecutiveFails.Swap(0)
 		oks := h.consecutiveOK.Add(1)

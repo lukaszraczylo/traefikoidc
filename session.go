@@ -63,6 +63,7 @@ func generateSecureRandomString(length int) (string, error) {
 }
 
 // Cookie names and configuration constants used for session management
+// #nosec G101 -- These are cookie names, not hardcoded credentials
 const (
 	mainCookieName     = "_oidc_raczylo_m"
 	accessTokenCookie  = "_oidc_raczylo_a"

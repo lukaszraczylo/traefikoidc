@@ -51,7 +51,8 @@ func NewShardedCache(numShards int, maxSize int) *ShardedCache {
 	}
 
 	return &ShardedCache{
-		shards:      shards,
+		shards: shards,
+		// #nosec G115 -- numShards is validated to be positive and small (typically 32-256)
 		numShards:   uint32(numShards),
 		maxPerShard: maxPerShard,
 	}
@@ -61,7 +62,7 @@ func NewShardedCache(numShards int, maxSize int) *ShardedCache {
 // FNV-1a is fast and provides good distribution.
 func (c *ShardedCache) getShard(key string) *cacheShard {
 	h := fnv.New32a()
-	h.Write([]byte(key))
+	_, _ = h.Write([]byte(key)) // hash.Hash.Write never returns an error
 	return c.shards[h.Sum32()%c.numShards]
 }
 

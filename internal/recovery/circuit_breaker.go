@@ -148,6 +148,7 @@ func (cb *CircuitBreaker) allowRequest() bool {
 // allowHalfOpenRequest checks if a request is allowed in half-open state
 func (cb *CircuitBreaker) allowHalfOpenRequest() bool {
 	current := atomic.AddInt32(&cb.halfOpenRequests, 1)
+	// #nosec G115 -- MaxRequests is a small config value that fits in int32
 	if current <= int32(cb.config.MaxRequests) {
 		return true
 	}
@@ -164,6 +165,7 @@ func (cb *CircuitBreaker) recordFailure() {
 
 	state := CircuitBreakerState(atomic.LoadInt32(&cb.state))
 
+	// #nosec G115 -- FailureThreshold is a small config value that fits in int32
 	if state == CircuitBreakerClosed && failures >= int32(cb.config.FailureThreshold) {
 		cb.transitionToOpen()
 	} else if state == CircuitBreakerHalfOpen {
@@ -180,6 +182,7 @@ func (cb *CircuitBreaker) recordSuccess() {
 
 	state := CircuitBreakerState(atomic.LoadInt32(&cb.state))
 
+	// #nosec G115 -- SuccessThreshold is a small config value that fits in int32
 	if state == CircuitBreakerHalfOpen && successes >= int32(cb.config.SuccessThreshold) {
 		cb.transitionToClosed()
 	}

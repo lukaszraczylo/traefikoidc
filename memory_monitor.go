@@ -120,8 +120,9 @@ func NewMemoryMonitor(logger *Logger, thresholds MemoryAlertThresholds) *MemoryM
 		alertThresholds:    thresholds,
 		baselineHeap:       memStats.HeapAlloc,
 		baselineGoroutines: runtime.NumGoroutine(),
-		lastGCTime:         time.Unix(0, int64(memStats.LastGC)),
-		lastGCCount:        memStats.NumGC,
+		// #nosec G115 -- LastGC nanoseconds fits in int64 for centuries
+		lastGCTime:  time.Unix(0, int64(memStats.LastGC)),
+		lastGCCount: memStats.NumGC,
 	}
 }
 
@@ -158,9 +159,10 @@ func (mm *MemoryMonitor) GetCurrentStats() *MemoryStats {
 		StackSysBytes:     memStats.StackSys,
 		GCSysBytes:        memStats.GCSys,
 		NumGoroutines:     runtime.NumGoroutine(),
-		LastGCTime:        time.Unix(0, int64(memStats.LastGC)),
-		GCFrequency:       gcFrequency,
-		Timestamp:         now,
+		// #nosec G115 -- LastGC nanoseconds fits in int64 for centuries
+		LastGCTime:  time.Unix(0, int64(memStats.LastGC)),
+		GCFrequency: gcFrequency,
+		Timestamp:   now,
 	}
 
 	// Get application-specific stats
@@ -386,6 +388,7 @@ func (mm *MemoryMonitor) TriggerGC() {
 
 	after := mm.GetCurrentStats()
 
+	// #nosec G115 -- heap allocation bytes fit in int64 for practical purposes
 	freedBytes := int64(before.HeapAllocBytes) - int64(after.HeapAllocBytes)
 	freedMB := float64(freedBytes) / (1024 * 1024)
 
