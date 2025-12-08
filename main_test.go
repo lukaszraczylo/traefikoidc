@@ -1882,7 +1882,6 @@ func TestHandleLogout(t *testing.T) {
 			tOidc := &TraefikOidc{
 				revocationURL:  mockRevocationServer.URL,
 				endSessionURL:  tc.endSessionURL,
-				scheme:         "http",
 				logger:         logger,
 				tokenBlacklist: NewCache(), // Use generic cache for blacklist
 				httpClient:     &http.Client{},

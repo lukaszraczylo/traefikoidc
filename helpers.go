@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/lukaszraczylo/traefikoidc/internal/utils"
 )
 
 // generateNonce creates a cryptographically secure random nonce for OIDC flows.
@@ -349,8 +351,8 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	host := t.determineHost(req)
-	scheme := t.determineScheme(req)
+	host := utils.DetermineHost(req)
+	scheme := utils.DetermineScheme(req, t.forceHTTPS)
 	baseURL := fmt.Sprintf("%s://%s", scheme, host)
 
 	postLogoutRedirectURI := t.postLogoutRedirectURI

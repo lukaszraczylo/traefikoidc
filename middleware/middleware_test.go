@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/lukaszraczylo/traefikoidc/internal/utils"
 )
 
 // TestUncoveredMiddlewareFunctions tests the functions with 0% coverage in middleware package
@@ -68,7 +70,7 @@ func TestBuildFullURLFunction(t *testing.T) {
 		host := "example.com"
 		path := "/callback"
 
-		url := buildFullURL(scheme, host, path)
+		url := utils.BuildFullURL(scheme, host, path)
 		expected := "https://example.com/callback"
 
 		if url != expected {
@@ -76,7 +78,7 @@ func TestBuildFullURLFunction(t *testing.T) {
 		}
 
 		// Test with path that doesn't start with / (function adds leading /)
-		url2 := buildFullURL(scheme, host, "callback")
+		url2 := utils.BuildFullURL(scheme, host, "callback")
 		expected2 := "https://example.com/callback"
 
 		if url2 != expected2 {
@@ -84,7 +86,7 @@ func TestBuildFullURLFunction(t *testing.T) {
 		}
 
 		// Test with empty path (function adds leading /)
-		url3 := buildFullURL(scheme, host, "")
+		url3 := utils.BuildFullURL(scheme, host, "")
 		expected3 := "https://example.com/"
 
 		if url3 != expected3 {
@@ -92,7 +94,7 @@ func TestBuildFullURLFunction(t *testing.T) {
 		}
 
 		// Test with different schemes
-		url4 := buildFullURL("http", "localhost:8080", "/test")
+		url4 := utils.BuildFullURL("http", "localhost:8080", "/test")
 		expected4 := "http://localhost:8080/test"
 
 		if url4 != expected4 {
@@ -100,7 +102,7 @@ func TestBuildFullURLFunction(t *testing.T) {
 		}
 
 		// Test with special characters
-		url5 := buildFullURL("https", "api.example.com", "/v1/auth?redirect=true")
+		url5 := utils.BuildFullURL("https", "api.example.com", "/v1/auth?redirect=true")
 		expected5 := "https://api.example.com/v1/auth?redirect=true"
 
 		if url5 != expected5 {
@@ -108,7 +110,7 @@ func TestBuildFullURLFunction(t *testing.T) {
 		}
 
 		// Test with empty components (function adds leading /)
-		url6 := buildFullURL("", "", "")
+		url6 := utils.BuildFullURL("", "", "")
 		expected6 := ":///"
 
 		if url6 != expected6 {
@@ -116,7 +118,7 @@ func TestBuildFullURLFunction(t *testing.T) {
 		}
 
 		// Test with port numbers
-		url7 := buildFullURL("http", "localhost:3000", "/admin")
+		url7 := utils.BuildFullURL("http", "localhost:3000", "/admin")
 		expected7 := "http://localhost:3000/admin"
 
 		if url7 != expected7 {

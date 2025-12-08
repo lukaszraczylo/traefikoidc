@@ -380,9 +380,9 @@ func TestUtilsPackageComplete(t *testing.T) {
 		t.Errorf("Expected empty slice, got %v", emptyMapKeys)
 	}
 
-	// Test BuildFullURL with empty values
+	// Test BuildFullURL with empty values (adds leading / to empty path)
 	emptyURL := BuildFullURL("", "", "")
-	expected := "://"
+	expected := ":///"
 	if emptyURL != expected {
 		t.Errorf("Expected '%s', got '%s'", expected, emptyURL)
 	}

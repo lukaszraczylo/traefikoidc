@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lukaszraczylo/traefikoidc/internal/utils"
 )
 
 // AuthMiddleware handles the main OIDC authentication flow
@@ -223,7 +225,7 @@ func (m *AuthMiddleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		scheme := m.urlHelper.DetermineScheme(req)
 		host := m.urlHelper.DetermineHost(req)
-		redirectURL := buildFullURL(scheme, host, m.redirURLPath)
+		redirectURL := utils.BuildFullURL(scheme, host, m.redirURLPath)
 		m.authHandler.InitiateAuthentication(rw, req, session, redirectURL,
 			generateNonce, generateCodeVerifier, deriveCodeChallenge)
 		return
@@ -233,7 +235,7 @@ func (m *AuthMiddleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	scheme := m.urlHelper.DetermineScheme(req)
 	host := m.urlHelper.DetermineHost(req)
-	redirectURL := buildFullURL(scheme, host, m.redirURLPath)
+	redirectURL := utils.BuildFullURL(scheme, host, m.redirURLPath)
 
 	if req.URL.Path == m.logoutURLPath {
 		m.processLogoutFunc(rw, req)
@@ -428,20 +430,6 @@ func (m *AuthMiddleware) processAuthorizedRequest(rw http.ResponseWriter, req *h
 	}
 
 	m.next.ServeHTTP(rw, req)
-}
-
-// buildFullURL constructs a full URL from scheme, host, and path components.
-// It handles absolute URLs in the path and ensures proper URL formatting.
-func buildFullURL(scheme, host, path string) string {
-	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
-		return path
-	}
-
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-
-	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }
 
 // These functions need to be provided by the calling code or injected as dependencies

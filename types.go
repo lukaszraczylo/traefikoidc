@@ -108,7 +108,6 @@ type TraefikOidc struct {
 	authURL                    string
 	endSessionURL              string
 	postLogoutRedirectURI      string
-	scheme                     string
 	jwksURL                    string
 	issuerURL                  string
 	revocationURL              string
