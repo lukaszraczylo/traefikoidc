@@ -1051,7 +1051,7 @@ func TestSessionErrorHandling(t *testing.T) {
 
 			if input, ok := test.Input.(string); ok && input != "" {
 				req.AddCookie(&http.Cookie{
-					Name:  mainCookieName,
+					Name:  defaultCookiePrefix + mainCookieSuffix,
 					Value: input,
 				})
 			}
@@ -1927,8 +1927,9 @@ func TestLargeIDTokenChunking(t *testing.T) {
 			t.Logf("Total cookies in response: %d", len(cookies))
 
 			var chunkCookies []*http.Cookie
+			idTokenCookieName := defaultCookiePrefix + idTokenSuffix
 			for _, cookie := range cookies {
-				if strings.HasPrefix(cookie.Name, idTokenCookie+"_") {
+				if strings.HasPrefix(cookie.Name, idTokenCookieName+"_") {
 					chunkCookies = append(chunkCookies, cookie)
 				}
 			}
@@ -1968,8 +1969,9 @@ func TestLargeIDTokenChunking(t *testing.T) {
 
 			// Verify chunks are expired (MaxAge = -1)
 			clearCookies := clearRR.Result().Cookies()
+			idTokenCookieName2 := defaultCookiePrefix + idTokenSuffix
 			for _, cookie := range clearCookies {
-				if strings.HasPrefix(cookie.Name, idTokenCookie+"_") {
+				if strings.HasPrefix(cookie.Name, idTokenCookieName2+"_") {
 					if cookie.MaxAge != -1 {
 						t.Errorf("Expected chunk cookie %s to be expired (MaxAge=-1), got MaxAge=%d",
 							cookie.Name, cookie.MaxAge)
@@ -3194,4 +3196,83 @@ func createExpiredJWTToken(userID, email string, expiredTime time.Time) string {
 	signatureEncoded := base64.RawURLEncoding.EncodeToString([]byte(signature))
 
 	return header + "." + claimsEncoded + "." + signatureEncoded
+}
+
+// TestCookiePrefixIsolation tests that different cookie prefixes create isolated sessions
+// This addresses GitHub issue #87 where multiple middleware instances should not share sessions
+func TestCookiePrefixIsolation(t *testing.T) {
+	logger := NewLogger("info")
+	encryptionKey := strings.Repeat("a", 32)
+
+	// Create two session managers with different cookie prefixes
+	sm1, err := NewSessionManager(encryptionKey, false, "", "_oidc_userauth_", 0, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager 1: %v", err)
+	}
+
+	sm2, err := NewSessionManager(encryptionKey, false, "", "_oidc_adminauth_", 0, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager 2: %v", err)
+	}
+
+	// Verify cookie names are different
+	if sm1.mainCookieName() == sm2.mainCookieName() {
+		t.Errorf("Expected different main cookie names, got same: %s", sm1.mainCookieName())
+	}
+	if sm1.accessTokenCookieName() == sm2.accessTokenCookieName() {
+		t.Errorf("Expected different access token cookie names, got same: %s", sm1.accessTokenCookieName())
+	}
+
+	// Verify cookie names have the correct prefix
+	expectedPrefix1 := "_oidc_userauth_"
+	expectedPrefix2 := "_oidc_adminauth_"
+
+	if !strings.HasPrefix(sm1.mainCookieName(), expectedPrefix1) {
+		t.Errorf("Expected main cookie name to start with %s, got %s", expectedPrefix1, sm1.mainCookieName())
+	}
+	if !strings.HasPrefix(sm2.mainCookieName(), expectedPrefix2) {
+		t.Errorf("Expected main cookie name to start with %s, got %s", expectedPrefix2, sm2.mainCookieName())
+	}
+
+	t.Logf("Session Manager 1 cookies: main=%s, access=%s, refresh=%s, id=%s",
+		sm1.mainCookieName(), sm1.accessTokenCookieName(), sm1.refreshTokenCookieName(), sm1.idTokenCookieName())
+	t.Logf("Session Manager 2 cookies: main=%s, access=%s, refresh=%s, id=%s",
+		sm2.mainCookieName(), sm2.accessTokenCookieName(), sm2.refreshTokenCookieName(), sm2.idTokenCookieName())
+}
+
+// TestCookiePrefixDefault tests that the default cookie prefix is applied when none is provided
+func TestCookiePrefixDefault(t *testing.T) {
+	logger := NewLogger("info")
+	encryptionKey := strings.Repeat("a", 32)
+
+	// Create session manager without cookie prefix (should use default)
+	sm, err := NewSessionManager(encryptionKey, false, "", "", 0, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	// Verify default prefix is used
+	expectedPrefix := defaultCookiePrefix
+	if !strings.HasPrefix(sm.mainCookieName(), expectedPrefix) {
+		t.Errorf("Expected default prefix %s, got cookie name %s", expectedPrefix, sm.mainCookieName())
+	}
+
+	// Verify full cookie names
+	expectedMain := defaultCookiePrefix + mainCookieSuffix
+	expectedAccess := defaultCookiePrefix + accessTokenSuffix
+	expectedRefresh := defaultCookiePrefix + refreshTokenSuffix
+	expectedID := defaultCookiePrefix + idTokenSuffix
+
+	if sm.mainCookieName() != expectedMain {
+		t.Errorf("Expected main cookie name %s, got %s", expectedMain, sm.mainCookieName())
+	}
+	if sm.accessTokenCookieName() != expectedAccess {
+		t.Errorf("Expected access cookie name %s, got %s", expectedAccess, sm.accessTokenCookieName())
+	}
+	if sm.refreshTokenCookieName() != expectedRefresh {
+		t.Errorf("Expected refresh cookie name %s, got %s", expectedRefresh, sm.refreshTokenCookieName())
+	}
+	if sm.idTokenCookieName() != expectedID {
+		t.Errorf("Expected ID cookie name %s, got %s", expectedID, sm.idTokenCookieName())
+	}
 }

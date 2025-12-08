@@ -62,13 +62,15 @@ func generateSecureRandomString(length int) (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// Cookie names and configuration constants used for session management
-// #nosec G101 -- These are cookie names, not hardcoded credentials
+// Cookie name suffixes used for session management
+// These are appended to the cookiePrefix to create full cookie names
+// #nosec G101 -- These are cookie name suffixes, not hardcoded credentials
 const (
-	mainCookieName     = "_oidc_raczylo_m"
-	accessTokenCookie  = "_oidc_raczylo_a"
-	refreshTokenCookie = "_oidc_raczylo_r"
-	idTokenCookie      = "_oidc_raczylo_id"
+	mainCookieSuffix    = "m"
+	accessTokenSuffix   = "a"
+	refreshTokenSuffix  = "r"
+	idTokenSuffix       = "id"
+	defaultCookiePrefix = "_oidc_raczylo_"
 )
 
 const (
@@ -273,7 +275,7 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 
 	// Set default cookie prefix if not provided
 	if cookiePrefix == "" {
-		cookiePrefix = "_oidc_raczylo_"
+		cookiePrefix = defaultCookiePrefix
 	}
 
 	// Set default session max age if not provided (24 hours for backward compatibility)
@@ -323,6 +325,28 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 	go sm.backgroundCleanup()
 
 	return sm, nil
+}
+
+// Cookie name helper methods - build cookie names using the configured prefix
+
+// mainCookieName returns the main session cookie name with the configured prefix
+func (sm *SessionManager) mainCookieName() string {
+	return sm.cookiePrefix + mainCookieSuffix
+}
+
+// accessTokenCookieName returns the access token cookie name with the configured prefix
+func (sm *SessionManager) accessTokenCookieName() string {
+	return sm.cookiePrefix + accessTokenSuffix
+}
+
+// refreshTokenCookieName returns the refresh token cookie name with the configured prefix
+func (sm *SessionManager) refreshTokenCookieName() string {
+	return sm.cookiePrefix + refreshTokenSuffix
+}
+
+// idTokenCookieName returns the ID token cookie name with the configured prefix
+func (sm *SessionManager) idTokenCookieName() string {
+	return sm.cookiePrefix + idTokenSuffix
 }
 
 // Shutdown gracefully shuts down the SessionManager and all its background tasks
@@ -756,10 +780,8 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 	processedCookies := make(map[string]bool)
 
 	for _, cookie := range cookies {
-		if strings.HasPrefix(cookie.Name, mainCookieName) ||
-			strings.HasPrefix(cookie.Name, accessTokenCookie) ||
-			strings.HasPrefix(cookie.Name, refreshTokenCookie) ||
-			strings.HasPrefix(cookie.Name, "_oidc_raczylo_id") ||
+		// Check if cookie belongs to this middleware instance using the configured prefix
+		if strings.HasPrefix(cookie.Name, sm.cookiePrefix) ||
 			strings.HasPrefix(cookie.Name, "access_token_chunk_") ||
 			strings.HasPrefix(cookie.Name, "refresh_token_chunk_") {
 
@@ -832,7 +854,7 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	}
 
 	var err error
-	sessionData.mainSession, err = sm.store.Get(r, mainCookieName)
+	sessionData.mainSession, err = sm.store.Get(r, sm.mainCookieName())
 	if err != nil {
 		return handleError(err, "failed to get main session")
 	}
@@ -844,17 +866,17 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 		}
 	}
 
-	sessionData.accessSession, err = sm.store.Get(r, accessTokenCookie)
+	sessionData.accessSession, err = sm.store.Get(r, sm.accessTokenCookieName())
 	if err != nil {
 		return handleError(err, "failed to get access token session")
 	}
 
-	sessionData.refreshSession, err = sm.store.Get(r, refreshTokenCookie)
+	sessionData.refreshSession, err = sm.store.Get(r, sm.refreshTokenCookieName())
 	if err != nil {
 		return handleError(err, "failed to get refresh token session")
 	}
 
-	sessionData.idTokenSession, err = sm.store.Get(r, idTokenCookie)
+	sessionData.idTokenSession, err = sm.store.Get(r, sm.idTokenCookieName())
 	if err != nil {
 		return handleError(err, "failed to get ID token session")
 	}
@@ -869,9 +891,9 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 		delete(sessionData.idTokenChunks, k)
 	}
 
-	sm.getTokenChunkSessions(r, accessTokenCookie, sessionData.accessTokenChunks)
-	sm.getTokenChunkSessions(r, refreshTokenCookie, sessionData.refreshTokenChunks)
-	sm.getTokenChunkSessions(r, idTokenCookie, sessionData.idTokenChunks)
+	sm.getTokenChunkSessions(r, sm.accessTokenCookieName(), sessionData.accessTokenChunks)
+	sm.getTokenChunkSessions(r, sm.refreshTokenCookieName(), sessionData.refreshTokenChunks)
+	sm.getTokenChunkSessions(r, sm.idTokenCookieName(), sessionData.idTokenChunks)
 
 	return sessionData, nil
 }
@@ -1447,7 +1469,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 		}
 
 		for i, chunkData := range chunks {
-			sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
+			sessionName := fmt.Sprintf("%s_%d", sd.manager.accessTokenCookieName(), i)
 
 			if sd.request == nil {
 				sd.manager.logger.Error("SetAccessToken: sd.request is nil, cannot create chunk session %s", sessionName)
@@ -1632,7 +1654,7 @@ func (sd *SessionData) SetRefreshToken(token string) {
 		}
 
 		for i, chunkData := range chunks {
-			sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
+			sessionName := fmt.Sprintf("%s_%d", sd.manager.refreshTokenCookieName(), i)
 
 			if sd.request == nil {
 				sd.manager.logger.Errorf("CRITICAL: SetRefreshToken: sd.request is nil, cannot create chunk session %s", sessionName)
@@ -1702,7 +1724,7 @@ func (sd *SessionData) expireAccessTokenChunksEnhanced(w http.ResponseWriter) {
 	orphanedChunks := 0
 
 	for i := 0; i < maxChunkSearchLimit; i++ {
-		sessionName := fmt.Sprintf("%s_%d", accessTokenCookie, i)
+		sessionName := fmt.Sprintf("%s_%d", sd.manager.accessTokenCookieName(), i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
 			break
@@ -1748,7 +1770,7 @@ func (sd *SessionData) expireRefreshTokenChunksEnhanced(w http.ResponseWriter) {
 	orphanedChunks := 0
 
 	for i := 0; i < maxChunkSearchLimit; i++ {
-		sessionName := fmt.Sprintf("%s_%d", refreshTokenCookie, i)
+		sessionName := fmt.Sprintf("%s_%d", sd.manager.refreshTokenCookieName(), i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
 			break
@@ -1794,7 +1816,7 @@ func (sd *SessionData) expireIDTokenChunksEnhanced(w http.ResponseWriter) {
 	orphanedChunks := 0
 
 	for i := 0; i < maxChunkSearchLimit; i++ {
-		sessionName := fmt.Sprintf("%s_%d", idTokenCookie, i)
+		sessionName := fmt.Sprintf("%s_%d", sd.manager.idTokenCookieName(), i)
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
 			break
@@ -2149,7 +2171,7 @@ func (sd *SessionData) SetIDToken(token string) {
 		}
 
 		for i, chunkData := range chunks {
-			sessionName := fmt.Sprintf("%s_%d", idTokenCookie, i)
+			sessionName := fmt.Sprintf("%s_%d", sd.manager.idTokenCookieName(), i)
 
 			if sd.request == nil {
 				sd.manager.logger.Errorf("CRITICAL: SetIDToken: sd.request is nil, cannot create chunk session %s", sessionName)
