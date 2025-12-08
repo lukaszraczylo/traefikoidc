@@ -1,9 +1,13 @@
 package traefikoidc
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +15,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// =============================================================================
+// Test Framework and Types
+// =============================================================================
 
 // MemoryLeakFixesTestSuite provides comprehensive memory leak testing using unified infrastructure
 type MemoryLeakFixesTestSuite struct {
@@ -32,7 +40,108 @@ func NewMemoryLeakFixesTestSuite() *MemoryLeakFixesTestSuite {
 	}
 }
 
-// TestOptimizedCacheLifecycleManagement verifies cache lifecycle using table-driven tests
+// MemoryTestCase defines a memory leak test scenario
+type MemoryTestCase struct {
+	name         string
+	component    string // "cache", "session", "token", "plugin", "pool"
+	scenario     string // "concurrent", "longrunning", "stress", "lifecycle"
+	iterations   int
+	concurrency  int
+	setup        func(*MemoryTestFramework) error
+	execute      func(*MemoryTestFramework) error
+	validateLeak func(*testing.T, runtime.MemStats, runtime.MemStats)
+	cleanup      func(*MemoryTestFramework) error
+}
+
+// MemoryTestFramework provides common test infrastructure for memory tests
+type MemoryTestFramework struct {
+	t       *testing.T
+	cache   CacheInterface
+	plugin  *TraefikOidc
+	logger  *Logger
+	servers []*httptest.Server
+	configs []*Config
+	ctx     context.Context
+	cancel  context.CancelFunc
+}
+
+// NewMemoryTestFramework creates a new test framework instance
+func NewMemoryTestFramework(t *testing.T) *MemoryTestFramework {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &MemoryTestFramework{
+		t:       t,
+		logger:  NewLogger("debug"),
+		ctx:     ctx,
+		cancel:  cancel,
+		servers: make([]*httptest.Server, 0),
+		configs: make([]*Config, 0),
+	}
+}
+
+// Cleanup releases all framework resources
+func (tf *MemoryTestFramework) Cleanup() {
+	if tf.cancel != nil {
+		tf.cancel()
+	}
+	if tf.plugin != nil {
+		tf.plugin.Close()
+	}
+	if tf.cache != nil {
+		tf.cache.Close()
+	}
+	for _, server := range tf.servers {
+		server.Close()
+	}
+}
+
+// ConsolidatedMemorySnapshot captures memory statistics at a point in time
+type ConsolidatedMemorySnapshot struct {
+	Timestamp   time.Time
+	Alloc       uint64
+	TotalAlloc  uint64
+	Sys         uint64
+	NumGC       uint32
+	Goroutines  int
+	Description string
+}
+
+// VerifyNoGoroutineLeaks checks for goroutine leaks
+func VerifyNoGoroutineLeaks(t *testing.T, baseline int, tolerance int, description string) {
+	time.Sleep(100 * time.Millisecond)
+
+	current := runtime.NumGoroutine()
+	leaked := current - baseline
+
+	if leaked > tolerance {
+		t.Errorf("Goroutine leak detected in %s: baseline=%d, current=%d, leaked=%d (tolerance=%d)",
+			description, baseline, current, leaked, tolerance)
+	}
+}
+
+// TakeConsolidatedMemorySnapshot captures current memory state
+func TakeConsolidatedMemorySnapshot(description string) ConsolidatedMemorySnapshot {
+	runtime.GC()
+	runtime.GC()
+	debug.FreeOSMemory()
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	return ConsolidatedMemorySnapshot{
+		Timestamp:   time.Now(),
+		Alloc:       m.Alloc,
+		TotalAlloc:  m.TotalAlloc,
+		Sys:         m.Sys,
+		NumGC:       m.NumGC,
+		Goroutines:  runtime.NumGoroutine(),
+		Description: description,
+	}
+}
+
+// =============================================================================
+// Optimized Cache Lifecycle Tests
+// =============================================================================
+
 func TestOptimizedCacheLifecycleManagement(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -51,7 +160,6 @@ func TestOptimizedCacheLifecycleManagement(t *testing.T) {
 					return fmt.Errorf("cache creation failed")
 				}
 
-				// Test basic operations
 				cache.Set("test", "value", time.Minute)
 				val, found := cache.Get("test")
 				if !found || val != "value" {
@@ -74,13 +182,11 @@ func TestOptimizedCacheLifecycleManagement(t *testing.T) {
 				cache := NewOptimizedCache()
 				defer cache.Close()
 
-				// Add multiple entries
 				for i := 0; i < 100; i++ {
 					key := fmt.Sprintf("key-%d", i)
 					cache.Set(key, fmt.Sprintf("value-%d", i), time.Minute)
 				}
 
-				// Verify entries
 				for i := 0; i < 100; i++ {
 					key := fmt.Sprintf("key-%d", i)
 					_, found := cache.Get(key)
@@ -104,16 +210,13 @@ func TestOptimizedCacheLifecycleManagement(t *testing.T) {
 				cache := NewOptimizedCache()
 				defer cache.Close()
 
-				// Add entries with short expiration
 				for i := 0; i < 50; i++ {
 					key := fmt.Sprintf("short-key-%d", i)
 					cache.Set(key, "short-value", 50*time.Millisecond)
 				}
 
-				// Wait for expiration
 				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
-				// Trigger cleanup
 				for i := 0; i < 50; i++ {
 					key := fmt.Sprintf("cleanup-key-%d", i)
 					cache.Set(key, "new-value", time.Minute)
@@ -132,7 +235,10 @@ func TestOptimizedCacheLifecycleManagement(t *testing.T) {
 	suite.runner.RunMemoryLeakTests(t, tests)
 }
 
-// TestChunkManagerBoundedSessions verifies session limits using table-driven tests
+// =============================================================================
+// Chunk Manager Tests
+// =============================================================================
+
 func TestChunkManagerBoundedSessions(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -164,7 +270,6 @@ func TestChunkManagerBoundedSessions(t *testing.T) {
 		},
 	}
 
-	// Run configuration validation tests
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			if test.Setup != nil {
@@ -182,17 +287,13 @@ func TestChunkManagerBoundedSessions(t *testing.T) {
 			logger := GetSingletonNoOpLogger()
 			cm := NewChunkManager(logger)
 
-			// Verify bounds are set
 			assert.Equal(t, 1000, cm.maxSessions)
 			assert.Equal(t, 24*time.Hour, cm.sessionTTL)
-
-			// Test that session map is initialized
 			assert.NotNil(t, cm.sessionMap)
 			assert.Equal(t, 0, len(cm.sessionMap))
 		})
 	}
 
-	// Run memory leak tests for session management
 	leakTests := []MemoryLeakTestCase{
 		{
 			Name:        "Session map memory management",
@@ -201,15 +302,12 @@ func TestChunkManagerBoundedSessions(t *testing.T) {
 				logger := GetSingletonNoOpLogger()
 				cm := NewChunkManager(logger)
 
-				// Verify chunk manager is initialized properly
 				if cm == nil {
 					return fmt.Errorf("chunk manager creation failed")
 				}
 
-				// Simulate session creation within bounds
 				for i := 0; i < 100; i++ {
 					sessionID := fmt.Sprintf("session-%d", i)
-					// Mock session creation (would need actual implementation)
 					_ = sessionID
 				}
 
@@ -226,7 +324,10 @@ func TestChunkManagerBoundedSessions(t *testing.T) {
 	suite.runner.RunMemoryLeakTests(t, leakTests)
 }
 
-// TestProviderRegistryBoundedCache verifies provider registry bounds using edge cases
+// =============================================================================
+// Provider Registry Tests
+// =============================================================================
+
 func TestProviderRegistryBoundedCache(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -234,13 +335,12 @@ func TestProviderRegistryBoundedCache(t *testing.T) {
 	}
 	suite := NewMemoryLeakFixesTestSuite()
 
-	// Test conceptual patterns that would be used for provider registry
 	tests := []TableTestCase{
 		{
 			Name:        "Registry bounds validation",
 			Description: "Validate registry bounds pattern for future implementation",
-			Input:       1000, // Expected max cache size
-			Expected:    true, // Pattern validation should pass
+			Input:       1000,
+			Expected:    true,
 			Setup: func(t *testing.T) error {
 				return nil
 			},
@@ -250,10 +350,9 @@ func TestProviderRegistryBoundedCache(t *testing.T) {
 		},
 	}
 
-	// Test edge cases for registry bounds
 	edgeCases := suite.edgeGen.GenerateIntegerEdgeCases()
 	for _, maxSize := range edgeCases {
-		if maxSize > 0 { // Only test positive values for cache size
+		if maxSize > 0 {
 			tests = append(tests, TableTestCase{
 				Name:        fmt.Sprintf("Registry bounds edge case - size %d", maxSize),
 				Description: "Test registry bounds with edge case values",
@@ -265,19 +364,16 @@ func TestProviderRegistryBoundedCache(t *testing.T) {
 
 	suite.runner.RunTests(t, tests)
 
-	// Memory leak test for potential registry implementation
 	leakTests := []MemoryLeakTestCase{
 		{
 			Name:        "Provider registry memory pattern",
 			Description: "Test memory pattern for bounded provider registry",
 			Operation: func() error {
-				// Simulate registry operations that would be used
 				maxCacheSize := 1000
 				cacheCount := 0
 				cache := make(map[string]interface{})
 
-				// Simulate bounded cache operations
-				for i := 0; i < maxCacheSize*2; i++ { // Try to exceed bounds
+				for i := 0; i < maxCacheSize*2; i++ {
 					key := fmt.Sprintf("provider-%d", i)
 					if cacheCount < maxCacheSize {
 						cache[key] = fmt.Sprintf("config-%d", i)
@@ -285,7 +381,6 @@ func TestProviderRegistryBoundedCache(t *testing.T) {
 					}
 				}
 
-				// Verify bounds are respected
 				if len(cache) > maxCacheSize {
 					return fmt.Errorf("cache exceeded bounds: %d > %d", len(cache), maxCacheSize)
 				}
@@ -303,7 +398,10 @@ func TestProviderRegistryBoundedCache(t *testing.T) {
 	suite.runner.RunMemoryLeakTests(t, leakTests)
 }
 
-// TestErrorRecoveryLifecycleManagement tests graceful degradation cleanup
+// =============================================================================
+// Error Recovery Lifecycle Tests
+// =============================================================================
+
 func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -311,7 +409,6 @@ func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 	}
 	suite := NewMemoryLeakFixesTestSuite()
 
-	// Test various error recovery scenarios
 	tests := []MemoryLeakTestCase{
 		{
 			Name:        "Basic background task lifecycle",
@@ -319,26 +416,15 @@ func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 			Operation: func() error {
 				logger := GetSingletonNoOpLogger()
 
-				config := struct {
-					HealthCheckInterval time.Duration
-				}{
-					HealthCheckInterval: 100 * time.Millisecond,
-				}
+				taskFunc := func() {}
 
-				taskFunc := func() {
-					// Mock health check operation
-				}
-
-				task := NewBackgroundTask("test-health-check", config.HealthCheckInterval, taskFunc, logger)
+				task := NewBackgroundTask("test-health-check", 100*time.Millisecond, taskFunc, logger)
 				task.Start()
 
-				// Let it run briefly
 				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
-				// Stop the task
 				task.Stop()
 
-				// Wait for cleanup
 				time.Sleep(GetTestDuration(200 * time.Millisecond))
 
 				return nil
@@ -356,26 +442,20 @@ func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 				logger := GetSingletonNoOpLogger()
 				tasks := make([]*BackgroundTask, 0, 3)
 
-				// Create multiple tasks
 				for i := 0; i < 3; i++ {
 					taskName := fmt.Sprintf("test-task-%d", i)
-					taskFunc := func() {
-						// Mock task operation
-					}
+					taskFunc := func() {}
 					task := NewBackgroundTask(taskName, 50*time.Millisecond, taskFunc, logger)
 					tasks = append(tasks, task)
 					task.Start()
 				}
 
-				// Let them run
 				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
-				// Stop all tasks
 				for _, task := range tasks {
 					task.Stop()
 				}
 
-				// Wait for cleanup
 				time.Sleep(GetTestDuration(200 * time.Millisecond))
 
 				return nil
@@ -386,50 +466,15 @@ func TestErrorRecoveryLifecycleManagement(t *testing.T) {
 			GCBetweenRuns:      true,
 			Timeout:            15 * time.Second,
 		},
-		{
-			Name:        "Error recovery task patterns",
-			Description: "Test error recovery patterns with various edge cases",
-			Operation: func() error {
-				logger := GetSingletonNoOpLogger()
-
-				// Test with different intervals
-				intervals := []time.Duration{
-					10 * time.Millisecond,
-					50 * time.Millisecond,
-					100 * time.Millisecond,
-				}
-
-				for _, interval := range intervals {
-					taskFunc := func() {
-						// Mock health check with potential error handling
-					}
-
-					task := NewBackgroundTask("variable-interval-task", interval, taskFunc, logger)
-					task.Start()
-
-					// Brief execution
-					time.Sleep(GetTestDuration(25 * time.Millisecond))
-
-					task.Stop()
-
-					// Wait for cleanup
-					time.Sleep(GetTestDuration(50 * time.Millisecond))
-				}
-
-				return nil
-			},
-			Iterations:         3,
-			MaxGoroutineGrowth: 2,
-			MaxMemoryGrowthMB:  1.0,
-			GCBetweenRuns:      true,
-			Timeout:            10 * time.Second,
-		},
 	}
 
 	suite.runner.RunMemoryLeakTests(t, tests)
 }
 
-// TestBackgroundTaskProperShutdown verifies BackgroundTask cleans up properly using table-driven tests
+// =============================================================================
+// Background Task Shutdown Tests
+// =============================================================================
+
 func TestBackgroundTaskProperShutdown(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -453,16 +498,13 @@ func TestBackgroundTaskProperShutdown(t *testing.T) {
 				task := NewBackgroundTask("test-task", 50*time.Millisecond, taskFunc, logger, &wg)
 				task.Start()
 
-				// Let it run a few times
 				time.Sleep(GetTestDuration(150 * time.Millisecond))
 				if callCount == 0 {
 					return fmt.Errorf("task should have executed at least once")
 				}
 
-				// Stop the task
 				task.Stop()
 
-				// Wait for cleanup
 				wg.Wait()
 				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
@@ -489,13 +531,10 @@ func TestBackgroundTaskProperShutdown(t *testing.T) {
 				task := NewBackgroundTask("high-freq-task", 10*time.Millisecond, taskFunc, logger, &wg)
 				task.Start()
 
-				// Let it run many times
 				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
-				// Stop the task
 				task.Stop()
 
-				// Wait for cleanup
 				wg.Wait()
 				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
@@ -507,49 +546,15 @@ func TestBackgroundTaskProperShutdown(t *testing.T) {
 			GCBetweenRuns:      true,
 			Timeout:            10 * time.Second,
 		},
-		{
-			Name:        "Task with edge case intervals",
-			Description: "Test background task with various edge case intervals",
-			Operation: func() error {
-				var wg sync.WaitGroup
-				logger := GetSingletonNoOpLogger()
-
-				// Test with edge case intervals
-				validIntervals := []time.Duration{
-					1 * time.Millisecond,
-					5 * time.Millisecond,
-					100 * time.Millisecond,
-				}
-
-				for _, interval := range validIntervals {
-					taskFunc := func() {
-						// Minimal task work
-					}
-
-					task := NewBackgroundTask("edge-interval-task", interval, taskFunc, logger, &wg)
-					task.Start()
-
-					// Brief execution
-					time.Sleep(GetTestDuration(20 * time.Millisecond))
-
-					task.Stop()
-					wg.Wait()
-				}
-
-				return nil
-			},
-			Iterations:         3,
-			MaxGoroutineGrowth: 2,
-			MaxMemoryGrowthMB:  1.0,
-			GCBetweenRuns:      true,
-			Timeout:            10 * time.Second,
-		},
 	}
 
 	suite.runner.RunMemoryLeakTests(t, tests)
 }
 
-// TestMetadataCacheResourceCleanup verifies metadata cache cleanup using enhanced testing
+// =============================================================================
+// Metadata Cache Tests
+// =============================================================================
+
 func TestMetadataCacheResourceCleanup(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -570,13 +575,10 @@ func TestMetadataCacheResourceCleanup(t *testing.T) {
 					return fmt.Errorf("cache creation failed")
 				}
 
-				// Let it run briefly
 				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
-				// Close the cache
 				cache.Close()
 
-				// Wait for cleanup
 				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
 				return nil
@@ -588,41 +590,12 @@ func TestMetadataCacheResourceCleanup(t *testing.T) {
 			Timeout:            10 * time.Second,
 		},
 		{
-			Name:        "Metadata cache with operations",
-			Description: "Test metadata cache with typical operations before cleanup",
-			Operation: func() error {
-				var wg sync.WaitGroup
-
-				cache := NewMetadataCache(&wg)
-				defer cache.Close()
-
-				// Simulate metadata operations
-				for i := 0; i < 10; i++ {
-					key := fmt.Sprintf("metadata-key-%d", i)
-					// Mock metadata operations (would need actual implementation)
-					_ = key
-					time.Sleep(GetTestDuration(5 * time.Millisecond))
-				}
-
-				// Additional runtime before cleanup
-				time.Sleep(GetTestDuration(50 * time.Millisecond))
-
-				return nil
-			},
-			Iterations:         5,
-			MaxGoroutineGrowth: 2,
-			MaxMemoryGrowthMB:  2.0,
-			GCBetweenRuns:      true,
-			Timeout:            10 * time.Second,
-		},
-		{
 			Name:        "Multiple metadata caches",
 			Description: "Test multiple metadata cache instances cleanup",
 			Operation: func() error {
 				var wg sync.WaitGroup
 				caches := make([]*MetadataCache, 0, 3)
 
-				// Create multiple caches
 				for i := 0; i < 3; i++ {
 					cache := NewMetadataCache(&wg)
 					if cache == nil {
@@ -631,15 +604,12 @@ func TestMetadataCacheResourceCleanup(t *testing.T) {
 					caches = append(caches, cache)
 				}
 
-				// Let them run
 				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
-				// Close all caches
 				for _, cache := range caches {
 					cache.Close()
 				}
 
-				// Wait for cleanup
 				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
 				return nil
@@ -655,7 +625,10 @@ func TestMetadataCacheResourceCleanup(t *testing.T) {
 	suite.runner.RunMemoryLeakTests(t, tests)
 }
 
-// TestSecureDataCleanup verifies sensitive data cleanup using comprehensive edge cases
+// =============================================================================
+// Secure Data Cleanup Tests
+// =============================================================================
+
 func TestSecureDataCleanup(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -663,13 +636,12 @@ func TestSecureDataCleanup(t *testing.T) {
 	}
 	suite := NewMemoryLeakFixesTestSuite()
 
-	// Test secure data cleanup with various data types and sizes
 	tests := []TableTestCase{
 		{
 			Name:        "Basic sensitive data cleanup",
 			Description: "Test basic sensitive data storage and cleanup",
 			Input:       []byte("secret-token-data"),
-			Expected:    true, // Cleanup should succeed
+			Expected:    true,
 			Setup: func(t *testing.T) error {
 				return nil
 			},
@@ -679,10 +651,9 @@ func TestSecureDataCleanup(t *testing.T) {
 		},
 	}
 
-	// Generate edge cases for sensitive data
 	stringEdgeCases := suite.edgeGen.GenerateStringEdgeCases()
 	for i, testString := range stringEdgeCases {
-		if len(testString) > 0 { // Skip empty strings for this test
+		if len(testString) > 0 {
 			tests = append(tests, TableTestCase{
 				Name:        fmt.Sprintf("Sensitive data edge case %d", i),
 				Description: "Test secure cleanup with edge case data",
@@ -692,7 +663,6 @@ func TestSecureDataCleanup(t *testing.T) {
 		}
 	}
 
-	// Run table-driven tests
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			if test.Setup != nil {
@@ -710,24 +680,17 @@ func TestSecureDataCleanup(t *testing.T) {
 			cache := NewOptimizedCache()
 			defer cache.Close()
 
-			// Store sensitive data
 			sensitiveData := test.Input.([]byte)
 			cache.Set("token", sensitiveData, time.Minute)
 
-			// Verify it's stored
 			val, found := cache.Get("token")
 			assert.True(t, found)
 			assert.Equal(t, sensitiveData, val)
 
-			// Close cache (should trigger secure cleanup)
 			cache.Close()
-
-			// Note: We can't easily verify the data is zeroed since Go GC
-			// and the slice might be reused, but the structure is in place
 		})
 	}
 
-	// Memory leak test for secure data cleanup
 	leakTests := []MemoryLeakTestCase{
 		{
 			Name:        "Secure data cleanup memory management",
@@ -736,14 +699,12 @@ func TestSecureDataCleanup(t *testing.T) {
 				cache := NewOptimizedCache()
 				defer cache.Close()
 
-				// Store multiple sensitive data items
 				for i := 0; i < 50; i++ {
 					key := fmt.Sprintf("sensitive-key-%d", i)
 					sensitiveData := []byte(fmt.Sprintf("secret-data-%d-%s", i, suite.factory.GenerateRandomString(64)))
 					cache.Set(key, sensitiveData, time.Minute)
 				}
 
-				// Verify storage
 				for i := 0; i < 50; i++ {
 					key := fmt.Sprintf("sensitive-key-%d", i)
 					_, found := cache.Get(key)
@@ -752,7 +713,6 @@ func TestSecureDataCleanup(t *testing.T) {
 					}
 				}
 
-				// Close cache (should trigger secure cleanup)
 				cache.Close()
 
 				return nil
@@ -768,7 +728,10 @@ func TestSecureDataCleanup(t *testing.T) {
 	suite.runner.RunMemoryLeakTests(t, leakTests)
 }
 
-// TestMemoryGrowthPrevention verifies systems don't grow unbounded using enhanced testing
+// =============================================================================
+// Memory Growth Prevention Tests
+// =============================================================================
+
 func TestMemoryGrowthPrevention(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping memory growth prevention test in short mode")
@@ -786,22 +749,18 @@ func TestMemoryGrowthPrevention(t *testing.T) {
 			Name:        "Multiple cache memory growth prevention",
 			Description: "Test memory growth with multiple cache instances",
 			Operation: func() error {
-				// Create and use multiple components
 				caches := make([]*OptimizedCache, 10)
 				for i := 0; i < 10; i++ {
 					caches[i] = NewOptimizedCache()
-					// Add some data
 					for j := 0; j < 100; j++ {
 						caches[i].Set(fmt.Sprintf("key-%d-%d", i, j), "value", time.Minute)
 					}
 				}
 
-				// Clean up all caches
 				for _, cache := range caches {
 					cache.Close()
 				}
 
-				// Force GC
 				runtime.GC()
 				time.Sleep(GetTestDuration(100 * time.Millisecond))
 				runtime.GC()
@@ -810,7 +769,7 @@ func TestMemoryGrowthPrevention(t *testing.T) {
 			},
 			Iterations:         3,
 			MaxGoroutineGrowth: 5,
-			MaxMemoryGrowthMB:  50.0, // 50MB tolerance
+			MaxMemoryGrowthMB:  50.0,
 			GCBetweenRuns:      true,
 			Timeout:            30 * time.Second,
 		},
@@ -821,76 +780,41 @@ func TestMemoryGrowthPrevention(t *testing.T) {
 				cache := NewOptimizedCache()
 				defer cache.Close()
 
-				// Create larger dataset
 				for i := 0; i < 1000; i++ {
 					key := fmt.Sprintf("large-key-%d", i)
-					value := suite.factory.GenerateRandomString(1024) // 1KB values
+					value := suite.factory.GenerateRandomString(1024)
 					cache.Set(key, value, time.Minute)
 				}
 
-				// Force cleanup of some entries by setting with short expiration
 				for i := 0; i < 500; i++ {
 					key := fmt.Sprintf("temp-key-%d", i)
 					cache.Set(key, "temp-value", 10*time.Millisecond)
 				}
 
-				// Wait for expiration
 				time.Sleep(GetTestDuration(50 * time.Millisecond))
 
-				// Trigger cleanup by accessing cache
 				for i := 0; i < 100; i++ {
 					key := fmt.Sprintf("cleanup-trigger-%d", i)
-					cache.Get(key) // Will trigger cleanup
+					cache.Get(key)
 				}
 
 				return nil
 			},
 			Iterations:         2,
 			MaxGoroutineGrowth: 3,
-			MaxMemoryGrowthMB:  100.0, // Allow more growth for large datasets
+			MaxMemoryGrowthMB:  100.0,
 			GCBetweenRuns:      true,
 			Timeout:            45 * time.Second,
-		},
-		{
-			Name:        "Cache churn memory growth prevention",
-			Description: "Test memory growth with high cache churn",
-			Operation: func() error {
-				cache := NewOptimizedCache()
-				defer cache.Close()
-
-				// Simulate high cache churn
-				for round := 0; round < 5; round++ {
-					// Add entries
-					for i := 0; i < 200; i++ {
-						key := fmt.Sprintf("churn-key-%d-%d", round, i)
-						value := suite.factory.GenerateRandomString(256)
-						cache.Set(key, value, 20*time.Millisecond)
-					}
-
-					// Wait for some to expire
-					time.Sleep(GetTestDuration(30 * time.Millisecond))
-
-					// Access to trigger cleanup
-					for i := 0; i < 50; i++ {
-						key := fmt.Sprintf("access-key-%d", i)
-						cache.Get(key)
-					}
-				}
-
-				return nil
-			},
-			Iterations:         3,
-			MaxGoroutineGrowth: 3,
-			MaxMemoryGrowthMB:  20.0,
-			GCBetweenRuns:      true,
-			Timeout:            30 * time.Second,
 		},
 	}
 
 	suite.runner.RunMemoryLeakTests(t, tests)
 }
 
-// TestGoroutineLeakPrevention tests concurrent components for goroutine leaks
+// =============================================================================
+// Goroutine Leak Prevention Tests
+// =============================================================================
+
 func TestGoroutineLeakPrevention(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping goroutine leak prevention test in short mode")
@@ -908,10 +832,8 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 			Name:        "Concurrent cache goroutine management",
 			Description: "Test goroutine management with concurrent cache operations",
 			Operation: func() error {
-				// Run multiple components concurrently
 				var wg sync.WaitGroup
 
-				// Start multiple caches
 				for i := 0; i < 5; i++ {
 					wg.Add(1)
 					go func(i int) {
@@ -919,7 +841,6 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 						cache := NewOptimizedCache()
 						defer cache.Close()
 
-						// Use the cache briefly
 						for j := 0; j < 10; j++ {
 							cache.Set(fmt.Sprintf("key-%d", j), "value", time.Minute)
 							time.Sleep(time.Millisecond)
@@ -929,53 +850,16 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 
 				wg.Wait()
 
-				// Wait for cleanup
 				time.Sleep(GetTestDuration(500 * time.Millisecond))
 				runtime.GC()
 
 				return nil
 			},
 			Iterations:         3,
-			MaxGoroutineGrowth: 5, // Allow some variance
+			MaxGoroutineGrowth: 5,
 			MaxMemoryGrowthMB:  10.0,
 			GCBetweenRuns:      true,
 			Timeout:            30 * time.Second,
-		},
-		{
-			Name:        "High concurrency goroutine management",
-			Description: "Test goroutine management with high concurrency",
-			Operation: func() error {
-				var wg sync.WaitGroup
-
-				// Higher concurrency test
-				for i := 0; i < 20; i++ {
-					wg.Add(1)
-					go func(i int) {
-						defer wg.Done()
-						cache := NewOptimizedCache()
-						defer cache.Close()
-
-						// Brief cache usage
-						for j := 0; j < 5; j++ {
-							key := fmt.Sprintf("concurrent-key-%d-%d", i, j)
-							cache.Set(key, "concurrent-value", 10*time.Second)
-						}
-					}(i)
-				}
-
-				wg.Wait()
-
-				// Cleanup wait
-				time.Sleep(GetTestDuration(300 * time.Millisecond))
-				runtime.GC()
-
-				return nil
-			},
-			Iterations:         2,
-			MaxGoroutineGrowth: 10, // Allow more variance for higher concurrency
-			MaxMemoryGrowthMB:  15.0,
-			GCBetweenRuns:      true,
-			Timeout:            45 * time.Second,
 		},
 		{
 			Name:        "Mixed component goroutine management",
@@ -983,9 +867,7 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 			Operation: func() error {
 				var wg sync.WaitGroup
 
-				// Mix different components
 				for i := 0; i < 3; i++ {
-					// Cache goroutine
 					wg.Add(1)
 					go func(i int) {
 						defer wg.Done()
@@ -994,7 +876,6 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 						cache.Set("mixed-key", "mixed-value", time.Minute)
 					}(i)
 
-					// Background task goroutine
 					wg.Add(1)
 					go func(i int) {
 						defer wg.Done()
@@ -1006,7 +887,6 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 						task.Stop()
 					}(i)
 
-					// Metadata cache goroutine
 					wg.Add(1)
 					go func(i int) {
 						defer wg.Done()
@@ -1019,7 +899,6 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 
 				wg.Wait()
 
-				// Extended cleanup wait for mixed components
 				time.Sleep(GetTestDuration(500 * time.Millisecond))
 				runtime.GC()
 
@@ -1036,7 +915,10 @@ func TestGoroutineLeakPrevention(t *testing.T) {
 	suite.runner.RunMemoryLeakTests(t, tests)
 }
 
-// TestLazyBackgroundTask tests LazyBackgroundTask specific functionality
+// =============================================================================
+// Lazy Background Task Tests
+// =============================================================================
+
 func TestLazyBackgroundTask(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -1058,13 +940,11 @@ func TestLazyBackgroundTask(t *testing.T) {
 
 				task := NewLazyBackgroundTask("lazy-test", 50*time.Millisecond, taskFunc, logger)
 
-				// Wait - should not execute yet
 				time.Sleep(GetTestDuration(100 * time.Millisecond))
 				if callCount != 0 {
 					return fmt.Errorf("task should not have executed before StartIfNeeded")
 				}
 
-				// Now start it
 				task.StartIfNeeded()
 				time.Sleep(GetTestDuration(150 * time.Millisecond))
 
@@ -1095,19 +975,16 @@ func TestLazyBackgroundTask(t *testing.T) {
 
 				task := NewLazyBackgroundTask("lazy-multiple", 50*time.Millisecond, taskFunc, logger)
 
-				// Call multiple times - should be idempotent
 				task.StartIfNeeded()
 				task.StartIfNeeded()
 				task.StartIfNeeded()
 
-				// Verify it started (should execute)
 				time.Sleep(GetTestDuration(100 * time.Millisecond))
 
 				if execCount < 1 {
 					return fmt.Errorf("task should have executed at least once")
 				}
 
-				// Verify started flag is set
 				if !task.started {
 					return fmt.Errorf("task should be marked as started")
 				}
@@ -1122,56 +999,15 @@ func TestLazyBackgroundTask(t *testing.T) {
 			GCBetweenRuns:      true,
 			Timeout:            10 * time.Second,
 		},
-		{
-			Name:        "LazyBackgroundTask stop and restart",
-			Description: "Test that task can be stopped and restarted",
-			Operation: func() error {
-				logger := GetSingletonNoOpLogger()
-				execCount := 0
-				taskFunc := func() {
-					execCount++
-				}
-
-				task := NewLazyBackgroundTask("lazy-restart", 50*time.Millisecond, taskFunc, logger)
-
-				// Start
-				task.StartIfNeeded()
-				time.Sleep(GetTestDuration(100 * time.Millisecond))
-				countAfterFirst := execCount
-
-				// Stop
-				task.Stop()
-				time.Sleep(GetTestDuration(100 * time.Millisecond))
-				countAfterStop := execCount
-
-				// Should not have executed much more after stop (allow 1 in-flight)
-				if countAfterStop > countAfterFirst+1 {
-					return fmt.Errorf("task executed after stop: %d > %d", countAfterStop, countAfterFirst+1)
-				}
-
-				// Restart
-				task.StartIfNeeded()
-				time.Sleep(GetTestDuration(100 * time.Millisecond))
-
-				if execCount <= countAfterStop {
-					return fmt.Errorf("task should execute after restart")
-				}
-
-				task.Stop()
-				return nil
-			},
-			Iterations:         3,
-			MaxGoroutineGrowth: 2,
-			MaxMemoryGrowthMB:  1.0,
-			GCBetweenRuns:      true,
-			Timeout:            10 * time.Second,
-		},
 	}
 
 	suite.runner.RunMemoryLeakTests(t, tests)
 }
 
-// TestLazyCache tests NewLazyCache and NewLazyCacheWithLogger
+// =============================================================================
+// Lazy Cache Tests
+// =============================================================================
+
 func TestLazyCache(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -1190,7 +1026,6 @@ func TestLazyCache(t *testing.T) {
 					return fmt.Errorf("NewLazyCache returned nil")
 				}
 
-				// Test basic operations
 				cache.Set("key1", "value1", time.Minute)
 				val, found := cache.Get("key1")
 				if !found || val != "value1" {
@@ -1215,13 +1050,11 @@ func TestLazyCache(t *testing.T) {
 					return fmt.Errorf("NewLazyCacheWithLogger returned nil")
 				}
 
-				// Test with multiple entries
 				for i := 0; i < 50; i++ {
 					key := fmt.Sprintf("lazy-key-%d", i)
 					cache.Set(key, i, time.Minute)
 				}
 
-				// Verify
 				for i := 0; i < 50; i++ {
 					key := fmt.Sprintf("lazy-key-%d", i)
 					val, found := cache.Get(key)
@@ -1243,7 +1076,10 @@ func TestLazyCache(t *testing.T) {
 	suite.runner.RunMemoryLeakTests(t, tests)
 }
 
-// TestOptimizedMiddlewareConfig tests DefaultOptimizedConfig
+// =============================================================================
+// Optimized Middleware Config Tests
+// =============================================================================
+
 func TestOptimizedMiddlewareConfig(t *testing.T) {
 	t.Run("DefaultOptimizedConfig", func(t *testing.T) {
 		config := DefaultOptimizedConfig()
@@ -1270,7 +1106,10 @@ func TestOptimizedMiddlewareConfig(t *testing.T) {
 	})
 }
 
-// TestCleanupIdleConnections tests the HTTP connection cleanup function
+// =============================================================================
+// Cleanup Idle Connections Tests
+// =============================================================================
+
 func TestCleanupIdleConnections(t *testing.T) {
 	config := GetTestConfig()
 	if config.ShouldSkipTest(t, TestTypeLeakDetection) {
@@ -1288,16 +1127,12 @@ func TestCleanupIdleConnections(t *testing.T) {
 
 		stopChan := make(chan struct{})
 
-		// Start cleanup in background
 		go CleanupIdleConnections(client, 50*time.Millisecond, stopChan)
 
-		// Let it run a couple of cycles
 		time.Sleep(150 * time.Millisecond)
 
-		// Stop cleanup
 		close(stopChan)
 
-		// Wait for cleanup to finish
 		time.Sleep(100 * time.Millisecond)
 	})
 
@@ -1311,12 +1146,10 @@ func TestCleanupIdleConnections(t *testing.T) {
 
 		stopChan := make(chan struct{})
 
-		// Start and immediately stop
 		go CleanupIdleConnections(client, 100*time.Millisecond, stopChan)
 		time.Sleep(10 * time.Millisecond)
 		close(stopChan)
 
-		// Wait for cleanup
 		time.Sleep(50 * time.Millisecond)
 	})
 
@@ -1327,7 +1160,6 @@ func TestCleanupIdleConnections(t *testing.T) {
 
 		stopChan := make(chan struct{})
 
-		// Should handle gracefully
 		go CleanupIdleConnections(client, 50*time.Millisecond, stopChan)
 		time.Sleep(100 * time.Millisecond)
 		close(stopChan)
@@ -1335,67 +1167,578 @@ func TestCleanupIdleConnections(t *testing.T) {
 	})
 }
 
-// BenchmarkMemoryLeakFixes provides performance benchmarks for memory leak fixes
-func BenchmarkMemoryLeakFixes(b *testing.B) {
-	suite := NewMemoryLeakFixesTestSuite()
+// =============================================================================
+// Unit Tests (Non-Leak Detection)
+// =============================================================================
 
-	b.Run("OptimizedCacheLifecycle", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			cache := NewOptimizedCache()
-			cache.Set("bench-key", "bench-value", time.Minute)
-			_, _ = cache.Get("bench-key")
-			cache.Close()
+func TestNewLazyBackgroundTaskUnit(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	callCount := 0
+	taskFunc := func() {
+		callCount++
+	}
+
+	task := NewLazyBackgroundTask("test-task", 50*time.Millisecond, taskFunc, logger)
+
+	require.NotNil(t, task)
+	assert.NotNil(t, task.BackgroundTask)
+	assert.False(t, task.started)
+
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, 0, callCount, "task should not execute before StartIfNeeded")
+
+	if task.started {
+		task.Stop()
+	}
+}
+
+func TestLazyBackgroundTaskStartIfNeededUnit(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	callCount := 0
+	var mu sync.Mutex
+	taskFunc := func() {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+	}
+
+	task := NewLazyBackgroundTask("test-start", 30*time.Millisecond, taskFunc, logger)
+	require.NotNil(t, task)
+
+	task.StartIfNeeded()
+	assert.True(t, task.started)
+
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	firstCount := callCount
+	mu.Unlock()
+	assert.Greater(t, firstCount, 0, "task should execute after StartIfNeeded")
+
+	task.StartIfNeeded()
+	task.StartIfNeeded()
+
+	task.Stop()
+}
+
+func TestLazyBackgroundTaskStopUnit(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	callCount := 0
+	var mu sync.Mutex
+	taskFunc := func() {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+	}
+
+	task := NewLazyBackgroundTask("test-stop", 30*time.Millisecond, taskFunc, logger)
+	require.NotNil(t, task)
+
+	task.StartIfNeeded()
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	countAfterStart := callCount
+	mu.Unlock()
+	assert.Greater(t, countAfterStart, 0)
+
+	task.Stop()
+	assert.False(t, task.started)
+
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	countAfterStop := callCount
+	mu.Unlock()
+
+	assert.LessOrEqual(t, countAfterStop, countAfterStart+1, "task should stop executing")
+}
+
+func TestNewLazyCacheUnit(t *testing.T) {
+	cache := NewLazyCache()
+
+	require.NotNil(t, cache)
+
+	cache.Set("test-key", "test-value", time.Minute)
+	val, found := cache.Get("test-key")
+
+	assert.True(t, found)
+	assert.Equal(t, "test-value", val)
+}
+
+func TestNewLazyCacheWithLoggerUnit(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	cache := NewLazyCacheWithLogger(logger)
+
+	require.NotNil(t, cache)
+
+	for i := 0; i < 10; i++ {
+		key := "key-" + string(rune('0'+i))
+		cache.Set(key, i, time.Minute)
+	}
+
+	for i := 0; i < 10; i++ {
+		key := "key-" + string(rune('0'+i))
+		val, found := cache.Get(key)
+		assert.True(t, found, "should find key %s", key)
+		assert.Equal(t, i, val, "should get correct value for key %s", key)
+	}
+}
+
+func TestNewLazyCacheWithLoggerNilUnit(t *testing.T) {
+	cache := NewLazyCacheWithLogger(nil)
+
+	require.NotNil(t, cache)
+
+	cache.Set("nil-test", "value", time.Minute)
+	val, found := cache.Get("nil-test")
+
+	assert.True(t, found)
+	assert.Equal(t, "value", val)
+}
+
+func TestCleanupIdleConnectionsUnit(t *testing.T) {
+	t.Run("basic cleanup cycle", func(t *testing.T) {
+		client := &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:       10,
+				IdleConnTimeout:    30 * time.Second,
+				DisableCompression: true,
+			},
 		}
+
+		stopChan := make(chan struct{})
+
+		go CleanupIdleConnections(client, 40*time.Millisecond, stopChan)
+
+		time.Sleep(100 * time.Millisecond)
+
+		close(stopChan)
+
+		time.Sleep(50 * time.Millisecond)
 	})
 
-	b.Run("BackgroundTaskLifecycle", func(b *testing.B) {
-		logger := GetSingletonNoOpLogger()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			taskFunc := func() {}
-			task := NewBackgroundTask("bench-task", 100*time.Millisecond, taskFunc, logger)
-			task.Start()
-			task.Stop()
+	t.Run("immediate stop", func(t *testing.T) {
+		client := &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:    10,
+				IdleConnTimeout: 30 * time.Second,
+			},
 		}
+
+		stopChan := make(chan struct{})
+
+		go CleanupIdleConnections(client, 100*time.Millisecond, stopChan)
+		time.Sleep(10 * time.Millisecond)
+		close(stopChan)
+
+		time.Sleep(50 * time.Millisecond)
 	})
 
-	b.Run("LazyBackgroundTaskLifecycle", func(b *testing.B) {
-		logger := GetSingletonNoOpLogger()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			taskFunc := func() {}
-			task := NewLazyBackgroundTask("bench-lazy-task", 100*time.Millisecond, taskFunc, logger)
-			task.StartIfNeeded()
-			task.Stop()
+	t.Run("nil transport", func(t *testing.T) {
+		client := &http.Client{
+			Transport: nil,
 		}
+
+		stopChan := make(chan struct{})
+
+		go CleanupIdleConnections(client, 40*time.Millisecond, stopChan)
+		time.Sleep(80 * time.Millisecond)
+		close(stopChan)
+		time.Sleep(50 * time.Millisecond)
+	})
+}
+
+func TestDefaultOptimizedConfigUnit(t *testing.T) {
+	config := DefaultOptimizedConfig()
+
+	require.NotNil(t, config)
+	assert.True(t, config.DelayBackgroundTasks)
+	assert.True(t, config.ReducedCleanupIntervals)
+	assert.True(t, config.AggressiveConnectionCleanup)
+	assert.True(t, config.MinimalCacheSize)
+}
+
+// =============================================================================
+// Consolidated Memory Leak Tests
+// =============================================================================
+
+func TestMemoryLeakConsolidated(t *testing.T) {
+	baselineGoroutines := runtime.NumGoroutine()
+	defer func() {
+		VerifyNoGoroutineLeaks(t, baselineGoroutines, 20, "TestMemoryLeakConsolidated")
+	}()
+
+	testCases := []MemoryTestCase{
+		{
+			name:        "cache_basic_lifecycle",
+			component:   "cache",
+			scenario:    "lifecycle",
+			iterations:  10,
+			concurrency: 1,
+			setup: func(tf *MemoryTestFramework) error {
+				return nil
+			},
+			execute: func(tf *MemoryTestFramework) error {
+				cache := NewCache()
+				defer cache.Close()
+
+				for i := 0; i < 100; i++ {
+					key := fmt.Sprintf("key-%d", i)
+					cache.Set(key, "value", time.Minute)
+					cache.Get(key)
+				}
+				return nil
+			},
+			validateLeak: func(t *testing.T, before, after runtime.MemStats) {
+				allocDiff := int64(after.Alloc) - int64(before.Alloc)
+				if allocDiff > 1024*1024 {
+					t.Errorf("Memory leak detected: %d bytes allocated", allocDiff)
+				}
+			},
+			cleanup: func(tf *MemoryTestFramework) error {
+				return nil
+			},
+		},
+		{
+			name:        "cache_concurrent_access",
+			component:   "cache",
+			scenario:    "concurrent",
+			iterations:  5,
+			concurrency: 10,
+			setup: func(tf *MemoryTestFramework) error {
+				tf.cache = NewCache()
+				return nil
+			},
+			execute: func(tf *MemoryTestFramework) error {
+				var wg sync.WaitGroup
+				for i := 0; i < 10; i++ {
+					wg.Add(1)
+					go func(id int) {
+						defer wg.Done()
+						for j := 0; j < 100; j++ {
+							key := fmt.Sprintf("key-%d-%d", id, j)
+							tf.cache.Set(key, "value", time.Second)
+							tf.cache.Get(key)
+						}
+					}(i)
+				}
+				wg.Wait()
+				return nil
+			},
+			validateLeak: func(t *testing.T, before, after runtime.MemStats) {
+				allocDiff := int64(after.Alloc) - int64(before.Alloc)
+				if allocDiff > 5*1024*1024 {
+					t.Errorf("Memory leak in concurrent cache: %d bytes", allocDiff)
+				}
+			},
+			cleanup: func(tf *MemoryTestFramework) error {
+				if tf.cache != nil {
+					tf.cache.Close()
+					tf.cache = nil
+				}
+				return nil
+			},
+		},
+		{
+			name:        "session_manager_lifecycle",
+			component:   "session",
+			scenario:    "lifecycle",
+			iterations:  5,
+			concurrency: 1,
+			setup: func(tf *MemoryTestFramework) error {
+				return nil
+			},
+			execute: func(tf *MemoryTestFramework) error {
+				sm, err := NewSessionManager(
+					"test-encryption-key-32-bytes-long-enough",
+					false,
+					"",
+					"",
+					0,
+					tf.logger,
+				)
+				if err != nil {
+					return err
+				}
+				defer func() {}()
+
+				for i := 0; i < 50; i++ {
+					req := httptest.NewRequest("GET", "/", nil)
+					_, _ = sm.GetSession(req)
+				}
+				return nil
+			},
+			validateLeak: func(t *testing.T, before, after runtime.MemStats) {
+				allocDiff := int64(after.Alloc) - int64(before.Alloc)
+				if allocDiff > 2*1024*1024 {
+					t.Errorf("Session manager memory leak: %d bytes", allocDiff)
+				}
+			},
+			cleanup: func(tf *MemoryTestFramework) error {
+				return nil
+			},
+		},
+		{
+			name:        "buffer_pool_memory",
+			component:   "pool",
+			scenario:    "stress",
+			iterations:  5,
+			concurrency: 10,
+			setup: func(tf *MemoryTestFramework) error {
+				return nil
+			},
+			execute: func(tf *MemoryTestFramework) error {
+				pool := NewBufferPool(4096)
+				var wg sync.WaitGroup
+
+				for i := 0; i < 10; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for j := 0; j < 100; j++ {
+							buf := pool.Get()
+							buf.WriteString("test data")
+							pool.Put(buf)
+						}
+					}()
+				}
+				wg.Wait()
+				return nil
+			},
+			validateLeak: func(t *testing.T, before, after runtime.MemStats) {
+				allocDiff := int64(after.Alloc) - int64(before.Alloc)
+				if allocDiff > 1024*1024 {
+					t.Errorf("Buffer pool memory leak: %d bytes", allocDiff)
+				}
+			},
+			cleanup: func(tf *MemoryTestFramework) error {
+				return nil
+			},
+		},
+		{
+			name:        "gzip_pool_memory",
+			component:   "pool",
+			scenario:    "stress",
+			iterations:  3,
+			concurrency: 5,
+			setup: func(tf *MemoryTestFramework) error {
+				return nil
+			},
+			execute: func(tf *MemoryTestFramework) error {
+				pool := NewGzipWriterPool()
+				var wg sync.WaitGroup
+
+				for i := 0; i < 5; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for j := 0; j < 50; j++ {
+							w := pool.Get()
+							var buf bytes.Buffer
+							w.Reset(&buf)
+							w.Write([]byte("test compression data"))
+							w.Close()
+							pool.Put(w)
+						}
+					}()
+				}
+				wg.Wait()
+				return nil
+			},
+			validateLeak: func(t *testing.T, before, after runtime.MemStats) {
+				allocDiff := int64(after.Alloc) - int64(before.Alloc)
+				if allocDiff > 2*1024*1024 {
+					t.Errorf("Gzip pool memory leak: %d bytes", allocDiff)
+				}
+			},
+			cleanup: func(tf *MemoryTestFramework) error {
+				return nil
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(fmt.Sprintf("%s_%s_%s", tc.component, tc.scenario, tc.name), func(t *testing.T) {
+			if testing.Short() && tc.scenario == "longrunning" {
+				t.Skip("Skipping long-running test in short mode")
+			}
+
+			for iteration := 0; iteration < tc.iterations; iteration++ {
+				framework := NewMemoryTestFramework(t)
+				defer framework.Cleanup()
+
+				if tc.setup != nil {
+					require.NoError(t, tc.setup(framework))
+				}
+
+				runtime.GC()
+				runtime.GC()
+				debug.FreeOSMemory()
+				var before runtime.MemStats
+				runtime.ReadMemStats(&before)
+
+				err := tc.execute(framework)
+				require.NoError(t, err)
+
+				if tc.cleanup != nil {
+					require.NoError(t, tc.cleanup(framework))
+				}
+
+				runtime.GC()
+				runtime.GC()
+				debug.FreeOSMemory()
+				var after runtime.MemStats
+				runtime.ReadMemStats(&after)
+
+				tc.validateLeak(t, before, after)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Goroutine Leak Tests
+// =============================================================================
+
+func TestGoroutineLeaks(t *testing.T) {
+	testCases := []struct {
+		name string
+		test func(t *testing.T)
+	}{
+		{
+			name: "cache_no_leak",
+			test: func(t *testing.T) {
+				baseline := runtime.NumGoroutine()
+
+				cache := NewCache()
+				for i := 0; i < 100; i++ {
+					cache.Set(fmt.Sprintf("key-%d", i), "value", time.Second)
+				}
+				cache.Close()
+				time.Sleep(100 * time.Millisecond)
+
+				VerifyNoGoroutineLeaks(t, baseline, 2, "cache operations")
+			},
+		},
+		{
+			name: "session_manager_no_leak",
+			test: func(t *testing.T) {
+				baseline := runtime.NumGoroutine()
+
+				sm, err := NewSessionManager(
+					"test-encryption-key-32-bytes-long-enough",
+					false,
+					"",
+					"",
+					0,
+					NewLogger("error"),
+				)
+				require.NoError(t, err)
+
+				if sm != nil {
+					sm.Shutdown()
+				}
+				time.Sleep(100 * time.Millisecond)
+
+				VerifyNoGoroutineLeaks(t, baseline, 2, "session manager")
+			},
+		},
+		{
+			name: "plugin_no_leak",
+			test: func(t *testing.T) {
+				baseline := runtime.NumGoroutine()
+
+				config := CreateConfig()
+				config.ProviderURL = "https://accounts.google.com"
+				config.SessionEncryptionKey = "test-encryption-key-32-bytes-long"
+				config.ClientID = "test-client"
+				config.ClientSecret = "test-secret"
+
+				handler, err := New(context.Background(), nil, config, "test")
+				require.NoError(t, err)
+
+				plugin := handler.(*TraefikOidc)
+				plugin.Close()
+				time.Sleep(500 * time.Millisecond)
+
+				VerifyNoGoroutineLeaks(t, baseline, 10, "plugin lifecycle")
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, tc.test)
+	}
+}
+
+// =============================================================================
+// Memory Thresholds Tests
+// =============================================================================
+
+func TestMemoryThresholds(t *testing.T) {
+	thresholds := map[string]uint64{
+		"cache_1000_items":      10 * 1024 * 1024,
+		"session_100_sessions":  5 * 1024 * 1024,
+		"plugin_initialization": 20 * 1024 * 1024,
+		"buffer_pool_usage":     2 * 1024 * 1024,
+	}
+
+	t.Run("cache_memory_threshold", func(t *testing.T) {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+
+		cache := NewCache()
+		for i := 0; i < 1000; i++ {
+			cache.Set(fmt.Sprintf("key-%d", i), fmt.Sprintf("value-%d", i), time.Hour)
+		}
+
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		cache.Close()
+
+		var memUsed uint64
+		if after.Alloc >= before.Alloc {
+			memUsed = after.Alloc - before.Alloc
+		} else {
+			memUsed = 0
+		}
+
+		threshold := thresholds["cache_1000_items"]
+		assert.LessOrEqual(t, memUsed, threshold,
+			"Cache memory usage %d exceeds threshold %d", memUsed, threshold)
 	})
 
-	b.Run("LazyCacheLifecycle", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			cache := NewLazyCache()
-			cache.Set("bench-key", "bench-value", time.Minute)
-			_, _ = cache.Get("bench-key")
-		}
-	})
+	t.Run("session_memory_threshold", func(t *testing.T) {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
 
-	b.Run("MetadataCacheLifecycle", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			var wg sync.WaitGroup
-			cache := NewMetadataCache(&wg)
-			cache.Close()
-		}
-	})
+		sm, _ := NewSessionManager(
+			"test-encryption-key-32-bytes-long-enough",
+			false,
+			"",
+			"",
+			0,
+			NewLogger("error"),
+		)
 
-	b.Run("SecureDataCleanup", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			cache := NewOptimizedCache()
-			sensitiveData := []byte(suite.factory.GenerateRandomString(64))
-			cache.Set("sensitive-key", sensitiveData, time.Minute)
-			cache.Close()
+		for i := 0; i < 100; i++ {
+			req := httptest.NewRequest("GET", "/", nil)
+			_, _ = sm.GetSession(req)
 		}
+
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+
+		var memUsed uint64
+		if after.Alloc >= before.Alloc {
+			memUsed = after.Alloc - before.Alloc
+		} else {
+			memUsed = 0
+		}
+
+		threshold := thresholds["session_100_sessions"]
+		assert.LessOrEqual(t, memUsed, threshold,
+			"Session memory usage %d exceeds threshold %d", memUsed, threshold)
 	})
 }

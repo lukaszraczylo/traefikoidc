@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// =============================================================================
+// TOKEN TYPE DETECTION BENCHMARKS
+// =============================================================================
+
 func BenchmarkDetectTokenType(b *testing.B) {
 	tr := &TraefikOidc{
 		clientID:               "test-client-id",
@@ -75,7 +79,7 @@ func BenchmarkDetectTokenType(b *testing.B) {
 	}
 }
 
-// Benchmark comparison with the old implementation logic
+// BenchmarkOldDetectionLogic provides comparison with the old implementation logic
 func BenchmarkOldDetectionLogic(b *testing.B) {
 	clientID := "test-client-id"
 
