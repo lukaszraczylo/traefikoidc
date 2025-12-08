@@ -247,6 +247,13 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Validate argument count to prevent integer overflow in slice operations
+	// maxSafeArgs is set to (1<<20)-1 = 1,048,575 which is more than any reasonable Redis command
+	const maxSafeArgs = (1 << 20) - 1
+	if len(args) > maxSafeArgs {
+		return nil, errors.New("too many arguments: exceeds maximum safe count")
+	}
+
 	// Build command arguments
 	// Validate total argument size to prevent memory exhaustion
 	const maxTotalArgBytes = 64 << 20 // 64 MiB max total size
