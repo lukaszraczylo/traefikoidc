@@ -120,6 +120,7 @@ testData:
   allowOpaqueTokens: false # Enable opaque (non-JWT) access token support via RFC 7662 introspection
   requireTokenIntrospection: false # Force introspection for opaque tokens (requires introspection endpoint)
   disableReplayDetection: false # Disable JTI replay detection for multi-replica deployments (default: false)
+  allowPrivateIPAddresses: false # Allow private IP addresses in provider URLs for internal networks (default: false)
 
   # Security Headers Configuration (enabled by default with 'default' profile)
   securityHeaders:
@@ -266,6 +267,8 @@ testDataWithRedis:
 #   allowedRolesAndGroups: # Corresponds to 'Token Claim Name' in Keycloak mappers
 #     - admin
 #     - editor
+#   # For internal Keycloak deployments with private IPs (Docker/Kubernetes internal):
+#   # allowPrivateIPAddresses: true  # Enable for private IP addresses like 192.168.x.x, 10.x.x.x
 #   # Ensure Keycloak client mappers add 'email', 'roles', 'groups' etc. to the ID Token.
 #   # See README.md "Provider Configuration Recommendations" for Keycloak.
 
@@ -901,6 +904,34 @@ configuration:
       - Production with shared cache: false (use Redis/Memcached for shared JTI cache)
 
       Default: false (replay detection enabled)
+    required: false
+
+  allowPrivateIPAddresses:
+    type: boolean
+    description: |
+      Allow private IP addresses in OIDC provider URLs for internal network deployments.
+
+      By default, the plugin blocks URLs containing private IP address ranges
+      (10.x.x.x, 172.16-31.x.x, 192.168.x.x) to prevent SSRF attacks and ensure
+      OIDC providers are publicly accessible.
+
+      Enable this option when:
+      - Your OIDC provider (e.g., Keycloak) runs on an internal network with private IPs
+      - You don't have DNS resolution available for internal services
+      - Your entire stack runs in a Docker network or Kubernetes cluster with private addressing
+
+      When enabled, the plugin will accept provider URLs like:
+      - https://192.168.1.100:8443/auth/realms/your-realm
+      - https://10.0.0.50:8080/realms/master
+      - https://172.16.0.10/auth
+
+      Security Warning:
+      Enabling this option reduces SSRF protection. Only use in trusted network
+      environments where the OIDC provider is known and controlled. Loopback
+      addresses (127.0.0.1, localhost, ::1) remain blocked even with this option enabled.
+
+      Default: false (private IPs are blocked for security)
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/97
     required: false
 
   headers:

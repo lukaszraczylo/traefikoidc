@@ -138,6 +138,7 @@ The middleware supports the following configuration options:
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 | `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
 | `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
+| `allowPrivateIPAddresses` | Allow private IP addresses in provider URLs (for internal networks with Keycloak, etc.) | `false` | `true` |
 | `redis` | Redis cache configuration for distributed deployments | disabled | See "Redis Cache" section |
 
 > **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
@@ -1327,7 +1328,11 @@ spec:
         - admin
         - editor
       # Ensure Keycloak client mappers add necessary claims to ID Token
+      # For internal Keycloak deployments with private IPs (e.g., Docker network):
+      # allowPrivateIPAddresses: true
 ```
+
+> **Internal Network Deployment**: If your Keycloak runs on an internal network with private IP addresses (e.g., `192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`) and you don't have DNS resolution available, set `allowPrivateIPAddresses: true` to allow the plugin to connect to your Keycloak instance. See [Issue #97](https://github.com/lukaszraczylo/traefikoidc/issues/97) for details.
 
 ### AWS Cognito Configuration
 
@@ -1861,6 +1866,15 @@ logLevel: debug
     - No ID tokens available (access tokens only)
     - No refresh tokens (re-authentication required on expiry)
     - Use only for GitHub API access, not user authentication
+
+15. **Environment variable names containing "API" cause plugin failure** ([Issue #98](https://github.com/lukaszraczylo/traefikoidc/issues/98)):
+    - When using environment variable syntax like `${OIDC_ENCRYPTION_SECRET_API}` in Traefik configuration, the plugin fails with "invalid handler type: \<nil\>" error
+    - This is a **Traefik-side issue**, not a plugin bug. Traefik uses reserved environment variables starting with `TRAEFIK_API_*` for its internal API configuration, and the "API" substring in user-defined variable names may interfere with Traefik's environment variable processing
+    - **Workaround**: Avoid using "API" as a substring in environment variable names. Use alternatives like:
+      - `${OIDC_ENCRYPTION_SECRET_SVC}` instead of `${OIDC_ENCRYPTION_SECRET_API}`
+      - `${OIDC_ENCRYPTION_SECRET_SERVICE}`
+      - `${OIDC_ENCRYPTION_SECRET_BACKEND}`
+      - Any name that doesn't contain the literal substring "API"
 
 ### Provider Warnings and Recommendations
 

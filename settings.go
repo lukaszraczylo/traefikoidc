@@ -131,6 +131,21 @@ type Config struct {
 	// When enabled, the middleware will automatically register as a client with
 	// the OIDC provider if ClientID/ClientSecret are not provided.
 	DynamicClientRegistration *DynamicClientRegistrationConfig `json:"dynamicClientRegistration,omitempty"`
+
+	// AllowPrivateIPAddresses disables the security check that blocks private/internal IP addresses.
+	// By default, the plugin rejects URLs containing private IP ranges (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
+	// to prevent SSRF attacks and ensure OIDC providers are publicly accessible.
+	//
+	// Enable this option ONLY when:
+	//   - Your OIDC provider (e.g., Keycloak) runs on an internal network with private IPs
+	//   - You have no DNS resolution available for internal services
+	//   - Your entire stack runs in a Docker network or Kubernetes cluster with private addressing
+	//
+	// Security Warning: Enabling this option reduces SSRF protection. Only use in trusted
+	// network environments where the OIDC provider is known and controlled.
+	//
+	// Default: false (private IPs are blocked for security)
+	AllowPrivateIPAddresses bool `json:"allowPrivateIPAddresses,omitempty"`
 }
 
 // RedisConfig configures Redis cache backend settings for distributed caching.

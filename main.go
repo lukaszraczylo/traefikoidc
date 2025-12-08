@@ -218,6 +218,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		securityHeadersApplier:  config.GetSecurityHeadersApplier(),
 		scopeFilter:             NewScopeFilter(logger), // NEW - for discovery-based scope filtering
 		dcrConfig:               config.DynamicClientRegistration,
+		allowPrivateIPAddresses: config.AllowPrivateIPAddresses,
 	}
 
 	// Log audience configuration

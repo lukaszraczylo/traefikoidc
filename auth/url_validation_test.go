@@ -10,7 +10,7 @@ import (
 func TestAuthHandler_validateURL(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	tests := []struct {
 		name    string
@@ -185,7 +185,7 @@ func TestAuthHandler_validateURL(t *testing.T) {
 func TestAuthHandler_validateHost(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	tests := []struct {
 		name    string
@@ -334,7 +334,7 @@ func TestAuthHandler_validateHost(t *testing.T) {
 func TestAuthHandler_buildURLWithParams(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	tests := []struct {
 		name        string
@@ -438,7 +438,7 @@ func TestAuthHandler_buildURLWithParams(t *testing.T) {
 func TestAuthHandler_buildURLWithParams_ParameterEncoding(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	// Test special characters that need encoding
 	params := url.Values{
@@ -477,7 +477,7 @@ func TestAuthHandler_buildURLWithParams_ParameterEncoding(t *testing.T) {
 func TestAuthHandler_validateParsedURL(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	tests := []struct {
 		name    string
@@ -559,4 +559,102 @@ func TestAuthHandler_validateParsedURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAuthHandler_validateHost_AllowPrivateIPAddresses tests the allowPrivateIPAddresses flag
+func TestAuthHandler_validateHost_AllowPrivateIPAddresses(t *testing.T) {
+	logger := &mockLogger{}
+
+	// Test with allowPrivateIPAddresses = false (default)
+	t.Run("Private IPs blocked by default", func(t *testing.T) {
+		handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+			"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
+
+		privateIPs := []string{
+			"192.168.1.1",
+			"10.0.0.1",
+			"172.16.0.1",
+			"172.31.255.255",
+		}
+
+		for _, ip := range privateIPs {
+			err := handler.validateHost(ip)
+			if err == nil {
+				t.Errorf("Expected private IP %s to be blocked, but it was allowed", ip)
+			}
+			if err != nil && !strings.Contains(err.Error(), "private IP not allowed") {
+				t.Errorf("Expected 'private IP not allowed' error for %s, got: %v", ip, err)
+			}
+		}
+	})
+
+	// Test with allowPrivateIPAddresses = true
+	t.Run("Private IPs allowed when flag enabled", func(t *testing.T) {
+		handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+			"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, true)
+
+		privateIPs := []string{
+			"192.168.1.1",
+			"10.0.0.1",
+			"172.16.0.1",
+			"172.31.255.255",
+		}
+
+		for _, ip := range privateIPs {
+			err := handler.validateHost(ip)
+			if err != nil {
+				t.Errorf("Expected private IP %s to be allowed with flag enabled, but got error: %v", ip, err)
+			}
+		}
+	})
+
+	// Test that loopback is still blocked even with flag enabled
+	t.Run("Loopback always blocked", func(t *testing.T) {
+		handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+			"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, true)
+
+		loopbackAddresses := []string{
+			"127.0.0.1",
+			"localhost",
+			"::1",
+			"0.0.0.0",
+		}
+
+		for _, addr := range loopbackAddresses {
+			err := handler.validateHost(addr)
+			if err == nil {
+				t.Errorf("Expected loopback address %s to be blocked even with allowPrivateIPAddresses=true", addr)
+			}
+		}
+	})
+
+	// Test that link-local is still blocked even with flag enabled
+	t.Run("Link-local always blocked", func(t *testing.T) {
+		handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+			"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, true)
+
+		err := handler.validateHost("169.254.1.1")
+		if err == nil {
+			t.Error("Expected link-local address to be blocked even with allowPrivateIPAddresses=true")
+		}
+	})
+
+	// Test that public IPs work with flag enabled
+	t.Run("Public IPs allowed", func(t *testing.T) {
+		handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
+			"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, true)
+
+		publicIPs := []string{
+			"8.8.8.8",
+			"1.1.1.1",
+			"142.250.185.68",
+		}
+
+		for _, ip := range publicIPs {
+			err := handler.validateHost(ip)
+			if err != nil {
+				t.Errorf("Expected public IP %s to be allowed, but got error: %v", ip, err)
+			}
+		}
+	})
 }

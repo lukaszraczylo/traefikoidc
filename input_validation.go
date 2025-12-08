@@ -15,20 +15,21 @@ import (
 // XSS, path traversal, and other injection attacks. It validates and sanitizes
 // various input types used in OIDC authentication flows.
 type InputValidator struct {
-	usernameRegex         *regexp.Regexp
-	tokenRegex            *regexp.Regexp
-	logger                *Logger
-	urlRegex              *regexp.Regexp
-	emailRegex            *regexp.Regexp
-	sqlInjectionPatterns  []string
-	pathTraversalPatterns []string
-	xssPatterns           []string
-	maxUsernameLength     int
-	maxURLLength          int
-	maxTokenLength        int
-	maxEmailLength        int
-	maxClaimLength        int
-	maxHeaderLength       int
+	usernameRegex           *regexp.Regexp
+	tokenRegex              *regexp.Regexp
+	logger                  *Logger
+	urlRegex                *regexp.Regexp
+	emailRegex              *regexp.Regexp
+	sqlInjectionPatterns    []string
+	pathTraversalPatterns   []string
+	xssPatterns             []string
+	maxUsernameLength       int
+	maxURLLength            int
+	maxTokenLength          int
+	maxEmailLength          int
+	maxClaimLength          int
+	maxHeaderLength         int
+	allowPrivateIPAddresses bool // Allow private IP addresses in URL validation
 }
 
 // ValidationResult encapsulates the outcome of input validation.
@@ -46,13 +47,14 @@ type ValidationResult struct {
 // It specifies maximum lengths for various input types and controls whether
 // strict validation mode is enabled.
 type InputValidationConfig struct {
-	MaxTokenLength    int  `json:"max_token_length"`
-	MaxURLLength      int  `json:"max_url_length"`
-	MaxHeaderLength   int  `json:"max_header_length"`
-	MaxClaimLength    int  `json:"max_claim_length"`
-	MaxEmailLength    int  `json:"max_email_length"`
-	MaxUsernameLength int  `json:"max_username_length"`
-	StrictMode        bool `json:"strict_mode"`
+	MaxTokenLength          int  `json:"max_token_length"`
+	MaxURLLength            int  `json:"max_url_length"`
+	MaxHeaderLength         int  `json:"max_header_length"`
+	MaxClaimLength          int  `json:"max_claim_length"`
+	MaxEmailLength          int  `json:"max_email_length"`
+	MaxUsernameLength       int  `json:"max_username_length"`
+	StrictMode              bool `json:"strict_mode"`
+	AllowPrivateIPAddresses bool `json:"allow_private_ip_addresses"` // Allow private IP addresses in URL validation
 }
 
 // DefaultInputValidationConfig returns a secure default configuration
@@ -103,16 +105,17 @@ func NewInputValidator(config InputValidationConfig, logger *Logger) (*InputVali
 	}
 
 	return &InputValidator{
-		maxTokenLength:    config.MaxTokenLength,
-		maxURLLength:      config.MaxURLLength,
-		maxHeaderLength:   config.MaxHeaderLength,
-		maxClaimLength:    config.MaxClaimLength,
-		maxEmailLength:    config.MaxEmailLength,
-		maxUsernameLength: config.MaxUsernameLength,
-		emailRegex:        emailRegex,
-		urlRegex:          urlRegex,
-		tokenRegex:        tokenRegex,
-		usernameRegex:     usernameRegex,
+		maxTokenLength:          config.MaxTokenLength,
+		maxURLLength:            config.MaxURLLength,
+		maxHeaderLength:         config.MaxHeaderLength,
+		maxClaimLength:          config.MaxClaimLength,
+		maxEmailLength:          config.MaxEmailLength,
+		maxUsernameLength:       config.MaxUsernameLength,
+		allowPrivateIPAddresses: config.AllowPrivateIPAddresses,
+		emailRegex:              emailRegex,
+		urlRegex:                urlRegex,
+		tokenRegex:              tokenRegex,
+		usernameRegex:           usernameRegex,
 		sqlInjectionPatterns: []string{
 			"'", "\"", ";", "--", "/*", "*/", "xp_", "sp_",
 			"union", "select", "insert", "update", "delete", "drop",
@@ -335,24 +338,26 @@ func (iv *InputValidator) ValidateURL(urlStr string) ValidationResult {
 		}
 	}
 
-	// Check for private IP ranges (RFC 1918)
-	if strings.HasPrefix(hostname, "10.") ||
-		strings.HasPrefix(hostname, "192.168.") ||
-		strings.HasPrefix(hostname, "172.") {
-		// For 172.x check if it's in the 172.16.0.0/12 range
-		if strings.HasPrefix(hostname, "172.") {
-			parts := strings.Split(hostname, ".")
-			if len(parts) >= 2 {
-				if second, err := strconv.Atoi(parts[1]); err == nil && second >= 16 && second <= 31 {
-					result.IsValid = false
-					result.Errors = append(result.Errors, "private IP URLs are not allowed for security")
-					return result
+	// Check for private IP ranges (RFC 1918) - skip if allowPrivateIPAddresses is enabled
+	if !iv.allowPrivateIPAddresses {
+		if strings.HasPrefix(hostname, "10.") ||
+			strings.HasPrefix(hostname, "192.168.") ||
+			strings.HasPrefix(hostname, "172.") {
+			// For 172.x check if it's in the 172.16.0.0/12 range
+			if strings.HasPrefix(hostname, "172.") {
+				parts := strings.Split(hostname, ".")
+				if len(parts) >= 2 {
+					if second, err := strconv.Atoi(parts[1]); err == nil && second >= 16 && second <= 31 {
+						result.IsValid = false
+						result.Errors = append(result.Errors, "private IP URLs are not allowed for security")
+						return result
+					}
 				}
+			} else {
+				result.IsValid = false
+				result.Errors = append(result.Errors, "private IP URLs are not allowed for security")
+				return result
 			}
-		} else {
-			result.IsValid = false
-			result.Errors = append(result.Errors, "private IP URLs are not allowed for security")
-			return result
 		}
 	}
 
