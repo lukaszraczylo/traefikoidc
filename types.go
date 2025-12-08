@@ -99,6 +99,7 @@ type TraefikOidc struct {
 	audience                   string // Expected JWT audience, defaults to clientID
 	roleClaimName              string // JWT claim name for extracting roles, defaults to "roles"
 	groupClaimName             string // JWT claim name for extracting groups, defaults to "groups"
+	userIdentifierClaim        string // JWT claim for user identification, defaults to "email"
 	name                       string
 	redirURLPath               string
 	logoutURLPath              string
@@ -128,6 +129,8 @@ type TraefikOidc struct {
 	suppressDiagnosticLogs     bool
 	firstRequestReceived       bool
 	metadataRefreshStarted     bool
+	allowPrivateIPAddresses    bool // Allow private IP addresses in URLs (for internal networks)
+	minimalHeaders             bool // Reduce headers to prevent 431 errors
 	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
 	scopeFilter                *ScopeFilter // NEW - for discovery-based scope filtering
 	scopesSupported            []string     // NEW - from provider metadata

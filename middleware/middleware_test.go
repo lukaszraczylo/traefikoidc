@@ -802,3 +802,99 @@ func TestServeHTTP_AdditionalCoverage(t *testing.T) {
 		}
 	})
 }
+
+// TestProcessAuthorizedRequest_MinimalHeaders tests the minimalHeaders configuration
+// This addresses GitHub issue #64 - Request Header Fields Too Large
+func TestProcessAuthorizedRequest_MinimalHeaders(t *testing.T) {
+	tests := []struct {
+		name                      string
+		minimalHeaders            bool
+		expectForwardedUser       bool
+		expectAuthRequestUser     bool
+		expectAuthRequestToken    bool
+		expectAuthRequestRedirect bool
+	}{
+		{
+			name:                      "minimalHeaders=false forwards all headers",
+			minimalHeaders:            false,
+			expectForwardedUser:       true,
+			expectAuthRequestUser:     true,
+			expectAuthRequestToken:    true,
+			expectAuthRequestRedirect: true,
+		},
+		{
+			name:                      "minimalHeaders=true only forwards X-Forwarded-User",
+			minimalHeaders:            true,
+			expectForwardedUser:       true,
+			expectAuthRequestUser:     false,
+			expectAuthRequestToken:    false,
+			expectAuthRequestRedirect: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := &mockLogger{}
+			var capturedHeaders http.Header
+
+			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedHeaders = r.Header.Clone()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			session := &mockSessionData{
+				email:       "user@example.com",
+				idToken:     "test-id-token-that-could-be-very-large",
+				accessToken: "test-access-token",
+			}
+
+			m := &AuthMiddleware{
+				logger:         logger,
+				next:           nextHandler,
+				minimalHeaders: tt.minimalHeaders,
+				extractGroupsAndRolesFunc: func(tokenString string) ([]string, []string, error) {
+					return nil, nil, nil
+				},
+			}
+
+			req := httptest.NewRequest("GET", "/protected", nil)
+			rw := httptest.NewRecorder()
+
+			m.processAuthorizedRequest(rw, req, session, "https://example.com/callback")
+
+			// Verify X-Forwarded-User is always set
+			if tt.expectForwardedUser {
+				if capturedHeaders.Get("X-Forwarded-User") != "user@example.com" {
+					t.Errorf("expected X-Forwarded-User to be set, got %q", capturedHeaders.Get("X-Forwarded-User"))
+				}
+			}
+
+			// Verify X-Auth-Request-User
+			hasAuthRequestUser := capturedHeaders.Get("X-Auth-Request-User") != ""
+			if tt.expectAuthRequestUser && !hasAuthRequestUser {
+				t.Error("expected X-Auth-Request-User to be set")
+			}
+			if !tt.expectAuthRequestUser && hasAuthRequestUser {
+				t.Errorf("expected X-Auth-Request-User to NOT be set when minimalHeaders=true, got %q", capturedHeaders.Get("X-Auth-Request-User"))
+			}
+
+			// Verify X-Auth-Request-Token (the big one that causes 431 errors)
+			hasAuthRequestToken := capturedHeaders.Get("X-Auth-Request-Token") != ""
+			if tt.expectAuthRequestToken && !hasAuthRequestToken {
+				t.Error("expected X-Auth-Request-Token to be set")
+			}
+			if !tt.expectAuthRequestToken && hasAuthRequestToken {
+				t.Errorf("expected X-Auth-Request-Token to NOT be set when minimalHeaders=true, got %q", capturedHeaders.Get("X-Auth-Request-Token"))
+			}
+
+			// Verify X-Auth-Request-Redirect
+			hasAuthRequestRedirect := capturedHeaders.Get("X-Auth-Request-Redirect") != ""
+			if tt.expectAuthRequestRedirect && !hasAuthRequestRedirect {
+				t.Error("expected X-Auth-Request-Redirect to be set")
+			}
+			if !tt.expectAuthRequestRedirect && hasAuthRequestRedirect {
+				t.Errorf("expected X-Auth-Request-Redirect to NOT be set when minimalHeaders=true, got %q", capturedHeaders.Get("X-Auth-Request-Redirect"))
+			}
+		})
+	}
+}

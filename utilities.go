@@ -55,6 +55,51 @@ func (t *TraefikOidc) safeLogInfo(msg string) {
 // DOMAIN VALIDATION
 // =============================================================================
 
+// isAllowedUser checks if a user identifier is authorized based on the configured user identifier claim.
+// When using email as the identifier (default), it validates against allowedUsers and allowedUserDomains.
+// When using non-email identifiers (sub, oid, upn, etc.), it only validates against allowedUsers
+// since domain-based validation doesn't apply to non-email identifiers.
+//
+// Parameters:
+//   - userIdentifier: The user identifier to validate (email, sub, oid, upn, etc.).
+//
+// Returns:
+//   - true if the user is authorized, false otherwise.
+func (t *TraefikOidc) isAllowedUser(userIdentifier string) bool {
+	// If no restrictions are configured, allow all authenticated users
+	if len(t.allowedUserDomains) == 0 && len(t.allowedUsers) == 0 {
+		return true
+	}
+
+	// Check if user is explicitly allowed
+	if len(t.allowedUsers) > 0 {
+		_, userAllowed := t.allowedUsers[strings.ToLower(userIdentifier)]
+		if userAllowed {
+			t.logger.Debugf("User identifier %s is explicitly allowed in allowedUsers", userIdentifier)
+			return true
+		}
+	}
+
+	// For email-based identifiers, also check domain restrictions
+	// Only apply domain validation if using email as identifier AND identifier looks like an email
+	if t.userIdentifierClaim == "email" && strings.Contains(userIdentifier, "@") {
+		return t.isAllowedDomain(userIdentifier)
+	}
+
+	// For non-email identifiers with allowedUserDomains configured, log a warning
+	if len(t.allowedUserDomains) > 0 && t.userIdentifierClaim != "email" {
+		t.logger.Debugf("AllowedUserDomains is configured but userIdentifierClaim is '%s', not 'email'. Domain validation skipped for: %s",
+			t.userIdentifierClaim, userIdentifier)
+	}
+
+	// User not found in allowedUsers list
+	if len(t.allowedUsers) > 0 {
+		t.logger.Debugf("User identifier %s is not in the allowed users list", userIdentifier)
+	}
+
+	return false
+}
+
 // isAllowedDomain checks if an email address is authorized based on domain or user whitelist.
 // It validates against both allowed user domains and specific allowed users.
 // Parameters:

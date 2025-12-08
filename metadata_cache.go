@@ -189,11 +189,56 @@ func (mc *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client
 	return mc.GetProviderMetadata(ctx, providerURL, httpClient)
 }
 
-// GetMetadataWithRecovery fetches metadata with recovery support
+// GetMetadataWithRecovery fetches metadata with retry support for startup scenarios.
+// This handles the race condition where Traefik initializes the plugin before the
+// OIDC provider routes are fully established, or before TLS certificates are loaded.
+// Uses aggressive retry settings (10 attempts, 1s intervals) to give the infrastructure
+// time to stabilize during cold starts.
+// See: https://github.com/lukaszraczylo/traefikoidc/issues/90
 func (mc *MetadataCache) GetMetadataWithRecovery(providerURL string, httpClient *http.Client, logger *Logger, errorRecoveryManager *ErrorRecoveryManager) (*ProviderMetadata, error) {
-	// For now, just use regular GetMetadata
-	// Recovery would be handled by ErrorRecoveryManager if needed
-	return mc.GetMetadata(providerURL, httpClient, logger)
+	// Check cache first - if we have valid cached metadata, use it
+	if metadata, exists := mc.Get(providerURL); exists {
+		return metadata, nil
+	}
+
+	// Create a retry executor with metadata-fetch-specific configuration
+	retryConfig := MetadataFetchRetryConfig()
+	retryExecutor := NewRetryExecutor(retryConfig, logger)
+
+	var metadata *ProviderMetadata
+	var lastErr error
+
+	// Use context with overall timeout for the entire retry sequence
+	// 10 attempts * ~10s max delay = ~100s worst case, so use 2 minute timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	err := retryExecutor.ExecuteWithContext(ctx, func() error {
+		// Create per-attempt context with shorter timeout
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer attemptCancel()
+
+		var fetchErr error
+		metadata, fetchErr = mc.GetProviderMetadata(attemptCtx, providerURL, httpClient)
+		if fetchErr != nil {
+			lastErr = fetchErr
+			if logger != nil {
+				logger.Debugf("Metadata fetch attempt failed: %v", fetchErr)
+			}
+			return fetchErr
+		}
+		return nil
+	})
+
+	if err != nil {
+		// Return the last actual error, not the retry wrapper error
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, err
+	}
+
+	return metadata, nil
 }
 
 // GetStats returns cache statistics for testing

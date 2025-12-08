@@ -41,6 +41,7 @@ type AuthMiddleware struct {
 	goroutineWG               *sync.WaitGroup
 	startTokenCleanupFunc     func()
 	startMetadataRefreshFunc  func(string)
+	minimalHeaders            bool
 }
 
 // Logger interface for dependency injection
@@ -120,6 +121,7 @@ func NewAuthMiddleware(
 	goroutineWG *sync.WaitGroup,
 	startTokenCleanupFunc func(),
 	startMetadataRefreshFunc func(string),
+	minimalHeaders bool,
 ) *AuthMiddleware {
 	return &AuthMiddleware{
 		logger:                    logger,
@@ -149,6 +151,7 @@ func NewAuthMiddleware(
 		goroutineWG:               goroutineWG,
 		startTokenCleanupFunc:     startTokenCleanupFunc,
 		startMetadataRefreshFunc:  startMetadataRefreshFunc,
+		minimalHeaders:            minimalHeaders,
 	}
 }
 
@@ -414,10 +417,14 @@ func (m *AuthMiddleware) processAuthorizedRequest(rw http.ResponseWriter, req *h
 	}
 
 	req.Header.Set("X-Forwarded-User", email)
-	req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
-	req.Header.Set("X-Auth-Request-User", email)
-	if idToken := session.GetIDToken(); idToken != "" {
-		req.Header.Set("X-Auth-Request-Token", idToken)
+
+	// When minimalHeaders is enabled, skip extra headers to prevent 431 errors
+	if !m.minimalHeaders {
+		req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
+		req.Header.Set("X-Auth-Request-User", email)
+		if idToken := session.GetIDToken(); idToken != "" {
+			req.Header.Set("X-Auth-Request-Token", idToken)
+		}
 	}
 
 	m.next.ServeHTTP(rw, req)

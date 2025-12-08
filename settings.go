@@ -127,10 +127,63 @@ type Config struct {
 	// Default: "groups"
 	GroupClaimName string `json:"groupClaimName,omitempty"`
 
+	// UserIdentifierClaim specifies the JWT claim to use as the user identifier.
+	// This allows authentication for users without email addresses (e.g., Azure AD service accounts).
+	//
+	// Examples:
+	//   - Default (backward compatible): "email"
+	//   - Azure AD without email: "sub", "oid", "upn", or "preferred_username"
+	//   - Generic OIDC: "sub" (always present per OIDC spec)
+	//
+	// When set to a non-email claim:
+	//   - AllowedUsers will match against this claim value instead of email
+	//   - AllowedUserDomains validation is skipped (domains only apply to email)
+	//   - The session will store this identifier as the user's identity
+	//
+	// Default: "email"
+	UserIdentifierClaim string `json:"userIdentifierClaim,omitempty"`
+
 	// DynamicClientRegistration enables OIDC Dynamic Client Registration (RFC 7591)
 	// When enabled, the middleware will automatically register as a client with
 	// the OIDC provider if ClientID/ClientSecret are not provided.
 	DynamicClientRegistration *DynamicClientRegistrationConfig `json:"dynamicClientRegistration,omitempty"`
+
+	// AllowPrivateIPAddresses disables the security check that blocks private/internal IP addresses.
+	// By default, the plugin rejects URLs containing private IP ranges (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
+	// to prevent SSRF attacks and ensure OIDC providers are publicly accessible.
+	//
+	// Enable this option ONLY when:
+	//   - Your OIDC provider (e.g., Keycloak) runs on an internal network with private IPs
+	//   - You have no DNS resolution available for internal services
+	//   - Your entire stack runs in a Docker network or Kubernetes cluster with private addressing
+	//
+	// Security Warning: Enabling this option reduces SSRF protection. Only use in trusted
+	// network environments where the OIDC provider is known and controlled.
+	//
+	// Default: false (private IPs are blocked for security)
+	AllowPrivateIPAddresses bool `json:"allowPrivateIPAddresses,omitempty"`
+
+	// MinimalHeaders reduces the number of headers forwarded to downstream services.
+	// This helps prevent "431 Request Header Fields Too Large" errors when downstream
+	// services have limited header buffer sizes.
+	//
+	// When enabled (true):
+	//   - Only forwards: X-Forwarded-User
+	//   - Skips: X-Auth-Request-Token (full ID token), X-Auth-Request-Redirect
+	//   - Groups/roles headers (X-User-Groups, X-User-Roles) are still forwarded if configured
+	//   - Custom templated headers are still processed
+	//
+	// When disabled (false, default):
+	//   - Forwards all headers: X-Forwarded-User, X-Auth-Request-User, X-Auth-Request-Redirect,
+	//     X-Auth-Request-Token (full ID token)
+	//
+	// Use this option when:
+	//   - Downstream services return "431 Request Header Fields Too Large" errors
+	//   - You don't need the full ID token forwarded to backend services
+	//   - You want to reduce request overhead
+	//
+	// Default: false (all headers forwarded for backward compatibility)
+	MinimalHeaders bool `json:"minimalHeaders,omitempty"`
 }
 
 // RedisConfig configures Redis cache backend settings for distributed caching.

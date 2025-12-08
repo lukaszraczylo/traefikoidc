@@ -108,11 +108,11 @@ func TestOAuthHandler_NewOAuthHandler(t *testing.T) {
 		return map[string]interface{}{"email": "test@example.com", "nonce": "test-nonce"}, nil
 	}
 
-	isAllowed := func(email string) bool { return true }
+	isAllowedUser := func(userIdentifier string) bool { return true }
 	sendError := func(rw http.ResponseWriter, req *http.Request, msg string, code int) {}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowedUser, "email", "/callback", sendError)
 
 	if handler == nil {
 		t.Fatal("Expected handler to be created, got nil")
@@ -151,7 +151,7 @@ func TestOAuthHandler_HandleCallback_SessionError(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test&state=test", nil)
 	rw := httptest.NewRecorder()
@@ -190,7 +190,7 @@ func TestOAuthHandler_HandleCallback_ProviderError(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	// Test with error parameter
 	req := httptest.NewRequest("GET", "/callback?error=access_denied&error_description=User%20denied%20access", nil)
@@ -230,7 +230,7 @@ func TestOAuthHandler_HandleCallback_MissingState(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test", nil)
 	rw := httptest.NewRecorder()
@@ -265,7 +265,7 @@ func TestOAuthHandler_HandleCallback_MissingCSRF(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -300,7 +300,7 @@ func TestOAuthHandler_HandleCallback_CSRFMismatch(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -335,7 +335,7 @@ func TestOAuthHandler_HandleCallback_MissingCode(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -370,7 +370,7 @@ func TestOAuthHandler_HandleCallback_TokenExchangeError(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -406,7 +406,7 @@ func TestOAuthHandler_HandleCallback_TokenVerificationError(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -444,7 +444,7 @@ func TestOAuthHandler_HandleCallback_ClaimsExtractionError(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -483,7 +483,7 @@ func TestOAuthHandler_HandleCallback_MissingNonceInToken(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -521,7 +521,7 @@ func TestOAuthHandler_HandleCallback_MissingNonceInSession(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -559,7 +559,7 @@ func TestOAuthHandler_HandleCallback_NonceMismatch(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -591,13 +591,13 @@ func TestOAuthHandler_HandleCallback_MissingEmail(t *testing.T) {
 		if code != http.StatusInternalServerError {
 			t.Errorf("Expected status %d, got %d", http.StatusInternalServerError, code)
 		}
-		if !strings.Contains(msg, "Email missing in token") {
-			t.Errorf("Expected error message to contain 'Email missing in token', got '%s'", msg)
+		if !strings.Contains(msg, "User identifier missing in token") {
+			t.Errorf("Expected error message to contain 'User identifier missing in token', got '%s'", msg)
 		}
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -629,13 +629,13 @@ func TestOAuthHandler_HandleCallback_DisallowedDomain(t *testing.T) {
 		if code != http.StatusForbidden {
 			t.Errorf("Expected status %d, got %d", http.StatusForbidden, code)
 		}
-		if !strings.Contains(msg, "Email domain not allowed") {
-			t.Errorf("Expected error message to contain 'Email domain not allowed', got '%s'", msg)
+		if !strings.Contains(msg, "User not authorized") {
+			t.Errorf("Expected error message to contain 'User not authorized', got '%s'", msg)
 		}
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -677,7 +677,7 @@ func TestOAuthHandler_HandleCallback_SessionSaveError(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -719,7 +719,7 @@ func TestOAuthHandler_HandleCallback_SetAuthenticatedError(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -760,7 +760,7 @@ func TestOAuthHandler_HandleCallback_Success(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -843,7 +843,7 @@ func TestOAuthHandler_HandleCallback_SuccessDefaultRedirect(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()
@@ -884,7 +884,7 @@ func TestOAuthHandler_HandleCallback_RedirectURLPathExcluded(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(logger, sessionManager, tokenExchanger, tokenVerifier,
-		extractClaims, isAllowed, "/callback", sendError)
+		extractClaims, isAllowed, "email", "/callback", sendError)
 
 	req := httptest.NewRequest("GET", "/callback?code=test-code&state=test-state", nil)
 	rw := httptest.NewRecorder()

@@ -340,6 +340,7 @@ func (t *TraefikOidc) validateParsedURL(u *url.URL) error {
 
 // validateHost validates a hostname or IP address for security.
 // It prevents access to localhost, private networks, and known metadata endpoints.
+// When allowPrivateIPAddresses is enabled, private IP checks are skipped.
 // Parameters:
 //   - host: The host string to validate (may include port).
 //
@@ -357,7 +358,13 @@ func (t *TraefikOidc) validateHost(host string) error {
 
 	ip := net.ParseIP(hostname)
 	if ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		// Always block loopback, link-local, and multicast addresses
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("access to loopback/link-local IP addresses is not allowed: %s", ip.String())
+		}
+
+		// Skip private IP check if allowPrivateIPAddresses is enabled
+		if !t.allowPrivateIPAddresses && ip.IsPrivate() {
 			return fmt.Errorf("access to private/internal IP addresses is not allowed: %s", ip.String())
 		}
 

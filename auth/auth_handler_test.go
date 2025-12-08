@@ -86,7 +86,7 @@ func TestAuthHandler_NewAuthHandler(t *testing.T) {
 
 	handler := NewAuthHandler(logger, true, isGoogleProv, isAzureProv,
 		"test-client-id", "https://example.com/auth", "https://example.com",
-		scopes, false, nil, nil)
+		scopes, false, nil, nil, false)
 
 	if handler == nil {
 		t.Fatal("Expected handler to be created, got nil")
@@ -125,7 +125,7 @@ func TestAuthHandler_NewAuthHandler(t *testing.T) {
 func TestAuthHandler_InitiateAuthentication_MaxRedirects(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	session := &mockSessionData{redirectCount: 5} // At the limit
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -160,7 +160,7 @@ func TestAuthHandler_InitiateAuthentication_MaxRedirects(t *testing.T) {
 func TestAuthHandler_InitiateAuthentication_NonceGenerationError(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	session := &mockSessionData{}
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -191,7 +191,7 @@ func TestAuthHandler_InitiateAuthentication_NonceGenerationError(t *testing.T) {
 func TestAuthHandler_InitiateAuthentication_PKCECodeVerifierError(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	session := &mockSessionData{}
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -222,7 +222,7 @@ func TestAuthHandler_InitiateAuthentication_PKCECodeVerifierError(t *testing.T) 
 func TestAuthHandler_InitiateAuthentication_PKCECodeChallengeError(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	session := &mockSessionData{}
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -253,7 +253,7 @@ func TestAuthHandler_InitiateAuthentication_PKCECodeChallengeError(t *testing.T)
 func TestAuthHandler_InitiateAuthentication_SessionSaveError(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{}, false, nil, nil, false)
 
 	session := &mockSessionData{saveError: &testError{"save failed"}}
 	req := httptest.NewRequest("GET", "/test?param=value", nil)
@@ -297,7 +297,7 @@ func TestAuthHandler_InitiateAuthentication_SessionSaveError(t *testing.T) {
 func TestAuthHandler_InitiateAuthentication_Success(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
-		"test-client", "https://example.com/auth", "https://example.com", []string{"openid", "email"}, false, nil, nil)
+		"test-client", "https://example.com/auth", "https://example.com", []string{"openid", "email"}, false, nil, nil, false)
 
 	session := &mockSessionData{}
 	req := httptest.NewRequest("GET", "/protected/resource", nil)
@@ -400,7 +400,7 @@ func TestAuthHandler_BuildAuthURL_GoogleProvider(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return true }, func() bool { return false },
 		"google-client", "https://accounts.google.com/oauth2/auth", "https://accounts.google.com",
-		[]string{"openid", "profile", "email"}, false, nil, nil)
+		[]string{"openid", "profile", "email"}, false, nil, nil, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -440,7 +440,7 @@ func TestAuthHandler_BuildAuthURL_AzureProvider(t *testing.T) {
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return true },
 		"azure-client", "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
 		"https://login.microsoftonline.com/tenant/v2.0",
-		[]string{"openid", "profile", "email"}, false, nil, nil)
+		[]string{"openid", "profile", "email"}, false, nil, nil, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -468,7 +468,7 @@ func TestAuthHandler_BuildAuthURL_PKCEEnabled(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
 		"pkce-client", "https://example.com/auth", "https://example.com",
-		[]string{"openid"}, false, nil, nil)
+		[]string{"openid"}, false, nil, nil, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "test-challenge")
 
@@ -493,7 +493,7 @@ func TestAuthHandler_BuildAuthURL_PKCEDisabled(t *testing.T) {
 	logger := &mockLogger{}
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"no-pkce-client", "https://example.com/auth", "https://example.com",
-		[]string{"openid"}, false, nil, nil)
+		[]string{"openid"}, false, nil, nil, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "test-challenge")
 
@@ -565,7 +565,7 @@ func TestAuthHandler_BuildAuthURL_ScopeHandling(t *testing.T) {
 			logger := &mockLogger{}
 			handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return tt.isAzure },
 				"test-client", "https://example.com/auth", "https://example.com",
-				tt.scopes, tt.overrideScopes, nil, nil)
+				tt.scopes, tt.overrideScopes, nil, nil, false)
 
 			authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -634,7 +634,7 @@ func TestAuthHandler_BuildAuthURL_WithScopeFiltering(t *testing.T) {
 
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"test-client", "https://example.com/auth", "https://example.com",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -676,7 +676,7 @@ func TestAuthHandler_BuildAuthURL_WithoutScopeFiltering(t *testing.T) {
 
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"test-client", "https://example.com/auth", "https://example.com",
-		scopes, false, nil, nil)
+		scopes, false, nil, nil, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -714,7 +714,7 @@ func TestAuthHandler_BuildAuthURL_GitLabFiltersOfflineAccess(t *testing.T) {
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"gitlab-client", "https://gitlab.example.com/oauth/authorize",
 		"https://gitlab.example.com",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -756,7 +756,7 @@ func TestAuthHandler_BuildAuthURL_GoogleRemovesOfflineAccess(t *testing.T) {
 	handler := NewAuthHandler(logger, false, func() bool { return true }, func() bool { return false },
 		"google-client", "https://accounts.google.com/o/oauth2/v2/auth",
 		"https://accounts.google.com",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -797,7 +797,7 @@ func TestAuthHandler_BuildAuthURL_AzureAddsOfflineAccess(t *testing.T) {
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return true },
 		"azure-client", "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
 		"https://login.microsoftonline.com/tenant/v2.0",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -831,7 +831,7 @@ func TestAuthHandler_BuildAuthURL_GenericWithFiltering(t *testing.T) {
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"generic-client", "https://auth.provider.com/authorize",
 		"https://auth.provider.com",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -870,7 +870,7 @@ func TestAuthHandler_BuildAuthURL_OverrideScopesWithFiltering(t *testing.T) {
 
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"test-client", "https://example.com/auth", "https://example.com",
-		scopes, true, scopeFilter, scopesSupported)
+		scopes, true, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -916,7 +916,7 @@ func TestAuthHandler_BuildAuthURL_DoubleFiltering(t *testing.T) {
 
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"test-client", "https://example.com/auth", "https://example.com",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -955,7 +955,7 @@ func TestAuthHandler_BuildAuthURL_NoScopeFilterProvided(t *testing.T) {
 
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"test-client", "https://example.com/auth", "https://example.com",
-		scopes, false, nil, scopesSupported) // scopeFilter is nil
+		scopes, false, nil, scopesSupported, false) // scopeFilter is nil
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -988,7 +988,7 @@ func TestAuthHandler_BuildAuthURL_EmptyScopesSupported(t *testing.T) {
 
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"test-client", "https://example.com/auth", "https://example.com",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 
@@ -1021,7 +1021,7 @@ func TestAuthHandler_BuildAuthURL_FilteringWithPKCE(t *testing.T) {
 
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
 		"test-client", "https://example.com/auth", "https://example.com",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "test-challenge")
 
@@ -1064,7 +1064,7 @@ func TestAuthHandler_BuildAuthURL_ComplexScenario(t *testing.T) {
 
 	handler := NewAuthHandler(logger, true, func() bool { return false }, func() bool { return false },
 		"complex-client", "https://auth.complex.com/authorize", "https://auth.complex.com",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	authURL := handler.BuildAuthURL("https://example.com/callback", "state-123", "nonce-456", "challenge-789")
 
@@ -1130,7 +1130,7 @@ func TestAuthHandler_BuildAuthURL_LoggingVerification(t *testing.T) {
 
 	handler := NewAuthHandler(logger, false, func() bool { return false }, func() bool { return false },
 		"test-client", "https://example.com/auth", "https://example.com",
-		scopes, false, scopeFilter, scopesSupported)
+		scopes, false, scopeFilter, scopesSupported, false)
 
 	handler.BuildAuthURL("https://example.com/callback", "test-state", "test-nonce", "")
 

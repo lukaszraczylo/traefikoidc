@@ -77,6 +77,7 @@ testData:
   # Custom claim names for Auth0 and other providers with namespaced claims
   roleClaimName: roles # JWT claim name for extracting user roles (default: "roles")
   groupClaimName: groups # JWT claim name for extracting user groups (default: "groups")
+  userIdentifierClaim: email # JWT claim for user identification (default: "email", alternatives: "sub", "oid", "upn", "preferred_username")
 
   # ⚠️ CRITICAL for TLS termination scenarios (AWS ALB, Cloud Load Balancers, etc.)
   # When NOT specified in config: defaults to FALSE (Go zero value)
@@ -120,6 +121,8 @@ testData:
   allowOpaqueTokens: false # Enable opaque (non-JWT) access token support via RFC 7662 introspection
   requireTokenIntrospection: false # Force introspection for opaque tokens (requires introspection endpoint)
   disableReplayDetection: false # Disable JTI replay detection for multi-replica deployments (default: false)
+  allowPrivateIPAddresses: false # Allow private IP addresses in provider URLs for internal networks (default: false)
+  minimalHeaders: false # Reduce forwarded headers to prevent 431 errors (default: false)
 
   # Security Headers Configuration (enabled by default with 'default' profile)
   securityHeaders:
@@ -266,6 +269,8 @@ testDataWithRedis:
 #   allowedRolesAndGroups: # Corresponds to 'Token Claim Name' in Keycloak mappers
 #     - admin
 #     - editor
+#   # For internal Keycloak deployments with private IPs (Docker/Kubernetes internal):
+#   # allowPrivateIPAddresses: true  # Enable for private IP addresses like 192.168.x.x, 10.x.x.x
 #   # Ensure Keycloak client mappers add 'email', 'roles', 'groups' etc. to the ID Token.
 #   # See README.md "Provider Configuration Recommendations" for Keycloak.
 
@@ -286,6 +291,26 @@ testDataWithRedis:
 #     - "group-object-id-1" # Azure AD group claims can be Object IDs by default
 #     - "AppRoleName"
 #   # See README.md "Provider Configuration Recommendations" for Azure AD.
+
+# --- Azure AD Users Without Email Example (Issue #95) ---
+# testDataAzureADNoEmail:
+#   providerURL: https://login.microsoftonline.com/your-tenant-id/v2.0
+#   clientID: your-azure-ad-client-id
+#   clientSecret: your-azure-ad-client-secret
+#   callbackURL: /oauth2/callback
+#   sessionEncryptionKey: "a-very-secure-key-at-least-32-bytes-long-for-azure"
+#   # Use 'sub' claim instead of 'email' for user identification
+#   userIdentifierClaim: sub  # or "oid", "upn", "preferred_username"
+#   overrideScopes: true  # Remove email scope if not needed
+#   scopes:
+#     - openid
+#     - profile
+#     - groups  # For group-based access control
+#   # When using non-email identifiers, allowedUsers matches against the claim value
+#   allowedUsers:
+#     - "abc12345-6789-0abc-def0-123456789abc"  # Azure AD user object ID (sub or oid claim)
+#   # NOTE: allowedUserDomains is ignored when userIdentifierClaim is not "email"
+#   # See: https://github.com/lukaszraczylo/traefikoidc/issues/95
 
 # --- Google Workspace / Google Cloud Identity Example ---
 # testDataGoogle:
@@ -605,6 +630,38 @@ configuration:
     items:
       type: string
 
+  userIdentifierClaim:
+    type: string
+    description: |
+      Specifies the JWT claim to use as the user identifier for authentication and authorization.
+
+      This allows authentication for users without email addresses, such as Azure AD service
+      accounts or organizational accounts that don't have email attributes configured.
+
+      When set to a non-email claim (e.g., "sub", "oid", "upn"):
+      - AllowedUsers will match against this claim value instead of email
+      - AllowedUserDomains validation is skipped (domains only apply to email addresses)
+      - The session stores this identifier as the user's identity
+      - If the configured claim is missing, falls back to "sub" (required by OIDC spec)
+
+      Common values by provider:
+      - Default: "email" (standard email-based identification)
+      - Azure AD: "sub", "oid" (object ID), "upn" (User Principal Name), "preferred_username"
+      - Generic OIDC: "sub" (always present per OIDC specification)
+      - Keycloak: "sub", "preferred_username"
+
+      Example for Azure AD users without email:
+      ```yaml
+      userIdentifierClaim: sub
+      allowedUsers:
+        - "abc123-user-object-id"
+        - "xyz789-another-user-id"
+      ```
+
+      Default: "email"
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/95
+    required: false
+
   revocationURL:
     type: string
     description: |
@@ -901,6 +958,67 @@ configuration:
       - Production with shared cache: false (use Redis/Memcached for shared JTI cache)
 
       Default: false (replay detection enabled)
+    required: false
+
+  allowPrivateIPAddresses:
+    type: boolean
+    description: |
+      Allow private IP addresses in OIDC provider URLs for internal network deployments.
+
+      By default, the plugin blocks URLs containing private IP address ranges
+      (10.x.x.x, 172.16-31.x.x, 192.168.x.x) to prevent SSRF attacks and ensure
+      OIDC providers are publicly accessible.
+
+      Enable this option when:
+      - Your OIDC provider (e.g., Keycloak) runs on an internal network with private IPs
+      - You don't have DNS resolution available for internal services
+      - Your entire stack runs in a Docker network or Kubernetes cluster with private addressing
+
+      When enabled, the plugin will accept provider URLs like:
+      - https://192.168.1.100:8443/auth/realms/your-realm
+      - https://10.0.0.50:8080/realms/master
+      - https://172.16.0.10/auth
+
+      Security Warning:
+      Enabling this option reduces SSRF protection. Only use in trusted network
+      environments where the OIDC provider is known and controlled. Loopback
+      addresses (127.0.0.1, localhost, ::1) remain blocked even with this option enabled.
+
+      Default: false (private IPs are blocked for security)
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/97
+    required: false
+
+  minimalHeaders:
+    type: boolean
+    description: |
+      Reduce forwarded headers to prevent "431 Request Header Fields Too Large" errors.
+
+      When enabled, the middleware only forwards the X-Forwarded-User header and skips
+      the larger authentication headers that can cause downstream services to reject
+      requests due to header size limits (typically 8KB).
+
+      Headers when disabled (default):
+      - X-Forwarded-User: User's email address (always set)
+      - X-Auth-Request-Redirect: Original request URI
+      - X-Auth-Request-User: User's email address
+      - X-Auth-Request-Token: Full ID token (can be very large with many claims)
+      - X-User-Groups: Comma-separated user groups (if configured)
+      - X-User-Roles: Comma-separated user roles (if configured)
+
+      Headers when enabled:
+      - X-Forwarded-User: User's email address (always set)
+      - X-User-Groups: Comma-separated user groups (if configured, still forwarded)
+      - X-User-Roles: Comma-separated user roles (if configured, still forwarded)
+      - Custom templated headers (still processed)
+
+      Use this option when:
+      - Downstream services return "431 Request Header Fields Too Large" errors
+      - Your ID tokens are large (many claims, long group lists)
+      - You don't need the full ID token forwarded to backend services
+      - You want to reduce request overhead
+
+      Default: false (all headers forwarded for backward compatibility)
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/64
     required: false
 
   headers:

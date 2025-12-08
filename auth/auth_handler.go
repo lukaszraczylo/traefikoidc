@@ -18,17 +18,18 @@ type ScopeFilter interface {
 
 // Handler provides core authentication functionality for OIDC flows
 type Handler struct {
-	logger          Logger
-	enablePKCE      bool
-	isGoogleProv    func() bool
-	isAzureProv     func() bool
-	clientID        string
-	authURL         string
-	issuerURL       string
-	scopes          []string
-	overrideScopes  bool
-	scopeFilter     ScopeFilter // NEW
-	scopesSupported []string    // NEW - from provider metadata
+	logger                  Logger
+	enablePKCE              bool
+	isGoogleProv            func() bool
+	isAzureProv             func() bool
+	clientID                string
+	authURL                 string
+	issuerURL               string
+	scopes                  []string
+	overrideScopes          bool
+	scopeFilter             ScopeFilter // NEW
+	scopesSupported         []string    // NEW - from provider metadata
+	allowPrivateIPAddresses bool        // Allow private IP addresses in URLs (for internal networks)
 }
 
 // Logger interface for dependency injection
@@ -40,19 +41,20 @@ type Logger interface {
 // NewAuthHandler creates a new Handler instance
 func NewAuthHandler(logger Logger, enablePKCE bool, isGoogleProv, isAzureProv func() bool,
 	clientID, authURL, issuerURL string, scopes []string, overrideScopes bool,
-	scopeFilter ScopeFilter, scopesSupported []string) *Handler {
+	scopeFilter ScopeFilter, scopesSupported []string, allowPrivateIPAddresses bool) *Handler {
 	return &Handler{
-		logger:          logger,
-		enablePKCE:      enablePKCE,
-		isGoogleProv:    isGoogleProv,
-		isAzureProv:     isAzureProv,
-		clientID:        clientID,
-		authURL:         authURL,
-		issuerURL:       issuerURL,
-		scopes:          scopes,
-		overrideScopes:  overrideScopes,
-		scopeFilter:     scopeFilter,     // NEW
-		scopesSupported: scopesSupported, // NEW
+		logger:                  logger,
+		enablePKCE:              enablePKCE,
+		isGoogleProv:            isGoogleProv,
+		isAzureProv:             isAzureProv,
+		clientID:                clientID,
+		authURL:                 authURL,
+		issuerURL:               issuerURL,
+		scopes:                  scopes,
+		overrideScopes:          overrideScopes,
+		scopeFilter:             scopeFilter,
+		scopesSupported:         scopesSupported,
+		allowPrivateIPAddresses: allowPrivateIPAddresses,
 	}
 }
 
@@ -347,6 +349,7 @@ func (h *Handler) validateParsedURL(u *url.URL) error {
 
 // validateHost validates a hostname for security and reachability.
 // It prevents access to private networks and localhost addresses.
+// When allowPrivateIPAddresses is enabled, private IP checks are skipped.
 func (h *Handler) validateHost(host string) error {
 	if host == "" {
 		return fmt.Errorf("empty host")
@@ -361,7 +364,7 @@ func (h *Handler) validateHost(host string) error {
 		}
 	}
 
-	// Check for localhost variations
+	// Check for localhost variations (always blocked, even with allowPrivateIPAddresses)
 	localhostVariations := []string{
 		"localhost", "127.0.0.1", "::1", "0.0.0.0",
 	}
@@ -376,7 +379,8 @@ func (h *Handler) validateHost(host string) error {
 		if ip.IsLoopback() {
 			return fmt.Errorf("loopback IP not allowed: %s", host)
 		}
-		if ip.IsPrivate() {
+		// Skip private IP check if allowPrivateIPAddresses is enabled
+		if !h.allowPrivateIPAddresses && ip.IsPrivate() {
 			return fmt.Errorf("private IP not allowed: %s", host)
 		}
 		if ip.IsLinkLocalUnicast() {

@@ -124,6 +124,7 @@ The middleware supports the following configuration options:
 | `allowedRolesAndGroups` | Restricts access to users with specific roles or groups | none | `["admin", "developer"]` |
 | `roleClaimName` | JWT claim name for extracting user roles (supports namespaced claims for Auth0) | `"roles"` | `"https://myapp.com/roles"`, `"user_roles"` |
 | `groupClaimName` | JWT claim name for extracting user groups (supports namespaced claims for Auth0) | `"groups"` | `"https://myapp.com/groups"`, `"user_groups"` |
+| `userIdentifierClaim` | JWT claim to use as user identifier (for users without email, e.g., Azure AD service accounts) | `"email"` | `"sub"`, `"oid"`, `"upn"`, `"preferred_username"` |
 | `revocationURL` | The endpoint for revoking tokens | auto-discovered | `https://accounts.google.com/revoke` |
 | `oidcEndSessionURL` | The provider's end session endpoint | auto-discovered | `https://accounts.google.com/logout` |
 | `enablePKCE` | Enables PKCE (Proof Key for Code Exchange) for authorization code flow | `false` | `true`, `false` |
@@ -138,6 +139,8 @@ The middleware supports the following configuration options:
 | `headers` | Custom HTTP headers with templates that can access OIDC claims and tokens | none | See "Templated Headers" section |
 | `securityHeaders` | Configure security headers including CSP, HSTS, CORS, and custom headers | enabled with default profile | See "Security Headers Configuration" section |
 | `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
+| `allowPrivateIPAddresses` | Allow private IP addresses in provider URLs (for internal networks with Keycloak, etc.) | `false` | `true` |
+| `minimalHeaders` | Reduce forwarded headers to prevent "431 Request Header Fields Too Large" errors | `false` | `true` |
 | `redis` | Redis cache configuration for distributed deployments | disabled | See "Redis Cache" section |
 
 > **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
@@ -1241,6 +1244,45 @@ spec:
         - "AppRoleName"        # Application role names
 ```
 
+### Azure AD Configuration (Users Without Email)
+
+For Azure AD users without email addresses (service accounts, organizational accounts without mail attributes):
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-azure-no-email
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://login.microsoftonline.com/your-tenant-id/v2.0
+      clientID: your-azure-ad-client-id
+      clientSecret: your-azure-ad-client-secret
+      sessionEncryptionKey: your-secure-encryption-key-min-32-chars
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout
+
+      # Use 'sub' instead of 'email' for user identification
+      userIdentifierClaim: sub  # Can also use: "oid", "upn", "preferred_username"
+
+      overrideScopes: true  # Optional: Don't request email scope if not needed
+      scopes:
+        - openid
+        - profile
+        - groups
+
+      # When using non-email identifiers, allowedUsers matches against the claim value
+      allowedUsers:
+        - "abc12345-6789-0abc-def0-123456789abc"  # Azure AD user object ID
+        - "def67890-1234-5678-90ab-cdef12345678"
+
+      # NOTE: allowedUserDomains is ignored when userIdentifierClaim is not "email"
+```
+
+> **Note**: When `userIdentifierClaim` is set to a non-email claim (like `sub`, `oid`, or `upn`), the `allowedUserDomains` configuration is ignored since domain-based validation only applies to email addresses. Use `allowedUsers` with the actual claim values instead.
+
 ### Auth0 Configuration
 
 ```yaml
@@ -1327,7 +1369,11 @@ spec:
         - admin
         - editor
       # Ensure Keycloak client mappers add necessary claims to ID Token
+      # For internal Keycloak deployments with private IPs (e.g., Docker network):
+      # allowPrivateIPAddresses: true
 ```
+
+> **Internal Network Deployment**: If your Keycloak runs on an internal network with private IP addresses (e.g., `192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`) and you don't have DNS resolution available, set `allowPrivateIPAddresses: true` to allow the plugin to connect to your Keycloak instance. See [Issue #97](https://github.com/lukaszraczylo/traefikoidc/issues/97) for details.
 
 ### AWS Cognito Configuration
 
@@ -1629,12 +1675,39 @@ headers:
 
 When a user is authenticated, the middleware sets the following headers for downstream services:
 
-- `X-Forwarded-User`: The user's email address
+- `X-Forwarded-User`: The user's email address (always set)
 - `X-User-Groups`: Comma-separated list of user groups (if available)
 - `X-User-Roles`: Comma-separated list of user roles (if available)
 - `X-Auth-Request-Redirect`: The original request URI
 - `X-Auth-Request-User`: The user's email address
-- `X-Auth-Request-Token`: The user's access token
+- `X-Auth-Request-Token`: The user's ID token (can be large)
+
+#### Minimal Headers Mode
+
+If your downstream services return **"431 Request Header Fields Too Large"** errors, you can enable minimal headers mode to reduce header overhead:
+
+```yaml
+http:
+  middlewares:
+    my-auth:
+      plugin:
+        traefikoidc:
+          minimalHeaders: true
+          # ... other config
+```
+
+When `minimalHeaders: true` is set:
+- **Only forwards**: `X-Forwarded-User`
+- **Skips**: `X-Auth-Request-Token` (the full ID token - often the largest header), `X-Auth-Request-User`, `X-Auth-Request-Redirect`
+- **Still forwards**: `X-User-Groups` and `X-User-Roles` (if configured)
+- **Still processes**: Custom templated headers
+
+This is particularly useful when:
+- Your ID tokens are large (many claims, long group lists)
+- Downstream services have limited header buffer sizes (default 8KB in many servers)
+- You don't need the full token forwarded to backend services
+
+See [GitHub Issue #64](https://github.com/lukaszraczylo/traefikoidc/issues/64) for details.
 
 ### Security Headers
 
@@ -1861,6 +1934,15 @@ logLevel: debug
     - No ID tokens available (access tokens only)
     - No refresh tokens (re-authentication required on expiry)
     - Use only for GitHub API access, not user authentication
+
+15. **Environment variable names containing "API" cause plugin failure** ([Issue #98](https://github.com/lukaszraczylo/traefikoidc/issues/98)):
+    - When using environment variable syntax like `${OIDC_ENCRYPTION_SECRET_API}` in Traefik configuration, the plugin fails with "invalid handler type: \<nil\>" error
+    - This is a **Traefik-side issue**, not a plugin bug. Traefik uses reserved environment variables starting with `TRAEFIK_API_*` for its internal API configuration, and the "API" substring in user-defined variable names may interfere with Traefik's environment variable processing
+    - **Workaround**: Avoid using "API" as a substring in environment variable names. Use alternatives like:
+      - `${OIDC_ENCRYPTION_SECRET_SVC}` instead of `${OIDC_ENCRYPTION_SECRET_API}`
+      - `${OIDC_ENCRYPTION_SECRET_SERVICE}`
+      - `${OIDC_ENCRYPTION_SECRET_BACKEND}`
+      - Any name that doesn't contain the literal substring "API"
 
 ### Provider Warnings and Recommendations
 

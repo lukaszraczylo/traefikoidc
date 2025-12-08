@@ -846,3 +846,296 @@ func (e *mockNetError) Temporary() bool { return e.temporary }
 
 // Ensure mockNetError implements net.Error
 var _ net.Error = (*mockNetError)(nil)
+
+// Test isTraefikDefaultCertError
+// See: https://github.com/lukaszraczylo/traefikoidc/issues/90
+
+func TestIsTraefikDefaultCertError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "regular error",
+			err:      errors.New("some error"),
+			expected: false,
+		},
+		{
+			name:     "network error",
+			err:      &mockNetError{msg: "connection refused"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isTraefikDefaultCertError(tt.err)
+			if result != tt.expected {
+				t.Errorf("isTraefikDefaultCertError() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test isEOFError
+
+func TestIsEOFError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "regular error",
+			err:      errors.New("some error"),
+			expected: false,
+		},
+		{
+			name:     "error containing EOF in message",
+			err:      errors.New("connection closed: EOF"),
+			expected: true,
+		},
+		{
+			name:     "error containing unexpected EOF",
+			err:      errors.New("read: unexpected EOF"),
+			expected: true,
+		},
+		{
+			name:     "network error without EOF",
+			err:      &mockNetError{msg: "connection refused"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isEOFError(tt.err)
+			if result != tt.expected {
+				t.Errorf("isEOFError() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test isCertificateError
+
+func TestIsCertificateError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "regular error",
+			err:      errors.New("some error"),
+			expected: false,
+		},
+		{
+			name:     "error containing certificate in message",
+			err:      errors.New("tls: failed to verify certificate"),
+			expected: true,
+		},
+		{
+			name:     "error containing x509 in message",
+			err:      errors.New("x509: certificate signed by unknown authority"),
+			expected: true,
+		},
+		{
+			name:     "error containing tls in message",
+			err:      errors.New("tls handshake failed"),
+			expected: true,
+		},
+		{
+			name:     "error containing ssl in message",
+			err:      errors.New("ssl connection error"),
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isCertificateError(tt.err)
+			if result != tt.expected {
+				t.Errorf("isCertificateError() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test MetadataFetchRetryConfig
+
+func TestMetadataFetchRetryConfig(t *testing.T) {
+	config := MetadataFetchRetryConfig()
+
+	if config.MaxAttempts != 10 {
+		t.Errorf("Expected MaxAttempts 10, got %d", config.MaxAttempts)
+	}
+
+	if config.InitialDelay != 1*time.Second {
+		t.Errorf("Expected InitialDelay 1s, got %v", config.InitialDelay)
+	}
+
+	if config.MaxDelay != 10*time.Second {
+		t.Errorf("Expected MaxDelay 10s, got %v", config.MaxDelay)
+	}
+
+	if config.BackoffFactor != 1.5 {
+		t.Errorf("Expected BackoffFactor 1.5, got %v", config.BackoffFactor)
+	}
+
+	if !config.EnableJitter {
+		t.Error("Expected EnableJitter to be true")
+	}
+
+	// Verify retryable errors include startup-related patterns
+	expectedPatterns := []string{"EOF", "certificate", "x509", "tls"}
+	for _, pattern := range expectedPatterns {
+		found := false
+		for _, retryableErr := range config.RetryableErrors {
+			if retryableErr == pattern {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected '%s' in RetryableErrors", pattern)
+		}
+	}
+}
+
+// Test RetryExecutor with startup-specific errors
+
+func TestRetryExecutorStartupErrors(t *testing.T) {
+	// Verify MetadataFetchRetryConfig creates a valid retry executor
+	_ = NewRetryExecutor(MetadataFetchRetryConfig(), nil)
+
+	tests := []struct {
+		name        string
+		err         error
+		shouldRetry bool
+	}{
+		{
+			name:        "EOF error",
+			err:         errors.New("read tcp: EOF"),
+			shouldRetry: true,
+		},
+		{
+			name:        "unexpected EOF",
+			err:         errors.New("http: unexpected EOF"),
+			shouldRetry: true,
+		},
+		{
+			name:        "certificate error",
+			err:         errors.New("x509: certificate signed by unknown authority"),
+			shouldRetry: true,
+		},
+		{
+			name:        "TLS error",
+			err:         errors.New("tls: failed to verify certificate"),
+			shouldRetry: true,
+		},
+		{
+			name:        "connection refused",
+			err:         errors.New("dial tcp: connection refused"),
+			shouldRetry: true,
+		},
+		{
+			name:        "permanent error",
+			err:         errors.New("invalid response format"),
+			shouldRetry: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use very short delays for testing
+			testConfig := RetryConfig{
+				MaxAttempts:   3,
+				InitialDelay:  1 * time.Millisecond,
+				MaxDelay:      10 * time.Millisecond,
+				BackoffFactor: 1.5,
+				EnableJitter:  false,
+				RetryableErrors: []string{
+					"connection refused",
+					"timeout",
+					"temporary failure",
+					"network unreachable",
+					"EOF",
+					"certificate",
+					"x509",
+					"tls",
+				},
+			}
+			testRe := NewRetryExecutor(testConfig, nil)
+
+			attempts := 0
+			_ = testRe.ExecuteWithContext(context.Background(), func() error {
+				attempts++
+				return tt.err
+			})
+
+			expectedAttempts := 1
+			if tt.shouldRetry {
+				expectedAttempts = 3
+			}
+
+			if attempts != expectedAttempts {
+				t.Errorf("Expected %d attempts for '%s', got %d", expectedAttempts, tt.name, attempts)
+			}
+		})
+	}
+}
+
+// Test that retry executor properly uses isRetryableError with new error types
+
+func TestRetryExecutorIsRetryableErrorIntegration(t *testing.T) {
+	re := NewRetryExecutor(DefaultRetryConfig(), nil)
+
+	// Test that the enhanced isRetryableError is being used
+	tests := []struct {
+		name        string
+		err         error
+		shouldRetry bool
+	}{
+		{
+			name:        "EOF in error message",
+			err:         errors.New("connection reset by peer: EOF"),
+			shouldRetry: true,
+		},
+		{
+			name:        "certificate in error message",
+			err:         errors.New("x509: certificate has expired"),
+			shouldRetry: true,
+		},
+		{
+			name:        "TLS in error message",
+			err:         errors.New("tls: handshake failure"),
+			shouldRetry: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := re.isRetryableError(tt.err)
+			if result != tt.shouldRetry {
+				t.Errorf("isRetryableError(%q) = %v, expected %v", tt.err.Error(), result, tt.shouldRetry)
+			}
+		})
+	}
+}

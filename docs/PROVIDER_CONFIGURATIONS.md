@@ -437,6 +437,21 @@ http:
 4. Configure client scopes and mappers
 5. Generate client secret in Credentials tab
 
+### Internal Network Deployment
+
+If your Keycloak instance runs on an internal network with private IP addresses (e.g., Docker networks, Kubernetes internal services), set `allowPrivateIPAddresses: true`:
+
+```yaml
+traefikoidc:
+  providerUrl: "https://192.168.1.100:8443/auth/realms/your-realm"  # Private IP
+  allowPrivateIPAddresses: true  # Required for private IP addresses
+  clientId: "your-client-id"
+  clientSecret: "your-client-secret"
+  # ... other config
+```
+
+> **Security Warning**: Only enable `allowPrivateIPAddresses` in trusted network environments where you control the OIDC provider. This setting reduces SSRF protection.
+
 ---
 
 ## Okta

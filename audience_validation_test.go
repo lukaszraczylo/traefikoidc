@@ -849,26 +849,27 @@ func TestAudienceEndToEndScenario(t *testing.T) {
 	customAudience := "https://api.company.com"
 
 	tOidc := &TraefikOidc{
-		next:               nextHandler,
-		name:               "test",
-		redirURLPath:       "/callback",
-		logoutURLPath:      "/callback/logout",
-		issuerURL:          "https://auth.company.com",
-		clientID:           "test-client-id",
-		clientSecret:       "test-client-secret",
-		audience:           customAudience, // Set custom audience
-		jwkCache:           mockJWKCache,
-		jwksURL:            "https://auth.company.com/.well-known/jwks.json",
-		tokenBlacklist:     tokenBlacklist,
-		tokenCache:         tokenCache,
-		limiter:            rate.NewLimiter(rate.Every(time.Second), 10),
-		logger:             logger,
-		allowedUserDomains: map[string]struct{}{"company.com": {}},
-		excludedURLs:       map[string]struct{}{},
-		httpClient:         &http.Client{},
-		initComplete:       make(chan struct{}),
-		sessionManager:     sm,
-		extractClaimsFunc:  extractClaims,
+		next:                nextHandler,
+		name:                "test",
+		redirURLPath:        "/callback",
+		logoutURLPath:       "/callback/logout",
+		issuerURL:           "https://auth.company.com",
+		clientID:            "test-client-id",
+		clientSecret:        "test-client-secret",
+		audience:            customAudience, // Set custom audience
+		jwkCache:            mockJWKCache,
+		jwksURL:             "https://auth.company.com/.well-known/jwks.json",
+		tokenBlacklist:      tokenBlacklist,
+		tokenCache:          tokenCache,
+		limiter:             rate.NewLimiter(rate.Every(time.Second), 10),
+		logger:              logger,
+		allowedUserDomains:  map[string]struct{}{"company.com": {}},
+		userIdentifierClaim: "email", // Required for user identification
+		excludedURLs:        map[string]struct{}{},
+		httpClient:          &http.Client{},
+		initComplete:        make(chan struct{}),
+		sessionManager:      sm,
+		extractClaimsFunc:   extractClaims,
 	}
 	tOidc.jwtVerifier = tOidc
 	tOidc.tokenVerifier = tOidc

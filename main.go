@@ -177,6 +177,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return "groups" // Backward compatible default
 		}(),
+		userIdentifierClaim: func() string {
+			if config.UserIdentifierClaim != "" {
+				return config.UserIdentifierClaim
+			}
+			return "email" // Backward compatible default
+		}(),
 		forceHTTPS:                config.ForceHTTPS,
 		enablePKCE:                config.EnablePKCE,
 		overrideScopes:            config.OverrideScopes,
@@ -218,6 +224,8 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		securityHeadersApplier:  config.GetSecurityHeadersApplier(),
 		scopeFilter:             NewScopeFilter(logger), // NEW - for discovery-based scope filtering
 		dcrConfig:               config.DynamicClientRegistration,
+		allowPrivateIPAddresses: config.AllowPrivateIPAddresses,
+		minimalHeaders:          config.MinimalHeaders,
 	}
 
 	// Log audience configuration

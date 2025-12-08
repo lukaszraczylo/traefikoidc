@@ -2,10 +2,14 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto/x509"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand/v2"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -411,6 +415,31 @@ func DefaultRetryConfig() RetryConfig {
 	}
 }
 
+// MetadataFetchRetryConfig returns retry configuration optimized for OIDC metadata
+// fetching during startup. Uses more aggressive retry settings to handle the race
+// condition where Traefik initializes the plugin before routes are fully established,
+// or before TLS certificates are properly loaded.
+// See: https://github.com/lukaszraczylo/traefikoidc/issues/90
+func MetadataFetchRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxAttempts:   10,               // More attempts for startup scenarios
+		InitialDelay:  1 * time.Second,  // 1 second between attempts as suggested
+		MaxDelay:      10 * time.Second, // Cap at 10 seconds
+		BackoffFactor: 1.5,              // Gentler backoff for startup
+		EnableJitter:  true,             // Prevent thundering herd
+		RetryableErrors: []string{
+			"connection refused",
+			"timeout",
+			"temporary failure",
+			"network unreachable",
+			"EOF",
+			"certificate",
+			"x509",
+			"tls",
+		},
+	}
+}
+
 // RetryExecutor implements retry logic with exponential backoff and jitter.
 // It automatically retries failed operations based on configurable error patterns
 // and uses exponential backoff to avoid overwhelming failing services.
@@ -487,9 +516,27 @@ func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
 // isRetryableError checks if an error should trigger a retry
 // isRetryableError determines if an error should trigger a retry attempt.
 // Checks error message against configured retryable error patterns.
+// Also handles startup-specific errors like Traefik default certificate errors
+// and EOF errors that occur during service initialization.
 func (re *RetryExecutor) isRetryableError(err error) bool {
 	if err == nil {
 		return false
+	}
+
+	// Check for Traefik default certificate error (startup race condition)
+	// See: https://github.com/lukaszraczylo/traefikoidc/issues/90
+	if isTraefikDefaultCertError(err) {
+		return true
+	}
+
+	// Check for EOF errors (common during startup when services aren't ready)
+	if isEOFError(err) {
+		return true
+	}
+
+	// Check for certificate errors (transient during startup)
+	if isCertificateError(err) {
+		return true
 	}
 
 	errStr := err.Error()
@@ -1086,5 +1133,88 @@ func containsSubstring(s, substr string) bool {
 			return true
 		}
 	}
+	return false
+}
+
+// isTraefikDefaultCertError detects when Traefik is serving its default self-signed
+// certificate during cold-start, before the real certificates are loaded.
+// This manifests as an x509.HostnameError where one of the certificate's DNS names
+// ends with "traefik.default" (the default Traefik certificate pattern).
+// See: https://github.com/lukaszraczylo/traefikoidc/issues/90
+func isTraefikDefaultCertError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var hostnameErr x509.HostnameError
+	if errors.As(err, &hostnameErr) {
+		if hostnameErr.Certificate != nil {
+			for _, name := range hostnameErr.Certificate.DNSNames {
+				if strings.HasSuffix(name, "traefik.default") {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// isEOFError checks if an error is an EOF error, which can occur during
+// connection establishment when the remote end closes unexpectedly.
+// This is common during service startup when endpoints aren't fully ready.
+func isEOFError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for direct EOF
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	// Check for unexpected EOF
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	// Check error message for EOF patterns (wrapped errors)
+	errStr := err.Error()
+	return strings.Contains(errStr, "EOF") || strings.Contains(errStr, "unexpected EOF")
+}
+
+// isCertificateError checks if an error is related to TLS certificate validation.
+// These errors are often transient during startup when services are still initializing.
+func isCertificateError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for x509 certificate errors
+	var certInvalidErr x509.CertificateInvalidError
+	var hostnameErr x509.HostnameError
+	var unknownAuthErr x509.UnknownAuthorityError
+
+	if errors.As(err, &certInvalidErr) ||
+		errors.As(err, &hostnameErr) ||
+		errors.As(err, &unknownAuthErr) {
+		return true
+	}
+
+	// Check error message for certificate patterns
+	errStr := strings.ToLower(err.Error())
+	certPatterns := []string{
+		"certificate",
+		"x509",
+		"tls",
+		"ssl",
+	}
+
+	for _, pattern := range certPatterns {
+		if strings.Contains(errStr, pattern) {
+			return true
+		}
+	}
+
 	return false
 }
