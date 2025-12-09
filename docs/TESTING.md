@@ -6,9 +6,9 @@ Comprehensive testing infrastructure for traefikoidc.
 
 | Metric | Value |
 |--------|-------|
-| Test files | 97 |
-| Lines of test code | ~63,500 |
-| Code coverage | 70.3% |
+| Test files | 99 |
+| Lines of test code | ~65,500 |
+| Code coverage | 71.0% |
 | Race conditions | None (all pass with `-race`) |
 
 ## Running Tests
@@ -62,6 +62,9 @@ internal/testutil/
 | URLPathEdgeCasesSuite | `edge_cases_suite_test.go` | URL parsing edge cases |
 | ConcurrencyEdgeCasesSuite | `edge_cases_suite_test.go` | Concurrent token validation |
 | ExampleTestSuite | `testutil_example_test.go` | Example demonstrating patterns |
+| AuthFlowBehaviourSuite | `auth_flow_behaviour_test.go` | Authentication flow behavior tests |
+| SessionBehaviourSuite | `session_behaviour_test.go` | Session management behavior tests |
+| EnhancedMocksSuite | `enhanced_mocks_suite_test.go` | Enhanced mock usage demonstration |
 
 ## Mock Types
 
