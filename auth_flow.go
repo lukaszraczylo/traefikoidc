@@ -8,10 +8,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// ============================================================================
-// AUTHENTICATION FLOW
-// ============================================================================
-
 // validateRedirectCount checks if redirect limit is exceeded and handles the error
 func (t *TraefikOidc) validateRedirectCount(session *SessionData, rw http.ResponseWriter, req *http.Request) error {
 	const maxRedirects = 5

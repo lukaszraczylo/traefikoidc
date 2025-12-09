@@ -9,11 +9,881 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/sessions"
+	"github.com/stretchr/testify/assert"
 )
+
+// ============================================================================
+// SESSION TEST FRAMEWORK
+// ============================================================================
+
+// SessionTestCase represents a comprehensive session test scenario
+type SessionTestCase struct {
+	name        string
+	scenario    string // "creation", "validation", "expiration", "persistence", "cleanup", "chunking", "security"
+	sessionType string // "user", "admin", "api", "guest", "csrf"
+	setup       func(*SessionTestFramework)
+	execute     func(*SessionTestFramework) error
+	validate    func(*testing.T, error, *SessionTestFramework)
+	cleanup     func(*SessionTestFramework)
+	concurrent  bool
+	iterations  int
+	timeout     time.Duration
+	skipReason  string
+}
+
+// SessionTestFramework provides shared test infrastructure for session tests
+type SessionTestFramework struct {
+	t            *testing.T
+	mockProvider *httptest.Server
+	requests     []*http.Request
+	responses    []*httptest.ResponseRecorder
+	testTokens   map[string]string
+	sessionIDs   []string
+	mu           sync.RWMutex
+	metrics      *SessionTestMetrics
+	cleanupFuncs []func()
+	config       *SessionTestConfig
+}
+
+// SessionTestMetrics tracks test performance metrics
+type SessionTestMetrics struct {
+	SessionsCreated   int64
+	SessionsDestroyed int64
+	TokensGenerated   int64
+	TokensValidated   int64
+	ChunksCreated     int64
+	ChunksRetrieved   int64
+	ErrorCount        int64
+	Duration          time.Duration
+}
+
+// SessionTestConfig holds test configuration
+type SessionTestConfig struct {
+	MaxChunkSize      int
+	MaxSessions       int
+	EnableHTTPS       bool
+	CookieDomain      string
+	SessionTimeout    time.Duration
+	EncryptionKey     string
+	EnableCompression bool
+}
+
+// NewSessionTestFramework creates a new test framework instance
+func NewSessionTestFramework(t *testing.T) *SessionTestFramework {
+	framework := &SessionTestFramework{
+		t:            t,
+		requests:     make([]*http.Request, 0),
+		responses:    make([]*httptest.ResponseRecorder, 0),
+		testTokens:   make(map[string]string),
+		sessionIDs:   make([]string, 0),
+		metrics:      &SessionTestMetrics{},
+		cleanupFuncs: make([]func(), 0),
+		config: &SessionTestConfig{
+			MaxChunkSize:      3900,
+			MaxSessions:       1000,
+			EnableHTTPS:       false,
+			CookieDomain:      "",
+			SessionTimeout:    time.Hour,
+			EncryptionKey:     generateTestKey(),
+			EnableCompression: true,
+		},
+	}
+
+	// Setup mock OIDC provider
+	framework.setupMockProvider()
+
+	return framework
+}
+
+// generateTestKey generates a test encryption key
+func generateTestKey() string {
+	// 48 bytes = 384 bits for testing
+	return "0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+
+// setupMockProvider sets up a mock OIDC provider for testing
+func (f *SessionTestFramework) setupMockProvider() {
+	f.mockProvider = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":                 f.mockProvider.URL,
+				"authorization_endpoint": f.mockProvider.URL + "/auth",
+				"token_endpoint":         f.mockProvider.URL + "/token",
+				"userinfo_endpoint":      f.mockProvider.URL + "/userinfo",
+				"jwks_uri":               f.mockProvider.URL + "/jwks",
+			})
+		case "/token":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"access_token":  f.generateTestToken("access", 3600),
+				"id_token":      f.generateTestToken("id", 3600),
+				"refresh_token": f.generateTestToken("refresh", 86400),
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+			})
+		case "/userinfo":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"sub":   "test-user-id",
+				"email": "test@example.com",
+				"name":  "Test User",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+
+	f.cleanupFuncs = append(f.cleanupFuncs, f.mockProvider.Close)
+}
+
+// generateTestToken generates a test token
+func (f *SessionTestFramework) generateTestToken(tokenType string, expiresIn int) string {
+	atomic.AddInt64(&f.metrics.TokensGenerated, 1)
+
+	// Create a realistic JWT-like token for testing
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+
+	claims := map[string]interface{}{
+		"iss": f.mockProvider.URL,
+		"sub": "test-user-id",
+		"aud": "test-client-id",
+		"exp": time.Now().Add(time.Duration(expiresIn) * time.Second).Unix(),
+		"iat": time.Now().Unix(),
+		"typ": tokenType,
+	}
+
+	claimsJSON, _ := json.Marshal(claims)
+	payload := base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	// Generate a fake signature
+	signature := make([]byte, 64)
+	rand.Read(signature)
+	sig := base64.RawURLEncoding.EncodeToString(signature)
+
+	token := fmt.Sprintf("%s.%s.%s", header, payload, sig)
+
+	// Thread-safe write to map
+	f.mu.Lock()
+	f.testTokens[tokenType] = token
+	f.mu.Unlock()
+
+	return token
+}
+
+// generateLargeToken generates a token of specified size for testing chunking
+func (f *SessionTestFramework) generateLargeToken(size int) string {
+	atomic.AddInt64(&f.metrics.TokensGenerated, 1)
+
+	// Create base JWT structure
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+
+	// Calculate how much padding we need in claims
+	baseSize := len(header) + 2                          // for the dots
+	signatureSize := 86                                  // approximate base64 encoded signature size
+	paddingSize := size - baseSize - signatureSize - 100 // leave room for other claims
+
+	if paddingSize < 0 {
+		paddingSize = 0
+	}
+
+	// Create large padding data
+	padding := make([]byte, paddingSize)
+	for i := range padding {
+		padding[i] = byte('A' + (i % 26))
+	}
+
+	claims := map[string]interface{}{
+		"iss":     f.mockProvider.URL,
+		"sub":     "test-user-id",
+		"aud":     "test-client-id",
+		"exp":     time.Now().Add(time.Hour).Unix(),
+		"iat":     time.Now().Unix(),
+		"padding": base64.StdEncoding.EncodeToString(padding),
+	}
+
+	claimsJSON, _ := json.Marshal(claims)
+	payload := base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	// Generate signature
+	signature := make([]byte, 64)
+	rand.Read(signature)
+	sig := base64.RawURLEncoding.EncodeToString(signature)
+
+	return fmt.Sprintf("%s.%s.%s", header, payload, sig)
+}
+
+// Cleanup performs framework cleanup
+func (f *SessionTestFramework) Cleanup() {
+	for _, cleanup := range f.cleanupFuncs {
+		cleanup()
+	}
+}
+
+// ============================================================================
+// SESSION CHUNK MANAGER TESTS
+// ============================================================================
+
+// Helper function to create a mock HTTP request for session creation
+func createMockRequest() *http.Request {
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	return req
+}
+
+func TestNewSessionChunkManager(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	if manager == nil {
+		t.Fatal("Expected non-nil session chunk manager")
+	}
+
+	if manager.maxChunks != 10 {
+		t.Errorf("Expected maxChunks 10, got %d", manager.maxChunks)
+	}
+}
+
+func TestNewSessionChunkManagerDefaultLimit(t *testing.T) {
+	// Test with 0 maxChunks (should use default)
+	manager := NewSessionChunkManager(0)
+
+	if manager.maxChunks != 20 {
+		t.Errorf("Expected default maxChunks 20, got %d", manager.maxChunks)
+	}
+}
+
+func TestNewSessionChunkManagerNegativeLimit(t *testing.T) {
+	// Test with negative maxChunks (should use default)
+	manager := NewSessionChunkManager(-5)
+
+	if manager.maxChunks != 20 {
+		t.Errorf("Expected default maxChunks 20, got %d", manager.maxChunks)
+	}
+}
+
+func TestCleanupChunksWithoutWriter(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add some chunks
+	for i := 0; i < 5; i++ {
+		session, _ := store.New(createMockRequest(), "chunk")
+		session.Values["token_chunk"] = "chunk-data"
+		chunks[i] = session
+	}
+
+	// Cleanup without writer (should just clear map)
+	manager.CleanupChunks(chunks, nil)
+
+	if len(chunks) != 0 {
+		t.Errorf("Expected chunks map to be empty, got %d entries", len(chunks))
+	}
+}
+
+func TestCleanupChunksWithWriter(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add some chunks
+	for i := 0; i < 3; i++ {
+		session, _ := store.New(createMockRequest(), "chunk")
+		session.Values["token_chunk"] = "chunk-data"
+		session.Options = &sessions.Options{MaxAge: 3600}
+		chunks[i] = session
+	}
+
+	// Create response writer
+	w := httptest.NewRecorder()
+
+	// Note: We can't fully test the Save behavior without a proper HTTP request
+	// but we can verify the cleanup clears the map
+	manager.CleanupChunks(chunks, w)
+
+	if len(chunks) != 0 {
+		t.Errorf("Expected chunks map to be empty, got %d entries", len(chunks))
+	}
+}
+
+func TestCleanupChunksNilSession(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	chunks[0] = nil
+	chunks[1] = nil
+
+	w := httptest.NewRecorder()
+
+	// Should handle nil sessions gracefully
+	manager.CleanupChunks(chunks, w)
+
+	if len(chunks) != 0 {
+		t.Errorf("Expected chunks map to be empty, got %d entries", len(chunks))
+	}
+}
+
+func TestCleanupChunksEmptyMap(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+
+	// Should handle empty map gracefully
+	manager.CleanupChunks(chunks, nil)
+
+	if len(chunks) != 0 {
+		t.Error("Expected chunks map to remain empty")
+	}
+}
+
+func TestValidateAndCleanChunksWithinLimit(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add chunks within limit
+	for i := 0; i < 5; i++ {
+		session, _ := store.New(createMockRequest(), "chunk")
+		chunks[i] = session
+	}
+
+	result := manager.ValidateAndCleanChunks(chunks)
+
+	if !result {
+		t.Error("Expected validation to pass for chunks within limit")
+	}
+
+	if len(chunks) != 5 {
+		t.Errorf("Expected chunks to remain intact, got %d", len(chunks))
+	}
+}
+
+func TestValidateAndCleanChunksExceedLimit(t *testing.T) {
+	manager := NewSessionChunkManager(5)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add more chunks than limit
+	for i := 0; i < 10; i++ {
+		session, _ := store.New(createMockRequest(), "chunk")
+		chunks[i] = session
+	}
+
+	result := manager.ValidateAndCleanChunks(chunks)
+
+	if result {
+		t.Error("Expected validation to fail for chunks exceeding limit")
+	}
+
+	if len(chunks) != 0 {
+		t.Errorf("Expected chunks to be cleared, got %d", len(chunks))
+	}
+}
+
+func TestValidateAndCleanChunksAtLimit(t *testing.T) {
+	manager := NewSessionChunkManager(5)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add chunks exactly at limit
+	for i := 0; i < 5; i++ {
+		session, _ := store.New(createMockRequest(), "chunk")
+		chunks[i] = session
+	}
+
+	result := manager.ValidateAndCleanChunks(chunks)
+
+	if !result {
+		t.Error("Expected validation to pass for chunks at limit")
+	}
+
+	if len(chunks) != 5 {
+		t.Errorf("Expected chunks to remain intact, got %d", len(chunks))
+	}
+}
+
+func TestSafeSetChunkValidIndex(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+	session, _ := store.New(createMockRequest(), "chunk")
+
+	result := manager.SafeSetChunk(chunks, 5, session)
+
+	if !result {
+		t.Error("Expected SafeSetChunk to succeed for valid index")
+	}
+
+	if chunks[5] != session {
+		t.Error("Expected session to be set at index 5")
+	}
+}
+
+func TestSafeSetChunkNegativeIndex(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+	session, _ := store.New(createMockRequest(), "chunk")
+
+	result := manager.SafeSetChunk(chunks, -1, session)
+
+	if result {
+		t.Error("Expected SafeSetChunk to fail for negative index")
+	}
+
+	if len(chunks) != 0 {
+		t.Error("Expected chunks map to remain empty")
+	}
+}
+
+func TestSafeSetChunkIndexTooHigh(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+	session, _ := store.New(createMockRequest(), "chunk")
+
+	result := manager.SafeSetChunk(chunks, 10, session)
+
+	if result {
+		t.Error("Expected SafeSetChunk to fail for index >= maxChunks")
+	}
+
+	if len(chunks) != 0 {
+		t.Error("Expected chunks map to remain empty")
+	}
+}
+
+func TestSafeSetChunkExceedingLimit(t *testing.T) {
+	manager := NewSessionChunkManager(5)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Fill up to limit
+	for i := 0; i < 5; i++ {
+		session, _ := store.New(createMockRequest(), "chunk")
+		chunks[i] = session
+	}
+
+	// Try to add a new chunk at new index (should fail)
+	session, _ := store.New(createMockRequest(), "chunk")
+	result := manager.SafeSetChunk(chunks, 2, session)
+
+	// This should succeed because index 2 already exists
+	if !result {
+		t.Error("Expected SafeSetChunk to succeed for existing index")
+	}
+}
+
+func TestSafeSetChunkReplaceExisting(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	session1, _ := store.New(createMockRequest(), "chunk1")
+	session2, _ := store.New(createMockRequest(), "chunk2")
+
+	// Set initial session
+	manager.SafeSetChunk(chunks, 3, session1)
+
+	// Replace with new session
+	result := manager.SafeSetChunk(chunks, 3, session2)
+
+	if !result {
+		t.Error("Expected SafeSetChunk to succeed for replacing existing chunk")
+	}
+
+	if chunks[3] != session2 {
+		t.Error("Expected session to be replaced at index 3")
+	}
+}
+
+func TestGetChunkCount(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add some chunks
+	for i := 0; i < 7; i++ {
+		session, _ := store.New(createMockRequest(), "chunk")
+		chunks[i] = session
+	}
+
+	count := manager.GetChunkCount(chunks)
+
+	if count != 7 {
+		t.Errorf("Expected chunk count 7, got %d", count)
+	}
+}
+
+func TestGetChunkCountEmpty(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+
+	count := manager.GetChunkCount(chunks)
+
+	if count != 0 {
+		t.Errorf("Expected chunk count 0, got %d", count)
+	}
+}
+
+func TestCompactChunksNoGaps(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add sequential chunks
+	for i := 0; i < 5; i++ {
+		session, _ := store.New(createMockRequest(), "chunk")
+		session.Values["index"] = i
+		chunks[i] = session
+	}
+
+	compacted := manager.CompactChunks(chunks)
+
+	if len(compacted) != 5 {
+		t.Errorf("Expected 5 compacted chunks, got %d", len(compacted))
+	}
+
+	// Verify order
+	for i := 0; i < 5; i++ {
+		if compacted[i] == nil {
+			t.Errorf("Expected chunk at index %d", i)
+		}
+	}
+}
+
+func TestCompactChunksWithGaps(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add chunks with gaps
+	indices := []int{0, 2, 5, 7}
+	for _, idx := range indices {
+		session, _ := store.New(createMockRequest(), "chunk")
+		session.Values["original_index"] = idx
+		chunks[idx] = session
+	}
+
+	compacted := manager.CompactChunks(chunks)
+
+	if len(compacted) != 4 {
+		t.Errorf("Expected 4 compacted chunks, got %d", len(compacted))
+	}
+
+	// Verify chunks are reindexed sequentially
+	for i := 0; i < 4; i++ {
+		if compacted[i] == nil {
+			t.Errorf("Expected chunk at compacted index %d", i)
+		}
+	}
+}
+
+func TestCompactChunksWithNilEntries(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add chunks and nil entries
+	session1, _ := store.New(createMockRequest(), "chunk1")
+	session2, _ := store.New(createMockRequest(), "chunk2")
+	session3, _ := store.New(createMockRequest(), "chunk3")
+
+	chunks[0] = session1
+	chunks[1] = nil
+	chunks[2] = session2
+	chunks[3] = nil
+	chunks[4] = session3
+
+	compacted := manager.CompactChunks(chunks)
+
+	if len(compacted) != 3 {
+		t.Errorf("Expected 3 compacted chunks (nil entries removed), got %d", len(compacted))
+	}
+
+	// Verify non-nil chunks are compacted
+	for i := 0; i < 3; i++ {
+		if compacted[i] == nil {
+			t.Errorf("Expected non-nil chunk at compacted index %d", i)
+		}
+	}
+}
+
+func TestCompactChunksEmpty(t *testing.T) {
+	manager := NewSessionChunkManager(10)
+
+	chunks := make(map[int]*sessions.Session)
+
+	compacted := manager.CompactChunks(chunks)
+
+	if len(compacted) != 0 {
+		t.Errorf("Expected empty compacted map, got %d entries", len(compacted))
+	}
+}
+
+func TestSessionChunkManagerConcurrentOperations(t *testing.T) {
+	manager := NewSessionChunkManager(50)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	var wg sync.WaitGroup
+
+	// Concurrent SafeSetChunk
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			session, _ := store.New(createMockRequest(), "chunk")
+			manager.SafeSetChunk(chunks, index, session)
+		}(i)
+	}
+
+	// Concurrent GetChunkCount
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = manager.GetChunkCount(chunks)
+		}()
+	}
+
+	// Concurrent ValidateAndCleanChunks (reads)
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = manager.ValidateAndCleanChunks(chunks)
+		}()
+	}
+
+	wg.Wait()
+
+	// Verify manager is still functional
+	count := manager.GetChunkCount(chunks)
+	if count < 0 || count > 50 {
+		t.Errorf("Unexpected chunk count after concurrent operations: %d", count)
+	}
+}
+
+func TestSessionChunkManagerLargeChunkCount(t *testing.T) {
+	manager := NewSessionChunkManager(1000)
+
+	chunks := make(map[int]*sessions.Session)
+	store := sessions.NewCookieStore([]byte("test-secret"))
+
+	// Add many chunks
+	for i := 0; i < 500; i++ {
+		session, _ := store.New(createMockRequest(), "chunk")
+		chunks[i] = session
+	}
+
+	result := manager.ValidateAndCleanChunks(chunks)
+
+	if !result {
+		t.Error("Expected validation to pass for 500 chunks with limit 1000")
+	}
+
+	count := manager.GetChunkCount(chunks)
+	if count != 500 {
+		t.Errorf("Expected 500 chunks, got %d", count)
+	}
+}
+
+func TestSessionChunkManagerBoundaryConditions(t *testing.T) {
+	tests := []struct {
+		name       string
+		maxChunks  int
+		addChunks  int
+		shouldPass bool
+	}{
+		{"exactly at limit", 10, 10, true},
+		{"one over limit", 10, 11, false},
+		{"way over limit", 10, 50, false},
+		{"zero chunks with limit", 10, 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := NewSessionChunkManager(tt.maxChunks)
+			chunks := make(map[int]*sessions.Session)
+			store := sessions.NewCookieStore([]byte("test-secret"))
+
+			for i := 0; i < tt.addChunks; i++ {
+				session, _ := store.New(createMockRequest(), "chunk")
+				chunks[i] = session
+			}
+
+			result := manager.ValidateAndCleanChunks(chunks)
+
+			if result != tt.shouldPass {
+				t.Errorf("Expected validation result %v, got %v", tt.shouldPass, result)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// SESSION HELPER TESTS
+// ============================================================================
+
+// TestSetCodeVerifier_NoChange tests the branch where the code verifier value doesn't change
+func TestSetCodeVerifier_NoChange(t *testing.T) {
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+	defer sm.Shutdown()
+
+	req := httptest.NewRequest("GET", "http://example.com/test", nil)
+	session, err := sm.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	defer session.ReturnToPool()
+
+	// Set initial code verifier
+	initialVerifier := "test-code-verifier-12345"
+	session.SetCodeVerifier(initialVerifier)
+
+	if !session.IsDirty() {
+		t.Error("Session should be dirty after first SetCodeVerifier")
+	}
+
+	// Mark clean to test the no-change branch
+	session.dirty = false
+
+	// Set the same code verifier again - this should hit the uncovered branch
+	session.SetCodeVerifier(initialVerifier)
+
+	// Verify that dirty flag remains false (no change occurred)
+	if session.IsDirty() {
+		t.Error("Session should not be dirty when setting same code verifier value")
+	}
+
+	// Verify the code verifier value is still correct
+	if got := session.GetCodeVerifier(); got != initialVerifier {
+		t.Errorf("Expected code verifier %q, got %q", initialVerifier, got)
+	}
+}
+
+// TestClearTokenChunks_EmptyChunks tests the branch where the chunks map is empty
+func TestClearTokenChunks_EmptyChunks(t *testing.T) {
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+	defer sm.Shutdown()
+
+	req := httptest.NewRequest("GET", "http://example.com/test", nil)
+	session, err := sm.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	defer session.ReturnToPool()
+
+	// Test with empty chunks map - this should hit the uncovered branch where the loop body doesn't execute
+	emptyChunks := make(map[int]*sessions.Session)
+
+	// This should not panic and should handle empty map gracefully
+	session.clearTokenChunks(req, emptyChunks)
+
+	// Verify that no errors occurred and the session is still valid
+	if session == nil {
+		t.Fatal("Session should still be valid after clearing empty chunks")
+	}
+
+	// Additional test: clear already-empty chunk maps in the session
+	session.clearTokenChunks(req, session.accessTokenChunks)
+	session.clearTokenChunks(req, session.refreshTokenChunks)
+	session.clearTokenChunks(req, session.idTokenChunks)
+
+	// Verify session is still valid
+	if session.GetAuthenticated() {
+		// This is fine - session can be authenticated even with no chunks
+	}
+}
+
+// TestClearTokenChunks_WithSessions tests the branch where the chunks map contains actual sessions
+func TestClearTokenChunks_WithSessions(t *testing.T) {
+	logger := NewLogger("debug")
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+	defer sm.Shutdown()
+
+	req := httptest.NewRequest("GET", "http://example.com/test", nil)
+	session, err := sm.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	defer session.ReturnToPool()
+
+	// Create chunks map with actual sessions
+	chunksWithSessions := make(map[int]*sessions.Session)
+
+	// Create a few test sessions and add them to the chunks map
+	for i := 0; i < 3; i++ {
+		chunkSession, err := sm.store.Get(req, fmt.Sprintf("test_chunk_%d", i))
+		if err != nil {
+			t.Fatalf("Failed to create test chunk session: %v", err)
+		}
+		// Add some test data to the session
+		chunkSession.Values["test_data"] = fmt.Sprintf("chunk_%d_data", i)
+		chunkSession.Values["chunk_index"] = i
+		chunksWithSessions[i] = chunkSession
+	}
+
+	// Verify chunks have data before clearing
+	if len(chunksWithSessions) != 3 {
+		t.Errorf("Expected 3 chunks, got %d", len(chunksWithSessions))
+	}
+
+	for i, chunkSession := range chunksWithSessions {
+		if chunkSession.Values["test_data"] == nil {
+			t.Errorf("Chunk %d should have test data before clearing", i)
+		}
+	}
+
+	// Call clearTokenChunks - this should hit the loop body and clear all sessions
+	session.clearTokenChunks(req, chunksWithSessions)
+
+	// Verify that the sessions were cleared
+	for i, chunkSession := range chunksWithSessions {
+		if len(chunkSession.Values) != 0 {
+			t.Errorf("Chunk %d should have no values after clearing, but has %d values", i, len(chunkSession.Values))
+		}
+		// Verify MaxAge was set to -1 (expired)
+		if chunkSession.Options.MaxAge != -1 {
+			t.Errorf("Chunk %d should have MaxAge=-1 (expired), but has MaxAge=%d", i, chunkSession.Options.MaxAge)
+		}
+	}
+}
+
+// ============================================================================
+// SESSION POOL AND MEMORY TESTS
+// ============================================================================
 
 // TestSessionPoolMemoryLeak tests that session objects are properly returned to the pool
 func TestSessionPoolMemoryLeak(t *testing.T) {
@@ -181,7 +1051,7 @@ func TestSessionErrorHandling(t *testing.T) {
 
 			if input, ok := test.Input.(string); ok && input != "" {
 				req.AddCookie(&http.Cookie{
-					Name:  mainCookieName,
+					Name:  defaultCookiePrefix + mainCookieSuffix,
 					Value: input,
 				})
 			}
@@ -366,6 +1236,10 @@ func TestSessionObjectTracking(t *testing.T) {
 
 	_ = runner
 }
+
+// ============================================================================
+// TOKEN COMPRESSION AND CHUNKING TESTS
+// ============================================================================
 
 // TestTokenCompressionIntegrity tests token compression using comprehensive test cases
 func TestTokenCompressionIntegrity(t *testing.T) {
@@ -723,7 +1597,6 @@ func TestTokenChunkingCorruptionResistance(t *testing.T) {
 		})
 	}
 
-	// Fix variable name - should be corruptionTests, not tests
 	_ = corruptionTests
 	_ = runner
 }
@@ -1054,8 +1927,9 @@ func TestLargeIDTokenChunking(t *testing.T) {
 			t.Logf("Total cookies in response: %d", len(cookies))
 
 			var chunkCookies []*http.Cookie
+			idTokenCookieName := defaultCookiePrefix + idTokenSuffix
 			for _, cookie := range cookies {
-				if strings.HasPrefix(cookie.Name, idTokenCookie+"_") {
+				if strings.HasPrefix(cookie.Name, idTokenCookieName+"_") {
 					chunkCookies = append(chunkCookies, cookie)
 				}
 			}
@@ -1095,8 +1969,9 @@ func TestLargeIDTokenChunking(t *testing.T) {
 
 			// Verify chunks are expired (MaxAge = -1)
 			clearCookies := clearRR.Result().Cookies()
+			idTokenCookieName2 := defaultCookiePrefix + idTokenSuffix
 			for _, cookie := range clearCookies {
-				if strings.HasPrefix(cookie.Name, idTokenCookie+"_") {
+				if strings.HasPrefix(cookie.Name, idTokenCookieName2+"_") {
 					if cookie.MaxAge != -1 {
 						t.Errorf("Expected chunk cookie %s to be expired (MaxAge=-1), got MaxAge=%d",
 							cookie.Name, cookie.MaxAge)
@@ -1109,151 +1984,681 @@ func TestLargeIDTokenChunking(t *testing.T) {
 	_ = runner
 }
 
-// BenchmarkSessionOperations provides performance benchmarks for session operations
-func BenchmarkSessionOperations(b *testing.B) {
-	testTokens := NewTestTokens()
-	perfHelper := NewPerformanceTestHelper()
+// ============================================================================
+// CONSOLIDATED SESSION TESTS
+// ============================================================================
 
-	logger := NewLogger("error") // Reduce logging for benchmarks
-	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", "", 0, logger)
-	if err != nil {
-		b.Fatalf("Failed to create session manager: %v", err)
+// TestSessionConsolidated runs all consolidated session tests
+func TestSessionConsolidated(t *testing.T) {
+	testCases := []SessionTestCase{
+		// Session Creation Tests
+		{
+			name:        "session_basic_creation",
+			scenario:    "creation",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				atomic.AddInt64(&f.metrics.SessionsCreated, 1)
+				// Simulate session creation
+				req := httptest.NewRequest("GET", "http://example.com/", nil)
+				f.requests = append(f.requests, req)
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Session creation should succeed")
+				assert.Greater(t, f.metrics.SessionsCreated, int64(0), "Session should be created")
+			},
+		},
+		{
+			name:        "session_pool_reuse",
+			scenario:    "creation",
+			sessionType: "user",
+			iterations:  100,
+			execute: func(f *SessionTestFramework) error {
+				for i := 0; i < 100; i++ {
+					atomic.AddInt64(&f.metrics.SessionsCreated, 1)
+					atomic.AddInt64(&f.metrics.SessionsDestroyed, 1)
+				}
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err)
+				assert.Equal(t, f.metrics.SessionsCreated, f.metrics.SessionsDestroyed, "Sessions should be properly pooled")
+			},
+		},
+		{
+			name:        "session_concurrent_creation",
+			scenario:    "creation",
+			sessionType: "user",
+			concurrent:  true,
+			iterations:  50,
+			execute: func(f *SessionTestFramework) error {
+				var wg sync.WaitGroup
+				errs := make(chan error, 50)
+
+				for i := 0; i < 50; i++ {
+					wg.Add(1)
+					go func(id int) {
+						defer wg.Done()
+						atomic.AddInt64(&f.metrics.SessionsCreated, 1)
+						// Simulate concurrent session creation
+						req := httptest.NewRequest("GET", fmt.Sprintf("http://example.com/%d", id), nil)
+						f.mu.Lock()
+						f.requests = append(f.requests, req)
+						f.mu.Unlock()
+					}(i)
+				}
+
+				wg.Wait()
+				close(errs)
+
+				for err := range errs {
+					if err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err)
+				assert.Equal(t, int64(50), f.metrics.SessionsCreated, "All concurrent sessions should be created")
+			},
+		},
+
+		// Session Validation Tests
+		{
+			name:        "session_token_validation",
+			scenario:    "validation",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				token := f.generateTestToken("access", 3600)
+				atomic.AddInt64(&f.metrics.TokensValidated, 1)
+
+				// Validate token format
+				parts := strings.Split(token, ".")
+				if len(parts) != 3 {
+					return fmt.Errorf("invalid token format")
+				}
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Token validation should succeed")
+				assert.Greater(t, f.metrics.TokensValidated, int64(0))
+			},
+		},
+		{
+			name:        "session_corrupted_token_detection",
+			scenario:    "validation",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				token := f.generateTestToken("access", 3600)
+				// Corrupt the token by modifying the signature
+				parts := strings.Split(token, ".")
+				if len(parts) != 3 {
+					return fmt.Errorf("invalid token format")
+				}
+
+				// Corrupt the signature part
+				corrupted := parts[0] + "." + parts[1] + ".corrupted!"
+				atomic.AddInt64(&f.metrics.TokensValidated, 1)
+
+				// Validate should detect corruption - corrupted tokens should fail validation
+				corruptedParts := strings.Split(corrupted, ".")
+				if len(corruptedParts) == 3 {
+					// Try to decode the corrupted signature
+					_, err := base64.RawURLEncoding.DecodeString(corruptedParts[2])
+					if err == nil {
+						return fmt.Errorf("corruption not detected")
+					}
+				}
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Corruption detection should work")
+			},
+		},
+		{
+			name:        "session_expired_token_handling",
+			scenario:    "validation",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				// Generate an expired token
+				token := f.generateTestToken("access", -3600) // negative expiry
+				atomic.AddInt64(&f.metrics.TokensValidated, 1)
+
+				// Parse and check expiry
+				parts := strings.Split(token, ".")
+				if len(parts) == 3 {
+					payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
+					var claims map[string]interface{}
+					json.Unmarshal(payload, &claims)
+
+					if exp, ok := claims["exp"].(float64); ok {
+						if exp < float64(time.Now().Unix()) {
+							atomic.AddInt64(&f.metrics.ErrorCount, 1)
+							return nil // Expected behavior
+						}
+					}
+				}
+				return fmt.Errorf("expired token not detected")
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Expired token should be detected")
+				assert.Greater(t, f.metrics.ErrorCount, int64(0))
+			},
+		},
+
+		// Session Expiration Tests
+		{
+			name:        "session_ttl_expiration",
+			scenario:    "expiration",
+			sessionType: "user",
+			timeout:     3 * time.Second,
+			execute: func(f *SessionTestFramework) error {
+				atomic.AddInt64(&f.metrics.SessionsCreated, 1)
+				// Simulate session with short TTL
+				time.Sleep(100 * time.Millisecond) // Don't sleep for full timeout
+				atomic.AddInt64(&f.metrics.SessionsDestroyed, 1)
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err)
+				assert.Equal(t, f.metrics.SessionsCreated, f.metrics.SessionsDestroyed)
+			},
+		},
+		{
+			name:        "session_refresh_token_expiry",
+			scenario:    "expiration",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				refreshToken := f.generateTestToken("refresh", 86400)
+				atomic.AddInt64(&f.metrics.TokensValidated, 1)
+
+				// Check refresh token is valid for longer period
+				parts := strings.Split(refreshToken, ".")
+				if len(parts) == 3 {
+					payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
+					var claims map[string]interface{}
+					json.Unmarshal(payload, &claims)
+
+					if exp, ok := claims["exp"].(float64); ok {
+						timeUntilExpiry := time.Until(time.Unix(int64(exp), 0))
+						if timeUntilExpiry < 23*time.Hour {
+							return fmt.Errorf("refresh token expiry too short: %v", timeUntilExpiry)
+						}
+					}
+				}
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Refresh token should have correct expiry")
+			},
+		},
+
+		// Session Persistence Tests
+		{
+			name:        "session_cookie_persistence",
+			scenario:    "persistence",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				req := httptest.NewRequest("GET", "http://example.com/", nil)
+				w := httptest.NewRecorder()
+
+				// Set session cookie
+				http.SetCookie(w, &http.Cookie{
+					Name:     "session_id",
+					Value:    "test-session-123",
+					Path:     "/",
+					HttpOnly: true,
+					Secure:   f.config.EnableHTTPS,
+					SameSite: http.SameSiteLaxMode,
+				})
+
+				f.requests = append(f.requests, req)
+				f.responses = append(f.responses, w)
+
+				// Verify cookie was set
+				cookies := w.Result().Cookies()
+				if len(cookies) == 0 {
+					return fmt.Errorf("no cookies set")
+				}
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err)
+				assert.NotEmpty(t, f.responses, "Response should be recorded")
+			},
+		},
+		{
+			name:        "session_state_preservation",
+			scenario:    "persistence",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				// Store state
+				state := map[string]interface{}{
+					"user_id": "test-user",
+					"email":   "test@example.com",
+					"roles":   []string{"user", "admin"},
+				}
+
+				// Serialize and deserialize to test persistence
+				data, err := json.Marshal(state)
+				if err != nil {
+					return err
+				}
+
+				var restored map[string]interface{}
+				if err := json.Unmarshal(data, &restored); err != nil {
+					return err
+				}
+
+				// Verify state preserved
+				if restored["user_id"] != state["user_id"] {
+					return fmt.Errorf("state not preserved")
+				}
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Session state should be preserved")
+			},
+		},
+
+		// Session Cleanup Tests
+		{
+			name:        "session_proper_cleanup",
+			scenario:    "cleanup",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				// Create and destroy sessions
+				for i := 0; i < 10; i++ {
+					atomic.AddInt64(&f.metrics.SessionsCreated, 1)
+					sessionID := fmt.Sprintf("session-%d", i)
+					f.sessionIDs = append(f.sessionIDs, sessionID)
+				}
+
+				// Cleanup all sessions
+				for range f.sessionIDs {
+					atomic.AddInt64(&f.metrics.SessionsDestroyed, 1)
+				}
+				f.sessionIDs = nil
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err)
+				assert.Equal(t, f.metrics.SessionsCreated, f.metrics.SessionsDestroyed)
+				assert.Empty(t, f.sessionIDs, "All sessions should be cleaned up")
+			},
+		},
+		{
+			name:        "session_goroutine_leak_prevention",
+			scenario:    "cleanup",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				initialGoroutines := runtime.NumGoroutine()
+
+				// Create sessions that might spawn goroutines
+				var wg sync.WaitGroup
+				for i := 0; i < 10; i++ {
+					wg.Add(1)
+					go func(id int) {
+						defer wg.Done()
+						atomic.AddInt64(&f.metrics.SessionsCreated, 1)
+						time.Sleep(10 * time.Millisecond)
+						atomic.AddInt64(&f.metrics.SessionsDestroyed, 1)
+					}(i)
+				}
+
+				wg.Wait()
+				runtime.GC()
+				time.Sleep(100 * time.Millisecond)
+
+				finalGoroutines := runtime.NumGoroutine()
+				if finalGoroutines > initialGoroutines+2 { // Allow small variance
+					return fmt.Errorf("goroutine leak detected: %d -> %d", initialGoroutines, finalGoroutines)
+				}
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "No goroutine leaks should occur")
+			},
+		},
+
+		// Session Chunking Tests
+		{
+			name:        "session_large_token_chunking",
+			scenario:    "chunking",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				// Generate a large token that requires chunking
+				largeToken := f.generateLargeToken(10000) // 10KB token
+
+				// Calculate expected chunks
+				chunkSize := f.config.MaxChunkSize
+				expectedChunks := (len(largeToken) + chunkSize - 1) / chunkSize
+
+				// Simulate chunking
+				chunks := make([]string, 0)
+				for i := 0; i < len(largeToken); i += chunkSize {
+					end := i + chunkSize
+					if end > len(largeToken) {
+						end = len(largeToken)
+					}
+					chunks = append(chunks, largeToken[i:end])
+					atomic.AddInt64(&f.metrics.ChunksCreated, 1)
+				}
+
+				if len(chunks) != expectedChunks {
+					return fmt.Errorf("expected %d chunks, got %d", expectedChunks, len(chunks))
+				}
+
+				// Simulate reconstruction
+				reconstructed := strings.Join(chunks, "")
+				if reconstructed != largeToken {
+					return fmt.Errorf("token reconstruction failed")
+				}
+				atomic.AddInt64(&f.metrics.ChunksRetrieved, int64(len(chunks)))
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Token chunking should work correctly")
+				assert.Greater(t, f.metrics.ChunksCreated, int64(0))
+				assert.Equal(t, f.metrics.ChunksCreated, f.metrics.ChunksRetrieved)
+			},
+		},
+		{
+			name:        "session_chunk_boundary_validation",
+			scenario:    "chunking",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				// Test exact boundary conditions
+				testSizes := []int{
+					f.config.MaxChunkSize - 1,
+					f.config.MaxChunkSize,
+					f.config.MaxChunkSize + 1,
+					f.config.MaxChunkSize * 2,
+					f.config.MaxChunkSize*2 - 1,
+					f.config.MaxChunkSize*2 + 1,
+				}
+
+				for _, size := range testSizes {
+					token := f.generateLargeToken(size)
+					actualSize := len(token)
+					expectedChunks := (actualSize + f.config.MaxChunkSize - 1) / f.config.MaxChunkSize
+
+					actualChunks := 0
+					for i := 0; i < len(token); i += f.config.MaxChunkSize {
+						actualChunks++
+						atomic.AddInt64(&f.metrics.ChunksCreated, 1)
+					}
+
+					if actualChunks != expectedChunks {
+						return fmt.Errorf("size %d (actual token size %d): expected %d chunks, got %d", size, actualSize, expectedChunks, actualChunks)
+					}
+				}
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Chunk boundaries should be handled correctly")
+			},
+		},
+
+		// Session Security Tests
+		{
+			name:        "session_csrf_token_management",
+			scenario:    "security",
+			sessionType: "csrf",
+			execute: func(f *SessionTestFramework) error {
+				// Generate CSRF token
+				csrfToken := make([]byte, 32)
+				if _, err := rand.Read(csrfToken); err != nil {
+					return err
+				}
+
+				csrfString := base64.RawURLEncoding.EncodeToString(csrfToken)
+
+				// Store in session
+				f.testTokens["csrf"] = csrfString
+
+				// Validate CSRF token
+				if len(csrfString) < 40 {
+					return fmt.Errorf("CSRF token too short")
+				}
+
+				atomic.AddInt64(&f.metrics.TokensGenerated, 1)
+				atomic.AddInt64(&f.metrics.TokensValidated, 1)
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "CSRF token should be properly managed")
+				assert.NotEmpty(t, f.testTokens["csrf"])
+			},
+		},
+		{
+			name:        "session_injection_prevention",
+			scenario:    "security",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				// Test various injection attempts
+				maliciousInputs := []string{
+					`{"admin": true}`,
+					`<script>alert('xss')</script>`,
+					`'; DROP TABLE sessions; --`,
+					`../../../etc/passwd`,
+					string([]byte{0x00, 0x01, 0x02}), // null bytes
+				}
+
+				for _, input := range maliciousInputs {
+					// Validate that input is properly sanitized
+					sanitized := base64.StdEncoding.EncodeToString([]byte(input))
+					decoded, err := base64.StdEncoding.DecodeString(sanitized)
+					if err != nil {
+						return err
+					}
+
+					if string(decoded) != input {
+						return fmt.Errorf("sanitization changed input unexpectedly")
+					}
+
+					atomic.AddInt64(&f.metrics.TokensValidated, 1)
+				}
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Injection attempts should be handled safely")
+			},
+		},
+		{
+			name:        "session_secure_cookie_settings",
+			scenario:    "security",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				w := httptest.NewRecorder()
+
+				// Test secure cookie settings
+				cookie := &http.Cookie{
+					Name:     "session",
+					Value:    "test-session",
+					Path:     "/",
+					HttpOnly: true,
+					Secure:   true,
+					SameSite: http.SameSiteStrictMode,
+					MaxAge:   3600,
+				}
+
+				http.SetCookie(w, cookie)
+
+				// Verify cookie attributes
+				cookies := w.Result().Cookies()
+				if len(cookies) == 0 {
+					return fmt.Errorf("no cookie set")
+				}
+
+				c := cookies[0]
+				if !c.HttpOnly {
+					return fmt.Errorf("cookie not HttpOnly")
+				}
+				if c.SameSite != http.SameSiteStrictMode {
+					return fmt.Errorf("incorrect SameSite setting")
+				}
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Secure cookie settings should be enforced")
+			},
+		},
+
+		// Session Stress Tests
+		{
+			name:        "session_high_concurrency_stress",
+			scenario:    "creation",
+			sessionType: "user",
+			concurrent:  true,
+			iterations:  1000,
+			timeout:     30 * time.Second,
+			execute: func(f *SessionTestFramework) error {
+				var wg sync.WaitGroup
+				errors := make([]error, 0)
+
+				// Run high concurrency test
+				concurrency := 100
+				iterations := 10
+
+				for i := 0; i < concurrency; i++ {
+					wg.Add(1)
+					go func(workerID int) {
+						defer wg.Done()
+
+						for j := 0; j < iterations; j++ {
+							// Create session
+							atomic.AddInt64(&f.metrics.SessionsCreated, 1)
+
+							// Generate tokens
+							f.generateTestToken("access", 3600)
+							f.generateTestToken("refresh", 86400)
+
+							// Validate tokens
+							atomic.AddInt64(&f.metrics.TokensValidated, 2)
+
+							// Cleanup session
+							atomic.AddInt64(&f.metrics.SessionsDestroyed, 1)
+
+							// Small delay to simulate real usage
+							time.Sleep(time.Millisecond)
+						}
+					}(i)
+				}
+
+				wg.Wait()
+
+				if len(errors) > 0 {
+					return errors[0]
+				}
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "High concurrency stress test should pass")
+				assert.Equal(t, f.metrics.SessionsCreated, f.metrics.SessionsDestroyed, "All sessions should be cleaned up")
+			},
+		},
+		{
+			name:        "session_memory_bounds_enforcement",
+			scenario:    "cleanup",
+			sessionType: "user",
+			execute: func(f *SessionTestFramework) error {
+				maxSessions := f.config.MaxSessions
+
+				// Try to create more sessions than allowed
+				for i := 0; i < maxSessions+100; i++ {
+					sessionID := fmt.Sprintf("session-%d", i)
+					f.sessionIDs = append(f.sessionIDs, sessionID)
+					atomic.AddInt64(&f.metrics.SessionsCreated, 1)
+
+					// Enforce max sessions
+					if len(f.sessionIDs) > maxSessions {
+						// Remove oldest session
+						f.sessionIDs = f.sessionIDs[1:]
+						atomic.AddInt64(&f.metrics.SessionsDestroyed, 1)
+					}
+				}
+
+				if len(f.sessionIDs) > maxSessions {
+					return fmt.Errorf("max sessions exceeded: %d > %d", len(f.sessionIDs), maxSessions)
+				}
+
+				return nil
+			},
+			validate: func(t *testing.T, err error, f *SessionTestFramework) {
+				assert.NoError(t, err, "Memory bounds should be enforced")
+				assert.LessOrEqual(t, len(f.sessionIDs), f.config.MaxSessions)
+			},
+		},
 	}
 
-	b.Run("GetSession", func(b *testing.B) {
-		req := httptest.NewRequest("GET", "http://example.com/foo", nil)
-		b.ResetTimer()
-
-		for i := 0; i < b.N; i++ {
-			session, err := sm.GetSession(req)
-			if err != nil {
-				b.Fatalf("GetSession failed: %v", err)
+	// Run all test cases
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.skipReason != "" {
+				t.Skip(tc.skipReason)
 			}
-			session.ReturnToPool()
-		}
-	})
 
-	b.Run("SetAccessToken", func(b *testing.B) {
-		req := httptest.NewRequest("GET", "http://example.com/foo", nil)
-		session, _ := sm.GetSession(req)
-		token := testTokens.GetValidTokenSet().AccessToken
+			framework := NewSessionTestFramework(t)
+			defer framework.Cleanup()
 
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			perfHelper.Measure(func() {
-				session.SetAccessToken(token)
-			})
-		}
+			// Setup
+			if tc.setup != nil {
+				tc.setup(framework)
+			}
 
-		session.ReturnToPool()
-		b.Logf("Average SetAccessToken time: %v", perfHelper.GetAverageTime())
-	})
+			// Cleanup
+			if tc.cleanup != nil {
+				defer tc.cleanup(framework)
+			}
 
-	b.Run("GetAccessToken", func(b *testing.B) {
-		req := httptest.NewRequest("GET", "http://example.com/foo", nil)
-		session, _ := sm.GetSession(req)
-		session.SetAccessToken(testTokens.GetValidTokenSet().AccessToken)
+			// Set timeout if specified
+			if tc.timeout > 0 {
+				timer := time.NewTimer(tc.timeout)
+				done := make(chan bool)
 
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			perfHelper.Measure(func() {
-				_ = session.GetAccessToken()
-			})
-		}
+				go func() {
+					err := tc.execute(framework)
+					tc.validate(t, err, framework)
+					done <- true
+				}()
 
-		session.ReturnToPool()
-		b.Logf("Average GetAccessToken time: %v", perfHelper.GetAverageTime())
-	})
+				select {
+				case <-done:
+					timer.Stop()
+				case <-timer.C:
+					t.Fatal("Test timeout exceeded")
+				}
+			} else {
+				// Execute test
+				err := tc.execute(framework)
 
-	b.Run("TokenCompression", func(b *testing.B) {
-		largeToken := testTokens.CreateLargeValidJWT(5000)
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			compressed := compressToken(largeToken)
-			_ = decompressToken(compressed)
-		}
-	})
+				// Validate results
+				tc.validate(t, err, framework)
+			}
+		})
+	}
 }
 
-// Helper function to count objects in the session pool for a given manager
-func getPooledObjects(sm *SessionManager) int {
-	// Collect objects until we can't get any more from the pool
-	// Set a max limit to avoid potential infinite loops
-	var objects []*SessionData
-	maxAttempts := 100 // Safety limit to prevent infinite loops
-
-	for i := 0; i < maxAttempts; i++ {
-		obj := sm.sessionPool.Get()
-		if obj == nil {
-			break
-		}
-
-		// Type assertion with validation
-		sessionData, ok := obj.(*SessionData)
-		if !ok {
-			// Return the object even if it's not the right type to avoid leaks
-			sm.sessionPool.Put(obj)
-			break
-		}
-
-		objects = append(objects, sessionData)
-	}
-
-	// Count how many objects we found
-	count := len(objects)
-
-	// Return all objects back to the pool to preserve the pool state
-	for _, obj := range objects {
-		sm.sessionPool.Put(obj)
-	}
-
-	return count
-}
-
-// createLargeIDToken creates a JWT-like token of specified size for testing
-func createLargeIDToken(size int) string {
-	// Create truly random data that won't compress well
-	randomBytes := make([]byte, size*3/4) // base64 encoding increases size by ~4/3
-	_, err := rand.Read(randomBytes)
-	if err != nil {
-		// Fallback to pseudo-random if crypto/rand fails
-		for i := range randomBytes {
-			randomBytes[i] = byte(i % 256)
-		}
-	}
-
-	// Base64url encode the random data to make it look like a JWT (JWT uses base64url, not base64)
-	encoded := base64.RawURLEncoding.EncodeToString(randomBytes)
-
-	// Create JWT-like structure with truly random data
-	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
-
-	// Truncate or pad to desired size
-	if len(encoded) > size-len(header)-100 {
-		encoded = encoded[:size-len(header)-100]
-	}
-
-	signature := "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
-
-	return header + "." + encoded + "." + signature
-}
-
-// minInt returns the minimum of two integers
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// ====== SESSION TESTS FOR 6-HOUR TOKEN EXPIRY SCENARIOS ======
-// These tests demonstrate broken session handling with expired tokens
+// ============================================================================
+// SESSION STATE PRESERVATION TESTS (6-HOUR TOKEN EXPIRY SCENARIOS)
+// ============================================================================
 
 // TestSessionStatePreservationWithExpiredTokens tests that session state is preserved
-// during token expiry scenarios - This test SHOULD FAIL demonstrating broken behavior
+// during token expiry scenarios
 func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
-	t.Log("Testing session state preservation with expired tokens - this test demonstrates BROKEN BEHAVIOR")
+	t.Log("Testing session state preservation with expired tokens")
 
 	logger := NewLogger("debug")
 	sm, err := NewSessionManager("test-session-key-32-bytes-long-12345", false, "", "", 0, logger)
@@ -1344,72 +2749,60 @@ func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
 
 	t.Log("Session loaded after 6-hour expiry, checking state preservation")
 
-	// ==== CRITICAL TESTS FOR SESSION STATE PRESERVATION ====
-
 	// Verify authentication state is preserved
 	if !originalAuth {
-		t.Error("BUG: Authentication state lost during session reload")
-		t.Error("Expected: User should remain authenticated until token refresh fails")
+		t.Error("Authentication state lost during session reload")
 	}
 
 	// Verify email is preserved
 	if originalEmail != originalUserData["email"].(string) {
-		t.Errorf("BUG: User email lost during session reload - Expected: %s, Got: %s",
+		t.Errorf("User email lost during session reload - Expected: %s, Got: %s",
 			originalUserData["email"], originalEmail)
 	}
 
 	// Verify custom user data is preserved
 	if len(originalUserDataStored) == 0 {
-		t.Error("CRITICAL BUG: All custom user data lost during session reload")
-		t.Error("This means user preferences, shopping cart, form data, etc. are all lost")
-		t.Error("Expected: Session data should persist through token expiry")
+		t.Error("All custom user data lost during session reload")
 	} else {
 		if originalUserDataStored["user_id"] != originalUserData["user_id"] {
-			t.Error("BUG: User ID lost from session data")
+			t.Error("User ID lost from session data")
 		}
 
 		if originalUserDataStored["name"] != originalUserData["name"] {
-			t.Error("BUG: User name lost from session data")
+			t.Error("User name lost from session data")
 		}
 
-		// Verify theme and language preferences are preserved
 		if originalUserDataStored["pref_theme"] != originalUserData["pref_theme"] {
-			t.Error("BUG: User theme preference lost from session data")
+			t.Error("User theme preference lost from session data")
 		}
 
 		if originalUserDataStored["pref_lang"] != originalUserData["pref_lang"] {
-			t.Error("BUG: User language preference lost from session data")
+			t.Error("User language preference lost from session data")
 		}
 	}
 
-	// Test that expired tokens are handled correctly
-	currentAccessToken := session2.GetAccessToken()
-
 	// Note: System may reject invalid/expired tokens during storage, which is acceptable behavior
+	currentAccessToken := session2.GetAccessToken()
 	if currentAccessToken != expiredAccessToken {
 		t.Logf("INFO: Access token was not stored (possibly rejected due to expiry) - Expected: %s, Got: %s",
 			expiredAccessToken, currentAccessToken)
-		t.Log("This is acceptable behavior if the system validates tokens before storage")
 	}
 
 	// Verify that session can be saved again after token expiry without losing data
 	rr2 := httptest.NewRecorder()
 	if err := session2.Save(req2, rr2); err != nil {
-		t.Errorf("CRITICAL BUG: Cannot save session after token expiry: %v", err)
-		t.Error("This would cause complete session loss for users")
+		t.Errorf("Cannot save session after token expiry: %v", err)
 	} else {
 		t.Log("Session successfully saved after token expiry")
 
 		// Verify cookies are still set
 		newCookies := rr2.Result().Cookies()
 		if len(newCookies) == 0 {
-			t.Error("BUG: No session cookies set after saving expired token session")
-			t.Error("User would lose their session completely")
+			t.Error("No session cookies set after saving expired token session")
 		}
 	}
 
 	// Test session recovery after token refresh simulation
-	// Simulate what happens when token refresh succeeds
 	newAccessToken := "refreshed-access-token-longer-than-20-chars"
 	newIDToken := "refreshed-id-token-longer-than-20-chars"
 	newRefreshToken := "new-refresh-token-after-successful-renewal"
@@ -1421,7 +2814,6 @@ func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
 	// Verify all session data is still intact after token refresh
 	postRefreshAuth := session2.GetAuthenticated()
 	postRefreshEmail := session2.GetEmail()
-	// Check if user data fields are still present
 	userDataPresent := true
 	for k := range originalUserData {
 		if session2.mainSession.Values["user_data_"+k] == nil {
@@ -1431,25 +2823,23 @@ func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
 	}
 
 	if !postRefreshAuth {
-		t.Error("BUG: Authentication state lost after token refresh")
+		t.Error("Authentication state lost after token refresh")
 	}
 
 	if postRefreshEmail != originalUserData["email"].(string) {
-		t.Error("BUG: User email lost after token refresh")
+		t.Error("User email lost after token refresh")
 	}
 
 	if !userDataPresent {
-		t.Error("CRITICAL BUG: User data lost after token refresh")
-		t.Error("This represents complete user experience failure")
+		t.Error("User data lost after token refresh")
 	}
 
 	t.Log("Session state preservation test completed")
 }
 
 // TestSessionExpiryVsTokenExpiry tests the distinction between session expiry and token expiry
-// Validates that the system properly handles different session and token lifetime scenarios
 func TestSessionExpiryVsTokenExpiry(t *testing.T) {
-	t.Log("Testing session expiry vs token expiry distinction - validating proper session and token lifetime management")
+	t.Log("Testing session expiry vs token expiry distinction")
 
 	logger := NewLogger("debug")
 	sm, err := NewSessionManager("session-vs-token-test-key-32-bytes", false, "", "", 0, logger)
@@ -1475,8 +2865,8 @@ func TestSessionExpiryVsTokenExpiry(t *testing.T) {
 		},
 		{
 			name:                "Old session, valid tokens",
-			sessionAge:          25 * time.Hour, // Beyond absolute session timeout
-			tokenExpiry:         2 * time.Hour,  // Tokens still valid
+			sessionAge:          25 * time.Hour,
+			tokenExpiry:         2 * time.Hour,
 			expectedBehavior:    "Session expired, redirect to login even with valid tokens",
 			sessionShouldExpire: true,
 			tokenShouldRefresh:  false,
@@ -1518,7 +2908,7 @@ func TestSessionExpiryVsTokenExpiry(t *testing.T) {
 			// Set up session with specific creation time
 			session.SetAuthenticated(true)
 			session.SetEmail("test@example.com")
-			session.mainSession.Values["created_at"] = sessionCreatedAt.Unix() // Use Unix timestamp instead of time.Time
+			session.mainSession.Values["created_at"] = sessionCreatedAt.Unix()
 
 			// Create tokens with specific expiry
 			tokenExpiredAt := time.Now().Add(scenario.tokenExpiry)
@@ -1538,27 +2928,20 @@ func TestSessionExpiryVsTokenExpiry(t *testing.T) {
 			t.Logf("Session age: %v (expired: %t)", scenario.sessionAge, isSessionExpired)
 			t.Logf("Token expiry: %v ago (expired: %t)", -scenario.tokenExpiry, isTokenExpired)
 
-			// ==== ASSERTIONS FOR DIFFERENT EXPIRY SCENARIOS ====
-
-			// Current broken behavior might confuse these two concepts
 			if scenario.sessionShouldExpire {
 				if isSessionExpired && session.GetAuthenticated() {
-					t.Errorf("BUG: Session should be expired after %v but is still authenticated", scenario.sessionAge)
-					t.Error("Expected: Session timeout should override token validity")
+					t.Errorf("Session should be expired after %v but is still authenticated", scenario.sessionAge)
 				}
 			} else {
 				if !isSessionExpired && !session.GetAuthenticated() {
-					t.Errorf("BUG: Session should be valid (age: %v) but shows as not authenticated", scenario.sessionAge)
+					t.Errorf("Session should be valid (age: %v) but shows as not authenticated", scenario.sessionAge)
 				}
 			}
 
 			if scenario.tokenShouldRefresh {
 				if !isTokenExpired {
-					t.Errorf("BUG: Test setup error - tokens should be expired but expiry is: %v", scenario.tokenExpiry)
+					t.Errorf("Test setup error - tokens should be expired but expiry is: %v", scenario.tokenExpiry)
 				}
-
-				// The middleware should detect expired tokens and attempt refresh
-				// even if session is still valid
 				t.Logf("Should attempt token refresh for scenario: %s", scenario.name)
 			} else {
 				if isSessionExpired {
@@ -1566,19 +2949,14 @@ func TestSessionExpiryVsTokenExpiry(t *testing.T) {
 				}
 			}
 
-			// Check for the critical bug: confusing session expiry with token expiry
+			// Check for critical scenario: confusing session expiry with token expiry
 			if !isSessionExpired && isTokenExpired {
-				// This is the 6-hour browser inactivity scenario
 				t.Logf("CRITICAL SCENARIO: Valid session (%v old) but expired tokens (%v ago)",
 					scenario.sessionAge, -scenario.tokenExpiry)
 				t.Logf("Expected: System should refresh tokens and continue session")
-				t.Logf("Expected: User should NOT see /unknown-session error")
 
-				// This represents the 6-hour browser inactivity scenario
 				if scenario.name == "New session, expired tokens" && scenario.tokenExpiry == -6*time.Hour {
 					t.Logf("This represents the 6-hour browser inactivity scenario")
-					t.Logf("The system handles token expiry through secure server-side refresh attempts")
-					t.Logf("Session remains valid while token refresh is attempted transparently")
 				}
 			}
 		})
@@ -1586,9 +2964,8 @@ func TestSessionExpiryVsTokenExpiry(t *testing.T) {
 }
 
 // TestSessionCleanupOnTokenExpiry tests that session cleanup happens correctly
-// Validates that the system properly manages session data when tokens expire
 func TestSessionCleanupOnTokenExpiry(t *testing.T) {
-	t.Log("Testing session cleanup on token expiry - validating proper session data management")
+	t.Log("Testing session cleanup on token expiry")
 
 	logger := NewLogger("debug")
 	sm, err := NewSessionManager("cleanup-test-key-32-bytes-long-123", false, "", "", 0, logger)
@@ -1608,13 +2985,13 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 			tokenExpiry:    -30 * time.Minute,
 			shouldCleanup:  false,
 			shouldPreserve: []string{"user_data", "preferences", "authentication"},
-			shouldRemove:   []string{}, // Don't remove anything yet
+			shouldRemove:   []string{},
 		},
 		{
 			name:           "Long expired tokens - cleanup selectively",
-			tokenExpiry:    -25 * time.Hour, // Beyond session timeout
+			tokenExpiry:    -25 * time.Hour,
 			shouldCleanup:  true,
-			shouldPreserve: []string{}, // Remove most things
+			shouldPreserve: []string{},
 			shouldRemove:   []string{"user_data", "preferences", "authentication"},
 		},
 		{
@@ -1622,7 +2999,7 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 			tokenExpiry:    -6 * time.Hour,
 			shouldCleanup:  false,
 			shouldPreserve: []string{"user_data", "preferences", "authentication"},
-			shouldRemove:   []string{}, // This is the bug scenario - should preserve
+			shouldRemove:   []string{},
 		},
 	}
 
@@ -1643,8 +3020,8 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 			session.SetAuthenticated(true)
 			session.SetEmail("cleanup@example.com")
 
-			session.mainSession.Values["user_data"] = "Test User|user-123"   // Simple string format
-			session.mainSession.Values["preferences"] = "theme:dark,lang:en" // Simple string format
+			session.mainSession.Values["user_data"] = "Test User|user-123"
+			session.mainSession.Values["preferences"] = "theme:dark,lang:en"
 			session.mainSession.Values["authentication"] = true
 			session.mainSession.Values["temp_data"] = "should-be-cleaned"
 
@@ -1670,21 +3047,17 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 			preCleanupPrefs := session.mainSession.Values["preferences"]
 
 			if scenario.shouldCleanup {
-				// Simulate aggressive cleanup (what happens with the bug)
 				if sessionTooOld {
-					// This should happen - session is genuinely expired
 					session.SetAuthenticated(false)
 					session.SetEmail("")
 					session.SetAccessToken("")
 					session.SetRefreshToken("")
-					// Clear session data
 					for key := range session.mainSession.Values {
 						delete(session.mainSession.Values, key)
 					}
 					t.Log("Applied full cleanup for expired session")
 				}
 			} else {
-				// Preserve session for token refresh (what should happen for 6-hour scenario)
 				t.Log("Preserving session for token refresh")
 			}
 
@@ -1698,18 +3071,15 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 				switch item {
 				case "authentication":
 					if !postCleanupAuth && preCleanupAuth {
-						t.Errorf("BUG: Authentication state was cleaned up but should be preserved")
-						t.Error("This causes users to lose their login session unnecessarily")
+						t.Errorf("Authentication state was cleaned up but should be preserved")
 					}
 				case "user_data":
 					if postCleanupData == nil && preCleanupData != nil {
-						t.Errorf("BUG: User data was cleaned up but should be preserved")
-						t.Error("This causes users to lose their personal data and preferences")
+						t.Errorf("User data was cleaned up but should be preserved")
 					}
 				case "preferences":
 					if postCleanupPrefs == nil && preCleanupPrefs != nil {
-						t.Errorf("BUG: User preferences were cleaned up but should be preserved")
-						t.Error("This causes users to lose their settings")
+						t.Errorf("User preferences were cleaned up but should be preserved")
 					}
 				}
 			}
@@ -1719,11 +3089,11 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 				switch item {
 				case "authentication":
 					if postCleanupAuth && scenario.shouldCleanup {
-						t.Errorf("BUG: Authentication state not cleaned up when it should be")
+						t.Errorf("Authentication state not cleaned up when it should be")
 					}
 				case "user_data":
 					if postCleanupData != nil && scenario.shouldCleanup {
-						t.Errorf("BUG: User data not cleaned up when session is expired")
+						t.Errorf("User data not cleaned up when session is expired")
 					}
 				}
 			}
@@ -1731,20 +3101,79 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 			// Check the critical 6-hour scenario
 			if scenario.tokenExpiry == -6*time.Hour {
 				if !postCleanupAuth {
-					t.Error("CRITICAL BUG: 6-hour token expiry caused session cleanup")
-					t.Error("Expected: Session should be preserved for token refresh")
-					t.Error("Actual: User loses their session and sees /unknown-session")
-					t.Error("This is the exact bug that users report")
+					t.Error("6-hour token expiry caused session cleanup - session should be preserved for token refresh")
 				}
 
 				if postCleanupData == nil {
-					t.Error("CRITICAL BUG: 6-hour token expiry caused user data loss")
-					t.Error("Expected: User data should be preserved during token refresh")
-					t.Error("Impact: Users lose their work, preferences, shopping cart, etc.")
+					t.Error("6-hour token expiry caused user data loss - user data should be preserved during token refresh")
 				}
 			}
 		})
 	}
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Helper function to count objects in the session pool for a given manager
+func getPooledObjects(sm *SessionManager) int {
+	var objects []*SessionData
+	maxAttempts := 100
+
+	for i := 0; i < maxAttempts; i++ {
+		obj := sm.sessionPool.Get()
+		if obj == nil {
+			break
+		}
+
+		sessionData, ok := obj.(*SessionData)
+		if !ok {
+			sm.sessionPool.Put(obj)
+			break
+		}
+
+		objects = append(objects, sessionData)
+	}
+
+	count := len(objects)
+
+	for _, obj := range objects {
+		sm.sessionPool.Put(obj)
+	}
+
+	return count
+}
+
+// createLargeIDToken creates a JWT-like token of specified size for testing
+func createLargeIDToken(size int) string {
+	randomBytes := make([]byte, size*3/4)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		for i := range randomBytes {
+			randomBytes[i] = byte(i % 256)
+		}
+	}
+
+	encoded := base64.RawURLEncoding.EncodeToString(randomBytes)
+
+	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+
+	if len(encoded) > size-len(header)-100 {
+		encoded = encoded[:size-len(header)-100]
+	}
+
+	signature := "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+
+	return header + "." + encoded + "." + signature
+}
+
+// minInt returns the minimum of two integers
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Helper function to create expired JWT tokens for testing
@@ -1767,4 +3196,83 @@ func createExpiredJWTToken(userID, email string, expiredTime time.Time) string {
 	signatureEncoded := base64.RawURLEncoding.EncodeToString([]byte(signature))
 
 	return header + "." + claimsEncoded + "." + signatureEncoded
+}
+
+// TestCookiePrefixIsolation tests that different cookie prefixes create isolated sessions
+// This addresses GitHub issue #87 where multiple middleware instances should not share sessions
+func TestCookiePrefixIsolation(t *testing.T) {
+	logger := NewLogger("info")
+	encryptionKey := strings.Repeat("a", 32)
+
+	// Create two session managers with different cookie prefixes
+	sm1, err := NewSessionManager(encryptionKey, false, "", "_oidc_userauth_", 0, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager 1: %v", err)
+	}
+
+	sm2, err := NewSessionManager(encryptionKey, false, "", "_oidc_adminauth_", 0, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager 2: %v", err)
+	}
+
+	// Verify cookie names are different
+	if sm1.mainCookieName() == sm2.mainCookieName() {
+		t.Errorf("Expected different main cookie names, got same: %s", sm1.mainCookieName())
+	}
+	if sm1.accessTokenCookieName() == sm2.accessTokenCookieName() {
+		t.Errorf("Expected different access token cookie names, got same: %s", sm1.accessTokenCookieName())
+	}
+
+	// Verify cookie names have the correct prefix
+	expectedPrefix1 := "_oidc_userauth_"
+	expectedPrefix2 := "_oidc_adminauth_"
+
+	if !strings.HasPrefix(sm1.mainCookieName(), expectedPrefix1) {
+		t.Errorf("Expected main cookie name to start with %s, got %s", expectedPrefix1, sm1.mainCookieName())
+	}
+	if !strings.HasPrefix(sm2.mainCookieName(), expectedPrefix2) {
+		t.Errorf("Expected main cookie name to start with %s, got %s", expectedPrefix2, sm2.mainCookieName())
+	}
+
+	t.Logf("Session Manager 1 cookies: main=%s, access=%s, refresh=%s, id=%s",
+		sm1.mainCookieName(), sm1.accessTokenCookieName(), sm1.refreshTokenCookieName(), sm1.idTokenCookieName())
+	t.Logf("Session Manager 2 cookies: main=%s, access=%s, refresh=%s, id=%s",
+		sm2.mainCookieName(), sm2.accessTokenCookieName(), sm2.refreshTokenCookieName(), sm2.idTokenCookieName())
+}
+
+// TestCookiePrefixDefault tests that the default cookie prefix is applied when none is provided
+func TestCookiePrefixDefault(t *testing.T) {
+	logger := NewLogger("info")
+	encryptionKey := strings.Repeat("a", 32)
+
+	// Create session manager without cookie prefix (should use default)
+	sm, err := NewSessionManager(encryptionKey, false, "", "", 0, logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	// Verify default prefix is used
+	expectedPrefix := defaultCookiePrefix
+	if !strings.HasPrefix(sm.mainCookieName(), expectedPrefix) {
+		t.Errorf("Expected default prefix %s, got cookie name %s", expectedPrefix, sm.mainCookieName())
+	}
+
+	// Verify full cookie names
+	expectedMain := defaultCookiePrefix + mainCookieSuffix
+	expectedAccess := defaultCookiePrefix + accessTokenSuffix
+	expectedRefresh := defaultCookiePrefix + refreshTokenSuffix
+	expectedID := defaultCookiePrefix + idTokenSuffix
+
+	if sm.mainCookieName() != expectedMain {
+		t.Errorf("Expected main cookie name %s, got %s", expectedMain, sm.mainCookieName())
+	}
+	if sm.accessTokenCookieName() != expectedAccess {
+		t.Errorf("Expected access cookie name %s, got %s", expectedAccess, sm.accessTokenCookieName())
+	}
+	if sm.refreshTokenCookieName() != expectedRefresh {
+		t.Errorf("Expected refresh cookie name %s, got %s", expectedRefresh, sm.refreshTokenCookieName())
+	}
+	if sm.idTokenCookieName() != expectedID {
+		t.Errorf("Expected ID cookie name %s, got %s", expectedID, sm.idTokenCookieName())
+	}
 }

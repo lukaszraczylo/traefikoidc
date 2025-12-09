@@ -1,2 +1,3 @@
 docker/
-.claude/
+.claude/*.out
+*.test

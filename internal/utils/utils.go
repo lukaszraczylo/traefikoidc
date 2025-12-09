@@ -2,6 +2,8 @@
 package utils
 
 import (
+	"fmt"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -119,7 +121,56 @@ func KeysFromMap(m map[string]struct{}) []string {
 	return keys
 }
 
-// BuildFullURL constructs a URL from scheme, host, and path components
+// DetermineScheme determines the URL scheme for building redirect URLs.
+// Priority order (highest to lowest):
+//  1. forceHTTPS parameter - explicit security requirement
+//  2. X-Forwarded-Proto header - proxy/load balancer information
+//  3. TLS connection state - direct HTTPS connection
+//  4. Default to http
+//
+// The forceHTTPS parameter ensures redirect URIs use HTTPS even when behind
+// proxies/load balancers that may overwrite X-Forwarded-Proto header
+// (e.g., AWS ALB terminating TLS).
+func DetermineScheme(req *http.Request, forceHTTPS bool) string {
+	// Honor forceHTTPS configuration as highest priority
+	if forceHTTPS {
+		return "https"
+	}
+
+	// Check X-Forwarded-Proto header for proxy scenarios
+	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
+		return scheme
+	}
+
+	// Check if connection has TLS
+	if req.TLS != nil {
+		return "https"
+	}
+
+	// Default to http
+	return "http"
+}
+
+// DetermineHost determines the host for building redirect URLs.
+// It checks X-Forwarded-Host header first (for proxy scenarios),
+// then falls back to req.Host.
+func DetermineHost(req *http.Request) string {
+	if host := req.Header.Get("X-Forwarded-Host"); host != "" {
+		return host
+	}
+	return req.Host
+}
+
+// BuildFullURL constructs a URL from scheme, host, and path components.
+// It handles absolute URLs (returning them as-is) and ensures paths have leading slashes.
 func BuildFullURL(scheme, host, path string) string {
-	return scheme + "://" + host + path
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }

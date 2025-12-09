@@ -6,14 +6,9 @@ package traefikoidc
 import (
 	"fmt"
 	"net"
-	"net/http"
 	"net/url"
 	"strings"
 )
-
-// =============================================================================
-// URL Exclusion Methods
-// =============================================================================
 
 // determineExcludedURL checks if a URL path should bypass OIDC authentication.
 // It compares the request path against configured excluded URL prefixes.
@@ -31,62 +26,6 @@ func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 	}
 	return false
 }
-
-// =============================================================================
-// Request Analysis Methods
-// =============================================================================
-
-// determineScheme determines the URL scheme for building redirect URLs.
-// Priority order (highest to lowest):
-//  1. forceHTTPS configuration - explicit security requirement
-//  2. X-Forwarded-Proto header - proxy/load balancer information
-//  3. TLS connection state - direct HTTPS connection
-//  4. Default to http
-//
-// Parameters:
-//   - req: The HTTP request to analyze.
-//
-// Returns:
-//   - The determined scheme: "https" or "http".
-func (t *TraefikOidc) determineScheme(req *http.Request) string {
-	// Honor forceHTTPS configuration as highest priority
-	// This ensures redirect URIs use HTTPS even when behind proxies/load balancers
-	// that may overwrite X-Forwarded-Proto header (e.g., AWS ALB terminating TLS)
-	if t.forceHTTPS {
-		return "https"
-	}
-
-	// Check X-Forwarded-Proto header for proxy scenarios
-	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
-		return scheme
-	}
-
-	// Check if connection has TLS
-	if req.TLS != nil {
-		return "https"
-	}
-
-	// Default to http
-	return "http"
-}
-
-// determineHost determines the host for building redirect URLs.
-// It checks X-Forwarded-Host header first, then falls back to req.Host.
-// Parameters:
-//   - req: The HTTP request to analyze.
-//
-// Returns:
-//   - The determined host string (e.g., "example.com:8080").
-func (t *TraefikOidc) determineHost(req *http.Request) string {
-	if host := req.Header.Get("X-Forwarded-Host"); host != "" {
-		return host
-	}
-	return req.Host
-}
-
-// =============================================================================
-// URL Building Methods
-// =============================================================================
 
 // buildAuthURL constructs the OIDC provider authorization URL.
 // It builds the URL with all necessary parameters including client_id, scopes,
@@ -277,10 +216,6 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 	u.RawQuery = params.Encode()
 	return u.String()
 }
-
-// =============================================================================
-// URL Validation Methods
-// =============================================================================
 
 // validateURL performs security validation on URLs to prevent SSRF attacks.
 // It checks for allowed schemes, validates hosts, and prevents access to private networks.

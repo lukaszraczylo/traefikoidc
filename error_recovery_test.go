@@ -8,9 +8,14 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// Test Circuit Breaker State Transitions
+// =============================================================================
+// Circuit Breaker Tests
+// =============================================================================
 
 func TestCircuitBreakerStateTransitions(t *testing.T) {
 	tests := []struct {
@@ -51,19 +56,16 @@ func TestCircuitBreakerStateTransitions(t *testing.T) {
 				ResetTimeout: time.Second,
 			}, nil)
 
-			// Verify initial state
 			if state := circuitBreakerStateToString(cb.GetState()); state != tt.expectedStateBefore {
 				t.Errorf("Expected initial state %s, got %s", tt.expectedStateBefore, state)
 			}
 
-			// Trigger failures
 			for i := 0; i < tt.failures; i++ {
 				_ = cb.Execute(func() error {
 					return errors.New("test failure")
 				})
 			}
 
-			// Verify final state
 			if state := circuitBreakerStateToString(cb.GetState()); state != tt.expectedStateAfter {
 				t.Errorf("Expected final state %s, got %s", tt.expectedStateAfter, state)
 			}
@@ -78,7 +80,6 @@ func TestCircuitBreakerHalfOpenTransition(t *testing.T) {
 		ResetTimeout: 50 * time.Millisecond,
 	}, nil)
 
-	// Open the circuit
 	_ = cb.Execute(func() error { return errors.New("fail") })
 	_ = cb.Execute(func() error { return errors.New("fail") })
 
@@ -86,10 +87,8 @@ func TestCircuitBreakerHalfOpenTransition(t *testing.T) {
 		t.Error("Circuit should be open after failures")
 	}
 
-	// Wait for timeout to trigger half-open
 	time.Sleep(150 * time.Millisecond)
 
-	// Next request should be allowed (half-open)
 	allowed := false
 	_ = cb.Execute(func() error {
 		allowed = true
@@ -100,7 +99,6 @@ func TestCircuitBreakerHalfOpenTransition(t *testing.T) {
 		t.Error("Request should be allowed in half-open state")
 	}
 
-	// Successful request should close the circuit
 	if cb.GetState() != CircuitBreakerClosed {
 		t.Errorf("Circuit should be closed after successful half-open request, got %v", cb.GetState())
 	}
@@ -113,19 +111,15 @@ func TestCircuitBreakerHalfOpenFailure(t *testing.T) {
 		ResetTimeout: 50 * time.Millisecond,
 	}, nil)
 
-	// Open the circuit
 	_ = cb.Execute(func() error { return errors.New("fail") })
 	_ = cb.Execute(func() error { return errors.New("fail") })
 
-	// Wait for half-open
 	time.Sleep(150 * time.Millisecond)
 
-	// Fail in half-open state
 	_ = cb.Execute(func() error {
 		return errors.New("fail again")
 	})
 
-	// Should return to open state
 	if cb.GetState() != CircuitBreakerOpen {
 		t.Errorf("Circuit should be open after half-open failure, got %v", cb.GetState())
 	}
@@ -142,7 +136,6 @@ func TestCircuitBreakerConcurrency(t *testing.T) {
 	successCount := int64(0)
 	failureCount := int64(0)
 
-	// Concurrent successful requests
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
@@ -177,7 +170,6 @@ func TestCircuitBreakerReset(t *testing.T) {
 		ResetTimeout: time.Second,
 	}, nil)
 
-	// Open the circuit
 	_ = cb.Execute(func() error { return errors.New("fail") })
 	_ = cb.Execute(func() error { return errors.New("fail") })
 
@@ -185,14 +177,12 @@ func TestCircuitBreakerReset(t *testing.T) {
 		t.Error("Circuit should be open")
 	}
 
-	// Reset
 	cb.Reset()
 
 	if cb.GetState() != CircuitBreakerClosed {
 		t.Error("Circuit should be closed after reset")
 	}
 
-	// Should allow requests after reset
 	err := cb.Execute(func() error {
 		return nil
 	})
@@ -209,7 +199,6 @@ func TestCircuitBreakerMetrics(t *testing.T) {
 		ResetTimeout: time.Second,
 	}, nil)
 
-	// Execute some requests
 	_ = cb.Execute(func() error { return nil })
 	_ = cb.Execute(func() error { return errors.New("fail") })
 	_ = cb.Execute(func() error { return nil })
@@ -240,30 +229,106 @@ func TestCircuitBreakerIsAvailable(t *testing.T) {
 		ResetTimeout: 50 * time.Millisecond,
 	}, nil)
 
-	// Should be available initially
 	if !cb.IsAvailable() {
 		t.Error("Circuit should be available initially")
 	}
 
-	// Open the circuit
 	_ = cb.Execute(func() error { return errors.New("fail") })
 	_ = cb.Execute(func() error { return errors.New("fail") })
 
-	// Should not be available when open
 	if cb.IsAvailable() {
 		t.Error("Circuit should not be available when open")
 	}
 
-	// Wait for timeout
 	time.Sleep(150 * time.Millisecond)
 
-	// Should be available in half-open
 	if !cb.IsAvailable() {
 		t.Error("Circuit should be available in half-open state")
 	}
 }
 
-// Test Retry Executor
+func TestDefaultCircuitBreakerConfig(t *testing.T) {
+	config := DefaultCircuitBreakerConfig()
+
+	if config.MaxFailures != 2 {
+		t.Errorf("Expected MaxFailures 2, got %d", config.MaxFailures)
+	}
+
+	if config.Timeout != 60*time.Second {
+		t.Errorf("Expected Timeout 60s, got %v", config.Timeout)
+	}
+
+	if config.ResetTimeout != 30*time.Second {
+		t.Errorf("Expected ResetTimeout 30s, got %v", config.ResetTimeout)
+	}
+}
+
+func TestCircuitBreakerAllowRequestEdgeCases(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+
+	t.Run("invalid state returns false", func(t *testing.T) {
+		config := DefaultCircuitBreakerConfig()
+		cb := NewCircuitBreaker(config, logger)
+
+		cb.mutex.Lock()
+		cb.state = CircuitBreakerState(999)
+		cb.mutex.Unlock()
+
+		allowed := cb.allowRequest()
+		assert.False(t, allowed, "invalid state should not allow requests")
+	})
+
+	t.Run("open to half-open transition on timeout", func(t *testing.T) {
+		baseTimeout := GetTestDuration(50 * time.Millisecond)
+		config := CircuitBreakerConfig{
+			MaxFailures:  1,
+			Timeout:      baseTimeout,
+			ResetTimeout: 30 * time.Second,
+		}
+		cb := NewCircuitBreaker(config, logger)
+
+		cb.Execute(func() error { return errors.New("fail") })
+
+		assert.Equal(t, CircuitBreakerOpen, cb.GetState())
+		assert.False(t, cb.allowRequest())
+
+		time.Sleep(baseTimeout + GetTestDuration(20*time.Millisecond))
+
+		allowed := cb.allowRequest()
+		assert.True(t, allowed, "should allow request after timeout")
+		assert.Equal(t, CircuitBreakerHalfOpen, cb.GetState())
+	})
+
+	t.Run("half-open allows requests", func(t *testing.T) {
+		config := DefaultCircuitBreakerConfig()
+		cb := NewCircuitBreaker(config, logger)
+
+		cb.mutex.Lock()
+		cb.state = CircuitBreakerHalfOpen
+		cb.mutex.Unlock()
+
+		allowed := cb.allowRequest()
+		assert.True(t, allowed, "half-open should allow requests")
+	})
+
+	t.Run("open blocks requests before timeout", func(t *testing.T) {
+		config := CircuitBreakerConfig{
+			MaxFailures:  1,
+			Timeout:      1 * time.Hour,
+			ResetTimeout: 30 * time.Second,
+		}
+		cb := NewCircuitBreaker(config, logger)
+
+		cb.Execute(func() error { return errors.New("fail") })
+
+		allowed := cb.allowRequest()
+		assert.False(t, allowed, "open circuit should block requests")
+	})
+}
+
+// =============================================================================
+// Retry Executor Tests
+// =============================================================================
 
 func TestRetryExecutorSuccess(t *testing.T) {
 	re := NewRetryExecutor(RetryConfig{
@@ -389,7 +454,6 @@ func TestRetryExecutorContextCancellation(t *testing.T) {
 		})
 	}()
 
-	// Cancel after short delay
 	time.Sleep(150 * time.Millisecond)
 	cancel()
 
@@ -428,7 +492,6 @@ func TestRetryExecutorExponentialBackoff(t *testing.T) {
 
 	elapsed := time.Since(startTime)
 
-	// Should have delays: 100ms, 200ms, 400ms = 700ms total (approx)
 	if elapsed < 650*time.Millisecond || elapsed > 850*time.Millisecond {
 		t.Errorf("Expected ~700ms elapsed with exponential backoff, got %v", elapsed)
 	}
@@ -448,7 +511,6 @@ func TestRetryExecutorWithJitter(t *testing.T) {
 		RetryableErrors: []string{"temporary failure"},
 	}, nil)
 
-	// Run multiple times to verify jitter adds variability
 	durations := make([]time.Duration, 5)
 	for i := 0; i < 5; i++ {
 		startTime := time.Now()
@@ -458,7 +520,6 @@ func TestRetryExecutorWithJitter(t *testing.T) {
 		durations[i] = time.Since(startTime)
 	}
 
-	// Check that not all durations are identical (jitter should add variance)
 	allSame := true
 	for i := 1; i < len(durations); i++ {
 		if durations[i] != durations[0] {
@@ -593,7 +654,153 @@ func TestRetryExecutorMetrics(t *testing.T) {
 	}
 }
 
-// Test Error Types
+func TestRetryExecutorReset(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	executor := NewRetryExecutor(DefaultRetryConfig(), logger)
+
+	require.NotNil(t, executor)
+
+	assert.NotPanics(t, func() {
+		executor.Reset()
+	})
+
+	executor.Reset()
+	executor.Reset()
+}
+
+func TestRetryExecutorIsAvailable(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	executor := NewRetryExecutor(DefaultRetryConfig(), logger)
+
+	assert.True(t, executor.IsAvailable())
+
+	ctx := context.Background()
+	executor.ExecuteWithContext(ctx, func() error {
+		return nil
+	})
+
+	assert.True(t, executor.IsAvailable())
+}
+
+func TestRetryExecutorIsRetryableErrorEdgeCases(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultRetryConfig()
+	re := NewRetryExecutor(config, logger)
+
+	t.Run("nil error is not retryable", func(t *testing.T) {
+		retryable := re.isRetryableError(nil)
+		assert.False(t, retryable)
+	})
+
+	t.Run("HTTPError with 429 is retryable", func(t *testing.T) {
+		httpErr := &HTTPError{StatusCode: 429, Message: "Too Many Requests"}
+		retryable := re.isRetryableError(httpErr)
+		assert.True(t, retryable, "429 Too Many Requests should be retryable")
+	})
+
+	t.Run("HTTPError with 500 is retryable", func(t *testing.T) {
+		httpErr := &HTTPError{StatusCode: 500, Message: "Internal Server Error"}
+		retryable := re.isRetryableError(httpErr)
+		assert.True(t, retryable, "500 errors should be retryable")
+	})
+
+	t.Run("HTTPError with 503 is retryable", func(t *testing.T) {
+		httpErr := &HTTPError{StatusCode: 503, Message: "Service Unavailable"}
+		retryable := re.isRetryableError(httpErr)
+		assert.True(t, retryable, "503 errors should be retryable")
+	})
+
+	t.Run("HTTPError with 400 is not retryable", func(t *testing.T) {
+		httpErr := &HTTPError{StatusCode: 400, Message: "Bad Request"}
+		retryable := re.isRetryableError(httpErr)
+		assert.False(t, retryable, "400 errors should not be retryable")
+	})
+
+	t.Run("net.Error with timeout is retryable", func(t *testing.T) {
+		netErr := &mockNetError{timeout: true, temporary: false, msg: "timeout error"}
+		retryable := re.isRetryableError(netErr)
+		assert.True(t, retryable, "timeout errors should be retryable")
+	})
+
+	t.Run("net.Error with connection refused is retryable", func(t *testing.T) {
+		netErr := &mockNetError{timeout: false, temporary: false, msg: "connection refused"}
+		retryable := re.isRetryableError(netErr)
+		assert.True(t, retryable, "connection refused should be retryable")
+	})
+
+	t.Run("net.Error with connection reset is retryable", func(t *testing.T) {
+		netErr := &mockNetError{timeout: false, temporary: false, msg: "connection reset by peer"}
+		retryable := re.isRetryableError(netErr)
+		assert.True(t, retryable, "connection reset should be retryable")
+	})
+
+	t.Run("non-retryable error", func(t *testing.T) {
+		err := errors.New("invalid input data")
+		retryable := re.isRetryableError(err)
+		assert.False(t, retryable, "non-configured error should not be retryable")
+	})
+}
+
+func TestRetryExecutorCalculateDelayEdgeCases(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+
+	t.Run("delay calculation without jitter", func(t *testing.T) {
+		config := RetryConfig{
+			MaxAttempts:   3,
+			InitialDelay:  100 * time.Millisecond,
+			MaxDelay:      5 * time.Second,
+			BackoffFactor: 2.0,
+			EnableJitter:  false,
+		}
+		re := NewRetryExecutor(config, logger)
+
+		delay1 := re.calculateDelay(1)
+		assert.Equal(t, 100*time.Millisecond, delay1)
+
+		delay2 := re.calculateDelay(2)
+		assert.Equal(t, 200*time.Millisecond, delay2)
+
+		delay3 := re.calculateDelay(3)
+		assert.Equal(t, 400*time.Millisecond, delay3)
+	})
+
+	t.Run("delay calculation with jitter", func(t *testing.T) {
+		config := RetryConfig{
+			MaxAttempts:   3,
+			InitialDelay:  100 * time.Millisecond,
+			MaxDelay:      5 * time.Second,
+			BackoffFactor: 2.0,
+			EnableJitter:  true,
+		}
+		re := NewRetryExecutor(config, logger)
+
+		delay := re.calculateDelay(2)
+		expectedBase := 200 * time.Millisecond
+		minDelay := time.Duration(float64(expectedBase) * 0.9)
+		maxDelay := time.Duration(float64(expectedBase) * 1.1)
+
+		assert.GreaterOrEqual(t, delay, minDelay, "delay should be >= 90% of base")
+		assert.LessOrEqual(t, delay, maxDelay, "delay should be <= 110% of base")
+	})
+
+	t.Run("delay capped at max delay", func(t *testing.T) {
+		config := RetryConfig{
+			MaxAttempts:   10,
+			InitialDelay:  100 * time.Millisecond,
+			MaxDelay:      500 * time.Millisecond,
+			BackoffFactor: 2.0,
+			EnableJitter:  false,
+		}
+		re := NewRetryExecutor(config, logger)
+
+		delay := re.calculateDelay(10)
+		assert.Equal(t, 500*time.Millisecond, delay, "delay should be capped at max")
+	})
+}
+
+// =============================================================================
+// Error Types Tests
+// =============================================================================
 
 func TestOIDCErrorCreation(t *testing.T) {
 	err := NewOIDCError("invalid_token", "Token is expired", nil)
@@ -661,6 +868,30 @@ func TestSessionErrorWithSessionID(t *testing.T) {
 	}
 }
 
+func TestSessionErrorUnwrap(t *testing.T) {
+	t.Run("unwrap with cause", func(t *testing.T) {
+		rootErr := errors.New("root cause")
+		sessionErr := NewSessionError("save", "failed to save session", rootErr)
+
+		unwrapped := sessionErr.Unwrap()
+		assert.Equal(t, rootErr, unwrapped)
+	})
+
+	t.Run("unwrap without cause", func(t *testing.T) {
+		sessionErr := NewSessionError("load", "failed to load session", nil)
+
+		unwrapped := sessionErr.Unwrap()
+		assert.Nil(t, unwrapped)
+	})
+
+	t.Run("error chain", func(t *testing.T) {
+		rootErr := errors.New("database error")
+		sessionErr := NewSessionError("delete", "failed to delete session", rootErr)
+
+		assert.True(t, errors.Is(sessionErr, rootErr))
+	})
+}
+
 func TestTokenErrorCreation(t *testing.T) {
 	err := NewTokenError("id_token", "expired", "Token has expired", nil)
 
@@ -678,7 +909,83 @@ func TestTokenErrorCreation(t *testing.T) {
 	}
 }
 
-// Test Base Recovery Mechanism
+func TestTokenErrorUnwrap(t *testing.T) {
+	t.Run("unwrap with cause", func(t *testing.T) {
+		rootErr := errors.New("signature verification failed")
+		tokenErr := NewTokenError("id_token", "invalid", "token is invalid", rootErr)
+
+		unwrapped := tokenErr.Unwrap()
+		assert.Equal(t, rootErr, unwrapped)
+	})
+
+	t.Run("unwrap without cause", func(t *testing.T) {
+		tokenErr := NewTokenError("access_token", "expired", "token has expired", nil)
+
+		unwrapped := tokenErr.Unwrap()
+		assert.Nil(t, unwrapped)
+	})
+
+	t.Run("error chain", func(t *testing.T) {
+		rootErr := errors.New("crypto error")
+		tokenErr := NewTokenError("refresh_token", "malformed", "token is malformed", rootErr)
+
+		assert.True(t, errors.Is(tokenErr, rootErr))
+	})
+}
+
+func TestErrorTypesErrorMethodsWithoutCause(t *testing.T) {
+	t.Run("HTTPError.Error without cause", func(t *testing.T) {
+		httpErr := &HTTPError{StatusCode: 404, Message: "Not Found"}
+		errStr := httpErr.Error()
+		assert.Equal(t, "HTTP 404: Not Found", errStr)
+	})
+
+	t.Run("OIDCError.Error with cause", func(t *testing.T) {
+		rootErr := errors.New("signature mismatch")
+		oidcErr := &OIDCError{
+			Code:    "invalid_signature",
+			Message: "JWT signature invalid",
+			Context: make(map[string]interface{}),
+			Cause:   rootErr,
+		}
+
+		errStr := oidcErr.Error()
+		assert.Contains(t, errStr, "OIDC error [invalid_signature]: JWT signature invalid")
+		assert.Contains(t, errStr, "caused by: signature mismatch")
+	})
+
+	t.Run("SessionError.Error with cause", func(t *testing.T) {
+		rootErr := errors.New("database connection failed")
+		sessErr := &SessionError{
+			Operation: "save",
+			Message:   "Failed to persist session",
+			SessionID: "sess456",
+			Cause:     rootErr,
+		}
+
+		errStr := sessErr.Error()
+		assert.Contains(t, errStr, "Session error in save: Failed to persist session")
+		assert.Contains(t, errStr, "caused by: database connection failed")
+	})
+
+	t.Run("TokenError.Error with cause", func(t *testing.T) {
+		rootErr := errors.New("time check failed")
+		tokenErr := &TokenError{
+			TokenType: "id_token",
+			Reason:    "expired",
+			Message:   "Token validity period exceeded",
+			Cause:     rootErr,
+		}
+
+		errStr := tokenErr.Error()
+		assert.Contains(t, errStr, "Token error (id_token) - expired: Token validity period exceeded")
+		assert.Contains(t, errStr, "caused by: time check failed")
+	})
+}
+
+// =============================================================================
+// Base Recovery Mechanism Tests
+// =============================================================================
 
 func TestBaseRecoveryMechanismMetrics(t *testing.T) {
 	base := NewBaseRecoveryMechanism("test-mechanism", nil)
@@ -713,7 +1020,6 @@ func TestBaseRecoveryMechanismConcurrentUpdates(t *testing.T) {
 	var wg sync.WaitGroup
 	iterations := 1000
 
-	// Concurrent requests
 	for i := 0; i < iterations; i++ {
 		wg.Add(1)
 		go func() {
@@ -741,7 +1047,53 @@ func TestBaseRecoveryMechanismConcurrentUpdates(t *testing.T) {
 	}
 }
 
-// Test Error Recovery Manager
+func TestBaseRecoveryMechanism_GetBaseMetrics(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	base := NewBaseRecoveryMechanism("test-mechanism", logger)
+
+	metrics := base.GetBaseMetrics()
+
+	if metrics == nil {
+		t.Fatal("Expected non-nil metrics")
+	}
+
+	expectedFields := []string{
+		"total_requests",
+		"total_failures",
+		"total_successes",
+		"uptime_seconds",
+		"name",
+	}
+
+	for _, field := range expectedFields {
+		if _, exists := metrics[field]; !exists {
+			t.Errorf("Expected metric field %s to exist", field)
+		}
+	}
+}
+
+func TestBaseRecoveryMechanism_LogMethods(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	base := NewBaseRecoveryMechanism("test-mechanism", logger)
+
+	base.LogInfo("test message")
+	base.LogInfo("test message with args: %s %d", "arg1", 42)
+
+	base.LogError("error message")
+	base.LogError("error message with args: %s %d", "error", 500)
+
+	base.LogDebug("debug message")
+	base.LogDebug("debug message with args: %s %d", "debug", 123)
+
+	baseNoLogger := NewBaseRecoveryMechanism("test", nil)
+	baseNoLogger.LogInfo("test message")
+	baseNoLogger.LogError("error message")
+	baseNoLogger.LogDebug("debug message")
+}
+
+// =============================================================================
+// Error Recovery Manager Tests
+// =============================================================================
 
 func TestErrorRecoveryManagerCreation(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
@@ -770,12 +1122,10 @@ func TestErrorRecoveryManagerGetCircuitBreaker(t *testing.T) {
 		t.Fatal("Expected non-nil circuit breakers")
 	}
 
-	// Should return same instance for same service
 	if cb1 != cb2 {
 		t.Error("Expected same circuit breaker instance for same service")
 	}
 
-	// Should return different instances for different services
 	if cb1 == cb3 {
 		t.Error("Expected different circuit breaker instances for different services")
 	}
@@ -802,7 +1152,6 @@ func TestErrorRecoveryManagerExecuteWithRecovery(t *testing.T) {
 func TestErrorRecoveryManagerMetrics(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
 
-	// Create some circuit breakers
 	_ = erm.GetCircuitBreaker("service1")
 	_ = erm.GetCircuitBreaker("service2")
 
@@ -818,37 +1167,483 @@ func TestErrorRecoveryManagerMetrics(t *testing.T) {
 	}
 }
 
-// Helper functions and types
+func TestErrorRecoveryManagerIntegration(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	erm := NewErrorRecoveryManager(logger)
 
-func circuitBreakerStateToString(state CircuitBreakerState) string {
-	switch state {
-	case CircuitBreakerClosed:
-		return "closed"
-	case CircuitBreakerOpen:
-		return "open"
-	case CircuitBreakerHalfOpen:
-		return "half-open"
-	default:
-		return "unknown"
+	t.Run("circuit breaker and retry integration", func(t *testing.T) {
+		cb := NewCircuitBreaker(CircuitBreakerConfig{
+			MaxFailures:  10,
+			Timeout:      60 * time.Second,
+			ResetTimeout: 30 * time.Second,
+		}, logger)
+
+		erm.mutex.Lock()
+		erm.circuitBreakers["test-service-integration"] = cb
+		erm.mutex.Unlock()
+
+		attempts := 0
+		fn := func() error {
+			attempts++
+			if attempts < 3 {
+				return errors.New("temporary failure")
+			}
+			return nil
+		}
+
+		err := erm.ExecuteWithRecovery(context.Background(), "test-service-integration", fn)
+
+		assert.NoError(t, err)
+		assert.GreaterOrEqual(t, attempts, 3, "should retry until success")
+	})
+
+	t.Run("circuit breaker opens on repeated failures", func(t *testing.T) {
+		fn := func() error {
+			return errors.New("persistent failure")
+		}
+
+		err1 := erm.ExecuteWithRecovery(context.Background(), "failing-service", fn)
+		assert.Error(t, err1)
+
+		err2 := erm.ExecuteWithRecovery(context.Background(), "failing-service", fn)
+		assert.Error(t, err2)
+
+		cb := erm.GetCircuitBreaker("failing-service")
+		state := cb.GetState()
+		assert.Equal(t, CircuitBreakerOpen, state, "circuit should be open after repeated failures")
+	})
+
+	t.Run("recovery metrics include all mechanisms", func(t *testing.T) {
+		metrics := erm.GetRecoveryMetrics()
+
+		assert.NotNil(t, metrics)
+		assert.Contains(t, metrics, "circuit_breakers")
+		assert.Contains(t, metrics, "degraded_services")
+	})
+}
+
+// =============================================================================
+// Graceful Degradation Tests
+// =============================================================================
+
+func TestGracefulDegradationRegisterFallback(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	t.Run("register single fallback", func(t *testing.T) {
+		fallback := func() (interface{}, error) {
+			return "fallback result", nil
+		}
+
+		gd.RegisterFallback("service1", fallback)
+
+		result, err := gd.ExecuteWithFallback("service1", func() (interface{}, error) {
+			return nil, errors.New("service failed")
+		})
+
+		assert.NoError(t, err)
+		assert.Equal(t, "fallback result", result)
+	})
+
+	t.Run("override existing fallback", func(t *testing.T) {
+		gd.RegisterFallback("service4", func() (interface{}, error) {
+			return "old fallback", nil
+		})
+		gd.RegisterFallback("service4", func() (interface{}, error) {
+			return "new fallback", nil
+		})
+
+		result, _ := gd.ExecuteWithFallback("service4", func() (interface{}, error) {
+			return nil, errors.New("fail")
+		})
+
+		assert.Equal(t, "new fallback", result)
+	})
+}
+
+func TestGracefulDegradationRegisterHealthCheck(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	config.HealthCheckInterval = 50 * time.Millisecond
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	t.Run("register health check", func(t *testing.T) {
+		healthy := true
+		healthCheck := func() bool {
+			return healthy
+		}
+
+		gd.RegisterHealthCheck("service1", healthCheck)
+
+		gd.markServiceDegraded("service1")
+		assert.True(t, gd.isServiceDegraded("service1"))
+
+		healthy = true
+		time.Sleep(100 * time.Millisecond)
+	})
+}
+
+func TestGracefulDegradationExecuteWithContext(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	t.Run("successful execution", func(t *testing.T) {
+		ctx := context.Background()
+		err := gd.ExecuteWithContext(ctx, func() error {
+			return nil
+		})
+
+		assert.NoError(t, err)
+	})
+
+	t.Run("failed execution", func(t *testing.T) {
+		ctx := context.Background()
+		testErr := errors.New("operation failed")
+
+		err := gd.ExecuteWithContext(ctx, func() error {
+			return testErr
+		})
+
+		assert.Error(t, err)
+	})
+
+	t.Run("uses fallback on failure", func(t *testing.T) {
+		gd.RegisterFallback("default", func() (interface{}, error) {
+			return nil, nil
+		})
+
+		ctx := context.Background()
+		err := gd.ExecuteWithContext(ctx, func() error {
+			return errors.New("primary failed")
+		})
+
+		assert.NoError(t, err)
+	})
+}
+
+func TestGracefulDegradationExecuteWithFallback(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	t.Run("primary succeeds", func(t *testing.T) {
+		result, err := gd.ExecuteWithFallback("service1", func() (interface{}, error) {
+			return "primary result", nil
+		})
+
+		assert.NoError(t, err)
+		assert.Equal(t, "primary result", result)
+	})
+
+	t.Run("fallback succeeds when primary fails", func(t *testing.T) {
+		gd.RegisterFallback("service2", func() (interface{}, error) {
+			return "fallback result", nil
+		})
+
+		result, err := gd.ExecuteWithFallback("service2", func() (interface{}, error) {
+			return nil, errors.New("primary failed")
+		})
+
+		assert.NoError(t, err)
+		assert.Equal(t, "fallback result", result)
+	})
+
+	t.Run("fallback also fails", func(t *testing.T) {
+		gd.RegisterFallback("service4", func() (interface{}, error) {
+			return nil, errors.New("fallback also failed")
+		})
+
+		result, err := gd.ExecuteWithFallback("service4", func() (interface{}, error) {
+			return nil, errors.New("primary failed")
+		})
+
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "fallback also failed")
+	})
+}
+
+func TestGracefulDegradationIsServiceDegraded(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	config.RecoveryTimeout = 100 * time.Millisecond
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	t.Run("service not degraded initially", func(t *testing.T) {
+		assert.False(t, gd.isServiceDegraded("new-service"))
+	})
+
+	t.Run("service degraded after marking", func(t *testing.T) {
+		gd.markServiceDegraded("service1")
+		assert.True(t, gd.isServiceDegraded("service1"))
+	})
+
+	t.Run("service recovers after timeout", func(t *testing.T) {
+		gd.markServiceDegraded("service2")
+		assert.True(t, gd.isServiceDegraded("service2"))
+
+		time.Sleep(150 * time.Millisecond)
+
+		assert.False(t, gd.isServiceDegraded("service2"))
+	})
+}
+
+func TestGracefulDegradationMarkServiceDegraded(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	t.Run("mark single service", func(t *testing.T) {
+		gd.markServiceDegraded("service1")
+
+		degraded := gd.GetDegradedServices()
+		assert.Contains(t, degraded, "service1")
+	})
+
+	t.Run("mark multiple services", func(t *testing.T) {
+		gd.markServiceDegraded("service2")
+		gd.markServiceDegraded("service3")
+
+		degraded := gd.GetDegradedServices()
+		assert.Contains(t, degraded, "service2")
+		assert.Contains(t, degraded, "service3")
+	})
+}
+
+func TestGracefulDegradationReset(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	t.Run("reset clears degraded services", func(t *testing.T) {
+		gd.markServiceDegraded("service1")
+		gd.markServiceDegraded("service2")
+		gd.markServiceDegraded("service3")
+
+		assert.Len(t, gd.GetDegradedServices(), 3)
+
+		gd.Reset()
+
+		assert.Len(t, gd.GetDegradedServices(), 0)
+	})
+
+	t.Run("multiple resets are safe", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			gd.Reset()
+			gd.Reset()
+			gd.Reset()
+		})
+	})
+}
+
+func TestGracefulDegradationIsAvailable(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	assert.True(t, gd.IsAvailable())
+
+	gd.markServiceDegraded("service1")
+	assert.True(t, gd.IsAvailable())
+
+	gd.Reset()
+	assert.True(t, gd.IsAvailable())
+}
+
+func TestGracefulDegradationGetMetrics(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	t.Run("basic metrics", func(t *testing.T) {
+		metrics := gd.GetMetrics()
+
+		require.NotNil(t, metrics)
+		assert.Contains(t, metrics, "degraded_services_count")
+		assert.Contains(t, metrics, "degraded_services")
+		assert.Contains(t, metrics, "registered_fallbacks_count")
+		assert.Contains(t, metrics, "registered_health_checks_count")
+		assert.Contains(t, metrics, "health_check_interval_seconds")
+		assert.Contains(t, metrics, "recovery_timeout_seconds")
+		assert.Contains(t, metrics, "fallbacks_enabled")
+	})
+
+	t.Run("metrics reflect degraded services", func(t *testing.T) {
+		gd.Reset()
+		gd.markServiceDegraded("service1")
+		gd.markServiceDegraded("service2")
+
+		metrics := gd.GetMetrics()
+
+		assert.Equal(t, 2, metrics["degraded_services_count"])
+		degradedList := metrics["degraded_services"].([]string)
+		assert.Len(t, degradedList, 2)
+	})
+
+	t.Run("metrics include base metrics", func(t *testing.T) {
+		metrics := gd.GetMetrics()
+
+		assert.Contains(t, metrics, "name")
+		assert.Contains(t, metrics, "uptime_seconds")
+		assert.Contains(t, metrics, "total_requests")
+	})
+}
+
+func TestGracefulDegradationHealthChecks(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+
+	t.Run("performHealthChecks recovers degraded service", func(t *testing.T) {
+		config := DefaultGracefulDegradationConfig()
+		gd := NewGracefulDegradation(config, logger)
+		defer gd.Close()
+
+		healthCheckCalled := false
+		gd.RegisterHealthCheck("test-service", func() bool {
+			healthCheckCalled = true
+			return true
+		})
+
+		gd.markServiceDegraded("test-service")
+
+		assert.True(t, gd.isServiceDegraded("test-service"))
+
+		gd.performHealthChecks()
+
+		assert.True(t, healthCheckCalled, "health check should be called")
+
+		assert.False(t, gd.isServiceDegraded("test-service"), "service should be recovered")
+	})
+
+	t.Run("performHealthChecks marks service degraded on failure", func(t *testing.T) {
+		config := DefaultGracefulDegradationConfig()
+		gd := NewGracefulDegradation(config, logger)
+		defer gd.Close()
+
+		gd.RegisterHealthCheck("failing-service", func() bool {
+			return false
+		})
+
+		assert.False(t, gd.isServiceDegraded("failing-service"))
+
+		gd.performHealthChecks()
+
+		assert.True(t, gd.isServiceDegraded("failing-service"), "service should be degraded")
+	})
+
+	t.Run("performHealthChecks handles empty health checks", func(t *testing.T) {
+		config := DefaultGracefulDegradationConfig()
+		gd := NewGracefulDegradation(config, logger)
+		defer gd.Close()
+
+		assert.NotPanics(t, func() {
+			gd.performHealthChecks()
+		})
+	})
+}
+
+func TestGracefulDegradationServiceRecoveryTimeout(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+
+	t.Run("service auto-recovers after timeout", func(t *testing.T) {
+		baseTimeout := GetTestDuration(50 * time.Millisecond)
+		config := GracefulDegradationConfig{
+			HealthCheckInterval: 1 * time.Hour,
+			RecoveryTimeout:     baseTimeout,
+			EnableFallbacks:     true,
+		}
+		gd := NewGracefulDegradation(config, logger)
+		defer gd.Close()
+
+		gd.markServiceDegraded("auto-recover-service")
+
+		assert.True(t, gd.isServiceDegraded("auto-recover-service"))
+
+		time.Sleep(baseTimeout + GetTestDuration(20*time.Millisecond))
+
+		assert.False(t, gd.isServiceDegraded("auto-recover-service"), "service should auto-recover after timeout")
+	})
+
+	t.Run("service remains degraded before timeout", func(t *testing.T) {
+		config := GracefulDegradationConfig{
+			HealthCheckInterval: 1 * time.Hour,
+			RecoveryTimeout:     1 * time.Hour,
+			EnableFallbacks:     true,
+		}
+		gd := NewGracefulDegradation(config, logger)
+		defer gd.Close()
+
+		gd.markServiceDegraded("long-timeout-service")
+
+		assert.True(t, gd.isServiceDegraded("long-timeout-service"))
+
+		time.Sleep(GetTestDuration(10 * time.Millisecond))
+
+		assert.True(t, gd.isServiceDegraded("long-timeout-service"), "service should remain degraded before timeout")
+	})
+}
+
+func TestGracefulDegradationFullScenario(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping full scenario test in short mode")
 	}
+
+	logger := GetSingletonNoOpLogger()
+	config := DefaultGracefulDegradationConfig()
+	config.RecoveryTimeout = 200 * time.Millisecond
+	config.HealthCheckInterval = 50 * time.Millisecond
+	gd := NewGracefulDegradation(config, logger)
+	defer gd.Close()
+
+	gd.RegisterFallback("critical-service", func() (interface{}, error) {
+		return "fallback data", nil
+	})
+
+	serviceHealthy := false
+	gd.RegisterHealthCheck("critical-service", func() bool {
+		return serviceHealthy
+	})
+
+	result1, err1 := gd.ExecuteWithFallback("critical-service", func() (interface{}, error) {
+		return "primary data", nil
+	})
+	assert.NoError(t, err1)
+	assert.Equal(t, "primary data", result1)
+
+	result2, err2 := gd.ExecuteWithFallback("critical-service", func() (interface{}, error) {
+		return nil, errors.New("service down")
+	})
+	assert.NoError(t, err2)
+	assert.Equal(t, "fallback data", result2)
+
+	assert.True(t, gd.isServiceDegraded("critical-service"))
+
+	result3, err3 := gd.ExecuteWithFallback("critical-service", func() (interface{}, error) {
+		return "should not be called", nil
+	})
+	assert.NoError(t, err3)
+	assert.Equal(t, "fallback data", result3)
+
+	serviceHealthy = true
+	time.Sleep(250 * time.Millisecond)
+
+	metrics := gd.GetMetrics()
+	assert.NotNil(t, metrics)
 }
 
-// Mock network error for testing
-type mockNetError struct {
-	timeout   bool
-	temporary bool
-	msg       string
-}
-
-func (e *mockNetError) Error() string   { return e.msg }
-func (e *mockNetError) Timeout() bool   { return e.timeout }
-func (e *mockNetError) Temporary() bool { return e.temporary }
-
-// Ensure mockNetError implements net.Error
-var _ net.Error = (*mockNetError)(nil)
-
-// Test isTraefikDefaultCertError
-// See: https://github.com/lukaszraczylo/traefikoidc/issues/90
+// =============================================================================
+// Error Helper Functions Tests
+// =============================================================================
 
 func TestIsTraefikDefaultCertError(t *testing.T) {
 	tests := []struct {
@@ -882,8 +1677,6 @@ func TestIsTraefikDefaultCertError(t *testing.T) {
 		})
 	}
 }
-
-// Test isEOFError
 
 func TestIsEOFError(t *testing.T) {
 	tests := []struct {
@@ -927,8 +1720,6 @@ func TestIsEOFError(t *testing.T) {
 		})
 	}
 }
-
-// Test isCertificateError
 
 func TestIsCertificateError(t *testing.T) {
 	tests := []struct {
@@ -978,8 +1769,6 @@ func TestIsCertificateError(t *testing.T) {
 	}
 }
 
-// Test MetadataFetchRetryConfig
-
 func TestMetadataFetchRetryConfig(t *testing.T) {
 	config := MetadataFetchRetryConfig()
 
@@ -1003,7 +1792,6 @@ func TestMetadataFetchRetryConfig(t *testing.T) {
 		t.Error("Expected EnableJitter to be true")
 	}
 
-	// Verify retryable errors include startup-related patterns
 	expectedPatterns := []string{"EOF", "certificate", "x509", "tls"}
 	for _, pattern := range expectedPatterns {
 		found := false
@@ -1019,10 +1807,7 @@ func TestMetadataFetchRetryConfig(t *testing.T) {
 	}
 }
 
-// Test RetryExecutor with startup-specific errors
-
 func TestRetryExecutorStartupErrors(t *testing.T) {
-	// Verify MetadataFetchRetryConfig creates a valid retry executor
 	_ = NewRetryExecutor(MetadataFetchRetryConfig(), nil)
 
 	tests := []struct {
@@ -1064,7 +1849,6 @@ func TestRetryExecutorStartupErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Use very short delays for testing
 			testConfig := RetryConfig{
 				MaxAttempts:   3,
 				InitialDelay:  1 * time.Millisecond,
@@ -1102,12 +1886,9 @@ func TestRetryExecutorStartupErrors(t *testing.T) {
 	}
 }
 
-// Test that retry executor properly uses isRetryableError with new error types
-
 func TestRetryExecutorIsRetryableErrorIntegration(t *testing.T) {
 	re := NewRetryExecutor(DefaultRetryConfig(), nil)
 
-	// Test that the enhanced isRetryableError is being used
 	tests := []struct {
 		name        string
 		err         error
@@ -1139,3 +1920,70 @@ func TestRetryExecutorIsRetryableErrorIntegration(t *testing.T) {
 		})
 	}
 }
+
+func TestContainsHelperFunction(t *testing.T) {
+	t.Run("exact match", func(t *testing.T) {
+		assert.True(t, contains("timeout", "timeout"))
+	})
+
+	t.Run("prefix match", func(t *testing.T) {
+		assert.True(t, contains("timeout error occurred", "timeout"))
+	})
+
+	t.Run("suffix match", func(t *testing.T) {
+		assert.True(t, contains("connection timeout", "timeout"))
+	})
+
+	t.Run("middle match", func(t *testing.T) {
+		assert.True(t, contains("a connection timeout error", "timeout"))
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		assert.False(t, contains("connection refused", "timeout"))
+	})
+
+	t.Run("substring longer than string", func(t *testing.T) {
+		assert.False(t, contains("abc", "abcdef"))
+	})
+
+	t.Run("empty substring", func(t *testing.T) {
+		assert.True(t, contains("test", ""))
+	})
+
+	t.Run("empty string", func(t *testing.T) {
+		assert.False(t, contains("", "test"))
+	})
+
+	t.Run("both empty", func(t *testing.T) {
+		assert.True(t, contains("", ""))
+	})
+}
+
+// =============================================================================
+// Helper Types and Functions
+// =============================================================================
+
+func circuitBreakerStateToString(state CircuitBreakerState) string {
+	switch state {
+	case CircuitBreakerClosed:
+		return "closed"
+	case CircuitBreakerOpen:
+		return "open"
+	case CircuitBreakerHalfOpen:
+		return "half-open"
+	default:
+		return "unknown"
+	}
+}
+
+type mockNetError struct {
+	timeout   bool
+	temporary bool
+	msg       string
+}
+
+func (e *mockNetError) Error() string   { return e.msg }
+func (e *mockNetError) Timeout() bool   { return e.timeout }
+func (e *mockNetError) Temporary() bool { return e.temporary }
+
+var _ net.Error = (*mockNetError)(nil)

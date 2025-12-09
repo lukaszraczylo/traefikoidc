@@ -9,11 +9,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
-)
 
-// ============================================================================
-// HTTP MIDDLEWARE
-// ============================================================================
+	"github.com/lukaszraczylo/traefikoidc/internal/utils"
+)
 
 // ServeHTTP implements the main middleware logic for processing HTTP requests.
 // It handles the complete OIDC authentication flow including:
@@ -95,8 +93,8 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			t.sendErrorResponse(rw, req, "Critical session error", http.StatusInternalServerError)
 			return
 		}
-		scheme := t.determineScheme(req)
-		host := t.determineHost(req)
+		scheme := utils.DetermineScheme(req, t.forceHTTPS)
+		host := utils.DetermineHost(req)
 		redirectURL := buildFullURL(scheme, host, t.redirURLPath)
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		return
@@ -104,8 +102,8 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	defer session.returnToPoolSafely()
 
-	scheme := t.determineScheme(req)
-	host := t.determineHost(req)
+	scheme := utils.DetermineScheme(req, t.forceHTTPS)
+	host := utils.DetermineHost(req)
 	redirectURL := buildFullURL(scheme, host, t.redirURLPath)
 
 	if req.URL.Path == t.logoutURLPath {
@@ -232,10 +230,6 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	session.ResetRedirectCount()
 	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 }
-
-// ============================================================================
-// REQUEST PROCESSING
-// ============================================================================
 
 // processAuthorizedRequest processes requests for authenticated users.
 // It extracts claims, validates roles/groups if configured, sets authentication headers,

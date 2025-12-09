@@ -74,12 +74,6 @@ var defaultExcludedURLs = map[string]struct{}{
 	"/favicon": {},
 }
 
-// NOTE: VerifyToken method moved to token_manager.go
-
-// NOTE: cacheVerifiedToken method moved to token_manager.go
-
-// NOTE: VerifyJWTSignatureAndClaims method moved to token_manager.go
-
 // New creates a new TraefikOidc middleware instance.
 // It initializes all components including caches, HTTP clients, session management,
 // templates, and starts background processes for metadata discovery.
@@ -338,10 +332,6 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	return t, nil
 }
 
-// ============================================================================
-// PROVIDER METADATA MANAGEMENT
-// ============================================================================
-
 // initializeMetadata initializes OIDC provider metadata by fetching configuration.
 // It retrieves the provider's .well-known/openid-configuration and updates
 // internal endpoint URLs. Uses error recovery if available for resilient fetching.
@@ -520,50 +510,6 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	}
 }
 
-// NOTE: ServeHTTP method moved to middleware.go
-
-// NOTE: processAuthorizedRequest method moved to middleware.go
-
-// NOTE: handleExpiredToken method moved to auth_flow.go
-
-// NOTE: handleCallback method moved to auth_flow.go
-
-// NOTE: determineExcludedURL method moved to url_helpers.go
-
-// NOTE: determineScheme method moved to url_helpers.go
-
-// NOTE: determineHost method moved to url_helpers.go
-
-// NOTE: isUserAuthenticated method moved to auth_flow.go
-
-// NOTE: defaultInitiateAuthentication method moved to auth_flow.go
-
-// NOTE: verifyToken method moved to token_manager.go
-
-// NOTE: safeLog methods moved to utilities.go
-
-// NOTE: buildAuthURL method moved to url_helpers.go
-
-// NOTE: buildURLWithParams method moved to url_helpers.go
-
-// NOTE: validateURL method moved to url_helpers.go
-
-// NOTE: validateParsedURL method moved to url_helpers.go
-
-// NOTE: validateHost method moved to url_helpers.go
-
-// NOTE: startTokenCleanup method moved to token_manager.go
-
-// NOTE: RevokeToken method moved to token_manager.go
-
-// NOTE: RevokeTokenWithProvider method moved to token_manager.go
-
-// NOTE: refreshToken method moved to token_manager.go
-
-// NOTE: isAllowedDomain method moved to utilities.go
-
-// NOTE: keysFromMap function moved to utilities.go
-
 // createCaseInsensitiveStringMap creates a map with lowercase keys for case-insensitive matching.
 // This is used for case-insensitive matching of email addresses.
 // Parameters:
@@ -578,8 +524,6 @@ func createCaseInsensitiveStringMap(items []string) map[string]struct{} {
 	}
 	return result
 }
-
-// NOTE: extractGroupsAndRoles method moved to token_manager.go
 
 // buildFullURL constructs a complete URL from scheme, host, and path components.
 // It handles absolute URLs in the path and ensures proper URL formatting.
@@ -601,27 +545,3 @@ func buildFullURL(scheme, host, path string) string {
 
 	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }
-
-// NOTE: ExchangeCodeForToken method moved to token_manager.go
-
-// NOTE: GetNewTokenWithRefreshToken method moved to token_manager.go
-
-// NOTE: sendErrorResponse method moved to utilities.go
-
-// NOTE: isGoogleProvider method moved to token_manager.go
-
-// NOTE: isAzureProvider method moved to token_manager.go
-
-// NOTE: validateAzureTokens method moved to token_manager.go
-
-// NOTE: validateGoogleTokens method moved to token_manager.go
-
-// NOTE: validateStandardTokens method moved to token_manager.go
-
-// NOTE: validateTokenExpiry method moved to token_manager.go
-
-// NOTE: Close method moved to utilities.go
-
-// NOTE: isAjaxRequest method moved to auth_flow.go
-
-// NOTE: isRefreshTokenExpired method moved to auth_flow.go
