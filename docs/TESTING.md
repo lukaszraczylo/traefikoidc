@@ -67,7 +67,7 @@ internal/testutil/
 
 The project provides two mocking patterns:
 
-### State-Based Mocks
+### State-Based Mocks (Basic)
 
 Located in `main_test.go`, `mocks_test.go`. Simple mocks that store data in struct fields.
 
@@ -91,6 +91,42 @@ tOidc := &TraefikOidc{
     // ...
 }
 ```
+
+### Enhanced State-Based Mocks (with Call Tracking)
+
+Located in `enhanced_mocks_test.go`. State-based mocks with built-in call tracking and assertion helpers.
+
+| Mock | Interface | Description |
+|------|-----------|-------------|
+| `EnhancedMockJWKCache` | `JWKCacheInterface` | State-based with call tracking |
+| `EnhancedMockTokenVerifier` | `TokenVerifier` | State-based with call tracking |
+| `EnhancedMockTokenExchanger` | `TokenExchanger` | State-based with call tracking |
+| `EnhancedMockCacheInterface` | `CacheInterface` | Functional cache with call tracking |
+
+**Usage:**
+```go
+mock := &EnhancedMockJWKCache{
+    JWKS: &JWKSet{Keys: []JWK{jwk}},
+}
+
+// Make calls
+result, err := mock.GetJWKS(ctx, "https://example.com/jwks", nil)
+
+// Verify calls were made
+mock.AssertGetJWKSCalled(t)
+mock.AssertGetJWKSCalledWith(t, "https://example.com/jwks")
+mock.AssertGetJWKSCallCount(t, 1)
+
+// Access call details
+s.Equal(1, mock.GetJWKSCallCount())
+```
+
+**Features:**
+- Track all calls with parameters and timestamps
+- Built-in assertion helpers using testify
+- Thread-safe for concurrent tests
+- `Reset()` method to clear state between tests
+- `LastCall()` to inspect most recent call
 
 ### Testify-Based Mocks
 
@@ -131,11 +167,20 @@ mock.On("GetJWKS", mock.Anything, mock.Anything, mock.Anything).
 
 | Use Case | Recommended Mock |
 |----------|-----------------|
-| Simple return values | State-based (`MockJWKCache`) |
-| Verifying call parameters | Testify-based (`TestifyJWKCache`) |
-| Multiple call expectations | Testify-based |
+| Simple return values only | Basic state-based (`MockJWKCache`) |
+| Return values + verify calls made | Enhanced state-based (`EnhancedMockJWKCache`) |
+| Complex call expectations | Testify-based (`TestifyJWKCache`) |
+| Verify call order/sequence | Testify-based |
 | HTTP endpoint simulation | `MockOAuthProvider` |
-| New testify suite tests | Testify-based |
+| New testify suite tests | Enhanced or Testify-based |
+
+**Decision Guide:**
+
+1. **Basic State-Based**: Use when you only need to control return values and don't care about verifying interactions.
+
+2. **Enhanced State-Based**: Use when you want to verify calls were made with specific parameters, but prefer simpler setup than testify's `.On()/.Return()` pattern.
+
+3. **Testify-Based**: Use when you need complex behavior like different returns per call, strict call ordering, or detailed expectation matching.
 
 ## Token Fixtures
 
