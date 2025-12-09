@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -285,6 +287,12 @@ func (s *OIDCServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	redirectURI := r.URL.Query().Get("redirect_uri")
 
+	// Validate redirect URI to prevent open redirect vulnerability
+	if !isValidRedirectURI(redirectURI, s.URL) {
+		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
+		return
+	}
+
 	redirectURL := fmt.Sprintf("%s?code=test-auth-code&state=%s", redirectURI, state)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
@@ -344,6 +352,11 @@ func (s *OIDCServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 	postLogoutRedirect := r.URL.Query().Get("post_logout_redirect_uri")
 	if postLogoutRedirect != "" {
+		// Validate post-logout redirect URI to prevent open redirect vulnerability
+		if !isValidRedirectURI(postLogoutRedirect, s.URL) {
+			http.Error(w, "invalid post_logout_redirect_uri", http.StatusBadRequest)
+			return
+		}
 		http.Redirect(w, r, postLogoutRedirect, http.StatusFound)
 		return
 	}
@@ -367,6 +380,58 @@ func (s *OIDCServer) defaultTokenResponse() map[string]interface{} {
 		"refresh_token": "mock-refresh-token",
 		"id_token":      idToken,
 	}
+}
+
+// isValidRedirectURI validates that a redirect URI is safe to use.
+// It ensures the URI is either:
+// 1. A relative path (no scheme or host)
+// 2. Points to the same host as the test server (localhost)
+// 3. Points to a common test domain (127.0.0.1, localhost)
+// This prevents open redirect vulnerabilities in the test server.
+func isValidRedirectURI(redirectURI, serverURL string) bool {
+	if redirectURI == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(redirectURI)
+	if err != nil {
+		return false
+	}
+
+	// Allow relative paths (no scheme means relative)
+	if parsed.Scheme == "" && parsed.Host == "" {
+		return true
+	}
+
+	// Parse the server URL to get its host
+	serverParsed, err := url.Parse(serverURL)
+	if err != nil {
+		return false
+	}
+
+	// Allow same host as test server
+	if parsed.Host == serverParsed.Host {
+		return true
+	}
+
+	// Allow common localhost variations used in tests
+	host := strings.ToLower(parsed.Hostname())
+	allowedHosts := []string{
+		"localhost",
+		"127.0.0.1",
+		"[::1]",
+		"example.com", // Common test domain
+		"myapp.com",   // Common test domain
+		"test.example.com",
+	}
+
+	for _, allowed := range allowedHosts {
+		if host == allowed {
+			return true
+		}
+	}
+
+	return false
 }
 
 // DefaultConfig returns a default server configuration
