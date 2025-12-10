@@ -394,11 +394,15 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	t.introspectionURL = metadata.IntrospectionURL // OAuth 2.0 Token Introspection endpoint (RFC 7662)
 	t.registrationURL = metadata.RegistrationURL   // OIDC Dynamic Client Registration endpoint (RFC 7591)
 
+	// Copy values for logging after unlock to avoid race conditions
+	introspectionURL := t.introspectionURL
+	registrationURL := t.registrationURL
+
 	t.metadataMu.Unlock()
 
 	// Log introspection endpoint availability for opaque token support
-	if t.introspectionURL != "" {
-		t.logger.Debugf("Token introspection endpoint discovered: %s", t.introspectionURL)
+	if introspectionURL != "" {
+		t.logger.Debugf("Token introspection endpoint discovered: %s", introspectionURL)
 		if t.allowOpaqueTokens {
 			t.logger.Debugf("Opaque token support enabled with introspection endpoint")
 		}
@@ -407,8 +411,8 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	}
 
 	// Log registration endpoint availability
-	if t.registrationURL != "" {
-		t.logger.Debugf("Dynamic client registration endpoint discovered: %s", t.registrationURL)
+	if registrationURL != "" {
+		t.logger.Debugf("Dynamic client registration endpoint discovered: %s", registrationURL)
 	}
 
 	// Perform Dynamic Client Registration if enabled and ClientID is not set
@@ -512,6 +516,27 @@ func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 		t.logger.Debug("Started singleton metadata refresh task")
 	} else {
 		t.logger.Debug("Metadata refresh task already running, skipping duplicate")
+	}
+}
+
+// attemptMetadataRecovery tries to fetch provider metadata when the system is in a failed state.
+// This is called periodically (every 30s) when requests come in and metadata is unavailable.
+// It allows automatic recovery when the OIDC provider becomes available again.
+func (t *TraefikOidc) attemptMetadataRecovery() {
+	if t.metadataCache == nil || t.httpClient == nil {
+		return
+	}
+
+	// Try to fetch metadata (single attempt, no aggressive retry here since this runs every 30s)
+	metadata, err := t.metadataCache.GetMetadata(t.providerURL, t.httpClient, t.logger)
+	if err != nil {
+		t.safeLogDebugf("Metadata recovery attempt failed: %v", err)
+		return
+	}
+
+	if metadata != nil {
+		t.updateMetadataEndpoints(metadata)
+		t.safeLogInfo("Successfully recovered OIDC provider metadata - service restored")
 	}
 }
 
