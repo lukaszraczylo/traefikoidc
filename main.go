@@ -5,6 +5,8 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -474,7 +476,10 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 func (t *TraefikOidc) startMetadataRefresh(providerURL string) {
 	// Use singleton resource manager for metadata refresh
 	rm := GetResourceManager()
-	taskName := "singleton-metadata-refresh"
+	// Use last 6 chars of provider URL hash to create unique task name per realm
+	// This fixes multi-realm support where different Keycloak realms need separate refresh tasks
+	hash := sha256.Sum256([]byte(providerURL))
+	taskName := "singleton-metadata-refresh-" + hex.EncodeToString(hash[:])[0:6]
 
 	// Create refresh function
 	refreshFunc := func() {

@@ -2427,6 +2427,152 @@ func TestMultipleMiddlewareInstances(t *testing.T) {
 	}
 }
 
+// TestMultiRealmMetadataRefreshIsolation verifies that multiple middleware instances
+// with different provider URLs (e.g., different Keycloak realms) get separate
+// metadata refresh tasks. This addresses the issue reported in PR #88.
+func TestMultiRealmMetadataRefreshIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	// Create two mock provider metadata servers simulating different Keycloak realms
+	realm1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		metadata := ProviderMetadata{
+			Issuer:        "https://keycloak.example.com/realms/realm1",
+			AuthURL:       "https://keycloak.example.com/realms/realm1/protocol/openid-connect/auth",
+			TokenURL:      "https://keycloak.example.com/realms/realm1/protocol/openid-connect/token",
+			JWKSURL:       "https://keycloak.example.com/realms/realm1/protocol/openid-connect/certs",
+			EndSessionURL: "https://keycloak.example.com/realms/realm1/protocol/openid-connect/logout",
+		}
+		json.NewEncoder(w).Encode(metadata)
+	}))
+	defer realm1Server.Close()
+
+	realm2Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		metadata := ProviderMetadata{
+			Issuer:        "https://keycloak.example.com/realms/realm2",
+			AuthURL:       "https://keycloak.example.com/realms/realm2/protocol/openid-connect/auth",
+			TokenURL:      "https://keycloak.example.com/realms/realm2/protocol/openid-connect/token",
+			JWKSURL:       "https://keycloak.example.com/realms/realm2/protocol/openid-connect/certs",
+			EndSessionURL: "https://keycloak.example.com/realms/realm2/protocol/openid-connect/logout",
+		}
+		json.NewEncoder(w).Encode(metadata)
+	}))
+	defer realm2Server.Close()
+
+	// Config for realm1
+	config1 := &Config{
+		ProviderURL:          realm1Server.URL,
+		ClientID:             "realm1-client",
+		ClientSecret:         "realm1-secret",
+		CallbackURL:          "/realm1/callback",
+		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
+		CookiePrefix:         "_oidc_realm1_",
+	}
+
+	// Config for realm2
+	config2 := &Config{
+		ProviderURL:          realm2Server.URL,
+		ClientID:             "realm2-client",
+		ClientSecret:         "realm2-secret",
+		CallbackURL:          "/realm2/callback",
+		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
+		CookiePrefix:         "_oidc_realm2_",
+	}
+
+	// Create middleware instances for both realms
+	middleware1, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), config1, "realm1-middleware")
+	if err != nil {
+		t.Fatalf("Failed to create middleware for realm1: %v", err)
+	}
+
+	middleware2, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), config2, "realm2-middleware")
+	if err != nil {
+		t.Fatalf("Failed to create middleware for realm2: %v", err)
+	}
+
+	m1, ok1 := middleware1.(*TraefikOidc)
+	m2, ok2 := middleware2.(*TraefikOidc)
+	if !ok1 || !ok2 {
+		t.Fatalf("Middleware is not of type *TraefikOidc")
+	}
+
+	// Clean up middleware instances
+	defer func() {
+		if err := m1.Close(); err != nil {
+			t.Errorf("Failed to close realm1 middleware: %v", err)
+		}
+		if err := m2.Close(); err != nil {
+			t.Errorf("Failed to close realm2 middleware: %v", err)
+		}
+	}()
+
+	// Wait for both instances to initialize
+	select {
+	case <-m1.initComplete:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Realm1 middleware failed to initialize")
+	}
+
+	select {
+	case <-m2.initComplete:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Realm2 middleware failed to initialize")
+	}
+
+	// Verify each instance has the correct issuer URL from their respective realms
+	if !strings.Contains(m1.issuerURL, "realm1") {
+		t.Errorf("Realm1 middleware expected issuer with realm1, got %s", m1.issuerURL)
+	}
+	if !strings.Contains(m2.issuerURL, "realm2") {
+		t.Errorf("Realm2 middleware expected issuer with realm2, got %s", m2.issuerURL)
+	}
+
+	// Verify provider URLs are different
+	if m1.providerURL == m2.providerURL {
+		t.Errorf("Both middlewares should have different provider URLs, got same: %s", m1.providerURL)
+	}
+
+	// Test that each middleware can handle requests independently
+	req1 := httptest.NewRequest("GET", "/realm1/protected", nil)
+	rr1 := httptest.NewRecorder()
+	m1.ServeHTTP(rr1, req1)
+
+	req2 := httptest.NewRequest("GET", "/realm2/protected", nil)
+	rr2 := httptest.NewRecorder()
+	m2.ServeHTTP(rr2, req2)
+
+	// Both should redirect to their respective auth URLs
+	if rr1.Code != http.StatusFound {
+		t.Errorf("Realm1: Expected redirect status %d, got %d", http.StatusFound, rr1.Code)
+	}
+	if rr2.Code != http.StatusFound {
+		t.Errorf("Realm2: Expected redirect status %d, got %d", http.StatusFound, rr2.Code)
+	}
+
+	location1 := rr1.Header().Get("Location")
+	location2 := rr2.Header().Get("Location")
+
+	if !strings.Contains(location1, "realm1") {
+		t.Errorf("Realm1: Expected redirect to realm1 auth URL, got %s", location1)
+	}
+	if !strings.Contains(location2, "realm2") {
+		t.Errorf("Realm2: Expected redirect to realm2 auth URL, got %s", location2)
+	}
+}
+
 func TestServeHTTPRolesAndGroups(t *testing.T) {
 	ts := NewTestSuite(t)
 	ts.Setup()
