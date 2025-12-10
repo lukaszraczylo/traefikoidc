@@ -209,11 +209,8 @@ func (m *MockJWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *
 }
 
 func (m *MockJWKCache) Cleanup() {
-	// Mock cleanup implementation
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.JWKS = nil
-	m.Err = nil
+	// Mock cleanup is a no-op - we don't want to destroy the mock JWKS data
+	// Real cleanup is for expired entries, not resetting all data
 }
 
 // MockTokenVerifier implements TokenVerifier for testing, allowing interception of VerifyToken calls.
@@ -2425,6 +2422,276 @@ func TestMultipleMiddlewareInstances(t *testing.T) {
 			t.Errorf("Instance %d: Expected redirect to auth URL, got %s", i, location)
 		}
 	}
+}
+
+// TestMultiRealmMetadataRefreshIsolation verifies that multiple middleware instances
+// with different provider URLs (e.g., different Keycloak realms) get separate
+// metadata refresh tasks. This addresses the issue reported in PR #88.
+func TestMultiRealmMetadataRefreshIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	// Create two mock provider metadata servers simulating different Keycloak realms
+	realm1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		metadata := ProviderMetadata{
+			Issuer:        "https://keycloak.example.com/realms/realm1",
+			AuthURL:       "https://keycloak.example.com/realms/realm1/protocol/openid-connect/auth",
+			TokenURL:      "https://keycloak.example.com/realms/realm1/protocol/openid-connect/token",
+			JWKSURL:       "https://keycloak.example.com/realms/realm1/protocol/openid-connect/certs",
+			EndSessionURL: "https://keycloak.example.com/realms/realm1/protocol/openid-connect/logout",
+		}
+		json.NewEncoder(w).Encode(metadata)
+	}))
+	defer realm1Server.Close()
+
+	realm2Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		metadata := ProviderMetadata{
+			Issuer:        "https://keycloak.example.com/realms/realm2",
+			AuthURL:       "https://keycloak.example.com/realms/realm2/protocol/openid-connect/auth",
+			TokenURL:      "https://keycloak.example.com/realms/realm2/protocol/openid-connect/token",
+			JWKSURL:       "https://keycloak.example.com/realms/realm2/protocol/openid-connect/certs",
+			EndSessionURL: "https://keycloak.example.com/realms/realm2/protocol/openid-connect/logout",
+		}
+		json.NewEncoder(w).Encode(metadata)
+	}))
+	defer realm2Server.Close()
+
+	// Config for realm1
+	config1 := &Config{
+		ProviderURL:          realm1Server.URL,
+		ClientID:             "realm1-client",
+		ClientSecret:         "realm1-secret",
+		CallbackURL:          "/realm1/callback",
+		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
+		CookiePrefix:         "_oidc_realm1_",
+	}
+
+	// Config for realm2
+	config2 := &Config{
+		ProviderURL:          realm2Server.URL,
+		ClientID:             "realm2-client",
+		ClientSecret:         "realm2-secret",
+		CallbackURL:          "/realm2/callback",
+		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
+		CookiePrefix:         "_oidc_realm2_",
+	}
+
+	// Create middleware instances for both realms
+	middleware1, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), config1, "realm1-middleware")
+	if err != nil {
+		t.Fatalf("Failed to create middleware for realm1: %v", err)
+	}
+
+	middleware2, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), config2, "realm2-middleware")
+	if err != nil {
+		t.Fatalf("Failed to create middleware for realm2: %v", err)
+	}
+
+	m1, ok1 := middleware1.(*TraefikOidc)
+	m2, ok2 := middleware2.(*TraefikOidc)
+	if !ok1 || !ok2 {
+		t.Fatalf("Middleware is not of type *TraefikOidc")
+	}
+
+	// Clean up middleware instances
+	defer func() {
+		if err := m1.Close(); err != nil {
+			t.Errorf("Failed to close realm1 middleware: %v", err)
+		}
+		if err := m2.Close(); err != nil {
+			t.Errorf("Failed to close realm2 middleware: %v", err)
+		}
+	}()
+
+	// Wait for both instances to initialize
+	select {
+	case <-m1.initComplete:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Realm1 middleware failed to initialize")
+	}
+
+	select {
+	case <-m2.initComplete:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Realm2 middleware failed to initialize")
+	}
+
+	// Verify each instance has the correct issuer URL from their respective realms
+	if !strings.Contains(m1.issuerURL, "realm1") {
+		t.Errorf("Realm1 middleware expected issuer with realm1, got %s", m1.issuerURL)
+	}
+	if !strings.Contains(m2.issuerURL, "realm2") {
+		t.Errorf("Realm2 middleware expected issuer with realm2, got %s", m2.issuerURL)
+	}
+
+	// Verify provider URLs are different
+	if m1.providerURL == m2.providerURL {
+		t.Errorf("Both middlewares should have different provider URLs, got same: %s", m1.providerURL)
+	}
+
+	// Test that each middleware can handle requests independently
+	req1 := httptest.NewRequest("GET", "/realm1/protected", nil)
+	rr1 := httptest.NewRecorder()
+	m1.ServeHTTP(rr1, req1)
+
+	req2 := httptest.NewRequest("GET", "/realm2/protected", nil)
+	rr2 := httptest.NewRecorder()
+	m2.ServeHTTP(rr2, req2)
+
+	// Both should redirect to their respective auth URLs
+	if rr1.Code != http.StatusFound {
+		t.Errorf("Realm1: Expected redirect status %d, got %d", http.StatusFound, rr1.Code)
+	}
+	if rr2.Code != http.StatusFound {
+		t.Errorf("Realm2: Expected redirect status %d, got %d", http.StatusFound, rr2.Code)
+	}
+
+	location1 := rr1.Header().Get("Location")
+	location2 := rr2.Header().Get("Location")
+
+	if !strings.Contains(location1, "realm1") {
+		t.Errorf("Realm1: Expected redirect to realm1 auth URL, got %s", location1)
+	}
+	if !strings.Contains(location2, "realm2") {
+		t.Errorf("Realm2: Expected redirect to realm2 auth URL, got %s", location2)
+	}
+}
+
+// TestMetadataRecoveryOnProviderFailure verifies that the middleware automatically
+// recovers when the OIDC provider becomes available after initial failure.
+func TestMetadataRecoveryOnProviderFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	// Track whether the provider is "available"
+	providerAvailable := false
+	var mu sync.Mutex
+
+	// Create mock provider that initially fails, then becomes available
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		available := providerAvailable
+		mu.Unlock()
+
+		if !available {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			metadata := ProviderMetadata{
+				Issuer:        "https://test-issuer.com",
+				AuthURL:       "https://test-issuer.com/auth",
+				TokenURL:      "https://test-issuer.com/token",
+				JWKSURL:       "https://test-issuer.com/jwks",
+				EndSessionURL: "https://test-issuer.com/logout",
+			}
+			json.NewEncoder(w).Encode(metadata)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockServer.Close()
+
+	config := &Config{
+		ProviderURL:          mockServer.URL,
+		ClientID:             "test-client",
+		ClientSecret:         "test-secret",
+		CallbackURL:          "/callback",
+		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
+	}
+
+	// Create middleware while provider is unavailable
+	middleware, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), config, "test-recovery")
+	if err != nil {
+		t.Fatalf("Failed to create middleware: %v", err)
+	}
+
+	m, ok := middleware.(*TraefikOidc)
+	if !ok {
+		t.Fatalf("Middleware is not of type *TraefikOidc")
+	}
+	defer m.Close()
+
+	// Wait for initial initialization to complete (it should fail)
+	select {
+	case <-m.initComplete:
+	case <-time.After(15 * time.Second):
+		t.Fatal("Initialization did not complete in time")
+	}
+
+	// Verify initial state - should be in failed state (no issuerURL)
+	m.metadataMu.RLock()
+	initialIssuer := m.issuerURL
+	m.metadataMu.RUnlock()
+
+	if initialIssuer != "" {
+		t.Errorf("Expected empty issuerURL after failed init, got: %s", initialIssuer)
+	}
+
+	// First request should get 503
+	req1 := httptest.NewRequest("GET", "/protected", nil)
+	rr1 := httptest.NewRecorder()
+	m.ServeHTTP(rr1, req1)
+
+	if rr1.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503 when provider unavailable, got %d", rr1.Code)
+	}
+
+	// Now make the provider available
+	mu.Lock()
+	providerAvailable = true
+	mu.Unlock()
+
+	// Reset the retry timer to allow immediate retry
+	m.metadataRetryMutex.Lock()
+	m.lastMetadataRetryTime = time.Time{} // Reset to zero time
+	m.metadataRetryMutex.Unlock()
+
+	// Second request should trigger recovery attempt
+	req2 := httptest.NewRequest("GET", "/protected", nil)
+	rr2 := httptest.NewRecorder()
+	m.ServeHTTP(rr2, req2)
+
+	// Give the async recovery a moment to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Check if recovery happened
+	m.metadataMu.RLock()
+	recoveredIssuer := m.issuerURL
+	m.metadataMu.RUnlock()
+
+	if recoveredIssuer == "" {
+		t.Error("Expected issuerURL to be recovered after provider became available")
+	}
+
+	// Third request should succeed (redirect to auth, not 503)
+	req3 := httptest.NewRequest("GET", "/protected", nil)
+	rr3 := httptest.NewRecorder()
+	m.ServeHTTP(rr3, req3)
+
+	if rr3.Code == http.StatusServiceUnavailable {
+		t.Errorf("Expected redirect after recovery, still got 503")
+	}
+
+	t.Logf("Recovery test: initial_issuer=%q, recovered_issuer=%q, final_status=%d",
+		initialIssuer, recoveredIssuer, rr3.Code)
 }
 
 func TestServeHTTPRolesAndGroups(t *testing.T) {

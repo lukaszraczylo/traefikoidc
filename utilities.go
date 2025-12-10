@@ -3,6 +3,8 @@
 package traefikoidc
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -222,8 +224,13 @@ func (t *TraefikOidc) Close() error {
 		rm := GetResourceManager()
 
 		// Stop singleton tasks related to this instance
-		_ = rm.StopBackgroundTask("singleton-token-cleanup")    // Safe to ignore: best effort cleanup
-		_ = rm.StopBackgroundTask("singleton-metadata-refresh") // Safe to ignore: best effort cleanup
+		_ = rm.StopBackgroundTask("singleton-token-cleanup") // Safe to ignore: best effort cleanup
+		// Stop metadata refresh task using same hash-based name as startMetadataRefresh
+		if t.providerURL != "" {
+			hash := sha256.Sum256([]byte(t.providerURL))
+			taskName := "singleton-metadata-refresh-" + hex.EncodeToString(hash[:])[0:6]
+			_ = rm.StopBackgroundTask(taskName) // Safe to ignore: best effort cleanup
+		}
 
 		// Remove reference for this instance
 		rm.RemoveReference(t.name)

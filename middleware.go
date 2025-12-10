@@ -50,6 +50,20 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		t.metadataMu.RUnlock()
 
 		if issuerURL == "" {
+			// Provider metadata initialization failed - try to recover
+			// Retry every 30 seconds to allow automatic recovery when provider comes back online
+			t.metadataRetryMutex.Lock()
+			shouldRetry := time.Since(t.lastMetadataRetryTime) >= 30*time.Second
+			if shouldRetry {
+				t.lastMetadataRetryTime = time.Now()
+			}
+			t.metadataRetryMutex.Unlock()
+
+			if shouldRetry && t.providerURL != "" {
+				t.logger.Info("Attempting to recover OIDC provider metadata...")
+				go t.attemptMetadataRecovery()
+			}
+
 			t.logger.Error("OIDC provider metadata initialization failed or incomplete")
 			t.sendErrorResponse(rw, req, "OIDC provider metadata initialization failed - please check provider availability and configuration", http.StatusServiceUnavailable)
 			return

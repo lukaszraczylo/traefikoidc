@@ -2,6 +2,8 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"runtime"
 	"sync"
@@ -95,6 +97,89 @@ func TestSingletonResourceManager(t *testing.T) {
 		if err != nil {
 			t.Errorf("Failed to handle duplicate task registration: %v", err)
 		}
+	})
+
+	t.Run("MultiRealmMetadataRefreshTaskNaming", func(t *testing.T) {
+		// This test verifies that different provider URLs generate different task names
+		// which is critical for multi-realm Keycloak support (PR #88)
+
+		// Reset singletons for clean test state
+		resetResourceManagerForTesting()
+		ResetGlobalTaskRegistry()
+		defer ResetGlobalTaskRegistry()
+		rm := GetResourceManager()
+
+		// Simulate different Keycloak realms
+		providerURL1 := "https://keycloak.example.com/realms/realm1"
+		providerURL2 := "https://keycloak.example.com/realms/realm2"
+
+		// Generate task names using the same logic as startMetadataRefresh
+		hash1 := sha256.Sum256([]byte(providerURL1))
+		taskName1 := "singleton-metadata-refresh-" + hex.EncodeToString(hash1[:])[0:6]
+
+		hash2 := sha256.Sum256([]byte(providerURL2))
+		taskName2 := "singleton-metadata-refresh-" + hex.EncodeToString(hash2[:])[0:6]
+
+		// Verify task names are different
+		if taskName1 == taskName2 {
+			t.Errorf("Task names should be different for different provider URLs: %s vs %s", taskName1, taskName2)
+		}
+
+		// Register both tasks
+		task1Called := int32(0)
+		task2Called := int32(0)
+
+		err := rm.RegisterBackgroundTask(taskName1, 100*time.Millisecond, func() {
+			atomic.AddInt32(&task1Called, 1)
+		})
+		if err != nil {
+			t.Errorf("Failed to register task 1: %v", err)
+		}
+
+		err = rm.RegisterBackgroundTask(taskName2, 100*time.Millisecond, func() {
+			atomic.AddInt32(&task2Called, 1)
+		})
+		if err != nil {
+			t.Errorf("Failed to register task 2: %v", err)
+		}
+
+		// Start both tasks
+		_ = rm.StartBackgroundTask(taskName1)
+		_ = rm.StartBackgroundTask(taskName2)
+
+		// Wait for tasks to execute
+		time.Sleep(250 * time.Millisecond)
+
+		// Verify both tasks are running independently
+		if !rm.IsTaskRunning(taskName1) {
+			t.Error("Task 1 should be running")
+		}
+		if !rm.IsTaskRunning(taskName2) {
+			t.Error("Task 2 should be running")
+		}
+
+		// Verify both tasks were called (at least once)
+		if atomic.LoadInt32(&task1Called) == 0 {
+			t.Error("Task 1 should have been called at least once")
+		}
+		if atomic.LoadInt32(&task2Called) == 0 {
+			t.Error("Task 2 should have been called at least once")
+		}
+
+		// Stop both tasks
+		_ = rm.StopBackgroundTask(taskName1)
+		_ = rm.StopBackgroundTask(taskName2)
+
+		// Verify tasks are stopped
+		time.Sleep(50 * time.Millisecond)
+		if rm.IsTaskRunning(taskName1) {
+			t.Error("Task 1 should be stopped")
+		}
+		if rm.IsTaskRunning(taskName2) {
+			t.Error("Task 2 should be stopped")
+		}
+
+		t.Logf("Successfully verified multi-realm task isolation: task1=%s, task2=%s", taskName1, taskName2)
 	})
 
 	t.Run("ReferenceCountingCleanup", func(t *testing.T) {

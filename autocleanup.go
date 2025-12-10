@@ -266,18 +266,21 @@ func (cb *TaskCircuitBreaker) CanCreateTask(taskName string) error {
 	max := atomic.LoadInt32(&cb.maxConcurrent)
 
 	// For cleanup tasks, be more restrictive (singleton-like behavior)
+	// However, allow distinct realm-specific tasks (e.g., singleton-metadata-refresh-abc123 vs singleton-metadata-refresh-def456)
 	if strings.Contains(taskName, "cleanup") || strings.Contains(taskName, "singleton") {
 		cb.tasksMu.RLock()
-		hasCleanupTask := false
+		hasSameTask := false
 		for activeTask := range cb.activeTasks {
-			if strings.Contains(activeTask, "cleanup") || strings.Contains(activeTask, "singleton") {
-				hasCleanupTask = true
+			// Only block if the EXACT same task is already running
+			// This allows realm-specific tasks like singleton-metadata-refresh-{hash} to run concurrently
+			if activeTask == taskName {
+				hasSameTask = true
 				break
 			}
 		}
 		cb.tasksMu.RUnlock()
 
-		if hasCleanupTask {
+		if hasSameTask {
 			return fmt.Errorf("cleanup/singleton task already running: %s", taskName)
 		}
 	}

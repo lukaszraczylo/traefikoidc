@@ -128,8 +128,10 @@ type TraefikOidc struct {
 	suppressDiagnosticLogs     bool
 	firstRequestReceived       bool
 	metadataRefreshStarted     bool
-	allowPrivateIPAddresses    bool // Allow private IP addresses in URLs (for internal networks)
-	minimalHeaders             bool // Reduce headers to prevent 431 errors
+	lastMetadataRetryTime      time.Time  // Track last metadata retry for failed state recovery
+	metadataRetryMutex         sync.Mutex // Protects lastMetadataRetryTime
+	allowPrivateIPAddresses    bool       // Allow private IP addresses in URLs (for internal networks)
+	minimalHeaders             bool       // Reduce headers to prevent 431 errors
 	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
 	scopeFilter                *ScopeFilter // NEW - for discovery-based scope filtering
 	scopesSupported            []string     // NEW - from provider metadata
