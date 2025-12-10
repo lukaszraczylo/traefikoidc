@@ -1076,6 +1076,81 @@ func TestSessionErrorHandling(t *testing.T) {
 	_ = runner
 }
 
+func TestCreateSessionFromAccessToken(t *testing.T) {
+	logger := NewLogger("error")
+	sm, err := NewSessionManager("0123456789abcdef0123456789abcdef0123456789abcdef", false, "", logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+	defer func() {
+		if shutdownErr := sm.Shutdown(); shutdownErr != nil {
+			t.Logf("Session manager shutdown error: %v", shutdownErr)
+		}
+	}()
+
+	tokens := NewTestTokens()
+	session, err := sm.CreateSessionFromAccessToken(tokens.CreateValidJWT())
+	if err != nil {
+		t.Fatalf("CreateSessionFromAccessToken failed: %v", err)
+	}
+	defer session.returnToPoolSafely()
+
+	if !session.GetAuthenticated() {
+		t.Fatalf("Expected session to be authenticated")
+	}
+
+	if email := session.GetEmail(); email != "test@example.com" {
+		t.Fatalf("Unexpected email stored in session: %s", email)
+	}
+
+	if token := session.GetAccessToken(); token != tokens.CreateValidJWT() {
+		t.Fatalf("Access token mismatch, expected %s got %s", tokens.CreateValidJWT(), token)
+	}
+
+	if session.IsDirty() {
+		t.Fatalf("Synthetic session should not be marked dirty")
+	}
+}
+
+func TestCreateSessionFromAccessTokenMissingEmail(t *testing.T) {
+	logger := NewLogger("error")
+	sm, err := NewSessionManager("fedcba9876543210fedcba9876543210fedcba9876543210", false, "", logger)
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+	defer func() {
+		if shutdownErr := sm.Shutdown(); shutdownErr != nil {
+			t.Logf("Session manager shutdown error: %v", shutdownErr)
+		}
+	}()
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"test"}`))
+	claims := map[string]interface{}{
+		"iss": "https://issuer.example.com",
+		"aud": "test-client",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"sub": "user-123",
+	}
+	claimsBytes, marshalErr := json.Marshal(claims)
+	if marshalErr != nil {
+		t.Fatalf("Failed to marshal claims: %v", marshalErr)
+	}
+	payload := base64.RawURLEncoding.EncodeToString(claimsBytes)
+	signature := base64.RawURLEncoding.EncodeToString([]byte("signature"))
+	token := fmt.Sprintf("%s.%s.%s", header, payload, signature)
+
+	session, err := sm.CreateSessionFromAccessToken(token)
+	if session != nil {
+		session.returnToPoolSafely()
+	}
+	if err == nil {
+		t.Fatalf("Expected error for token missing email claim")
+	}
+	if !strings.Contains(err.Error(), "email") {
+		t.Fatalf("Expected error about email claim, got: %v", err)
+	}
+}
+
 // TestSessionClearAlwaysReturnsToPool tests that sessions are always returned to pool even on errors
 func TestSessionClearAlwaysReturnsToPool(t *testing.T) {
 	config := GetTestConfig()

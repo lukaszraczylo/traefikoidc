@@ -898,6 +898,178 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	return sessionData, nil
 }
 
+// CreateSessionFromAccessToken builds an in-memory session using only a validated access token.
+// It constructs synthetic session state so downstream components that expect session-backed
+// data (like headers or domain checks) can operate without cookie persistence.
+// Parameters:
+//   - accessToken: The validated access token presented via an Authorization header.
+//
+// Returns:
+//   - A populated *SessionData instance representing the token-authenticated user.
+//   - An error if the token is empty, malformed, or missing essential claims.
+func (sm *SessionManager) CreateSessionFromAccessToken(accessToken string) (*SessionData, error) {
+	trimmedToken := strings.TrimSpace(accessToken)
+	if trimmedToken == "" {
+		return nil, fmt.Errorf("access token cannot be empty")
+	}
+
+	if len(trimmedToken) > AccessTokenConfig.MaxLength {
+		return nil, fmt.Errorf("access token exceeds maximum length of %d bytes", AccessTokenConfig.MaxLength)
+	}
+
+	if strings.Count(trimmedToken, ".") != 2 {
+		return nil, fmt.Errorf("access token must be a JWT with three segments")
+	}
+
+	sessionInterface := sm.sessionPool.Get()
+	sessionData, _ := sessionInterface.(*SessionData)
+	if sessionData == nil {
+		sessionData = &SessionData{
+			manager:            sm,
+			accessTokenChunks:  make(map[int]*sessions.Session),
+			refreshTokenChunks: make(map[int]*sessions.Session),
+			idTokenChunks:      make(map[int]*sessions.Session),
+		}
+	}
+
+	atomic.AddInt64(&sm.poolHits, 1)
+	atomic.AddInt64(&sm.activeSessions, 1)
+
+	// Ensure the session starts from a clean slate.
+	sessionData.Reset()
+
+	cleanupOnError := func(err error) (*SessionData, error) {
+		if sessionData != nil {
+			sessionData.Reset()
+			sm.sessionPool.Put(sessionData)
+			atomic.AddInt64(&sm.activeSessions, -1)
+		}
+		return nil, err
+	}
+
+	// Initialize session containers for synthetic usage.
+	ensureSession := func(target **sessions.Session, name string) {
+		if *target == nil {
+			*target = sessions.NewSession(sm.store, name)
+		} else {
+			clearSessionValues(*target, false)
+			(*target).ID = ""
+			(*target).IsNew = true
+		}
+		if (*target).Values == nil {
+			(*target).Values = make(map[interface{}]interface{})
+		}
+	}
+
+	ensureSession(&sessionData.mainSession, mainCookieName)
+	ensureSession(&sessionData.accessSession, accessTokenCookie)
+	ensureSession(&sessionData.refreshSession, refreshTokenCookie)
+	ensureSession(&sessionData.idTokenSession, idTokenCookie)
+
+	if sessionData.accessTokenChunks == nil {
+		sessionData.accessTokenChunks = make(map[int]*sessions.Session)
+	} else {
+		for k := range sessionData.accessTokenChunks {
+			delete(sessionData.accessTokenChunks, k)
+		}
+	}
+
+	if sessionData.refreshTokenChunks == nil {
+		sessionData.refreshTokenChunks = make(map[int]*sessions.Session)
+	} else {
+		for k := range sessionData.refreshTokenChunks {
+			delete(sessionData.refreshTokenChunks, k)
+		}
+	}
+
+	if sessionData.idTokenChunks == nil {
+		sessionData.idTokenChunks = make(map[int]*sessions.Session)
+	} else {
+		for k := range sessionData.idTokenChunks {
+			delete(sessionData.idTokenChunks, k)
+		}
+	}
+
+	claims, err := extractClaims(trimmedToken)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Debugf("CreateSessionFromAccessToken: failed to extract claims: %v", err)
+		}
+		return cleanupOnError(fmt.Errorf("failed to parse access token claims: %w", err))
+	}
+
+	resolveClaim := func(keys ...string) string {
+		for _, key := range keys {
+			if raw, exists := claims[key]; exists {
+				if value, ok := raw.(string); ok {
+					value = strings.TrimSpace(value)
+					if value != "" {
+						return value
+					}
+				}
+			}
+		}
+		return ""
+	}
+
+	email := resolveClaim("email", "upn", "preferred_username")
+	if email == "" {
+		if sm.logger != nil {
+			sm.logger.Debug("CreateSessionFromAccessToken: missing email-like claim")
+		}
+		return cleanupOnError(fmt.Errorf("access token missing required email claim"))
+	}
+
+	subject := resolveClaim("sub")
+
+	sessionData.sessionMutex.Lock()
+	defer sessionData.sessionMutex.Unlock()
+
+	// Synthesize authenticated session state without marking it dirty for persistence.
+	sessionData.mainSession.Values["authenticated"] = true
+	sessionData.mainSession.Values["created_at"] = time.Now().Unix()
+	sessionData.mainSession.Values["email"] = email
+	sessionData.mainSession.Values["redirect_count"] = 0
+	if subject != "" {
+		sessionData.mainSession.Values["subject"] = subject
+	}
+	sessionData.mainSession.IsNew = false
+
+	storedToken := trimmedToken
+	isCompressed := false
+	compressed := compressToken(trimmedToken)
+	if compressed != trimmedToken {
+		if decompressed := decompressToken(compressed); decompressed == trimmedToken {
+			storedToken = compressed
+			isCompressed = true
+		}
+	}
+
+	sessionData.accessSession.Values["token"] = storedToken
+	sessionData.accessSession.Values["compressed"] = isCompressed
+	sessionData.accessSession.IsNew = false
+
+	sessionData.refreshSession.Values["token"] = ""
+	sessionData.refreshSession.Values["compressed"] = false
+	sessionData.refreshSession.IsNew = false
+
+	sessionData.idTokenSession.Values["token"] = ""
+	sessionData.idTokenSession.Values["compressed"] = false
+	sessionData.idTokenSession.IsNew = false
+
+	if sessionID, genErr := generateSecureRandomString(64); genErr == nil {
+		sessionData.mainSession.ID = sessionID
+	} else if sm.logger != nil {
+		sm.logger.Debugf("CreateSessionFromAccessToken: failed to generate session id: %v", genErr)
+	}
+
+	sessionData.request = nil
+	sessionData.dirty = false
+	sessionData.inUse = true
+
+	return sessionData, nil
+}
+
 // getTokenChunkSessions loads all available token chunk sessions for a given token type.
 // It iterates through numbered chunk sessions until no more are found,
 // populating the provided chunks map with the loaded sessions.
