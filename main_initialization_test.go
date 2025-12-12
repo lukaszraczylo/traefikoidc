@@ -15,10 +15,10 @@ import (
 // TestInitializeMetadata tests the initializeMetadata function
 func TestInitializeMetadata(t *testing.T) {
 	tests := []struct {
-		name         string
-		providerURL  string
 		setupMock    func() *httptest.Server
 		validateFunc func(*testing.T, *TraefikOidc)
+		name         string
+		providerURL  string
 		wantPanic    bool
 	}{
 		{

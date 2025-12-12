@@ -33,21 +33,19 @@ type Logger interface {
 
 // Config provides configuration for the cache
 type Config struct {
+	Logger            Logger
+	JWKConfig         *JWKConfig
+	MetadataConfig    *MetadataConfig
+	TokenConfig       *TokenConfig
 	Type              Type
-	MaxSize           int
-	MaxMemoryBytes    int64
 	DefaultTTL        time.Duration
 	CleanupInterval   time.Duration
-	EnableCompression bool
+	MaxMemoryBytes    int64
+	MaxSize           int
 	EnableMetrics     bool
 	EnableAutoCleanup bool
 	EnableMemoryLimit bool
-	Logger            Logger
-
-	// Type-specific configurations
-	TokenConfig    *TokenConfig
-	MetadataConfig *MetadataConfig
-	JWKConfig      *JWKConfig
+	EnableCompression bool
 }
 
 // TokenConfig provides token-specific cache configuration
@@ -59,11 +57,11 @@ type TokenConfig struct {
 
 // MetadataConfig provides metadata-specific cache configuration
 type MetadataConfig struct {
+	SecurityCriticalFields         []string
 	GracePeriod                    time.Duration
 	ExtendedGracePeriod            time.Duration
 	MaxGracePeriod                 time.Duration
 	SecurityCriticalMaxGracePeriod time.Duration
-	SecurityCriticalFields         []string
 }
 
 // JWKConfig provides JWK-specific cache configuration
@@ -75,45 +73,35 @@ type JWKConfig struct {
 
 // Item represents a single cache entry
 type Item struct {
-	Key          string
-	Value        interface{}
-	Size         int64
 	ExpiresAt    time.Time
 	LastAccessed time.Time
-	AccessCount  int64
+	Value        interface{}
+	Metadata     map[string]interface{}
+	element      *list.Element
+	Key          string
 	CacheType    Type
-
-	// Type-specific metadata
-	Metadata map[string]interface{}
-
-	// LRU list element reference
-	element *list.Element
+	Size         int64
+	AccessCount  int64
 }
 
 // Cache provides a single, unified cache implementation
 type Cache struct {
-	mu      sync.RWMutex
-	items   map[string]*Item
-	lruList *list.List
-	config  Config
-	logger  Logger
-
-	// Memory management
+	config        Config
+	ctx           context.Context
+	logger        Logger
+	cancel        context.CancelFunc
+	lruList       *list.List
+	items         map[string]*Item
+	stopCleanup   chan bool
+	wg            sync.WaitGroup
 	currentSize   int64
 	currentMemory int64
-
-	// Metrics
-	hits      int64
-	misses    int64
-	evictions int64
-	sets      int64
-
-	// Lifecycle management
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	stopCleanup chan bool
-	closed      int32
+	hits          int64
+	misses        int64
+	evictions     int64
+	sets          int64
+	mu            sync.RWMutex
+	closed        int32
 }
 
 // DefaultConfig returns a default cache configuration

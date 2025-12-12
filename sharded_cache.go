@@ -17,8 +17,8 @@ type ShardedCache struct {
 
 // cacheShard represents a single shard with its own mutex and data map.
 type cacheShard struct {
-	mu    sync.RWMutex
 	items map[string]*shardedCacheItem
+	mu    sync.RWMutex
 }
 
 // shardedCacheItem represents an item in the sharded cache with expiration.

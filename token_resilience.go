@@ -8,37 +8,21 @@ import (
 
 // TokenResilienceConfig centralizes resilience configuration for token operations
 type TokenResilienceConfig struct {
-	// Circuit breaker configuration for token operations
-	CircuitBreakerEnabled bool
+	MetadataCacheConfig   MetadataCacheResilienceConfig
+	RetryConfig           RetryConfig
 	CircuitBreakerConfig  CircuitBreakerConfig
-
-	// Retry configuration for token operations
-	RetryEnabled bool
-	RetryConfig  RetryConfig
-
-	// Metadata cache progressive grace period configuration
-	MetadataCacheConfig MetadataCacheResilienceConfig
+	CircuitBreakerEnabled bool
+	RetryEnabled          bool
 }
 
 // MetadataCacheResilienceConfig defines resilience settings for metadata cache
 type MetadataCacheResilienceConfig struct {
-	// EnableProgressiveGracePeriod allows extending cache TTL on failures
-	EnableProgressiveGracePeriod bool
-
-	// InitialGracePeriod is the first extension when service is unavailable (5 minutes)
-	InitialGracePeriod time.Duration
-
-	// ExtendedGracePeriod is the second extension for continued failures (15 minutes)
-	ExtendedGracePeriod time.Duration
-
-	// MaxGracePeriod is the maximum extension allowed (30 minutes for normal, 15 for security-critical)
-	MaxGracePeriod time.Duration
-
-	// SecurityCriticalMaxGracePeriod enforces Allan's security limit for critical metadata
+	SecurityCriticalFields         []string
+	InitialGracePeriod             time.Duration
+	ExtendedGracePeriod            time.Duration
+	MaxGracePeriod                 time.Duration
 	SecurityCriticalMaxGracePeriod time.Duration
-
-	// SecurityCriticalFields defines which metadata fields are security-critical
-	SecurityCriticalFields []string
+	EnableProgressiveGracePeriod   bool
 }
 
 // DefaultTokenResilienceConfig returns the default resilience configuration for token operations
@@ -90,11 +74,11 @@ func DefaultMetadataCacheResilienceConfig() MetadataCacheResilienceConfig {
 
 // TokenResilienceManager coordinates resilience mechanisms for token operations
 type TokenResilienceManager struct {
-	config               TokenResilienceConfig
 	errorRecoveryManager *ErrorRecoveryManager
 	circuitBreaker       *CircuitBreaker
 	retryExecutor        *RetryExecutor
 	logger               *Logger
+	config               TokenResilienceConfig
 }
 
 // NewTokenResilienceManager creates a new token resilience manager

@@ -81,11 +81,11 @@ func TestIsTestMode_DefaultBehavior(t *testing.T) {
 // TestVerifyAudience tests the verifyAudience function
 func TestVerifyAudience(t *testing.T) {
 	tests := []struct {
-		name             string
 		tokenAudience    interface{}
+		name             string
 		expectedAudience string
-		expectError      bool
 		description      string
+		expectError      bool
 	}{
 		{
 			name:             "Audience matches",

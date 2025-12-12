@@ -7,22 +7,17 @@ import (
 
 // Manager manages multiple cache instances with singleton pattern
 type Manager struct {
-	mu sync.RWMutex
-
-	// Core caches
+	logger        Logger
 	tokenCache    *Cache
 	metadataCache *Cache
 	jwkCache      *Cache
 	sessionCache  *Cache
 	generalCache  *Cache
-
-	// Typed wrappers
 	typedToken    *TokenCache
 	typedMetadata *MetadataCache
 	typedJWK      *JWKCache
 	typedSession  *SessionCache
-
-	logger Logger
+	mu            sync.RWMutex
 }
 
 var (

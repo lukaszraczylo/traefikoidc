@@ -15,38 +15,19 @@ import (
 // It implements request coalescing, rate limiting, and circuit breaking
 // specifically for token refresh operations.
 type RefreshCoordinator struct {
-	// inFlightRefreshes tracks active refresh operations by refresh token hash
-	inFlightRefreshes map[string]*refreshOperation
-	// refreshMutex protects the inFlightRefreshes map
-	refreshMutex sync.RWMutex
-
-	// sessionRefreshAttempts tracks refresh attempts per session
+	inFlightRefreshes      map[string]*refreshOperation
+	cleanupTimers          map[string]*time.Timer
 	sessionRefreshAttempts map[string]*refreshAttemptTracker
-	// attemptsMutex protects sessionRefreshAttempts map
-	attemptsMutex sync.RWMutex
-
-	// Circuit breaker for refresh operations
-	circuitBreaker *RefreshCircuitBreaker
-
-	// Configuration
-	config RefreshCoordinatorConfig
-
-	// Metrics
-	metrics *RefreshMetrics
-
-	// Logger
-	logger *Logger
-
-	// Cleanup goroutine control
-	stopChan chan struct{}
-	wg       sync.WaitGroup
-
-	// delayedCleanupQueue stores items to be cleaned up after delay
-	// Uses a timer-based approach instead of spawning goroutines per cleanup
-	delayedCleanupQueue chan delayedCleanupItem
-	// cleanupTimerPool reuses timers to avoid goroutine-per-cleanup
-	cleanupTimerMu sync.Mutex
-	cleanupTimers  map[string]*time.Timer
+	delayedCleanupQueue    chan delayedCleanupItem
+	circuitBreaker         *RefreshCircuitBreaker
+	metrics                *RefreshMetrics
+	logger                 *Logger
+	stopChan               chan struct{}
+	config                 RefreshCoordinatorConfig
+	wg                     sync.WaitGroup
+	attemptsMutex          sync.RWMutex
+	refreshMutex           sync.RWMutex
+	cleanupTimerMu         sync.Mutex
 }
 
 // RefreshCoordinatorConfig configures the refresh coordinator behavior
@@ -89,18 +70,12 @@ func DefaultRefreshCoordinatorConfig() RefreshCoordinatorConfig {
 
 // refreshOperation represents an in-flight refresh operation
 type refreshOperation struct {
-	// refreshToken being refreshed (for validation)
+	startTime    time.Time
+	result       *refreshResult
+	done         chan struct{}
 	refreshToken string
-	// result stores the final result
-	result *refreshResult
-	// done signals when the operation is complete
-	done chan struct{}
-	// startTime tracks when the operation started
-	startTime time.Time
-	// waiterCount tracks number of goroutines waiting
-	waiterCount int32
-	// mutex protects the result field
-	mutex sync.RWMutex
+	mutex        sync.RWMutex
+	waiterCount  int32
 }
 
 // refreshResult contains the result of a refresh operation
@@ -112,18 +87,12 @@ type refreshResult struct {
 
 // refreshAttemptTracker tracks refresh attempts for a session
 type refreshAttemptTracker struct {
-	// attempts counts refresh attempts in current window
-	attempts int32
-	// lastAttemptTime is the timestamp of the last attempt
-	lastAttemptTime time.Time
-	// windowStartTime is when the current tracking window started
-	windowStartTime time.Time
-	// inCooldown indicates if this session is in cooldown
-	inCooldown bool
-	// cooldownEndTime is when cooldown period ends
-	cooldownEndTime time.Time
-	// consecutiveFailures tracks consecutive refresh failures
+	lastAttemptTime     time.Time
+	windowStartTime     time.Time
+	cooldownEndTime     time.Time
+	attempts            int32
 	consecutiveFailures int32
+	inCooldown          bool
 }
 
 // RefreshMetrics tracks coordinator performance metrics
@@ -140,18 +109,18 @@ type RefreshMetrics struct {
 
 // delayedCleanupItem represents an item scheduled for delayed cleanup
 type delayedCleanupItem struct {
-	tokenHash string
 	cleanupAt time.Time
+	tokenHash string
 }
 
 // RefreshCircuitBreaker implements a circuit breaker specifically for refresh operations
 type RefreshCircuitBreaker struct {
-	state           int32 // 0=closed, 1=open, 2=half-open
-	failures        int32
 	lastFailureTime time.Time
 	lastSuccessTime time.Time
 	config          RefreshCircuitBreakerConfig
 	mutex           sync.RWMutex
+	state           int32
+	failures        int32
 }
 
 // RefreshCircuitBreakerConfig configures the refresh circuit breaker

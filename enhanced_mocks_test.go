@@ -12,23 +12,19 @@ import (
 
 // EnhancedMockJWKCache is an improved state-based mock with call tracking
 type EnhancedMockJWKCache struct {
-	mu sync.RWMutex
-
-	// State (what to return)
-	JWKS *JWKSet
-	Err  error
-
-	// Call tracking
+	Err            error
+	JWKS           *JWKSet
 	GetJWKSCalls   []JWKSCall
+	mu             sync.RWMutex
+	getJWKSCallsMu sync.Mutex
 	CleanupCalls   int32
 	CloseCalls     int32
-	getJWKSCallsMu sync.Mutex
 }
 
 // JWKSCall records parameters from a GetJWKS call
 type JWKSCall struct {
-	URL       string
 	Timestamp time.Time
+	URL       string
 }
 
 func (m *EnhancedMockJWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error) {
@@ -108,22 +104,18 @@ func (m *EnhancedMockJWKCache) Reset() {
 
 // EnhancedMockTokenVerifier is an improved state-based mock with call tracking
 type EnhancedMockTokenVerifier struct {
-	mu sync.RWMutex
-
-	// State (what to return) - can be a fixed error or a function
-	Err        error
-	VerifyFunc func(token string) error
-
-	// Call tracking
+	Err           error
+	VerifyFunc    func(token string) error
 	VerifyCalls   []TokenVerifyCall
+	mu            sync.RWMutex
 	verifyCallsMu sync.Mutex
 }
 
 // TokenVerifyCall records parameters from a VerifyToken call
 type TokenVerifyCall struct {
-	Token     string
 	Timestamp time.Time
 	Result    error
+	Token     string
 }
 
 func (m *EnhancedMockTokenVerifier) VerifyToken(token string) error {
@@ -207,49 +199,43 @@ func (m *EnhancedMockTokenVerifier) Reset() {
 
 // EnhancedMockTokenExchanger is an improved state-based mock with call tracking
 type EnhancedMockTokenExchanger struct {
-	mu sync.RWMutex
-
-	// State (what to return)
-	ExchangeResponse *TokenResponse
-	ExchangeErr      error
-	RefreshResponse  *TokenResponse
 	RefreshErr       error
 	RevokeErr        error
-
-	// Optional functions for dynamic behavior
+	ExchangeErr      error
 	ExchangeCodeFunc func(ctx context.Context, grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error)
+	RefreshResponse  *TokenResponse
+	ExchangeResponse *TokenResponse
 	RefreshTokenFunc func(refreshToken string) (*TokenResponse, error)
 	RevokeTokenFunc  func(token, tokenType string) error
-
-	// Call tracking
-	ExchangeCalls   []ExchangeCall
-	RefreshCalls    []RefreshCall
-	RevokeCalls     []RevokeCall
-	exchangeCallsMu sync.Mutex
-	refreshCallsMu  sync.Mutex
-	revokeCallsMu   sync.Mutex
+	ExchangeCalls    []ExchangeCall
+	RefreshCalls     []RefreshCall
+	RevokeCalls      []RevokeCall
+	mu               sync.RWMutex
+	exchangeCallsMu  sync.Mutex
+	refreshCallsMu   sync.Mutex
+	revokeCallsMu    sync.Mutex
 }
 
 // ExchangeCall records parameters from an ExchangeCodeForToken call
 type ExchangeCall struct {
+	Timestamp    time.Time
 	GrantType    string
 	CodeOrToken  string
 	RedirectURL  string
 	CodeVerifier string
-	Timestamp    time.Time
 }
 
 // RefreshCall records parameters from a GetNewTokenWithRefreshToken call
 type RefreshCall struct {
-	RefreshToken string
 	Timestamp    time.Time
+	RefreshToken string
 }
 
 // RevokeCall records parameters from a RevokeTokenWithProvider call
 type RevokeCall struct {
+	Timestamp time.Time
 	Token     string
 	TokenType string
-	Timestamp time.Time
 }
 
 func (m *EnhancedMockTokenExchanger) ExchangeCodeForToken(ctx context.Context, grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error) {
@@ -401,16 +387,12 @@ func (m *EnhancedMockTokenExchanger) Reset() {
 
 // EnhancedMockCacheInterface is an improved state-based mock for CacheInterface
 type EnhancedMockCacheInterface struct {
-	mu sync.RWMutex
-
-	// Internal storage
-	data    map[string]cacheEntry
-	maxSize int
-
-	// Call tracking
+	data        map[string]cacheEntry
 	GetCalls    []CacheGetCall
 	SetCalls    []CacheSetCall
 	DeleteCalls []string
+	maxSize     int
+	mu          sync.RWMutex
 	getCalls    sync.Mutex
 	setCalls    sync.Mutex
 	deleteCalls sync.Mutex
@@ -423,17 +405,17 @@ type cacheEntry struct {
 
 // CacheGetCall records parameters from a Get call
 type CacheGetCall struct {
+	Timestamp time.Time
 	Key       string
 	Found     bool
-	Timestamp time.Time
 }
 
 // CacheSetCall records parameters from a Set call
 type CacheSetCall struct {
-	Key       string
-	Value     any
-	TTL       time.Duration
 	Timestamp time.Time
+	Value     any
+	Key       string
+	TTL       time.Duration
 }
 
 // NewEnhancedMockCache creates a new enhanced cache mock

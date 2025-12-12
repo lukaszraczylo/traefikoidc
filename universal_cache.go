@@ -25,27 +25,21 @@ const (
 
 // UniversalCacheConfig provides configuration for the universal cache
 type UniversalCacheConfig struct {
+	Strategy          CacheStrategy
+	Logger            *Logger
+	JWKConfig         *JWKCacheConfig
+	MetadataConfig    *MetadataCacheConfig
+	TokenConfig       *TokenCacheConfig
 	Type              CacheType
-	MaxSize           int
-	MaxMemoryBytes    int64
 	DefaultTTL        time.Duration
 	CleanupInterval   time.Duration
-	EnableCompression bool
+	MaxMemoryBytes    int64
+	MaxSize           int
+	EnableAutoCleanup bool
+	EnableMemoryLimit bool
 	EnableMetrics     bool
-	EnableAutoCleanup bool // For backward compatibility
-	EnableMemoryLimit bool // For backward compatibility
-	Logger            *Logger
-	Strategy          CacheStrategy // For backward compatibility
-
-	// SkipAutoCleanup skips starting the per-cache cleanup goroutine.
-	// Use this when cleanup is managed externally (e.g., by UniversalCacheManager)
-	// to reduce goroutine count and consolidate cleanup operations.
-	SkipAutoCleanup bool
-
-	// Type-specific configurations
-	TokenConfig    *TokenCacheConfig
-	MetadataConfig *MetadataCacheConfig
-	JWKConfig      *JWKCacheConfig
+	EnableCompression bool
+	SkipAutoCleanup   bool
 }
 
 // TokenCacheConfig provides token-specific cache configuration
@@ -57,11 +51,11 @@ type TokenCacheConfig struct {
 
 // MetadataCacheConfig provides metadata-specific cache configuration
 type MetadataCacheConfig struct {
+	SecurityCriticalFields         []string
 	GracePeriod                    time.Duration
 	ExtendedGracePeriod            time.Duration
 	MaxGracePeriod                 time.Duration
 	SecurityCriticalMaxGracePeriod time.Duration
-	SecurityCriticalFields         []string
 }
 
 // JWKCacheConfig provides JWK-specific cache configuration
@@ -73,48 +67,36 @@ type JWKCacheConfig struct {
 
 // CacheItem represents a single cache entry
 type CacheItem struct {
-	Key          string
-	Value        interface{}
-	Size         int64
 	ExpiresAt    time.Time
 	LastAccessed time.Time
-	AccessCount  int64
+	Value        interface{}
+	Metadata     map[string]interface{}
+	element      *list.Element
+	Key          string
 	CacheType    CacheType
-
-	// Type-specific metadata
-	Metadata map[string]interface{}
-
-	// LRU list element reference
-	element *list.Element
+	Size         int64
+	AccessCount  int64
 }
 
 // UniversalCache provides a single, unified cache implementation
 // that replaces all other cache types
 type UniversalCache struct {
-	mu      sync.RWMutex
-	items   map[string]*CacheItem
-	lruList *list.List
-	config  UniversalCacheConfig
-	logger  *Logger
-
-	// Backend for distributed caching (NEW)
-	backend     backends.CacheBackend
-	ownsBackend bool // If true, cache should close backend on Close(); if false, backend is shared
-
-	// Memory management
-	currentSize   int64
-	currentMemory int64
-
-	// Metrics
-	hits      int64
-	misses    int64
-	evictions int64
-
-	// Lifecycle management
+	config        UniversalCacheConfig
 	ctx           context.Context
+	backend       backends.CacheBackend
+	logger        *Logger
+	lruList       *list.List
+	items         map[string]*CacheItem
 	cancel        context.CancelFunc
 	cleanupTicker *time.Ticker
 	wg            sync.WaitGroup
+	currentSize   int64
+	currentMemory int64
+	hits          int64
+	misses        int64
+	evictions     int64
+	mu            sync.RWMutex
+	ownsBackend   bool
 }
 
 // NewUniversalCache creates a new universal cache instance

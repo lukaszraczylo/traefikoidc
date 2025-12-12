@@ -19,20 +19,20 @@ type Logger interface {
 
 // BackgroundTask represents a recurring background task
 type BackgroundTask struct {
-	name       string
-	interval   time.Duration
-	taskFunc   func()
+	lastRun    time.Time
+	logger     Logger
+	ctx        context.Context
 	ticker     *time.Ticker
 	stopChan   chan bool
-	isRunning  int32
-	logger     Logger
 	waitGroup  *sync.WaitGroup
-	lastRun    time.Time
+	taskFunc   func()
+	cancelFunc context.CancelFunc
+	name       string
 	runCount   int64
 	errorCount int64
+	interval   time.Duration
 	mu         sync.RWMutex
-	ctx        context.Context
-	cancelFunc context.CancelFunc
+	isRunning  int32
 }
 
 // NewBackgroundTask creates a new background task
@@ -183,11 +183,11 @@ func (bt *BackgroundTask) IsRunning() bool {
 
 // TaskRegistry manages all background tasks
 type TaskRegistry struct {
-	tasks          map[string]*BackgroundTask
-	mu             sync.RWMutex
 	logger         Logger
-	maxTasks       int
+	tasks          map[string]*BackgroundTask
 	circuitBreaker *TaskCircuitBreaker
+	maxTasks       int
+	mu             sync.RWMutex
 }
 
 // globalTaskRegistry is the singleton task registry

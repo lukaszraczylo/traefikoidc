@@ -13,22 +13,20 @@ import (
 // It runs a single consolidated cleanup goroutine for all caches, reducing
 // goroutine count and CPU overhead compared to per-cache cleanup routines.
 type UniversalCacheManager struct {
-	tokenCache         *UniversalCache
-	blacklistCache     *UniversalCache
-	metadataCache      *UniversalCache
+	sharedBackend      backends.CacheBackend
+	ctx                context.Context
+	tokenTypeCache     *UniversalCache
 	jwkCache           *UniversalCache
 	sessionCache       *UniversalCache
-	introspectionCache *UniversalCache       // OAuth 2.0 Token Introspection cache (RFC 7662)
-	tokenTypeCache     *UniversalCache       // Cache for token type detection results
-	sharedBackend      backends.CacheBackend // Shared backend (Redis) that should be closed by manager, not individual caches
-	mu                 sync.RWMutex
+	introspectionCache *UniversalCache
+	tokenCache         *UniversalCache
+	metadataCache      *UniversalCache
 	logger             *Logger
-
-	// Consolidated cleanup management
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	cleanupStarted bool
+	blacklistCache     *UniversalCache
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+	mu                 sync.RWMutex
+	cleanupStarted     bool
 }
 
 var (

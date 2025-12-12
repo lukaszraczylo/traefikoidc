@@ -1750,19 +1750,19 @@ func TestAdvancedEdgeCases(t *testing.T) {
 
 	// Test with various data types
 	testCases := []struct {
-		key   string
 		value interface{}
+		key   string
 	}{
-		{"string", "test string"},
-		{"int", 42},
-		{"float", 3.14159},
-		{"bool", true},
-		{"slice", []string{"a", "b", "c"}},
-		{"map", map[string]int{"one": 1, "two": 2}},
-		{"nil", nil},
-		{"empty-string", ""},
-		{"empty-slice", []string{}},
-		{"empty-map", map[string]interface{}{}},
+		{key: "string", value: "test string"},
+		{key: "int", value: 42},
+		{key: "float", value: 3.14159},
+		{key: "bool", value: true},
+		{key: "slice", value: []string{"a", "b", "c"}},
+		{key: "map", value: map[string]int{"one": 1, "two": 2}},
+		{key: "nil", value: nil},
+		{key: "empty-string", value: ""},
+		{key: "empty-slice", value: []string{}},
+		{key: "empty-map", value: map[string]interface{}{}},
 	}
 
 	for _, tc := range testCases {

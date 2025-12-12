@@ -27,12 +27,12 @@ func NewTokenValidator(logger *Logger) *TokenValidator {
 
 // TokenValidationResult contains the result of token validation
 type TokenValidationResult struct {
-	Valid     bool
-	TokenType string
+	Error     error
 	Claims    map[string]interface{}
 	Expiry    *time.Time
 	IssuedAt  *time.Time
-	Error     error
+	TokenType string
+	Valid     bool
 }
 
 // ValidateToken performs comprehensive token validation

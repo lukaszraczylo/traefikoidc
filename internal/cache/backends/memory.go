@@ -11,14 +11,14 @@ import (
 
 // memoryCacheItem represents an item in the memory cache
 type memoryCacheItem struct {
-	key         string
-	value       interface{}
 	expiresAt   time.Time
 	createdAt   time.Time
 	accessedAt  time.Time
+	value       interface{}
+	element     *list.Element
+	key         string
 	accessCount int64
 	size        int64
-	element     *list.Element // for LRU tracking
 }
 
 // isExpired checks if the item is expired
@@ -31,39 +31,31 @@ func (item *memoryCacheItem) isExpired() bool {
 
 // MemoryCacheBackend implements the CacheBackend interface using in-memory storage
 type MemoryCacheBackend struct {
-	mu            sync.RWMutex
-	items         map[string]*memoryCacheItem
-	lruList       *list.List
-	maxSize       int64
-	maxMemory     int64
-	currentSize   int64
-	currentMemory int64
-
-	// Statistics
-	hits      atomic.Int64
-	misses    atomic.Int64
-	sets      atomic.Int64
-	deletes   atomic.Int64
-	evictions atomic.Int64
-	errors    atomic.Int64
-
-	// Latency tracking
-	totalGetTime atomic.Int64
-	totalSetTime atomic.Int64
-	getCount     atomic.Int64
-	setCount     atomic.Int64
-
-	// Status
-	startTime     time.Time
-	lastError     string
-	lastErrorTime time.Time
-	cleanupTicker *time.Ticker
-	cleanupDone   chan bool
-	closed        atomic.Bool
-
-	// Configuration
+	startTime       time.Time
+	lastErrorTime   time.Time
+	items           map[string]*memoryCacheItem
+	lruList         *list.List
+	cleanupDone     chan bool
+	cleanupTicker   *time.Ticker
+	evictionPolicy  string
+	lastError       string
+	currentMemory   int64
+	misses          atomic.Int64
+	deletes         atomic.Int64
+	evictions       atomic.Int64
+	errors          atomic.Int64
+	totalGetTime    atomic.Int64
+	totalSetTime    atomic.Int64
+	getCount        atomic.Int64
+	setCount        atomic.Int64
+	sets            atomic.Int64
+	hits            atomic.Int64
+	maxSize         int64
+	currentSize     int64
+	maxMemory       int64
 	cleanupInterval time.Duration
-	evictionPolicy  string // "lru", "lfu", "fifo"
+	mu              sync.RWMutex
+	closed          atomic.Bool
 }
 
 // NewMemoryCacheBackend creates a new memory cache backend

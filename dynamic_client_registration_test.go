@@ -223,10 +223,10 @@ func TestRegisterClientWithInitialAccessToken(t *testing.T) {
 // TestRegisterClientError tests error handling during registration
 func TestRegisterClientError(t *testing.T) {
 	tests := []struct {
-		name           string
 		serverResponse func(w http.ResponseWriter, r *http.Request)
-		expectError    bool
+		name           string
 		errorContains  string
+		expectError    bool
 	}{
 		{
 			name: "invalid_redirect_uri error",
@@ -321,8 +321,8 @@ func TestRegisterClientError(t *testing.T) {
 // TestRegisterClientDisabled tests that registration fails when not enabled
 func TestRegisterClientDisabled(t *testing.T) {
 	tests := []struct {
-		name      string
 		dcrConfig *DynamicClientRegistrationConfig
+		name      string
 	}{
 		{
 			name:      "nil config",
@@ -521,8 +521,8 @@ func TestCredentialsValidation(t *testing.T) {
 	registrar := NewDynamicClientRegistrar(&http.Client{}, NewLogger("DEBUG"), dcrConfig, "https://example.com")
 
 	tests := []struct {
-		name     string
 		response *ClientRegistrationResponse
+		name     string
 		expected bool
 	}{
 		{
@@ -584,9 +584,9 @@ func TestCredentialsValidation(t *testing.T) {
 // TestBuildRegistrationRequest tests the request body construction
 func TestBuildRegistrationRequest(t *testing.T) {
 	tests := []struct {
-		name           string
 		metadata       *ClientRegistrationMetadata
 		expectedFields map[string]interface{}
+		name           string
 		expectError    bool
 	}{
 		{

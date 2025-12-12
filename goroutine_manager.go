@@ -10,16 +10,16 @@ import (
 type GoroutineManager struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	mu         sync.RWMutex
 	goroutines map[string]*managedGoroutine
 	logger     *Logger
+	wg         sync.WaitGroup
+	mu         sync.RWMutex
 }
 
 type managedGoroutine struct {
-	name      string
-	cancel    context.CancelFunc
 	startTime time.Time
+	cancel    context.CancelFunc
+	name      string
 	running   bool
 }
 
@@ -149,10 +149,10 @@ func (m *GoroutineManager) GetStatus() map[string]GoroutineStatus {
 
 // GoroutineStatus represents the status of a managed goroutine
 type GoroutineStatus struct {
-	Name      string
-	Running   bool
 	StartTime time.Time
+	Name      string
 	Runtime   time.Duration
+	Running   bool
 }
 
 // ErrShutdownTimeout is returned when shutdown times out

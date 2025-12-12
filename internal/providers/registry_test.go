@@ -82,9 +82,9 @@ func TestProviderRegistry_GetProviderByType(t *testing.T) {
 	registry.RegisterProvider(googleProvider)
 
 	tests := []struct {
+		expected     OIDCProvider
 		name         string
 		providerType ProviderType
-		expected     OIDCProvider
 	}{
 		{
 			name:         "Get Generic provider",
@@ -180,9 +180,9 @@ func TestProviderRegistry_DetectProvider(t *testing.T) {
 	registry.RegisterProvider(gitlabProvider)
 
 	tests := []struct {
+		expected  OIDCProvider
 		name      string
 		issuerURL string
-		expected  OIDCProvider
 	}{
 		{
 			name:      "Google provider detection",
@@ -640,9 +640,9 @@ func TestProviderRegistry_GitLabDetection_RealWorldURLs(t *testing.T) {
 	registry.RegisterProvider(githubProvider)
 
 	realWorldTests := []struct {
+		expected  OIDCProvider
 		name      string
 		issuerURL string
-		expected  OIDCProvider
 	}{
 		// Actual self-hosted GitLab examples from issue #61
 		{

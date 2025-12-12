@@ -192,9 +192,9 @@ func (ts *TestSuite) Setup() {
 
 // MockJWKCache implements JWKCacheInterface
 type MockJWKCache struct {
-	mu   sync.RWMutex
-	JWKS *JWKSet
 	Err  error
+	JWKS *JWKSet
+	mu   sync.RWMutex
 }
 
 // Close is a no-op for the mock.

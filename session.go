@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,22 +67,159 @@ func generateSecureRandomString(length int) (string, error) {
 // These are appended to the cookiePrefix to create full cookie names
 // #nosec G101 -- These are cookie name suffixes, not hardcoded credentials
 const (
-	mainCookieSuffix    = "m"
-	accessTokenSuffix   = "a"
-	refreshTokenSuffix  = "r"
-	idTokenSuffix       = "id"
-	defaultCookiePrefix = "_oidc_raczylo_"
+	mainCookieSuffix     = "m"
+	accessTokenSuffix    = "a"
+	refreshTokenSuffix   = "r"
+	idTokenSuffix        = "id"
+	combinedCookieSuffix = "s" // Combined session cookie suffix
+	defaultCookiePrefix  = "_oidc_raczylo_"
 )
 
 const (
-	maxBrowserCookieSize = 3500
+	// maxCookieSize is the maximum raw data size per chunk before securecookie encoding.
+	//
+	// Browser cookie limit: 4096 bytes
+	// Securecookie overhead: ~2x (gob + AES encryption + MAC + double base64)
+	// Safety headroom: 1000 bytes for cookie metadata, headers, edge cases
+	//
+	// Math: 1400 raw → ~2800 encoded → safely under (4096 - 1000 = 3096) limit
+	maxCookieSize = 1400
 
-	maxCookieSize = 1200
+	// maxCombinedChunks is the maximum number of chunks allowed for combined session
+	maxCombinedChunks = 10
 
 	absoluteSessionTimeout = 24 * time.Hour
 
 	minEncryptionKeyLength = 32
 )
+
+// combinedSessionPayload is the JSON structure for combined cookie storage.
+// Uses short field names to minimize size.
+type combinedSessionPayload struct {
+	X  map[string]interface{} `json:"x,omitempty"`
+	A  string                 `json:"a,omitempty"`
+	R  string                 `json:"r,omitempty"`
+	I  string                 `json:"i,omitempty"`
+	E  string                 `json:"e,omitempty"`
+	Cs string                 `json:"cs,omitempty"`
+	N  string                 `json:"n,omitempty"`
+	Cv string                 `json:"cv,omitempty"`
+	Ip string                 `json:"ip,omitempty"`
+	Ca int64                  `json:"ca,omitempty"`
+	Rc int                    `json:"rc,omitempty"`
+	Au bool                   `json:"au,omitempty"`
+}
+
+// knownSessionKeys are the standard keys that are handled explicitly in the combined payload.
+// All other mainSession.Values keys are stored in the X (extra) field.
+var knownSessionKeys = map[string]bool{
+	"access_token":   true,
+	"refresh_token":  true,
+	"id_token":       true,
+	"email":          true,
+	"authenticated":  true,
+	"csrf":           true,
+	"nonce":          true,
+	"code_verifier":  true,
+	"incoming_path":  true,
+	"created_at":     true,
+	"redirect_count": true,
+}
+
+// compressCombinedPayload compresses the combined session payload using gzip.
+// It serializes the payload to JSON, compresses it, and returns base64-encoded data.
+// Returns the compressed string and any error encountered.
+func compressCombinedPayload(payload *combinedSessionPayload) (string, error) {
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal combined payload: %w", err)
+	}
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(jsonData); err != nil {
+		return "", fmt.Errorf("failed to compress combined payload: %w", err)
+	}
+	if err := gz.Close(); err != nil {
+		return "", fmt.Errorf("failed to close gzip writer: %w", err)
+	}
+
+	compressed := base64.StdEncoding.EncodeToString(buf.Bytes())
+	return compressed, nil
+}
+
+// decompressCombinedPayload decompresses a base64+gzip encoded combined session payload.
+// Returns the deserialized payload and any error encountered.
+func decompressCombinedPayload(compressed string) (*combinedSessionPayload, error) {
+	if compressed == "" {
+		return nil, fmt.Errorf("empty compressed data")
+	}
+
+	data, err := base64.StdEncoding.DecodeString(compressed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base64: %w", err)
+	}
+
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gr.Close()
+
+	// Limit decompressed size to prevent zip bombs
+	limitedReader := io.LimitReader(gr, 512*1024) // 512KB max
+	decompressed, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress: %w", err)
+	}
+
+	var payload combinedSessionPayload
+	if err := json.Unmarshal(decompressed, &payload); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal combined payload: %w", err)
+	}
+
+	return &payload, nil
+}
+
+// splitCombinedIntoChunks splits compressed data into chunks of maxCookieSize.
+// Returns the chunks and the total number of chunks.
+func splitCombinedIntoChunks(data string, chunkSize int) []string {
+	if len(data) <= chunkSize {
+		return []string{data}
+	}
+
+	var chunks []string
+	for i := 0; i < len(data); i += chunkSize {
+		end := i + chunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		chunks = append(chunks, data[i:end])
+	}
+	return chunks
+}
+
+// assembleCombinedChunks reassembles chunks back into the original compressed data.
+// It reads chunks from session values in order (chunk_0, chunk_1, etc.).
+func assembleCombinedChunks(sessions []*sessions.Session) string {
+	if len(sessions) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for i := 0; i < len(sessions); i++ {
+		session := sessions[i]
+		if session == nil {
+			break
+		}
+		chunk, ok := session.Values["d"].(string) // "d" for data
+		if !ok || chunk == "" {
+			break
+		}
+		parts = append(parts, chunk)
+	}
+	return strings.Join(parts, "")
+}
 
 // compressToken compresses a JWT token using gzip compression if beneficial.
 // It validates the token format, attempts compression, and verifies the compressed
@@ -236,22 +374,22 @@ func decompressTokenInternal(compressed string) string {
 // session object reuse and supports both HTTP and HTTPS schemes.
 type SessionManager struct {
 	sessionPool    sync.Pool
+	ctx            context.Context
 	store          sessions.Store
 	logger         *Logger
 	chunkManager   *ChunkManager
-	cookieDomain   string
-	cookiePrefix   string        // Prefix for cookie names (default: "_oidc_raczylo_")
-	sessionMaxAge  time.Duration // Maximum session age (default: 24 hours)
-	cleanupMutex   sync.RWMutex
-	forceHTTPS     bool
-	cleanupDone    bool
-	ctx            context.Context
-	cancel         context.CancelFunc
 	memoryMonitor  *TaskMemoryMonitor
+	cancel         context.CancelFunc
+	cookieDomain   string
+	cookiePrefix   string
+	sessionMaxAge  time.Duration
 	activeSessions int64
 	poolHits       int64
 	poolMisses     int64
+	cleanupMutex   sync.RWMutex
 	shutdownOnce   sync.Once
+	forceHTTPS     bool
+	cleanupDone    bool
 }
 
 // NewSessionManager creates a new SessionManager instance with secure defaults.
@@ -312,6 +450,8 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 			accessTokenChunks:  make(map[int]*sessions.Session),
 			refreshTokenChunks: make(map[int]*sessions.Session),
 			idTokenChunks:      make(map[int]*sessions.Session),
+			combinedChunks:     make(map[int]*sessions.Session),
+			useCombinedStorage: true, // Use combined storage by default for new sessions
 			refreshMutex:       sync.Mutex{},
 			sessionMutex:       sync.RWMutex{},
 			dirty:              false,
@@ -347,6 +487,17 @@ func (sm *SessionManager) refreshTokenCookieName() string {
 // idTokenCookieName returns the ID token cookie name with the configured prefix
 func (sm *SessionManager) idTokenCookieName() string {
 	return sm.cookiePrefix + idTokenSuffix
+}
+
+// combinedCookieName returns the combined session cookie base name with the configured prefix
+// Chunk cookies are named: prefix + "s" + "_" + chunkIndex (e.g., "_oidc_raczylo_s_0")
+func (sm *SessionManager) combinedCookieName() string {
+	return sm.cookiePrefix + combinedCookieSuffix
+}
+
+// combinedChunkCookieName returns the name for a specific combined session chunk
+func (sm *SessionManager) combinedChunkCookieName(chunkIndex int) string {
+	return fmt.Sprintf("%s_%d", sm.combinedCookieName(), chunkIndex)
 }
 
 // Shutdown gracefully shuts down the SessionManager and all its background tasks
@@ -650,7 +801,7 @@ func (sm *SessionManager) GetSessionMetrics() map[string]interface{} {
 	metrics["force_https"] = sm.forceHTTPS
 	metrics["absolute_timeout_hours"] = sm.sessionMaxAge.Hours()
 	metrics["max_cookie_size"] = maxCookieSize
-	metrics["max_browser_cookie_size"] = maxBrowserCookieSize
+	metrics["max_encoded_cookie_size"] = maxCookieSize * 2 // ~2x encoding overhead
 
 	if cookieStore, ok := sm.store.(*sessions.CookieStore); ok && len(cookieStore.Codecs) > 0 {
 		metrics["has_encryption"] = true
@@ -824,9 +975,10 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 }
 
 // GetSession retrieves or creates session data from the HTTP request.
-// It loads the main session and all token chunk sessions, performing validation
-// and timeout checks. The returned session must be explicitly returned to the pool
-// by calling returnToPoolSafely() to prevent memory leaks.
+// It first tries to load from combined cookies (new format), falling back to legacy
+// cookies if combined cookies don't exist. Performs validation and timeout checks.
+// The returned session must be explicitly returned to the pool by calling
+// returnToPoolSafely() to prevent memory leaks.
 // MEMORY LEAK FIX: Session is NOT returned to pool here - caller must call ReturnToPool() when done.
 // Parameters:
 //   - r: The HTTP request containing session cookies.
@@ -852,6 +1004,26 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 		}
 		return nil, fmt.Errorf("%s: %w", message, err)
 	}
+
+	// Try to load from combined cookies first (new format)
+	if sm.loadFromCombinedCookies(r, sessionData) {
+		sessionData.useCombinedStorage = true
+		sm.logger.Debug("Loaded session from combined cookies")
+
+		// Check session timeout
+		if sessionData.getCreatedAtUnsafe() > 0 {
+			if time.Since(time.Unix(sessionData.getCreatedAtUnsafe(), 0)) > sm.sessionMaxAge {
+				_ = sessionData.Clear(r, nil) // Safe to ignore: session is being invalidated
+				return handleError(fmt.Errorf("session timeout"), "session expired")
+			}
+		}
+
+		return sessionData, nil
+	}
+
+	// Fall back to legacy cookies
+	sessionData.useCombinedStorage = false
+	sm.logger.Debug("Loading session from legacy cookies")
 
 	var err error
 	sessionData.mainSession, err = sm.store.Get(r, sm.mainCookieName())
@@ -895,7 +1067,92 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	sm.getTokenChunkSessions(r, sm.refreshTokenCookieName(), sessionData.refreshTokenChunks)
 	sm.getTokenChunkSessions(r, sm.idTokenCookieName(), sessionData.idTokenChunks)
 
+	// If legacy session has data, migrate to combined storage on next save
+	if !sessionData.mainSession.IsNew {
+		sessionData.useCombinedStorage = true
+		sessionData.dirty = true // Mark dirty to trigger migration on save
+		sm.logger.Debug("Legacy session found, will migrate to combined storage on save")
+	}
+
 	return sessionData, nil
+}
+
+// loadFromCombinedCookies attempts to load session data from combined cookies.
+// Returns true if combined cookies were found and successfully loaded.
+func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *SessionData) bool {
+	// Check if first combined chunk exists
+	firstChunk, err := sm.store.Get(r, sm.combinedChunkCookieName(0))
+	if err != nil || firstChunk.IsNew {
+		return false
+	}
+
+	// Get total chunk count from first chunk
+	totalChunks, ok := firstChunk.Values["n"].(int)
+	if !ok || totalChunks < 1 || totalChunks > maxCombinedChunks {
+		sm.logger.Debugf("Invalid combined cookie chunk count: %v", firstChunk.Values["n"])
+		return false
+	}
+
+	// Load all chunks
+	chunkSessions := make([]*sessions.Session, totalChunks)
+	chunkSessions[0] = firstChunk
+	sessionData.combinedChunks[0] = firstChunk
+
+	for i := 1; i < totalChunks; i++ {
+		chunk, err := sm.store.Get(r, sm.combinedChunkCookieName(i))
+		if err != nil || chunk.IsNew {
+			sm.logger.Debugf("Missing combined cookie chunk %d", i)
+			return false
+		}
+		chunkSessions[i] = chunk
+		sessionData.combinedChunks[i] = chunk
+	}
+
+	// Assemble and decompress
+	compressed := assembleCombinedChunks(chunkSessions)
+	if compressed == "" {
+		sm.logger.Debug("Failed to assemble combined chunks")
+		return false
+	}
+
+	payload, err := decompressCombinedPayload(compressed)
+	if err != nil {
+		sm.logger.Debugf("Failed to decompress combined payload: %v", err)
+		return false
+	}
+
+	// Hydrate the legacy session objects for compatibility with existing getter methods
+	// We need to initialize them even though we're using combined storage
+	sessionData.mainSession, _ = sm.store.Get(r, sm.mainCookieName())
+	sessionData.accessSession, _ = sm.store.Get(r, sm.accessTokenCookieName())
+	sessionData.refreshSession, _ = sm.store.Get(r, sm.refreshTokenCookieName())
+	sessionData.idTokenSession, _ = sm.store.Get(r, sm.idTokenCookieName())
+
+	// Populate legacy session values from combined payload
+	sessionData.mainSession.Values["email"] = payload.E
+	sessionData.mainSession.Values["authenticated"] = payload.Au
+	sessionData.mainSession.Values["csrf"] = payload.Cs
+	sessionData.mainSession.Values["nonce"] = payload.N
+	sessionData.mainSession.Values["code_verifier"] = payload.Cv
+	sessionData.mainSession.Values["incoming_path"] = payload.Ip
+	sessionData.mainSession.Values["created_at"] = payload.Ca
+	sessionData.mainSession.Values["redirect_count"] = payload.Rc
+
+	// Restore extra custom session values
+	for key, val := range payload.X {
+		sessionData.mainSession.Values[key] = val
+	}
+
+	sessionData.accessSession.Values["token"] = payload.A
+	sessionData.accessSession.Values["compressed"] = false
+
+	sessionData.refreshSession.Values["token"] = payload.R
+	sessionData.refreshSession.Values["compressed"] = false
+
+	sessionData.idTokenSession.Values["token"] = payload.I
+	sessionData.idTokenSession.Values["compressed"] = false
+
+	return true
 }
 
 // getTokenChunkSessions loads all available token chunk sessions for a given token type.
@@ -920,11 +1177,13 @@ func (sm *SessionManager) getTokenChunkSessions(r *http.Request, baseName string
 // SessionData represents a user's authentication session with comprehensive token management.
 // It handles main session data and supports large tokens that need to be
 // split across multiple cookies due to browser size limitations.
+// Supports both legacy (separate cookies) and combined (single compressed cookie) storage.
 type SessionData struct {
 	manager *SessionManager
 
 	request *http.Request
 
+	// Legacy storage (kept for backward compatibility during migration)
 	mainSession *sessions.Session
 
 	accessSession *sessions.Session
@@ -938,6 +1197,12 @@ type SessionData struct {
 	refreshTokenChunks map[int]*sessions.Session
 
 	idTokenChunks map[int]*sessions.Session
+
+	// Combined storage (new approach - single compressed cookie)
+	combinedChunks map[int]*sessions.Session
+
+	// useCombinedStorage indicates whether to use the new combined storage format
+	useCombinedStorage bool
 
 	refreshMutex sync.Mutex
 
@@ -966,6 +1231,7 @@ func (sd *SessionData) MarkDirty() {
 // Save persists all session data including main session and token chunks.
 // It applies security options, saves all session components, and handles
 // errors gracefully by continuing to save other components even if one fails.
+// Uses combined cookie storage for efficiency when useCombinedStorage is true.
 // Parameters:
 //   - r: The HTTP request context for security option configuration.
 //   - w: The HTTP response writer for setting session cookies.
@@ -978,6 +1244,117 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	options := sd.manager.getSessionOptions(isSecure)
 	options = sd.manager.EnhanceSessionSecurity(options, r)
 
+	// Use combined storage for new sessions
+	if sd.useCombinedStorage {
+		return sd.saveCombined(r, w, options)
+	}
+
+	// Legacy storage path (for backward compatibility)
+	return sd.saveLegacy(r, w, options)
+}
+
+// saveCombined saves all session data in a single compressed, chunked cookie.
+// This reduces cookie count and total size through combined compression.
+func (sd *SessionData) saveCombined(r *http.Request, w http.ResponseWriter, options *sessions.Options) error {
+	// Build the combined payload
+	payload := &combinedSessionPayload{
+		A:  sd.getAccessTokenUnsafe(),
+		R:  sd.getRefreshTokenUnsafe(),
+		I:  sd.getIDTokenUnsafe(),
+		E:  sd.getEmailUnsafe(),
+		Au: sd.getAuthenticatedUnsafe(),
+		Cs: sd.getCSRFUnsafe(),
+		N:  sd.getNonceUnsafe(),
+		Cv: sd.getCodeVerifierUnsafe(),
+		Ip: sd.getIncomingPathUnsafe(),
+		Ca: sd.getCreatedAtUnsafe(),
+		Rc: sd.getRedirectCountUnsafe(),
+	}
+
+	// Collect extra session values not handled by the standard fields
+	sd.sessionMutex.RLock()
+	if sd.mainSession != nil && len(sd.mainSession.Values) > 0 {
+		extra := make(map[string]interface{})
+		for key, val := range sd.mainSession.Values {
+			keyStr, ok := key.(string)
+			if !ok {
+				continue
+			}
+			// Skip known session keys that are already in the payload
+			if knownSessionKeys[keyStr] {
+				continue
+			}
+			// Store the extra value (must be JSON-serializable)
+			extra[keyStr] = val
+		}
+		if len(extra) > 0 {
+			payload.X = extra
+		}
+	}
+	sd.sessionMutex.RUnlock()
+
+	// Compress the payload
+	compressed, err := compressCombinedPayload(payload)
+	if err != nil {
+		sd.manager.logger.Errorf("Failed to compress combined payload: %v", err)
+		// Fall back to legacy storage on compression failure
+		return sd.saveLegacy(r, w, options)
+	}
+
+	sd.manager.logger.Debugf("Combined session: raw payload compressed to %d bytes", len(compressed))
+
+	// Split into chunks
+	chunks := splitCombinedIntoChunks(compressed, maxCookieSize)
+	if len(chunks) > maxCombinedChunks {
+		sd.manager.logger.Errorf("Combined session requires %d chunks, exceeds max %d", len(chunks), maxCombinedChunks)
+		return fmt.Errorf("session data too large: requires %d chunks, max is %d", len(chunks), maxCombinedChunks)
+	}
+
+	sd.manager.logger.Debugf("Combined session split into %d chunks", len(chunks))
+
+	var firstErr error
+
+	// Save each chunk
+	for i, chunkData := range chunks {
+		cookieName := sd.manager.combinedChunkCookieName(i)
+		session, err := sd.manager.store.Get(r, cookieName)
+		if err != nil {
+			sd.manager.logger.Errorf("Failed to get combined chunk session %s: %v", cookieName, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+
+		session.Values["d"] = chunkData   // "d" for data
+		session.Values["n"] = len(chunks) // "n" for total number of chunks
+		session.Values["i"] = i           // "i" for index
+		session.Options = options
+
+		if err := session.Save(r, w); err != nil {
+			sd.manager.logger.Errorf("Failed to save combined chunk %d: %v", i, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		sd.combinedChunks[i] = session
+	}
+
+	// Expire old combined chunks that are no longer needed
+	sd.expireOldCombinedChunks(r, w, options, len(chunks))
+
+	// Expire legacy cookies if they exist (migration)
+	sd.expireLegacyCookies(r, w, options)
+
+	if firstErr == nil {
+		sd.dirty = false
+	}
+	return firstErr
+}
+
+// saveLegacy saves session data using the old separate cookie approach.
+// Kept for backward compatibility during migration.
+func (sd *SessionData) saveLegacy(r *http.Request, w http.ResponseWriter, options *sessions.Options) error {
 	sd.mainSession.Options = options
 	sd.accessSession.Options = options
 	sd.refreshSession.Options = options
@@ -1002,11 +1379,8 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 	}
 
 	saveOrLogError(sd.mainSession, "main")
-
 	saveOrLogError(sd.accessSession, "access token")
-
 	saveOrLogError(sd.refreshSession, "refresh token")
-
 	saveOrLogError(sd.idTokenSession, "ID token")
 
 	for i, sessionChunk := range sd.accessTokenChunks {
@@ -1028,6 +1402,84 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 		sd.dirty = false
 	}
 	return firstErr
+}
+
+// expireOldCombinedChunks expires combined cookie chunks that are no longer needed.
+func (sd *SessionData) expireOldCombinedChunks(r *http.Request, w http.ResponseWriter, options *sessions.Options, currentChunks int) {
+	// Expire chunks beyond the current count
+	for i := currentChunks; i < maxCombinedChunks; i++ {
+		cookieName := sd.manager.combinedChunkCookieName(i)
+		session, err := sd.manager.store.Get(r, cookieName)
+		if err != nil || session.IsNew {
+			// No more old chunks
+			break
+		}
+		// Expire this chunk
+		expireOptions := *options
+		expireOptions.MaxAge = -1
+		session.Options = &expireOptions
+		for k := range session.Values {
+			delete(session.Values, k)
+		}
+		if err := session.Save(r, w); err != nil {
+			sd.manager.logger.Debugf("Failed to expire old combined chunk %d: %v", i, err)
+		}
+	}
+}
+
+// expireLegacyCookies expires old legacy format cookies during migration.
+func (sd *SessionData) expireLegacyCookies(r *http.Request, w http.ResponseWriter, options *sessions.Options) {
+	expireOptions := *options
+	expireOptions.MaxAge = -1
+
+	// Helper to expire a legacy session cookie without clearing in-memory values
+	// IMPORTANT: We must NOT clear values from sessions that sd is holding,
+	// as store.Get() returns the same cached session object
+	expireLegacyChunk := func(cookieName string) {
+		session, err := sd.manager.store.Get(r, cookieName)
+		if err != nil || session.IsNew {
+			return // Cookie doesn't exist
+		}
+		session.Options = &expireOptions
+		// Clear values from chunk cookies (not the main session objects)
+		for k := range session.Values {
+			delete(session.Values, k)
+		}
+		_ = session.Save(r, w) // Best effort
+	}
+
+	// For main session cookies, only set expiration WITHOUT clearing values
+	// because sd.mainSession, sd.accessSession, etc. point to these same objects
+	expireLegacyMain := func(cookieName string) {
+		session, err := sd.manager.store.Get(r, cookieName)
+		if err != nil || session.IsNew {
+			return // Cookie doesn't exist
+		}
+		// Just expire the cookie, don't clear values (they're still needed in memory)
+		session.Options = &expireOptions
+		_ = session.Save(r, w) // Best effort
+	}
+
+	// Expire main legacy cookies (don't clear in-memory values)
+	expireLegacyMain(sd.manager.mainCookieName())
+	expireLegacyMain(sd.manager.accessTokenCookieName())
+	expireLegacyMain(sd.manager.refreshTokenCookieName())
+	expireLegacyMain(sd.manager.idTokenCookieName())
+
+	// Expire legacy chunk cookies (safe to clear values, they're separate from main sessions)
+	for i := 0; i < 50; i++ { // Max legacy chunks was 50
+		accessChunk := fmt.Sprintf("%s_%d", sd.manager.accessTokenCookieName(), i)
+		refreshChunk := fmt.Sprintf("%s_%d", sd.manager.refreshTokenCookieName(), i)
+		idChunk := fmt.Sprintf("%s_%d", sd.manager.idTokenCookieName(), i)
+
+		session, err := sd.manager.store.Get(r, accessChunk)
+		if err != nil || session.IsNew {
+			break // No more chunks
+		}
+		expireLegacyChunk(accessChunk)
+		expireLegacyChunk(refreshChunk)
+		expireLegacyChunk(idChunk)
+	}
 }
 
 // clearSessionValues removes all values from a session and optionally expires it.
@@ -1263,6 +1715,12 @@ func (sd *SessionData) Reset() {
 	resetSession(sd.refreshSession)
 	resetSession(sd.idTokenSession)
 
+	// Clear combined chunks
+	for k, session := range sd.combinedChunks {
+		resetSession(session)
+		delete(sd.combinedChunks, k)
+	}
+
 	// Clear redirect count to prevent leaking between sessions
 	if sd.mainSession != nil && sd.mainSession.Values != nil {
 		delete(sd.mainSession.Values, "redirect_count")
@@ -1271,6 +1729,7 @@ func (sd *SessionData) Reset() {
 	sd.dirty = false
 	sd.inUse = false
 	sd.request = nil
+	sd.useCombinedStorage = true // Reset to use combined storage by default
 
 	// Reset the refresh mutex to ensure clean state
 	// Note: We don't need to lock it since sessionMutex is already held
@@ -1886,8 +2345,9 @@ func splitIntoChunks(s string, chunkSize int) []string {
 // Returns:
 //   - true if the chunk is safe to store, false if it may exceed browser limits.
 func validateChunkSize(chunkData string) bool {
+	// Estimate ~50% overhead for encoding, compare against ~2x maxCookieSize limit
 	estimatedEncodedSize := len(chunkData) + (len(chunkData) * 50 / 100)
-	return estimatedEncodedSize <= maxBrowserCookieSize
+	return estimatedEncodedSize <= maxCookieSize*2
 }
 
 // isCorruptionMarker detects if data contains known corruption indicators.
@@ -2086,6 +2546,78 @@ func (sd *SessionData) getIDTokenUnsafe() string {
 	}
 
 	return result.Token
+}
+
+// getRefreshTokenUnsafe retrieves the refresh token without acquiring locks.
+// Used when the session mutex is already held to prevent deadlocks.
+func (sd *SessionData) getRefreshTokenUnsafe() string {
+	token, _ := sd.refreshSession.Values["token"].(string)
+	compressed, _ := sd.refreshSession.Values["compressed"].(bool)
+
+	if sd.manager == nil || sd.manager.chunkManager == nil {
+		return token
+	}
+
+	result := sd.manager.chunkManager.GetToken(
+		token,
+		compressed,
+		sd.refreshTokenChunks,
+		RefreshTokenConfig,
+	)
+
+	if result.Error != nil {
+		// Handle opaque tokens
+		if token != "" && !compressed && len(sd.refreshTokenChunks) == 0 {
+			if strings.Count(token, ".") != 2 {
+				return token
+			}
+		}
+		return ""
+	}
+
+	return result.Token
+}
+
+// getEmailUnsafe retrieves the email without acquiring locks.
+func (sd *SessionData) getEmailUnsafe() string {
+	email, _ := sd.mainSession.Values["email"].(string)
+	return email
+}
+
+// getCSRFUnsafe retrieves the CSRF token without acquiring locks.
+func (sd *SessionData) getCSRFUnsafe() string {
+	csrf, _ := sd.mainSession.Values["csrf"].(string)
+	return csrf
+}
+
+// getNonceUnsafe retrieves the nonce without acquiring locks.
+func (sd *SessionData) getNonceUnsafe() string {
+	nonce, _ := sd.mainSession.Values["nonce"].(string)
+	return nonce
+}
+
+// getCodeVerifierUnsafe retrieves the code verifier without acquiring locks.
+func (sd *SessionData) getCodeVerifierUnsafe() string {
+	codeVerifier, _ := sd.mainSession.Values["code_verifier"].(string)
+	return codeVerifier
+}
+
+// getIncomingPathUnsafe retrieves the incoming path without acquiring locks.
+func (sd *SessionData) getIncomingPathUnsafe() string {
+	path, _ := sd.mainSession.Values["incoming_path"].(string)
+	return path
+}
+
+// getCreatedAtUnsafe retrieves the created_at timestamp without acquiring locks.
+func (sd *SessionData) getCreatedAtUnsafe() int64 {
+	createdAt, _ := sd.mainSession.Values["created_at"].(int64)
+	return createdAt
+}
+
+// getRedirectCountUnsafe retrieves the redirect count without acquiring locks.
+func (sd *SessionData) getRedirectCountUnsafe() int {
+	count, _ := sd.mainSession.Values["redirect_count"].(int)
+	return count
 }
 
 // SetIDToken stores an ID token with automatic compression and chunking.

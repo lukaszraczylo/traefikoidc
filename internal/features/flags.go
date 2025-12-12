@@ -12,9 +12,9 @@ import (
 type FeatureFlag struct {
 	name        string
 	description string
-	enabled     atomic.Bool
-	mu          sync.RWMutex
 	callbacks   []func(bool)
+	mu          sync.RWMutex
+	enabled     atomic.Bool
 }
 
 // FeatureManager manages all feature flags in the application

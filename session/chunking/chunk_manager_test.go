@@ -16,7 +16,7 @@ func TestTokenValidatorJWT(t *testing.T) {
 	validator := NewTokenValidator()
 
 	// Test valid JWT format (using base64url encoded parts that are long enough)
-	validJWT := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	validJWT := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c" // trufflehog:ignore
 	err := validator.ValidateJWTFormat(validJWT, "test")
 	if err != nil {
 		t.Errorf("Expected valid JWT to pass, got error: %v", err)
@@ -186,10 +186,10 @@ func TestTokenConfigValidation(t *testing.T) {
 func TestSessionMapBounds_HardLimitEnforcement(t *testing.T) {
 	tests := []struct {
 		name           string
+		description    string
 		maxSessions    int
 		sessionCount   int
 		expectEviction bool
-		description    string
 	}{
 		{
 			name:           "within_limit",
@@ -760,18 +760,18 @@ func TestValidateJWTContent(t *testing.T) {
 	tests := []struct {
 		name        string
 		token       string
-		expectError bool
 		description string
+		expectError bool
 	}{
 		{
 			name:        "Valid JWT with required ID token claims",
-			token:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIiwic3ViIjoiMTIzNDU2Nzg5MCIsImF1ZCI6ImNsaWVudElkIiwiZXhwIjoxNjQ2MDY0MDAwLCJpYXQiOjE2NDYwNjA0MDB9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+			token:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIiwic3ViIjoiMTIzNDU2Nzg5MCIsImF1ZCI6ImNsaWVudElkIiwiZXhwIjoxNjQ2MDY0MDAwLCJpYXQiOjE2NDYwNjA0MDB9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", // trufflehog:ignore
 			expectError: false,
 			description: "JWT with all required ID token claims should pass",
 		},
 		{
 			name:        "JWT missing required claims",
-			token:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+			token:       "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", // trufflehog:ignore
 			expectError: true,
 			description: "JWT missing required claims should fail",
 		},
@@ -810,8 +810,8 @@ func TestValidateJWTHeader(t *testing.T) {
 	tests := []struct {
 		name        string
 		header      string
-		expectError bool
 		description string
+		expectError bool
 	}{
 		{
 			name:        "Valid JWT header",
@@ -865,9 +865,9 @@ func TestValidateJWTPayload(t *testing.T) {
 	tests := []struct {
 		name        string
 		payload     string
+		description string
 		config      TokenConfig
 		expectError bool
-		description string
 	}{
 		{
 			name:        "Valid ID token payload",
@@ -927,8 +927,8 @@ func TestValidateJWTSignature(t *testing.T) {
 	tests := []struct {
 		name        string
 		signature   string
-		expectError bool
 		description string
+		expectError bool
 	}{
 		{
 			name:        "Valid signature",
@@ -976,9 +976,9 @@ func TestValidateChunkStructure(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		description string
 		chunks      []ChunkData
 		expectError bool
-		description string
 	}{
 		{
 			name: "Valid chunk structure",
@@ -1055,11 +1055,11 @@ func TestValidateChunkData(t *testing.T) {
 	config := AccessTokenConfig
 
 	tests := []struct {
-		name          string
 		chunk         ChunkData
+		name          string
+		description   string
 		expectedTotal int
 		expectError   bool
-		description   string
 	}{
 		{
 			name:          "Valid chunk data",
@@ -1218,13 +1218,13 @@ func TestGetToken(t *testing.T) {
 	cm := NewChunkManager(nil)
 
 	tests := []struct {
-		name          string
 		mainSession   *sessions.Session
 		chunks        map[int]*sessions.Session
-		config        TokenConfig
+		name          string
 		expectedToken string
-		expectError   bool
 		description   string
+		config        TokenConfig
+		expectError   bool
 	}{
 		{
 			name: "Token from main session",
@@ -1363,8 +1363,8 @@ func TestSerializeTokenToChunks(t *testing.T) {
 	tests := []struct {
 		name        string
 		token       string
-		expectError bool
 		description string
+		expectError bool
 	}{
 		{
 			name:        "Valid token serialization",
@@ -1436,10 +1436,10 @@ func TestDeserializeTokenFromChunks(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		chunks        []ChunkData
 		expectedToken string
-		expectError   bool
 		description   string
+		chunks        []ChunkData
+		expectError   bool
 	}{
 		{
 			name:          "Valid chunks deserialization",
@@ -1522,10 +1522,10 @@ func TestEncodeDecodeChunk(t *testing.T) {
 	cs := NewChunkSerializer(NewNoOpLogger())
 
 	tests := []struct {
-		name        string
 		chunk       ChunkData
-		expectError bool
+		name        string
 		description string
+		expectError bool
 	}{
 		{
 			name: "Valid chunk encoding/decoding",
@@ -1619,10 +1619,10 @@ func TestValidateChunkIntegrity(t *testing.T) {
 	cs := NewChunkSerializer(NewNoOpLogger())
 
 	tests := []struct {
-		name        string
 		chunk       ChunkData
-		expectError bool
+		name        string
 		description string
+		expectError bool
 	}{
 		{
 			name: "Valid chunk integrity",

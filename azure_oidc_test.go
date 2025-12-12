@@ -330,12 +330,12 @@ func TestValidateGoogleTokens(t *testing.T) {
 	ts.tOidc.refreshGracePeriod = 60 * time.Second
 
 	tests := []struct {
-		name            string
 		setupSession    func() *SessionData
+		name            string
+		description     string
 		expectedAuth    bool
 		expectedRefresh bool
 		expectedExpired bool
-		description     string
 	}{
 		{
 			name: "ValidGoogleTokens",
@@ -476,13 +476,13 @@ func TestIsUserAuthenticated(t *testing.T) {
 	ts.tOidc.refreshGracePeriod = 60 * time.Second
 
 	tests := []struct {
+		setupSession    func() *SessionData
 		name            string
 		providerType    string
-		setupSession    func() *SessionData
+		description     string
 		expectedAuth    bool
 		expectedRefresh bool
 		expectedExpired bool
-		description     string
 	}{
 		{
 			name:         "AzureProvider",
@@ -660,12 +660,12 @@ func TestValidateAzureTokensEdgeCases(t *testing.T) {
 	ts.tOidc.refreshGracePeriod = 60 * time.Second
 
 	tests := []struct {
-		name            string
 		setupSession    func() *SessionData
+		name            string
+		description     string
 		expectedAuth    bool
 		expectedRefresh bool
 		expectedExpired bool
-		description     string
 	}{
 		{
 			name: "UnauthenticatedWithRefreshToken",

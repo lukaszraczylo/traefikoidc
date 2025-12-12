@@ -12,20 +12,16 @@ import (
 
 // HealthCheckBackend wraps a cache backend with health checking
 type HealthCheckBackend struct {
-	backend backends.CacheBackend
-	config  *HealthCheckConfig
-
-	// Health tracking
+	lastCheck        time.Time
+	backend          backends.CacheBackend
+	ctx              context.Context
+	config           *HealthCheckConfig
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
+	checkMutex       sync.RWMutex
 	status           atomic.Int32
 	consecutiveFails atomic.Int32
 	consecutiveOK    atomic.Int32
-	lastCheck        time.Time
-	checkMutex       sync.RWMutex
-
-	// Lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
 }
 
 // NewHealthCheckBackend creates a new health check wrapped backend

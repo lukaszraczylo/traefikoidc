@@ -18,33 +18,20 @@ var (
 // ResourceManager manages shared resources across all middleware instances
 // to prevent duplication and goroutine leaks when Traefik recreates middleware
 type ResourceManager struct {
-	// HTTP clients shared across instances
-	httpClients map[string]*http.Client
-	clientsMu   sync.RWMutex
-
-	// Caches shared across instances
-	caches   map[string]interface{}
-	cachesMu sync.RWMutex
-
-	// Background tasks registry
-	tasks   map[string]*BackgroundTask
-	tasksMu sync.RWMutex
-
-	// Goroutine pools for controlled concurrency
-	pools   map[string]*GoroutinePool
-	poolsMu sync.RWMutex
-
-	// Reference counting for cleanup
 	references   map[string]*int32
-	referencesMu sync.RWMutex
-
-	// Logger
-	logger *Logger
-
-	// Shutdown coordination
-	shutdownOnce sync.Once
+	caches       map[string]interface{}
+	httpClients  map[string]*http.Client
+	tasks        map[string]*BackgroundTask
 	shutdownChan chan struct{}
+	pools        map[string]*GoroutinePool
+	logger       *Logger
 	wg           sync.WaitGroup
+	cachesMu     sync.RWMutex
+	referencesMu sync.RWMutex
+	poolsMu      sync.RWMutex
+	tasksMu      sync.RWMutex
+	clientsMu    sync.RWMutex
+	shutdownOnce sync.Once
 }
 
 // GetResourceManager returns the global singleton ResourceManager instance
@@ -338,17 +325,15 @@ func (rm *ResourceManager) Shutdown(ctx context.Context) error {
 
 // GoroutinePool provides a pool of workers for controlled concurrency
 type GoroutinePool struct {
-	maxWorkers   int
 	taskQueue    chan func()
-	workerWG     sync.WaitGroup
-	shutdownOnce sync.Once
 	shutdownChan chan struct{}
 	logger       *Logger
-	started      int32
-
-	// Condition variable for efficient Wait() without busy-polling
 	taskCond     *sync.Cond
-	pendingTasks int64 // atomic counter for pending tasks
+	workerWG     sync.WaitGroup
+	maxWorkers   int
+	pendingTasks int64
+	shutdownOnce sync.Once
+	started      int32
 }
 
 // NewGoroutinePool creates a new goroutine pool with the specified max workers
@@ -517,10 +502,10 @@ func (p *GoroutinePool) Shutdown(ctx context.Context) error {
 // GenericCache provides a simple cache implementation for testing
 type GenericCache struct {
 	data     map[string]interface{}
-	mu       sync.RWMutex
-	ttl      time.Duration
 	logger   *Logger
 	stopChan chan struct{}
+	ttl      time.Duration
+	mu       sync.RWMutex
 }
 
 // NewGenericCache creates a new generic cache

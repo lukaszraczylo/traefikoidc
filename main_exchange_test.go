@@ -18,15 +18,15 @@ import (
 // TestExchangeCodeForToken_Comprehensive tests the ExchangeCodeForToken function comprehensively
 func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 	tests := []struct {
+		setupMock     func(*httptest.Server) *TraefikOidc
+		validateFunc  func(*testing.T, *TokenResponse, error)
 		name          string
 		grantType     string
 		code          string
 		redirectURL   string
 		codeVerifier  string
-		setupMock     func(*httptest.Server) *TraefikOidc
-		validateFunc  func(*testing.T, *TokenResponse, error)
-		wantErr       bool
 		expectedError string
+		wantErr       bool
 	}{
 		{
 			name:         "successful authorization code exchange",

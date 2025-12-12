@@ -84,21 +84,19 @@ type TokenRetrievalResult struct {
 // and error handling to ensure data integrity and prevent security vulnerabilities
 // throughout the process.
 type ChunkManager struct {
-	logger *Logger
-	mutex  *sync.RWMutex
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup // WaitGroup to track background goroutine completion
-	// sessionMap provides bounded session storage to prevent memory leaks
+	lastCleanup    time.Time
+	ctx            context.Context
+	mutex          *sync.RWMutex
+	cancel         context.CancelFunc
 	sessionMap     map[string]*SessionEntry
+	logger         *Logger
+	wg             sync.WaitGroup
 	maxSessions    int
 	sessionTTL     time.Duration
-	lastCleanup    time.Time
-	cleanupRunning int32 // atomic flag to prevent concurrent cleanups
-	// Memory usage tracking
 	bytesAllocated int64
 	peakSessions   int64
 	cleanupCount   int64
+	cleanupRunning int32
 }
 
 // SessionEntry represents a session with expiration tracking
@@ -393,7 +391,8 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
-		if len(chunk) > maxBrowserCookieSize {
+		// Secondary check: ensure chunk won't exceed browser limit after encoding (~2x overhead)
+		if len(chunk) > maxCookieSize*2 {
 			err := fmt.Errorf("%s token chunk %d exceeds browser limit (%d bytes)",
 				config.Type, i, len(chunk))
 			return TokenRetrievalResult{Token: "", Error: err}
@@ -1199,8 +1198,8 @@ func (cm *ChunkManager) findOldestSessions(k int) []string {
 
 	// Collect all timestamps with keys
 	type sessionAge struct {
-		key      string
 		lastUsed time.Time
+		key      string
 	}
 
 	sessions := make([]sessionAge, 0, len(cm.sessionMap))

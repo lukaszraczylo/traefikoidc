@@ -21,25 +21,16 @@ import (
 // JWK represents a JSON Web Key as defined in RFC 7517.
 // It can represent different key types including RSA, EC, and symmetric keys.
 type JWK struct {
-	// Key type (e.g., "RSA", "EC", "oct")
-	Kty string `json:"kty"`
-	// Key use (e.g., "sig" for signature, "enc" for encryption)
-	Use string `json:"use,omitempty"`
-	// Key operations allowed
+	Kty    string   `json:"kty"`
+	Use    string   `json:"use,omitempty"`
+	Alg    string   `json:"alg,omitempty"`
+	Kid    string   `json:"kid,omitempty"`
+	N      string   `json:"n,omitempty"`
+	E      string   `json:"e,omitempty"`
+	Crv    string   `json:"crv,omitempty"`
+	X      string   `json:"x,omitempty"`
+	Y      string   `json:"y,omitempty"`
 	KeyOps []string `json:"key_ops,omitempty"`
-	// Algorithm intended for use with this key
-	Alg string `json:"alg,omitempty"`
-	// Key ID
-	Kid string `json:"kid,omitempty"`
-
-	// RSA specific fields
-	N string `json:"n,omitempty"` // Modulus
-	E string `json:"e,omitempty"` // Exponent
-
-	// EC specific fields
-	Crv string `json:"crv,omitempty"` // Curve
-	X   string `json:"x,omitempty"`   // X coordinate
-	Y   string `json:"y,omitempty"`   // Y coordinate
 }
 
 // JWKSet represents a set of JSON Web Keys.

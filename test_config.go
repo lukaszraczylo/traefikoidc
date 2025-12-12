@@ -9,26 +9,19 @@ import (
 
 // TestConfig manages test execution configuration and performance settings
 type TestConfig struct {
-	// Test execution modes
-	ExtendedTests bool // Run extended/stress tests
-	LongTests     bool // Run long-running performance tests
-	QuickMode     bool // Quick smoke tests only
-
-	// Performance settings
-	MaxConcurrency  int           // Maximum concurrent operations
-	MaxIterations   int           // Maximum test iterations
-	DefaultTimeout  time.Duration // Default test timeout
-	MemoryThreshold float64       // Memory growth threshold in MB
-	GoroutineGrowth int           // Acceptable goroutine growth
-
-	// Cache settings for tests
-	CacheSize       int           // Default cache size for tests
-	CleanupInterval time.Duration // Cleanup interval for tests
-
-	// Environment-specific overrides
-	MemoryStressTest bool // Enable memory stress tests
-	ConcurrencyTest  bool // Enable high concurrency tests
-	LeakDetection    bool // Enable memory leak detection
+	MemoryThreshold  float64
+	MaxConcurrency   int
+	MaxIterations    int
+	DefaultTimeout   time.Duration
+	GoroutineGrowth  int
+	CacheSize        int
+	CleanupInterval  time.Duration
+	LongTests        bool
+	QuickMode        bool
+	ExtendedTests    bool
+	MemoryStressTest bool
+	ConcurrencyTest  bool
+	LeakDetection    bool
 }
 
 // NewTestConfig creates a test configuration based on flags and environment

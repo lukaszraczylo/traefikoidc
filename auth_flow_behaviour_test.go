@@ -253,8 +253,8 @@ func (s *AuthFlowBehaviourSuite) TestPrepareSessionForAuthentication_WithPKCE() 
 // TestIsAjaxRequest tests AJAX request detection
 func (s *AuthFlowBehaviourSuite) TestIsAjaxRequest() {
 	testCases := []struct {
-		name       string
 		headers    map[string]string
+		name       string
 		expectAjax bool
 	}{
 		{

@@ -14,7 +14,7 @@ func TestInputValidator(t *testing.T) {
 	}
 
 	t.Run("Valid token validation", func(t *testing.T) {
-		validToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWV9.EkN-DOsnsuRjRO6BxXemmJDm3HbxrbRzXglbN2S4sOkopdU4IsDxTI8jO19W_A4K8ZPJijNLis4EZsHeY559a4DFOd50_OqgHs3UjpMC6M6FNqI2J-I2NxrragtnDxGxdJUvDERDQVHzeNlVQiuqWDEeO_O-0KptafbfyuGqfQxH_6dp2_MeFpAc"
+		validToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWV9.EkN-DOsnsuRjRO6BxXemmJDm3HbxrbRzXglbN2S4sOkopdU4IsDxTI8jO19W_A4K8ZPJijNLis4EZsHeY559a4DFOd50_OqgHs3UjpMC6M6FNqI2J-I2NxrragtnDxGxdJUvDERDQVHzeNlVQiuqWDEeO_O-0KptafbfyuGqfQxH_6dp2_MeFpAc" // trufflehog:ignore
 
 		result := validator.ValidateToken(validToken)
 		if !result.IsValid {
@@ -428,12 +428,12 @@ func TestInputValidatorValidateToken(t *testing.T) {
 	tests := []struct {
 		name        string
 		token       string
-		expectValid bool
 		description string
+		expectValid bool
 	}{
 		{
 			name:        "ValidJWTToken",
-			token:       "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiZXhwIjoxNTE2MjM5MDIyLCJpYXQiOjE1MTYyMzkwMjJ9.signature",
+			token:       "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiZXhwIjoxNTE2MjM5MDIyLCJpYXQiOjE1MTYyMzkwMjJ9.signature", // trufflehog:ignore
 			expectValid: true,
 			description: "Valid JWT token should pass validation",
 		},
@@ -475,7 +475,7 @@ func TestInputValidatorValidateToken(t *testing.T) {
 		},
 		{
 			name:        "MaliciousJWTWithExtraData",
-			token:       "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig.malicious_extra",
+			token:       "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig.malicious_extra", // trufflehog:ignore
 			expectValid: false,
 			description: "JWT with extra malicious data should fail validation",
 		},
@@ -500,8 +500,8 @@ func TestInputValidatorValidateEmail(t *testing.T) {
 	tests := []struct {
 		name        string
 		email       string
-		expectValid bool
 		description string
+		expectValid bool
 	}{
 		{
 			name:        "ValidEmail",
@@ -578,8 +578,8 @@ func TestInputValidatorValidateURL(t *testing.T) {
 	tests := []struct {
 		name        string
 		url         string
-		expectValid bool
 		description string
+		expectValid bool
 	}{
 		{
 			name:        "ValidHTTPSURL",
@@ -669,8 +669,8 @@ func TestInputValidatorValidateClaim(t *testing.T) {
 		name        string
 		claimName   string
 		claimValue  string
-		expectValid bool
 		description string
+		expectValid bool
 	}{
 		{
 			name:        "ValidStringClaim",
@@ -750,8 +750,8 @@ func TestInputValidatorValidateHeader(t *testing.T) {
 		name        string
 		headerName  string
 		headerValue string
-		expectValid bool
 		description string
+		expectValid bool
 	}{
 		{
 			name:        "ValidHeader",
@@ -830,8 +830,8 @@ func TestInputValidatorValidateUsername(t *testing.T) {
 	tests := []struct {
 		name        string
 		username    string
-		expectValid bool
 		description string
+		expectValid bool
 	}{
 		{
 			name:        "ValidUsername",

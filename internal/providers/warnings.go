@@ -7,9 +7,9 @@ import (
 
 // ProviderWarning represents a warning about provider limitations or requirements.
 type ProviderWarning struct {
-	ProviderType ProviderType
-	Level        string // "info", "warning", "error"
+	Level        string
 	Message      string
+	ProviderType ProviderType
 }
 
 // GetProviderWarnings returns warnings about provider-specific limitations.

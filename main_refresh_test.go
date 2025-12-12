@@ -16,12 +16,12 @@ import (
 // TestGetNewTokenWithRefreshToken tests the GetNewTokenWithRefreshToken function
 func TestGetNewTokenWithRefreshToken(t *testing.T) {
 	tests := []struct {
-		name          string
-		refreshToken  string
 		setupMock     func(*httptest.Server) *TraefikOidc
 		validateFunc  func(*testing.T, *TokenResponse, error)
-		wantErr       bool
+		name          string
+		refreshToken  string
 		expectedError string
+		wantErr       bool
 	}{
 		{
 			name:         "successful token refresh",

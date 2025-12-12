@@ -25,9 +25,9 @@ func TestProviderFactory_CreateProvider(t *testing.T) {
 	tests := []struct {
 		name         string
 		issuerURL    string
+		errMsg       string
 		expectedType ProviderType
 		wantErr      bool
-		errMsg       string
 	}{
 		{
 			name:         "Google provider",
@@ -158,10 +158,10 @@ func TestProviderFactory_CreateProviderByType(t *testing.T) {
 
 	tests := []struct {
 		name         string
+		errMsg       string
 		providerType ProviderType
 		expectedType ProviderType
 		wantErr      bool
-		errMsg       string
 	}{
 		{
 			name:         "Generic provider",

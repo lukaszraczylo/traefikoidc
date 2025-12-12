@@ -11,14 +11,14 @@ import (
 
 // TaskCircuitBreaker prevents task creation failures from cascading
 type TaskCircuitBreaker struct {
+	lastFailureTime  time.Time
+	logger           Logger
+	taskFailures     map[string]int32
+	timeout          time.Duration
+	mu               sync.RWMutex
 	failureThreshold int32
 	failureCount     int32
-	lastFailureTime  time.Time
-	timeout          time.Duration
-	state            int32 // 0: closed, 1: open
-	logger           Logger
-	mu               sync.RWMutex
-	taskFailures     map[string]int32
+	state            int32
 }
 
 // CircuitBreakerState represents the state of the circuit breaker
@@ -140,14 +140,14 @@ func (cb *TaskCircuitBreaker) GetState() CircuitBreakerState {
 
 // TaskMemoryMonitor monitors memory usage and can trigger cleanup
 type TaskMemoryMonitor struct {
+	lastCheck       time.Time
 	logger          Logger
 	registry        *TaskRegistry
+	stopChan        chan bool
 	memoryThreshold uint64
 	checkInterval   time.Duration
-	isMonitoring    int32
-	stopChan        chan bool
-	lastCheck       time.Time
 	mu              sync.RWMutex
+	isMonitoring    int32
 }
 
 var (
@@ -310,13 +310,13 @@ func (tmm *TaskMemoryMonitor) GetStats() map[string]interface{} {
 
 // WorkerPool manages a pool of worker goroutines for task execution
 type WorkerPool struct {
-	workers   int
-	taskQueue chan func()
-	workerWg  sync.WaitGroup
-	isRunning int32
 	logger    Logger
+	taskQueue chan func()
 	stopChan  chan bool
 	metrics   WorkerPoolMetrics
+	workerWg  sync.WaitGroup
+	workers   int
+	isRunning int32
 }
 
 // WorkerPoolMetrics tracks worker pool performance

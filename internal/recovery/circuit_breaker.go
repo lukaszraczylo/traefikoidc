@@ -60,20 +60,14 @@ func DefaultCircuitBreakerConfig() CircuitBreakerConfig {
 // CircuitBreaker implements the circuit breaker pattern for fault tolerance.
 // It prevents cascading failures by temporarily blocking requests to a failing service.
 type CircuitBreaker struct {
-	*BaseRecoveryMechanism
-	config CircuitBreakerConfig
-
-	// State management
-	state           int32 // atomic: CircuitBreakerState
 	lastStateChange time.Time
-	stateMutex      sync.RWMutex
-
-	// Failure tracking
-	consecutiveFailures  int32 // atomic
-	consecutiveSuccesses int32 // atomic
-
-	// Half-open state management
-	halfOpenRequests int32 // atomic
+	*BaseRecoveryMechanism
+	config               CircuitBreakerConfig
+	stateMutex           sync.RWMutex
+	state                int32
+	consecutiveFailures  int32
+	consecutiveSuccesses int32
+	halfOpenRequests     int32
 }
 
 // NewCircuitBreaker creates a new circuit breaker with the given configuration

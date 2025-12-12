@@ -13,40 +13,30 @@ import (
 // HybridBackend implements a two-tier cache with L1 (memory) and L2 (Redis) backends
 // It provides automatic failover, async writes for non-critical data, and optimized read paths
 type HybridBackend struct {
-	primary   CacheBackend // L1: Memory cache for fast access
-	secondary CacheBackend // L2: Redis cache for distributed access
-
-	// Configuration
-	syncWriteCacheTypes map[string]bool // Which cache types require synchronous writes
+	lastL2Error         atomic.Value
+	secondary           CacheBackend
+	primary             CacheBackend
+	logger              Logger
+	ctx                 context.Context
+	syncWriteCacheTypes map[string]bool
 	asyncWriteBuffer    chan *asyncWriteItem
-
-	// Metrics
-	l1Hits   atomic.Int64
-	l2Hits   atomic.Int64
-	misses   atomic.Int64
-	l1Writes atomic.Int64
-	l2Writes atomic.Int64
-	errors   atomic.Int64
-
-	// Fallback tracking
-	fallbackMode atomic.Bool  // True when operating in degraded mode (L1 only)
-	lastL2Error  atomic.Value // Stores last L2 error timestamp
-
-	// Lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-
-	// Logging
-	logger Logger
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	l1Hits              atomic.Int64
+	errors              atomic.Int64
+	l2Writes            atomic.Int64
+	l1Writes            atomic.Int64
+	misses              atomic.Int64
+	l2Hits              atomic.Int64
+	fallbackMode        atomic.Bool
 }
 
 // asyncWriteItem represents an async write operation
 type asyncWriteItem struct {
+	ctx   context.Context
 	key   string
 	value []byte
 	ttl   time.Duration
-	ctx   context.Context
 }
 
 // Logger interface for structured logging
@@ -82,9 +72,9 @@ func (l *defaultLogger) Errorf(format string, args ...interface{}) {
 type HybridConfig struct {
 	Primary             CacheBackend
 	Secondary           CacheBackend
-	SyncWriteCacheTypes map[string]bool // Cache types requiring synchronous L2 writes
-	AsyncBufferSize     int
 	Logger              Logger
+	SyncWriteCacheTypes map[string]bool
+	AsyncBufferSize     int
 }
 
 // NewHybridBackend creates a new hybrid cache backend with L1 (memory) and L2 (Redis) tiers

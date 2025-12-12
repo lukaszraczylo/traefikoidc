@@ -41,26 +41,13 @@ func (h HealthStatus) String() string {
 
 // HealthCheckConfig holds configuration for the health checker
 type HealthCheckConfig struct {
-	// CheckInterval is how often to check health
-	CheckInterval time.Duration
-
-	// Timeout is the timeout for each health check
-	Timeout time.Duration
-
-	// HealthyThreshold is the number of consecutive successes to become healthy
-	HealthyThreshold int
-
-	// UnhealthyThreshold is the number of consecutive failures to become unhealthy
+	OnStatusChange     func(from, to HealthStatus)
+	CheckFunc          func(ctx context.Context) error
+	CheckInterval      time.Duration
+	Timeout            time.Duration
+	HealthyThreshold   int
 	UnhealthyThreshold int
-
-	// DegradedThreshold is the latency threshold in ms to mark as degraded
-	DegradedThreshold time.Duration
-
-	// OnStatusChange is called when health status changes
-	OnStatusChange func(from, to HealthStatus)
-
-	// CheckFunc is the function to check health
-	CheckFunc func(ctx context.Context) error
+	DegradedThreshold  time.Duration
 }
 
 // DefaultHealthCheckConfig returns default configuration
@@ -76,31 +63,23 @@ func DefaultHealthCheckConfig() *HealthCheckConfig {
 
 // HealthChecker monitors the health of a backend
 type HealthChecker struct {
-	config *HealthCheckConfig
-
-	// Status tracking
-	status               atomic.Int32
-	consecutiveSuccesses atomic.Int32
+	lastCheckTime        time.Time
+	lastSuccessTime      time.Time
+	lastFailureTime      time.Time
+	config               *HealthCheckConfig
+	stopChan             chan struct{}
+	ticker               *time.Ticker
+	wg                   sync.WaitGroup
+	statusChanges        atomic.Int64
+	totalChecks          atomic.Int64
+	totalSuccesses       atomic.Int64
+	totalFailures        atomic.Int64
+	averageLatency       atomic.Int64
+	timeMu               sync.RWMutex
 	consecutiveFailures  atomic.Int32
-
-	// Timing
-	lastCheckTime   time.Time
-	lastSuccessTime time.Time
-	lastFailureTime time.Time
-	averageLatency  atomic.Int64
-	timeMu          sync.RWMutex
-
-	// Metrics
-	totalChecks    atomic.Int64
-	totalSuccesses atomic.Int64
-	totalFailures  atomic.Int64
-	statusChanges  atomic.Int64
-
-	// Lifecycle
-	ticker   *time.Ticker
-	stopChan chan struct{}
-	stopped  atomic.Bool
-	wg       sync.WaitGroup
+	consecutiveSuccesses atomic.Int32
+	stopped              atomic.Bool
+	status               atomic.Int32
 }
 
 // NewHealthChecker creates a new health checker
@@ -342,19 +321,19 @@ func (hc *HealthChecker) Stats() HealthCheckerStats {
 
 // HealthCheckerStats holds statistics for the health checker
 type HealthCheckerStats struct {
-	Status               HealthStatus
-	ConsecutiveSuccesses int32
-	ConsecutiveFailures  int32
+	LastCheckTime        time.Time
+	LastFailureTime      time.Time
+	LastSuccessTime      time.Time
 	TotalChecks          int64
 	TotalSuccesses       int64
 	TotalFailures        int64
 	SuccessRate          float64
 	AverageLatency       time.Duration
 	StatusChanges        int64
-	LastCheckTime        time.Time
-	LastSuccessTime      time.Time
-	LastFailureTime      time.Time
 	HealthScore          float64
+	Status               HealthStatus
+	ConsecutiveFailures  int32
+	ConsecutiveSuccesses int32
 }
 
 // Reset resets the health checker statistics

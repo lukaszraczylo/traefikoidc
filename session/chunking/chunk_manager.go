@@ -100,13 +100,12 @@ type Logger interface {
 // and error handling to ensure data integrity and prevent security vulnerabilities
 // throughout the process.
 type ChunkManager struct {
-	logger Logger
-	mutex  *sync.RWMutex
-	// sessionMap provides bounded session storage to prevent memory leaks
+	lastCleanup time.Time
+	logger      Logger
+	mutex       *sync.RWMutex
 	sessionMap  map[string]*SessionEntry
 	maxSessions int
 	sessionTTL  time.Duration
-	lastCleanup time.Time
 }
 
 // NewChunkManager creates a new ChunkManager instance with proper initialization.
@@ -361,8 +360,8 @@ func (cm *ChunkManager) StoreSession(key string, session *sessions.Session) {
 	if shouldEvict {
 		// Find oldest sessions to remove
 		type sessionAge struct {
-			key      string
 			lastUsed time.Time
+			key      string
 		}
 
 		sessions := make([]sessionAge, 0, currentLocal)

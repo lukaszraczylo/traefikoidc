@@ -10,9 +10,9 @@ import (
 // TestServeHTTP_ExcludedURLs tests the excluded URLs functionality
 func TestServeHTTP_ExcludedURLs(t *testing.T) {
 	tests := []struct {
+		excludedURLs map[string]struct{}
 		name         string
 		path         string
-		excludedURLs map[string]struct{}
 		shouldBypass bool
 	}{
 		{
@@ -506,12 +506,12 @@ type MockSessionData struct {
 	idToken       string
 	accessToken   string
 	refreshToken  string
-	authenticated bool
-	isDirty       bool
-	redirectCount int
 	csrf          string
 	nonce         string
 	codeVerifier  string
+	redirectCount int
+	authenticated bool
+	isDirty       bool
 }
 
 func (m *MockSessionData) GetEmail() string                                   { return m.email }

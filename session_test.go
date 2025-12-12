@@ -24,31 +24,31 @@ import (
 
 // SessionTestCase represents a comprehensive session test scenario
 type SessionTestCase struct {
-	name        string
-	scenario    string // "creation", "validation", "expiration", "persistence", "cleanup", "chunking", "security"
-	sessionType string // "user", "admin", "api", "guest", "csrf"
 	setup       func(*SessionTestFramework)
 	execute     func(*SessionTestFramework) error
 	validate    func(*testing.T, error, *SessionTestFramework)
 	cleanup     func(*SessionTestFramework)
-	concurrent  bool
+	name        string
+	scenario    string
+	sessionType string
+	skipReason  string
 	iterations  int
 	timeout     time.Duration
-	skipReason  string
+	concurrent  bool
 }
 
 // SessionTestFramework provides shared test infrastructure for session tests
 type SessionTestFramework struct {
 	t            *testing.T
 	mockProvider *httptest.Server
+	testTokens   map[string]string
+	metrics      *SessionTestMetrics
+	config       *SessionTestConfig
 	requests     []*http.Request
 	responses    []*httptest.ResponseRecorder
-	testTokens   map[string]string
 	sessionIDs   []string
-	mu           sync.RWMutex
-	metrics      *SessionTestMetrics
 	cleanupFuncs []func()
-	config       *SessionTestConfig
+	mu           sync.RWMutex
 }
 
 // SessionTestMetrics tracks test performance metrics
@@ -65,12 +65,12 @@ type SessionTestMetrics struct {
 
 // SessionTestConfig holds test configuration
 type SessionTestConfig struct {
+	CookieDomain      string
+	EncryptionKey     string
 	MaxChunkSize      int
 	MaxSessions       int
-	EnableHTTPS       bool
-	CookieDomain      string
 	SessionTimeout    time.Duration
-	EncryptionKey     string
+	EnableHTTPS       bool
 	EnableCompression bool
 }
 
@@ -2849,9 +2849,9 @@ func TestSessionExpiryVsTokenExpiry(t *testing.T) {
 
 	scenarios := []struct {
 		name                string
+		expectedBehavior    string
 		sessionAge          time.Duration
 		tokenExpiry         time.Duration
-		expectedBehavior    string
 		sessionShouldExpire bool
 		tokenShouldRefresh  bool
 	}{
@@ -2975,10 +2975,10 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 
 	scenarios := []struct {
 		name           string
-		tokenExpiry    time.Duration
-		shouldCleanup  bool
 		shouldPreserve []string
 		shouldRemove   []string
+		tokenExpiry    time.Duration
+		shouldCleanup  bool
 	}{
 		{
 			name:           "Recently expired tokens - preserve session",

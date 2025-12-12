@@ -16,45 +16,30 @@ import (
 
 // OIDCServerConfig configures the mock OIDC server behavior
 type OIDCServerConfig struct {
-	// Identity
-	Issuer string
-
-	// Discovery
-	ScopesSupported          []string
-	ResponseTypesSupported   []string
+	JWKSResponse             map[string]interface{}
+	TokenFixture             *fixtures.TokenFixture
+	UserinfoError            *OIDCError
+	UserinfoResponse         map[string]interface{}
+	IntrospectionResponse    map[string]interface{}
+	JWKSError                *OIDCError
+	RefreshError             *OIDCError
+	TokenResponse            map[string]interface{}
+	TokenError               *OIDCError
+	IntrospectionError       *OIDCError
+	RefreshResponse          map[string]interface{}
+	Issuer                   string
 	GrantTypesSupported      []string
-	ClaimsSupported          []string
 	TokenEndpointAuthMethods []string
-
-	// Token fixture for signing
-	TokenFixture *fixtures.TokenFixture
-
-	// Token endpoint behavior
-	TokenResponse   map[string]interface{}
-	TokenError      *OIDCError
-	TokenDelay      time.Duration
-	RefreshResponse map[string]interface{}
-	RefreshError    *OIDCError
-
-	// JWKS behavior
-	JWKSResponse map[string]interface{}
-	JWKSError    *OIDCError
-	JWKSDelay    time.Duration
-
-	// Introspection behavior
-	IntrospectionResponse map[string]interface{}
-	IntrospectionError    *OIDCError
-
-	// Userinfo behavior
-	UserinfoResponse map[string]interface{}
-	UserinfoError    *OIDCError
-
-	// Simulation flags
-	SimulateTimeout bool
-	TimeoutDuration time.Duration
-	RateLimitAfter  int
-	FailAfterN      int
-	FailWithStatus  int
+	ScopesSupported          []string
+	ClaimsSupported          []string
+	ResponseTypesSupported   []string
+	FailAfterN               int
+	JWKSDelay                time.Duration
+	TimeoutDuration          time.Duration
+	RateLimitAfter           int
+	TokenDelay               time.Duration
+	FailWithStatus           int
+	SimulateTimeout          bool
 }
 
 // OIDCError represents an OAuth error response
@@ -67,9 +52,9 @@ type OIDCError struct {
 type OIDCServer struct {
 	*httptest.Server
 	Config       *OIDCServerConfig
-	RequestCount int32
-	mu           sync.Mutex
 	requests     []*http.Request
+	mu           sync.Mutex
+	RequestCount int32
 }
 
 // NewOIDCServer creates a new mock OIDC server

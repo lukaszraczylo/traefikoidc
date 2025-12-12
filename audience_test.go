@@ -84,8 +84,8 @@ func TestAudienceValidation(t *testing.T) {
 	tests := []struct {
 		name          string
 		audience      string
-		expectError   bool
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name:        "valid custom audience URL",
@@ -163,8 +163,8 @@ func TestConfigAudienceValidation(t *testing.T) {
 	tests := []struct {
 		name        string
 		audience    string
-		wantErr     bool
 		errContains string
+		wantErr     bool
 	}{
 		{
 			name:     "Empty audience is valid for backward compatibility",
@@ -732,11 +732,11 @@ func TestJWTAudienceVerification(t *testing.T) {
 	tokenCache := tc.addTokenCache(NewTokenCache())
 
 	tests := []struct {
+		tokenAudience   interface{}
 		name            string
 		configAudience  string
-		tokenAudience   interface{}
-		wantErr         bool
 		errContains     string
+		wantErr         bool
 		skipReplayCheck bool
 	}{
 		{

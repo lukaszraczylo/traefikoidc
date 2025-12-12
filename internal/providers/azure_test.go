@@ -154,10 +154,10 @@ func TestAzureProvider_ValidateTokens(t *testing.T) {
 	provider := NewAzureProvider()
 
 	tests := []struct {
-		name           string
-		session        *mockSession
 		verifierError  error
+		session        *mockSession
 		cacheData      map[string]interface{}
+		name           string
 		expectedResult ValidationResult
 	}{
 		{
@@ -369,9 +369,9 @@ func TestAzureProvider_OfflineAccessHandling(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		inputScopes   []string
-		expectedCount int // Expected number of offline_access scopes (should be 1)
 		description   string
+		inputScopes   []string
+		expectedCount int
 	}{
 		{
 			name:          "No offline_access - should add one",

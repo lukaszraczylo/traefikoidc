@@ -16,18 +16,18 @@ import (
 // IntrospectionResponse represents the response from an OAuth 2.0 token introspection endpoint.
 // Per RFC 7662, this contains information about the token's validity and properties.
 type IntrospectionResponse struct {
-	Active    bool   `json:"active"`               // REQUIRED - whether the token is currently active
-	Scope     string `json:"scope,omitempty"`      // Space-separated list of scopes
-	ClientID  string `json:"client_id,omitempty"`  // Client identifier for the token
-	Username  string `json:"username,omitempty"`   // Human-readable identifier for the resource owner
-	TokenType string `json:"token_type,omitempty"` // Type of token (e.g., "Bearer")
-	Exp       int64  `json:"exp,omitempty"`        // Expiration time (seconds since epoch)
-	Iat       int64  `json:"iat,omitempty"`        // Issued at time (seconds since epoch)
-	Nbf       int64  `json:"nbf,omitempty"`        // Not before time (seconds since epoch)
-	Sub       string `json:"sub,omitempty"`        // Subject of the token
-	Aud       string `json:"aud,omitempty"`        // Intended audience
-	Iss       string `json:"iss,omitempty"`        // Issuer
-	Jti       string `json:"jti,omitempty"`        // JWT ID
+	Scope     string `json:"scope,omitempty"`
+	ClientID  string `json:"client_id,omitempty"`
+	Username  string `json:"username,omitempty"`
+	TokenType string `json:"token_type,omitempty"`
+	Sub       string `json:"sub,omitempty"`
+	Aud       string `json:"aud,omitempty"`
+	Iss       string `json:"iss,omitempty"`
+	Jti       string `json:"jti,omitempty"`
+	Exp       int64  `json:"exp,omitempty"`
+	Iat       int64  `json:"iat,omitempty"`
+	Nbf       int64  `json:"nbf,omitempty"`
+	Active    bool   `json:"active"`
 }
 
 // introspectToken performs OAuth 2.0 Token Introspection (RFC 7662) for an opaque token.

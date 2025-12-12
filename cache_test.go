@@ -19,16 +19,16 @@ import (
 
 // CacheTestCase represents a comprehensive test case for cache operations
 type CacheTestCase struct {
+	setup      func(*TestFramework)
+	execute    func(*TestFramework) error
+	validate   func(*testing.T, error, *TestFramework)
+	cleanup    func(*TestFramework)
 	name       string
-	cacheType  string                                  // "universal", "metadata", "bounded"
-	operation  string                                  // "get", "set", "evict", "cleanup"
-	setup      func(*TestFramework)                    // Pre-test setup
-	execute    func(*TestFramework) error              // Test execution
-	validate   func(*testing.T, error, *TestFramework) // Validation logic
-	cleanup    func(*TestFramework)                    // Post-test cleanup
-	timeout    time.Duration                           // Test timeout
-	parallel   bool                                    // Can run in parallel
-	skipReason string                                  // Optional reason to skip
+	cacheType  string
+	operation  string
+	skipReason string
+	timeout    time.Duration
+	parallel   bool
 }
 
 // createTestCacheConfig creates a standard test configuration
@@ -698,10 +698,10 @@ func TestUnifiedCache_SetMaxSize(t *testing.T) {
 
 func TestNewCacheAdapter(t *testing.T) {
 	tests := []struct {
-		name        string
 		cache       interface{}
-		expectNil   bool
+		name        string
 		description string
+		expectNil   bool
 	}{
 		{
 			name:        "UniversalCache",

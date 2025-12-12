@@ -19,31 +19,25 @@ import (
 
 // MockOAuthProvider simulates an OAuth/OIDC provider for testing
 type MockOAuthProvider struct {
-	TokenEndpoint      string
-	AuthEndpoint       string
-	JWKSEndpoint       string
-	RevokeEndpoint     string
-	EndSessionEndpoint string
-
-	// Configurable behaviors
-	TokenExchangeFunc func(grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error)
-	RefreshTokenFunc  func(refreshToken string) (*TokenResponse, error)
-	RevokeTokenFunc   func(token, tokenType string) error
-	JWKSResponseFunc  func() ([]byte, error)
-
-	// Simulation flags
-	SimulateTimeout     bool
-	SimulateRateLimit   bool
-	SimulateServerError bool
+	TokenExchangeFunc   func(grantType, codeOrToken, redirectURL, codeVerifier string) (*TokenResponse, error)
+	LastRequest         *http.Request
+	JWKSResponseFunc    func() ([]byte, error)
+	RevokeTokenFunc     func(token, tokenType string) error
+	RefreshTokenFunc    func(refreshToken string) (*TokenResponse, error)
+	EndSessionEndpoint  string
+	TokenEndpoint       string
+	RevokeEndpoint      string
+	JWKSEndpoint        string
+	AuthEndpoint        string
+	RequestHistory      []*http.Request
+	LastRequestBody     []byte
 	TimeoutDuration     time.Duration
 	ResponseDelay       time.Duration
-
-	// Request tracking
-	RequestCount    int32
-	LastRequest     *http.Request
-	LastRequestBody []byte
-	RequestHistory  []*http.Request
-	mu              sync.Mutex
+	mu                  sync.Mutex
+	RequestCount        int32
+	SimulateServerError bool
+	SimulateRateLimit   bool
+	SimulateTimeout     bool
 }
 
 // NewMockOAuthProvider creates a new mock OAuth provider with default endpoints
@@ -236,22 +230,16 @@ func (m *MockOAuthProvider) Reset() {
 
 // MockSessionManager implements a mock session manager for testing
 type MockSessionManager struct {
-	Sessions map[string]*SessionData
-	mu       sync.RWMutex
-
-	// Configurable behaviors
+	Sessions          map[string]*SessionData
 	GetSessionFunc    func(r *http.Request) (*SessionData, error)
 	SaveSessionFunc   func(r *http.Request, w http.ResponseWriter, session *SessionData) error
 	DeleteSessionFunc func(r *http.Request, w http.ResponseWriter) error
-
-	// Simulation flags
-	SimulateError    bool
-	SimulateNotFound bool
-
-	// Tracking
-	GetCallCount    int32
-	SaveCallCount   int32
-	DeleteCallCount int32
+	mu                sync.RWMutex
+	GetCallCount      int32
+	SaveCallCount     int32
+	DeleteCallCount   int32
+	SimulateError     bool
+	SimulateNotFound  bool
 }
 
 // NewMockSessionManager creates a new mock session manager
@@ -370,23 +358,16 @@ func (m *MockSessionManager) Reset() {
 
 // MockHTTPClient implements a mock HTTP client for testing
 type MockHTTPClient struct {
-	// Response configuration
-	ResponseFunc func(req *http.Request) (*http.Response, error)
-
-	// Default response settings
-	DefaultStatusCode int
-	DefaultBody       string
+	ResponseFunc      func(req *http.Request) (*http.Response, error)
 	DefaultHeaders    map[string]string
-
-	// Simulation flags
-	SimulateTimeout bool
-	SimulateError   bool
-	TimeoutDuration time.Duration
-
-	// Request tracking
-	Requests      []*http.Request
-	RequestBodies [][]byte
-	mu            sync.Mutex
+	DefaultBody       string
+	Requests          []*http.Request
+	RequestBodies     [][]byte
+	DefaultStatusCode int
+	TimeoutDuration   time.Duration
+	mu                sync.Mutex
+	SimulateTimeout   bool
+	SimulateError     bool
 }
 
 // NewMockHTTPClient creates a new mock HTTP client

@@ -17,23 +17,23 @@ import (
 
 // mockBackend is a simple mock implementation of CacheBackend for testing
 type mockBackend struct {
+	pingError   error
 	data        map[string]mockEntry
+	stats       map[string]interface{}
 	mu          sync.RWMutex
+	getCalls    atomic.Int32
+	setCalls    atomic.Int32
+	deleteCalls atomic.Int32
 	failSet     bool
 	failGet     bool
 	failDelete  bool
 	failClear   bool
 	failPing    bool
-	pingError   error
-	stats       map[string]interface{}
-	getCalls    atomic.Int32
-	setCalls    atomic.Int32
-	deleteCalls atomic.Int32
 }
 
 type mockEntry struct {
-	value     []byte
 	expiresAt time.Time
+	value     []byte
 }
 
 // mockBatchBackend extends mockBackend with batch operations

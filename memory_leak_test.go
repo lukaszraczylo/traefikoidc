@@ -42,27 +42,27 @@ func NewMemoryLeakFixesTestSuite() *MemoryLeakFixesTestSuite {
 
 // MemoryTestCase defines a memory leak test scenario
 type MemoryTestCase struct {
-	name         string
-	component    string // "cache", "session", "token", "plugin", "pool"
-	scenario     string // "concurrent", "longrunning", "stress", "lifecycle"
-	iterations   int
-	concurrency  int
 	setup        func(*MemoryTestFramework) error
 	execute      func(*MemoryTestFramework) error
 	validateLeak func(*testing.T, runtime.MemStats, runtime.MemStats)
 	cleanup      func(*MemoryTestFramework) error
+	name         string
+	component    string
+	scenario     string
+	iterations   int
+	concurrency  int
 }
 
 // MemoryTestFramework provides common test infrastructure for memory tests
 type MemoryTestFramework struct {
-	t       *testing.T
 	cache   CacheInterface
+	ctx     context.Context
+	t       *testing.T
 	plugin  *TraefikOidc
 	logger  *Logger
+	cancel  context.CancelFunc
 	servers []*httptest.Server
 	configs []*Config
-	ctx     context.Context
-	cancel  context.CancelFunc
 }
 
 // NewMemoryTestFramework creates a new test framework instance
@@ -97,12 +97,12 @@ func (tf *MemoryTestFramework) Cleanup() {
 // ConsolidatedMemorySnapshot captures memory statistics at a point in time
 type ConsolidatedMemorySnapshot struct {
 	Timestamp   time.Time
+	Description string
 	Alloc       uint64
 	TotalAlloc  uint64
 	Sys         uint64
-	NumGC       uint32
 	Goroutines  int
-	Description string
+	NumGC       uint32
 }
 
 // VerifyNoGoroutineLeaks checks for goroutine leaks
@@ -1601,8 +1601,8 @@ func TestMemoryLeakConsolidated(t *testing.T) {
 
 func TestGoroutineLeaks(t *testing.T) {
 	testCases := []struct {
-		name string
 		test func(t *testing.T)
+		name string
 	}{
 		{
 			name: "cache_no_leak",

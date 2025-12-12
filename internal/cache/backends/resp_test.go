@@ -15,8 +15,8 @@ import (
 func TestRESPWriter_WriteCommand(t *testing.T) {
 	tests := []struct {
 		name     string
-		args     []string
 		expected string
+		args     []string
 	}{
 		{
 			name:     "Simple command",
@@ -205,9 +205,9 @@ func TestRESPReader_ReadInteger(t *testing.T) {
 // TestRESPReader_ReadBulkString tests reading bulk strings
 func TestRESPReader_ReadBulkString(t *testing.T) {
 	tests := []struct {
+		expected interface{}
 		name     string
 		input    string
-		expected interface{}
 		wantErr  bool
 		isNil    bool
 	}{
@@ -440,10 +440,10 @@ func TestRESPHelpers(t *testing.T) {
 // TestRESPRoundTrip tests full round-trip encoding/decoding
 func TestRESPRoundTrip(t *testing.T) {
 	tests := []struct {
-		name     string
-		command  []string
-		response string
 		expected interface{}
+		name     string
+		response string
+		command  []string
 	}{
 		{
 			name:     "PING command",

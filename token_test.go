@@ -26,10 +26,10 @@ import (
 
 // Test tokens used across multiple test files
 var (
-	ValidAccessToken      = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIn0.eyJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImF1ZCI6InRlc3QtY2xpZW50LWlkIiwiZXhwIjozMDAwMDAwMDAwLCJzdWIiOiJ0ZXN0LXN1YmplY3QiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifQ.dGVzdC1zaWduYXR1cmU"
-	ValidIDToken          = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIn0.eyJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImF1ZCI6InRlc3QtY2xpZW50LWlkIiwiZXhwIjozMDAwMDAwMDAwLCJzdWIiOiJ0ZXN0LXN1YmplY3QiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifQ.dGVzdC1zaWduYXR1cmU"
+	ValidAccessToken      = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIn0.eyJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImF1ZCI6InRlc3QtY2xpZW50LWlkIiwiZXhwIjozMDAwMDAwMDAwLCJzdWIiOiJ0ZXN0LXN1YmplY3QiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifQ.dGVzdC1zaWduYXR1cmU" // trufflehog:ignore
+	ValidIDToken          = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIn0.eyJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImF1ZCI6InRlc3QtY2xpZW50LWlkIiwiZXhwIjozMDAwMDAwMDAwLCJzdWIiOiJ0ZXN0LXN1YmplY3QiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifQ.dGVzdC1zaWduYXR1cmU" // trufflehog:ignore
 	ValidRefreshToken     = "refresh_token_abc123"
-	MinimalValidJWT       = "eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
+	MinimalValidJWT       = "eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0." // trufflehog:ignore
 	InvalidTokenOneDot    = "invalid.token"
 	InvalidTokenNoDots    = "invalidtoken"
 	InvalidTokenThreeDots = "invalid..token"
@@ -43,8 +43,8 @@ type TestTokens struct {
 
 func NewTestTokens() *TestTokens {
 	return &TestTokens{
-		validJWT:   "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIn0.eyJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImF1ZCI6InRlc3QtY2xpZW50LWlkIiwiZXhwIjozMDAwMDAwMDAwLCJzdWIiOiJ0ZXN0LXN1YmplY3QiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifQ.dGVzdC1zaWduYXR1cmU",
-		expiredJWT: "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIn0.eyJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImF1ZCI6InRlc3QtY2xpZW50LWlkIiwiZXhwIjoxMDAwMDAwMDAwLCJzdWIiOiJ0ZXN0LXN1YmplY3QiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifQ.dGVzdC1zaWduYXR1cmU",
+		validJWT:   "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIn0.eyJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImF1ZCI6InRlc3QtY2xpZW50LWlkIiwiZXhwIjozMDAwMDAwMDAwLCJzdWIiOiJ0ZXN0LXN1YmplY3QiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifQ.dGVzdC1zaWduYXR1cmU", // trufflehog:ignore
+		expiredJWT: "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIn0.eyJpc3MiOiJodHRwczovL3Rlc3QtaXNzdWVyLmNvbSIsImF1ZCI6InRlc3QtY2xpZW50LWlkIiwiZXhwIjoxMDAwMDAwMDAwLCJzdWIiOiJ0ZXN0LXN1YmplY3QiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifQ.dGVzdC1zaWduYXR1cmU", // trufflehog:ignore
 	}
 }
 
@@ -137,12 +137,12 @@ func TestOpaqueTokenDetection(t *testing.T) {
 	tests := []struct {
 		name        string
 		token       string
-		isOpaque    bool
 		description string
+		isOpaque    bool
 	}{
 		{
 			name:        "JWT token with 3 parts",
-			token:       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+			token:       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", // trufflehog:ignore
 			isOpaque:    false,
 			description: "Standard JWT with header.payload.signature",
 		},
@@ -218,7 +218,7 @@ func TestOpaqueTokenValidation(t *testing.T) {
 		},
 		{
 			name:      "Valid JWT token",
-			token:     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+			token:     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", // trufflehog:ignore
 			wantError: false,
 		},
 	}
@@ -253,8 +253,8 @@ func TestOpaqueTokenStorage(t *testing.T) {
 	tests := []struct {
 		name        string
 		token       string
-		shouldStore bool
 		description string
+		shouldStore bool
 	}{
 		{
 			name:        "Valid opaque token",
@@ -264,7 +264,7 @@ func TestOpaqueTokenStorage(t *testing.T) {
 		},
 		{
 			name:        "Valid JWT token",
-			token:       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+			token:       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", // trufflehog:ignore
 			shouldStore: true,
 			description: "Standard JWT with three parts",
 		},
@@ -754,11 +754,11 @@ func TestDetectTokenType(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name        string
 		jwt         *JWT
+		name        string
 		token       string
-		expectedID  bool
 		description string
+		expectedID  bool
 	}{
 		{
 			name: "ID token with nonce",
@@ -1233,16 +1233,16 @@ func TestExtractTime(t *testing.T) {
 	validator := NewTokenValidator(nil)
 
 	tests := []struct {
-		name     string
 		claim    interface{}
+		name     string
 		expected bool
 	}{
-		{"float64", float64(1609459200), true},
-		{"int64", int64(1609459200), true},
-		{"int", int(1609459200), true},
-		{"string", "not a timestamp", false},
-		{"nil", nil, false},
-		{"map", map[string]interface{}{}, false},
+		{name: "float64", claim: float64(1609459200), expected: true},
+		{name: "int64", claim: int64(1609459200), expected: true},
+		{name: "int", claim: int(1609459200), expected: true},
+		{name: "string", claim: "not a timestamp", expected: false},
+		{name: "nil", claim: nil, expected: false},
+		{name: "map", claim: map[string]interface{}{}, expected: false},
 	}
 
 	for _, tt := range tests {
@@ -1556,11 +1556,11 @@ func TestTokenCorruption(t *testing.T) {
 		validJWT := testTokens.CreateLargeValidJWT(100)
 
 		tests := []struct {
+			corruptionScenario func(*SessionData)
 			name               string
 			tokenSize          int
 			iterations         int
 			expectConsistent   bool
-			corruptionScenario func(*SessionData)
 		}{
 			{
 				name:             "Small token - multiple retrievals",
@@ -1803,14 +1803,14 @@ func TestTokenValidation(t *testing.T) {
 	t.Run("TokenExpiryValidation", func(t *testing.T) {
 		now := time.Now()
 		tests := []struct {
-			name        string
 			exp         time.Time
+			name        string
 			expectValid bool
 		}{
-			{"Future expiry", now.Add(time.Hour), true},
-			{"Just expired", now.Add(-time.Second), false},
-			{"Long expired", now.Add(-24 * time.Hour), false},
-			{"Far future", now.Add(365 * 24 * time.Hour), true},
+			{name: "Future expiry", exp: now.Add(time.Hour), expectValid: true},
+			{name: "Just expired", exp: now.Add(-time.Second), expectValid: false},
+			{name: "Long expired", exp: now.Add(-24 * time.Hour), expectValid: false},
+			{name: "Far future", exp: now.Add(365 * 24 * time.Hour), expectValid: true},
 		}
 
 		for _, tt := range tests {
