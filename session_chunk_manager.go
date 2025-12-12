@@ -393,7 +393,8 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 			return TokenRetrievalResult{Token: "", Error: err}
 		}
 
-		if len(chunk) > maxBrowserCookieSize {
+		// Secondary check: ensure chunk won't exceed browser limit after encoding (~2x overhead)
+		if len(chunk) > maxCookieSize*2 {
 			err := fmt.Errorf("%s token chunk %d exceeds browser limit (%d bytes)",
 				config.Type, i, len(chunk))
 			return TokenRetrievalResult{Token: "", Error: err}
