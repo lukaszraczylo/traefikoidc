@@ -16,35 +16,26 @@ import (
 
 // ClientRegistrationResponse represents the response from a successful client registration (RFC 7591)
 type ClientRegistrationResponse struct {
-	// Required fields
-	ClientID string `json:"client_id"`
-
-	// Conditional - only for confidential clients
-	ClientSecret string `json:"client_secret,omitempty"`
-
-	// Optional - for managing registration
-	RegistrationAccessToken string `json:"registration_access_token,omitempty"`
-	RegistrationClientURI   string `json:"registration_client_uri,omitempty"`
-
-	// Expiration
-	ClientIDIssuedAt      int64 `json:"client_id_issued_at,omitempty"`
-	ClientSecretExpiresAt int64 `json:"client_secret_expires_at,omitempty"`
-
-	// Echo back of registered metadata
-	RedirectURIs            []string `json:"redirect_uris,omitempty"`
-	ResponseTypes           []string `json:"response_types,omitempty"`
-	GrantTypes              []string `json:"grant_types,omitempty"`
-	ApplicationType         string   `json:"application_type,omitempty"`
-	Contacts                []string `json:"contacts,omitempty"`
-	ClientName              string   `json:"client_name,omitempty"`
-	LogoURI                 string   `json:"logo_uri,omitempty"`
-	ClientURI               string   `json:"client_uri,omitempty"`
-	PolicyURI               string   `json:"policy_uri,omitempty"`
-	TOSURI                  string   `json:"tos_uri,omitempty"`
-	JWKSURI                 string   `json:"jwks_uri,omitempty"`
 	SubjectType             string   `json:"subject_type,omitempty"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
+	LogoURI                 string   `json:"logo_uri,omitempty"`
+	RegistrationAccessToken string   `json:"registration_access_token,omitempty"`
+	RegistrationClientURI   string   `json:"registration_client_uri,omitempty"`
 	Scope                   string   `json:"scope,omitempty"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
+	TOSURI                  string   `json:"tos_uri,omitempty"`
+	PolicyURI               string   `json:"policy_uri,omitempty"`
+	ClientSecret            string   `json:"client_secret,omitempty"`
+	ApplicationType         string   `json:"application_type,omitempty"`
+	ClientID                string   `json:"client_id"`
+	ClientName              string   `json:"client_name,omitempty"`
+	JWKSURI                 string   `json:"jwks_uri,omitempty"`
+	ClientURI               string   `json:"client_uri,omitempty"`
+	Contacts                []string `json:"contacts,omitempty"`
+	GrantTypes              []string `json:"grant_types,omitempty"`
+	ResponseTypes           []string `json:"response_types,omitempty"`
+	RedirectURIs            []string `json:"redirect_uris,omitempty"`
+	ClientSecretExpiresAt   int64    `json:"client_secret_expires_at,omitempty"`
+	ClientIDIssuedAt        int64    `json:"client_id_issued_at,omitempty"`
 }
 
 // ClientRegistrationError represents an error response from client registration (RFC 7591)
@@ -55,14 +46,12 @@ type ClientRegistrationError struct {
 
 // DynamicClientRegistrar handles OIDC Dynamic Client Registration (RFC 7591)
 type DynamicClientRegistrar struct {
-	httpClient  *http.Client
-	logger      *Logger
-	config      *DynamicClientRegistrationConfig
-	providerURL string
-
-	// Cached registration response
-	mu                   sync.RWMutex
+	httpClient           *http.Client
+	logger               *Logger
+	config               *DynamicClientRegistrationConfig
 	registrationResponse *ClientRegistrationResponse
+	providerURL          string
+	mu                   sync.RWMutex
 }
 
 // NewDynamicClientRegistrar creates a new dynamic client registrar

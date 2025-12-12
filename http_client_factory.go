@@ -12,30 +12,23 @@ import (
 
 // HTTPClientConfig provides configuration for creating HTTP clients
 type HTTPClientConfig struct {
-	// Timeout for the entire request
-	Timeout time.Duration
-	// MaxRedirects allowed (0 means follow Go's default of 10)
-	MaxRedirects int
-	// UseCookieJar enables cookie jar for the client
-	UseCookieJar bool
-	// Connection settings
+	IdleConnTimeout       time.Duration
+	MaxIdleConns          int
+	ReadBufferSize        int
 	DialTimeout           time.Duration
 	KeepAlive             time.Duration
 	TLSHandshakeTimeout   time.Duration
 	ResponseHeaderTimeout time.Duration
 	ExpectContinueTimeout time.Duration
-	IdleConnTimeout       time.Duration
-	// Connection pool settings
-	MaxIdleConns        int
-	MaxIdleConnsPerHost int
-	MaxConnsPerHost     int
-	// Buffer settings
-	WriteBufferSize int
-	ReadBufferSize  int
-	// Feature flags
-	ForceHTTP2         bool
-	DisableKeepAlives  bool
-	DisableCompression bool
+	MaxRedirects          int
+	MaxIdleConnsPerHost   int
+	Timeout               time.Duration
+	MaxConnsPerHost       int
+	WriteBufferSize       int
+	UseCookieJar          bool
+	ForceHTTP2            bool
+	DisableKeepAlives     bool
+	DisableCompression    bool
 }
 
 // DefaultHTTPClientConfig returns the default configuration for general use

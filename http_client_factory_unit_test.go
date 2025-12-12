@@ -110,9 +110,9 @@ func TestHTTPClientFactoryValidateHTTPClientConfig(t *testing.T) {
 
 	tests := []struct {
 		name      string
+		errorMsg  string
 		config    HTTPClientConfig
 		wantError bool
-		errorMsg  string
 	}{
 		{
 			name: "valid config",

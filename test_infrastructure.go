@@ -17,10 +17,10 @@ import (
 
 // GlobalTestCleanup tracks and cleans up test resources
 type GlobalTestCleanup struct {
-	mu      sync.Mutex
 	servers []*httptest.Server
 	tasks   []*BackgroundTask
 	caches  []interface{ Close() }
+	mu      sync.Mutex
 }
 
 var globalCleanup = &GlobalTestCleanup{}
@@ -187,13 +187,13 @@ func GetTestDuration(normal time.Duration) time.Duration {
 
 // UnifiedMockSession provides a comprehensive mock for the Session interface
 type UnifiedMockSession struct {
-	mu           sync.RWMutex
 	data         map[string]interface{}
 	callCounts   map[string]int64
 	errors       map[string]error
 	delays       map[string]time.Duration
-	destroyed    bool
 	destroyCount int64
+	mu           sync.RWMutex
+	destroyed    bool
 }
 
 // NewUnifiedMockSession creates a new mock session with default behavior
@@ -326,13 +326,13 @@ func (m *UnifiedMockSession) GetDestroyCount() int64 {
 
 // UnifiedMockTokenVerifier provides a comprehensive mock for token verification
 type UnifiedMockTokenVerifier struct {
-	mu               sync.RWMutex
 	validTokens      map[string]bool
 	tokenMetadata    map[string]map[string]interface{}
 	callCounts       map[string]int64
 	errors           map[string]error
 	delays           map[string]time.Duration
 	verificationFunc func(string) error
+	mu               sync.RWMutex
 }
 
 // NewUnifiedMockTokenVerifier creates a new mock token verifier
@@ -414,19 +414,19 @@ func (m *UnifiedMockTokenVerifier) VerifyToken(token string) error {
 
 // UnifiedMockTokenCache provides a comprehensive mock for token caching
 type UnifiedMockTokenCache struct {
-	mu         sync.RWMutex
 	cache      map[string]TestCacheEntry
 	callCounts map[string]int64
 	errors     map[string]error
 	delays     map[string]time.Duration
 	hitRate    float64
+	mu         sync.RWMutex
 }
 
 // TestCacheEntry represents a cached token entry for testing
 type TestCacheEntry struct {
-	Token     string
 	ExpiresAt time.Time
 	Metadata  map[string]interface{}
+	Token     string
 }
 
 // NewUnifiedMockTokenCache creates a new mock token cache
@@ -539,39 +539,39 @@ func (m *UnifiedMockTokenCache) Clear() {
 
 // TableTestCase represents a standardized test case structure
 type TableTestCase struct {
-	Name          string
-	Description   string
 	Input         interface{}
 	Expected      interface{}
 	ExpectedError error
 	Setup         func(*testing.T) error
 	Teardown      func(*testing.T) error
-	Timeout       time.Duration
+	Name          string
+	Description   string
 	SkipReason    string
 	Tags          []string
+	Timeout       time.Duration
 	Parallel      bool
 }
 
 // MemoryLeakTestCase represents a test case specifically for memory leak detection
 type MemoryLeakTestCase struct {
+	Operation          func() error
+	Setup              func() error
+	Teardown           func() error
 	Name               string
 	Description        string
-	Operation          func() error
 	Iterations         int
 	MaxGoroutineGrowth int
 	MaxMemoryGrowthMB  float64
-	Setup              func() error
-	Teardown           func() error
-	GCBetweenRuns      bool
 	Timeout            time.Duration
+	GCBetweenRuns      bool
 }
 
 // TestSuiteRunner provides utilities for running table-driven tests
 type TestSuiteRunner struct {
-	parallelTests bool
-	timeout       time.Duration
 	beforeEach    func(*testing.T)
 	afterEach     func(*testing.T)
+	timeout       time.Duration
+	parallelTests bool
 }
 
 // NewTestSuiteRunner creates a new test suite runner

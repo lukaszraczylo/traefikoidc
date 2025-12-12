@@ -726,20 +726,20 @@ type MockConfig struct {
 }
 
 type MockSession struct {
-	id       string
-	userID   string
 	created  time.Time
 	lastUsed time.Time
 	data     map[string]interface{}
+	id       string
+	userID   string
 }
 
 type TestResult struct {
-	UserID    int
 	StartTime time.Time
 	EndTime   time.Time
+	Error     error
+	UserID    int
 	Duration  time.Duration
 	Success   bool
-	Error     error
 }
 
 // ============================================================================

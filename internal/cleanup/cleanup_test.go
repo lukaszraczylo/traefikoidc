@@ -11,10 +11,10 @@ import (
 
 // Mock logger for testing
 type mockLogger struct {
-	mu       sync.Mutex
 	logs     []string
 	errLogs  []string
 	debugLog []string
+	mu       sync.Mutex
 }
 
 func (m *mockLogger) Logf(format string, args ...interface{}) {

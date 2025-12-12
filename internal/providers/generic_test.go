@@ -136,9 +136,9 @@ func TestGenericProvider_ValidateTokens(t *testing.T) {
 	provider := NewGenericProvider()
 
 	tests := []struct {
-		name           string
-		session        *mockSession
 		verifierError  error
+		session        *mockSession
+		name           string
 		expectedResult ValidationResult
 	}{
 		{

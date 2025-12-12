@@ -12,19 +12,19 @@ import (
 
 // SharedTransportPool manages a pool of shared HTTP transports to prevent connection exhaustion
 type SharedTransportPool struct {
-	mu          sync.RWMutex
-	transports  map[string]*sharedTransport
-	maxConns    int
 	ctx         context.Context
+	transports  map[string]*sharedTransport
 	cancel      context.CancelFunc
-	clientCount int32 // SECURITY FIX: Track total HTTP clients
-	maxClients  int32 // SECURITY FIX: Limit total clients to 5
+	maxConns    int
+	mu          sync.RWMutex
+	clientCount int32
+	maxClients  int32
 }
 
 type sharedTransport struct {
+	lastUsed  time.Time
 	transport *http.Transport
 	refCount  int
-	lastUsed  time.Time
 }
 
 var (

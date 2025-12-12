@@ -21,11 +21,11 @@ type TestFramework struct {
 	server     *httptest.Server
 	oidc       *TraefikOidc
 	config     *Config
-	cleanup    []func()
 	mocks      *TestMocks
 	fixtures   *TestFixtures
 	privateKey *rsa.PrivateKey
 	publicKey  *rsa.PublicKey
+	cleanup    []func()
 	mu         sync.Mutex
 }
 
@@ -457,12 +457,12 @@ func GetTestFramework() *TestFramework {
 
 // TestScenario represents a test scenario
 type TestScenario struct {
-	Name           string
 	Setup          func(*TestFramework)
 	Request        func(*TestFramework) *http.Request
-	ExpectedStatus int
-	ExpectedBody   string
 	Validate       func(*TestFramework, *httptest.ResponseRecorder)
+	Name           string
+	ExpectedBody   string
+	ExpectedStatus int
 }
 
 // RunScenarios executes a set of test scenarios

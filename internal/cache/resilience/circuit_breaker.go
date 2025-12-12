@@ -48,23 +48,12 @@ func (s State) String() string {
 
 // CircuitBreakerConfig holds configuration for the circuit breaker
 type CircuitBreakerConfig struct {
-	// MaxFailures is the number of consecutive failures before opening the circuit
-	MaxFailures int
-
-	// FailureThreshold is the failure rate threshold (0.0 to 1.0)
-	FailureThreshold float64
-
-	// Timeout is how long the circuit stays open before trying half-open
-	Timeout time.Duration
-
-	// HalfOpenMaxRequests is the number of requests allowed in half-open state
+	OnStateChange       func(from, to State)
+	MaxFailures         int
+	FailureThreshold    float64
+	Timeout             time.Duration
 	HalfOpenMaxRequests int
-
-	// ResetTimeout is how long to wait before resetting counters in closed state
-	ResetTimeout time.Duration
-
-	// OnStateChange is called when the circuit breaker changes state
-	OnStateChange func(from, to State)
+	ResetTimeout        time.Duration
 }
 
 // DefaultCircuitBreakerConfig returns default configuration
@@ -80,28 +69,20 @@ func DefaultCircuitBreakerConfig() *CircuitBreakerConfig {
 
 // CircuitBreaker implements the circuit breaker pattern
 type CircuitBreaker struct {
-	config *CircuitBreakerConfig
-
-	// State management
-	state           atomic.Int32
-	lastStateChange time.Time
-	stateMu         sync.RWMutex
-
-	// Failure tracking
-	consecutiveFailures atomic.Int32
-	totalRequests       atomic.Int64
+	nextRetryTime       time.Time
+	lastStateChange     time.Time
+	lastSuccessTime     time.Time
+	lastFailureTime     time.Time
+	config              *CircuitBreakerConfig
 	totalFailures       atomic.Int64
+	totalRequests       atomic.Int64
+	stateTransitions    atomic.Int64
+	rejectedRequests    atomic.Int64
+	stateMu             sync.RWMutex
+	timeMu              sync.RWMutex
 	halfOpenRequests    atomic.Int32
-
-	// Timing
-	lastFailureTime time.Time
-	lastSuccessTime time.Time
-	nextRetryTime   time.Time
-	timeMu          sync.RWMutex
-
-	// Metrics
-	stateTransitions atomic.Int64
-	rejectedRequests atomic.Int64
+	consecutiveFailures atomic.Int32
+	state               atomic.Int32
 }
 
 // NewCircuitBreaker creates a new circuit breaker
@@ -313,17 +294,17 @@ func (cb *CircuitBreaker) Stats() CircuitBreakerStats {
 
 // CircuitBreakerStats holds statistics for the circuit breaker
 type CircuitBreakerStats struct {
-	State               State
-	ConsecutiveFailures int32
+	LastFailureTime     time.Time
+	LastSuccessTime     time.Time
+	LastStateChange     time.Time
+	NextRetryTime       time.Time
 	TotalRequests       int64
 	TotalFailures       int64
 	SuccessRate         float64
 	RejectedRequests    int64
 	StateTransitions    int64
-	LastFailureTime     time.Time
-	LastSuccessTime     time.Time
-	LastStateChange     time.Time
-	NextRetryTime       time.Time
+	State               State
+	ConsecutiveFailures int32
 }
 
 // IsHealthy returns true if the circuit breaker is in a healthy state

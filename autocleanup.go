@@ -222,17 +222,16 @@ func (bt *BackgroundTask) run() {
 // TaskCircuitBreaker implements circuit breaker pattern for background task creation
 // It limits concurrent task execution and tracks failures to prevent system overload
 type TaskCircuitBreaker struct {
-	state            int32 // CircuitBreakerState
-	failureCount     int32
-	lastFailureTime  int64 // Unix timestamp
-	failureThreshold int32
-	timeout          time.Duration
 	logger           *Logger
-	// Concurrency limiting
-	concurrentTasks int32               // Current number of running tasks
-	maxConcurrent   int32               // Maximum concurrent tasks allowed
-	activeTasks     map[string]struct{} // Track active task names
-	tasksMu         sync.RWMutex        // Separate mutex for task tracking
+	activeTasks      map[string]struct{}
+	lastFailureTime  int64
+	timeout          time.Duration
+	tasksMu          sync.RWMutex
+	state            int32
+	failureCount     int32
+	failureThreshold int32
+	concurrentTasks  int32
+	maxConcurrent    int32
 }
 
 // NewTaskCircuitBreaker creates a new circuit breaker for background tasks
@@ -380,9 +379,9 @@ func (cb *TaskCircuitBreaker) OnTaskFailure(taskName string, err error) {
 // TaskRegistry maintains a registry of all active background tasks to prevent duplicates
 type TaskRegistry struct {
 	tasks  map[string]*BackgroundTask
-	mu     sync.RWMutex
 	cb     *TaskCircuitBreaker
 	logger *Logger
+	mu     sync.RWMutex
 }
 
 // GlobalTaskRegistry is the singleton instance for managing all background tasks

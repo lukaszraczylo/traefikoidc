@@ -273,17 +273,17 @@ func TestRetryExecutor_isRetryableError(t *testing.T) {
 	executor := NewRetryExecutor(config, logger)
 
 	tests := []struct {
-		name     string
 		err      error
+		name     string
 		expected bool
 	}{
-		{"nil error", nil, false},
-		{"connection refused", errors.New("connection refused"), true},
-		{"timeout", errors.New("TIMEOUT"), true}, // case insensitive
-		{"EOF", errors.New("EOF"), false},
-		{"random error", errors.New("something else"), false},
-		{"context cancelled", context.Canceled, false},
-		{"context deadline exceeded", context.DeadlineExceeded, false},
+		{name: "nil error", err: nil, expected: false},
+		{name: "connection refused", err: errors.New("connection refused"), expected: true},
+		{name: "timeout", err: errors.New("TIMEOUT"), expected: true}, // case insensitive
+		{name: "EOF", err: errors.New("EOF"), expected: false},
+		{name: "random error", err: errors.New("something else"), expected: false},
+		{name: "context cancelled", err: context.Canceled, expected: false},
+		{name: "context deadline exceeded", err: context.DeadlineExceeded, expected: false},
 	}
 
 	for _, tt := range tests {

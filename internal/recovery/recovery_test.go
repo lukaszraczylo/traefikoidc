@@ -13,10 +13,10 @@ import (
 
 // Mock logger for testing
 type mockLogger struct {
-	mu       sync.Mutex
 	logs     []string
 	errLogs  []string
 	debugLog []string
+	mu       sync.Mutex
 }
 
 func (m *mockLogger) Logf(format string, args ...interface{}) {
@@ -202,13 +202,13 @@ func TestBaseRecoveryMechanism_ConcurrentAccess(t *testing.T) {
 // CircuitBreakerState tests
 func TestCircuitBreakerState_String(t *testing.T) {
 	tests := []struct {
-		state    CircuitBreakerState
 		expected string
+		state    CircuitBreakerState
 	}{
-		{CircuitBreakerClosed, "closed"},
-		{CircuitBreakerOpen, "open"},
-		{CircuitBreakerHalfOpen, "half-open"},
-		{CircuitBreakerState(99), "unknown"},
+		{state: CircuitBreakerClosed, expected: "closed"},
+		{state: CircuitBreakerOpen, expected: "open"},
+		{state: CircuitBreakerHalfOpen, expected: "half-open"},
+		{state: CircuitBreakerState(99), expected: "unknown"},
 	}
 
 	for _, tt := range tests {

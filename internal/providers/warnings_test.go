@@ -9,9 +9,9 @@ import (
 func TestGetProviderWarnings(t *testing.T) {
 	tests := []struct {
 		name         string
+		checkContent string
 		providerType ProviderType
 		expectCount  int
-		checkContent string
 	}{
 		{
 			name:         "GitHub has OAuth 2.0 warning",

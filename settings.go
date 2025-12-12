@@ -27,359 +27,128 @@ type TemplatedHeader struct {
 // It provides all necessary settings to configure OpenID Connect authentication
 // with various providers like Auth0, Logto, or any standard OIDC provider.
 type Config struct {
-	HTTPClient        *http.Client `json:"-"`
-	OIDCEndSessionURL string       `json:"oidcEndSessionURL"`
-	CookieDomain      string       `json:"cookieDomain"`
-	CookiePrefix      string       `json:"cookiePrefix"`  // Prefix for session cookie names (default: "_oidc_raczylo_")
-	SessionMaxAge     int          `json:"sessionMaxAge"` // Maximum session age in seconds (default: 86400 = 24 hours)
-	CallbackURL       string       `json:"callbackURL"`
-	LogoutURL         string       `json:"logoutURL"`
-	ClientID          string       `json:"clientID"`
-	ClientSecret      string       `json:"clientSecret"`
-	// Audience specifies the expected JWT audience claim value.
-	// If not set, defaults to ClientID for backward compatibility.
-	// For Auth0 API access tokens with custom audiences, set this to your API identifier.
-	// For Azure AD with Application ID URI, set to "api://your-app-id".
-	// Security: This value is validated against the JWT aud claim to prevent token confusion attacks.
-	Audience                  string            `json:"audience,omitempty"`
-	PostLogoutRedirectURI     string            `json:"postLogoutRedirectURI"`
-	LogLevel                  string            `json:"logLevel"`
-	SessionEncryptionKey      string            `json:"sessionEncryptionKey"`
-	ProviderURL               string            `json:"providerURL"`
-	RevocationURL             string            `json:"revocationURL"`
-	ExcludedURLs              []string          `json:"excludedURLs"`
-	AllowedUserDomains        []string          `json:"allowedUserDomains"`
-	AllowedUsers              []string          `json:"allowedUsers"`
-	Scopes                    []string          `json:"scopes"`
-	Headers                   []TemplatedHeader `json:"headers"`
-	AllowedRolesAndGroups     []string          `json:"allowedRolesAndGroups"`
-	RateLimit                 int               `json:"rateLimit"`
-	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
-	ForceHTTPS                bool              `json:"forceHTTPS"`
-	EnablePKCE                bool              `json:"enablePKCE"`
-	OverrideScopes            bool              `json:"overrideScopes"`
-	// StrictAudienceValidation enforces strict audience validation for access tokens.
-	// When enabled, sessions are rejected if access token validation fails (prevents fallback to ID token).
-	// This addresses Auth0 Scenario 2 security concerns where access tokens without proper
-	// audience claims could be accepted based on ID token validation.
-	// Default: false (backward compatible - allows ID token fallback)
-	// Recommended: true for production environments requiring strict OAuth 2.0 compliance
-	StrictAudienceValidation bool `json:"strictAudienceValidation,omitempty"`
-	// AllowOpaqueTokens enables acceptance of non-JWT (opaque) access tokens.
-	// When enabled, opaque tokens are validated via OAuth 2.0 Token Introspection (RFC 7662).
-	// This supports Auth0 Scenario 3 and other providers that issue opaque access tokens.
-	// Default: false (only JWT access tokens accepted)
-	// Note: Requires introspection endpoint to be available from provider metadata
-	AllowOpaqueTokens bool `json:"allowOpaqueTokens,omitempty"`
-	// RequireTokenIntrospection forces token introspection for all opaque access tokens.
-	// When enabled, opaque tokens are rejected if introspection endpoint is unavailable.
-	// When disabled, opaque tokens fall back to ID token validation.
-	// Default: false (allows fallback to ID token)
-	// Recommended: true when AllowOpaqueTokens is enabled for maximum security
-	RequireTokenIntrospection bool `json:"requireTokenIntrospection,omitempty"`
-	// DisableReplayDetection disables JTI-based replay attack detection.
-	// Enable this when running multiple Traefik replicas to prevent false positives.
-	// Each replica maintains its own in-memory JTI cache, so the same valid token
-	// hitting different replicas will trigger replay detection on subsequent requests.
-	//
-	// Security Note: When enabled, the plugin still validates token signatures,
-	// expiration, and other claims. Only the JTI replay check is disabled.
-	// Consider using a shared cache backend (Redis/Memcached) if replay detection
-	// is required in multi-replica scenarios.
-	//
-	// Default: false (replay detection enabled)
-	// Recommended: true for multi-replica deployments
-	DisableReplayDetection bool                   `json:"disableReplayDetection,omitempty"`
-	SecurityHeaders        *SecurityHeadersConfig `json:"securityHeaders,omitempty"`
-
-	// Redis configures the Redis cache backend for distributed caching.
-	// When enabled, provides cache sharing across multiple Traefik replicas.
-	// Default: nil (disabled - uses in-memory caching)
-	Redis *RedisConfig `json:"redis,omitempty"`
-
-	// RoleClaimName specifies the JWT claim name to extract user roles from.
-	// This allows compatibility with different OIDC providers that use different claim names.
-	//
-	// Examples:
-	//   - Default (backward compatible): "roles"
-	//   - Auth0 namespaced: "https://myapp.com/roles"
-	//   - Keycloak realm roles: "realm_access.roles"
-	//   - Custom claim: "user_roles"
-	//
-	// If not specified, defaults to "roles" for backward compatibility.
-	// Supports both simple names and namespaced URIs per OIDC specification.
-	//
-	// Default: "roles"
-	RoleClaimName string `json:"roleClaimName,omitempty"`
-
-	// GroupClaimName specifies the JWT claim name to extract user groups from.
-	// This allows compatibility with different OIDC providers that use different claim names.
-	//
-	// Examples:
-	//   - Default (backward compatible): "groups"
-	//   - Auth0 namespaced: "https://myapp.com/groups"
-	//   - Azure AD groups: "groups"
-	//   - Custom claim: "user_groups"
-	//
-	// If not specified, defaults to "groups" for backward compatibility.
-	// Supports both simple names and namespaced URIs per OIDC specification.
-	//
-	// Default: "groups"
-	GroupClaimName string `json:"groupClaimName,omitempty"`
-
-	// UserIdentifierClaim specifies the JWT claim to use as the user identifier.
-	// This allows authentication for users without email addresses (e.g., Azure AD service accounts).
-	//
-	// Examples:
-	//   - Default (backward compatible): "email"
-	//   - Azure AD without email: "sub", "oid", "upn", or "preferred_username"
-	//   - Generic OIDC: "sub" (always present per OIDC spec)
-	//
-	// When set to a non-email claim:
-	//   - AllowedUsers will match against this claim value instead of email
-	//   - AllowedUserDomains validation is skipped (domains only apply to email)
-	//   - The session will store this identifier as the user's identity
-	//
-	// Default: "email"
-	UserIdentifierClaim string `json:"userIdentifierClaim,omitempty"`
-
-	// DynamicClientRegistration enables OIDC Dynamic Client Registration (RFC 7591)
-	// When enabled, the middleware will automatically register as a client with
-	// the OIDC provider if ClientID/ClientSecret are not provided.
 	DynamicClientRegistration *DynamicClientRegistrationConfig `json:"dynamicClientRegistration,omitempty"`
-
-	// AllowPrivateIPAddresses disables the security check that blocks private/internal IP addresses.
-	// By default, the plugin rejects URLs containing private IP ranges (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
-	// to prevent SSRF attacks and ensure OIDC providers are publicly accessible.
-	//
-	// Enable this option ONLY when:
-	//   - Your OIDC provider (e.g., Keycloak) runs on an internal network with private IPs
-	//   - You have no DNS resolution available for internal services
-	//   - Your entire stack runs in a Docker network or Kubernetes cluster with private addressing
-	//
-	// Security Warning: Enabling this option reduces SSRF protection. Only use in trusted
-	// network environments where the OIDC provider is known and controlled.
-	//
-	// Default: false (private IPs are blocked for security)
-	AllowPrivateIPAddresses bool `json:"allowPrivateIPAddresses,omitempty"`
-
-	// MinimalHeaders reduces the number of headers forwarded to downstream services.
-	// This helps prevent "431 Request Header Fields Too Large" errors when downstream
-	// services have limited header buffer sizes.
-	//
-	// When enabled (true):
-	//   - Only forwards: X-Forwarded-User
-	//   - Skips: X-Auth-Request-Token (full ID token), X-Auth-Request-Redirect
-	//   - Groups/roles headers (X-User-Groups, X-User-Roles) are still forwarded if configured
-	//   - Custom templated headers are still processed
-	//
-	// When disabled (false, default):
-	//   - Forwards all headers: X-Forwarded-User, X-Auth-Request-User, X-Auth-Request-Redirect,
-	//     X-Auth-Request-Token (full ID token)
-	//
-	// Use this option when:
-	//   - Downstream services return "431 Request Header Fields Too Large" errors
-	//   - You don't need the full ID token forwarded to backend services
-	//   - You want to reduce request overhead
-	//
-	// Default: false (all headers forwarded for backward compatibility)
-	MinimalHeaders bool `json:"minimalHeaders,omitempty"`
+	Redis                     *RedisConfig                     `json:"redis,omitempty"`
+	HTTPClient                *http.Client                     `json:"-"`
+	SecurityHeaders           *SecurityHeadersConfig           `json:"securityHeaders,omitempty"`
+	PostLogoutRedirectURI     string                           `json:"postLogoutRedirectURI"`
+	LogLevel                  string                           `json:"logLevel"`
+	LogoutURL                 string                           `json:"logoutURL"`
+	ClientID                  string                           `json:"clientID"`
+	ClientSecret              string                           `json:"clientSecret"`
+	Audience                  string                           `json:"audience,omitempty"`
+	CookiePrefix              string                           `json:"cookiePrefix"`
+	CallbackURL               string                           `json:"callbackURL"`
+	SessionEncryptionKey      string                           `json:"sessionEncryptionKey"`
+	ProviderURL               string                           `json:"providerURL"`
+	RevocationURL             string                           `json:"revocationURL"`
+	UserIdentifierClaim       string                           `json:"userIdentifierClaim,omitempty"`
+	GroupClaimName            string                           `json:"groupClaimName,omitempty"`
+	RoleClaimName             string                           `json:"roleClaimName,omitempty"`
+	CookieDomain              string                           `json:"cookieDomain"`
+	OIDCEndSessionURL         string                           `json:"oidcEndSessionURL"`
+	Scopes                    []string                         `json:"scopes"`
+	AllowedRolesAndGroups     []string                         `json:"allowedRolesAndGroups"`
+	ExcludedURLs              []string                         `json:"excludedURLs"`
+	AllowedUserDomains        []string                         `json:"allowedUserDomains"`
+	AllowedUsers              []string                         `json:"allowedUsers"`
+	Headers                   []TemplatedHeader                `json:"headers"`
+	RefreshGracePeriodSeconds int                              `json:"refreshGracePeriodSeconds"`
+	SessionMaxAge             int                              `json:"sessionMaxAge"`
+	RateLimit                 int                              `json:"rateLimit"`
+	OverrideScopes            bool                             `json:"overrideScopes"`
+	DisableReplayDetection    bool                             `json:"disableReplayDetection,omitempty"`
+	RequireTokenIntrospection bool                             `json:"requireTokenIntrospection,omitempty"`
+	AllowOpaqueTokens         bool                             `json:"allowOpaqueTokens,omitempty"`
+	StrictAudienceValidation  bool                             `json:"strictAudienceValidation,omitempty"`
+	EnablePKCE                bool                             `json:"enablePKCE"`
+	ForceHTTPS                bool                             `json:"forceHTTPS"`
+	AllowPrivateIPAddresses   bool                             `json:"allowPrivateIPAddresses,omitempty"`
+	MinimalHeaders            bool                             `json:"minimalHeaders,omitempty"`
 }
 
 // RedisConfig configures Redis cache backend settings for distributed caching.
 // All fields support both JSON and YAML configuration for compatibility with Traefik's
 // dynamic configuration (labels, YAML files, etc.)
 type RedisConfig struct {
-	// Enabled indicates if Redis caching should be used (default: false)
-	Enabled bool `json:"enabled" yaml:"enabled"`
-
-	// Address is the Redis server address (e.g., "localhost:6379", "redis:6379")
-	Address string `json:"address" yaml:"address"`
-
-	// Password for Redis authentication (optional, leave empty for no auth)
-	Password string `json:"password,omitempty" yaml:"password,omitempty"`
-
-	// DB is the Redis database number to use (default: 0)
-	DB int `json:"db" yaml:"db"`
-
-	// KeyPrefix is the prefix for all Redis keys (default: "traefikoidc:")
-	KeyPrefix string `json:"keyPrefix" yaml:"keyPrefix"`
-
-	// PoolSize is the maximum number of socket connections (default: 10)
-	PoolSize int `json:"poolSize" yaml:"poolSize"`
-
-	// ConnectTimeout is the timeout for establishing connections in seconds (default: 5)
-	ConnectTimeout int `json:"connectTimeout" yaml:"connectTimeout"`
-
-	// ReadTimeout is the timeout for read operations in seconds (default: 3)
-	ReadTimeout int `json:"readTimeout" yaml:"readTimeout"`
-
-	// WriteTimeout is the timeout for write operations in seconds (default: 3)
-	WriteTimeout int `json:"writeTimeout" yaml:"writeTimeout"`
-
-	// EnableTLS indicates if TLS should be used for Redis connections (default: false)
-	EnableTLS bool `json:"enableTLS" yaml:"enableTLS"`
-
-	// TLSSkipVerify skips TLS certificate verification (not recommended for production)
-	TLSSkipVerify bool `json:"tlsSkipVerify" yaml:"tlsSkipVerify"`
-
-	// CacheMode determines the caching strategy: "redis" (Redis only), "hybrid" (Memory+Redis), "memory" (Memory only)
-	// Default: "redis" when enabled
-	CacheMode string `json:"cacheMode" yaml:"cacheMode"`
-
-	// HybridL1Size is the maximum number of items in L1 cache for hybrid mode (default: 500)
-	HybridL1Size int `json:"hybridL1Size" yaml:"hybridL1Size"`
-
-	// HybridL1MemoryMB is the maximum memory in MB for L1 cache in hybrid mode (default: 10)
-	HybridL1MemoryMB int64 `json:"hybridL1MemoryMB" yaml:"hybridL1MemoryMB"`
-
-	// EnableCircuitBreaker enables circuit breaker for Redis failures (default: true)
-	EnableCircuitBreaker bool `json:"enableCircuitBreaker" yaml:"enableCircuitBreaker"`
-
-	// CircuitBreakerThreshold is the number of failures before opening circuit (default: 5)
-	CircuitBreakerThreshold int `json:"circuitBreakerThreshold" yaml:"circuitBreakerThreshold"`
-
-	// CircuitBreakerTimeout is the timeout in seconds before attempting to close circuit (default: 60)
-	CircuitBreakerTimeout int `json:"circuitBreakerTimeout" yaml:"circuitBreakerTimeout"`
-
-	// EnableHealthCheck enables periodic health checks for Redis (default: true)
-	EnableHealthCheck bool `json:"enableHealthCheck" yaml:"enableHealthCheck"`
-
-	// HealthCheckInterval is the interval in seconds between health checks (default: 30)
-	HealthCheckInterval int `json:"healthCheckInterval" yaml:"healthCheckInterval"`
+	KeyPrefix               string `json:"keyPrefix" yaml:"keyPrefix"`
+	Address                 string `json:"address" yaml:"address"`
+	Password                string `json:"password,omitempty" yaml:"password,omitempty"`
+	CacheMode               string `json:"cacheMode" yaml:"cacheMode"`
+	WriteTimeout            int    `json:"writeTimeout" yaml:"writeTimeout"`
+	CircuitBreakerThreshold int    `json:"circuitBreakerThreshold" yaml:"circuitBreakerThreshold"`
+	ConnectTimeout          int    `json:"connectTimeout" yaml:"connectTimeout"`
+	ReadTimeout             int    `json:"readTimeout" yaml:"readTimeout"`
+	PoolSize                int    `json:"poolSize" yaml:"poolSize"`
+	HealthCheckInterval     int    `json:"healthCheckInterval" yaml:"healthCheckInterval"`
+	CircuitBreakerTimeout   int    `json:"circuitBreakerTimeout" yaml:"circuitBreakerTimeout"`
+	DB                      int    `json:"db" yaml:"db"`
+	HybridL1Size            int    `json:"hybridL1Size" yaml:"hybridL1Size"`
+	HybridL1MemoryMB        int64  `json:"hybridL1MemoryMB" yaml:"hybridL1MemoryMB"`
+	Enabled                 bool   `json:"enabled" yaml:"enabled"`
+	EnableCircuitBreaker    bool   `json:"enableCircuitBreaker" yaml:"enableCircuitBreaker"`
+	TLSSkipVerify           bool   `json:"tlsSkipVerify" yaml:"tlsSkipVerify"`
+	EnableHealthCheck       bool   `json:"enableHealthCheck" yaml:"enableHealthCheck"`
+	EnableTLS               bool   `json:"enableTLS" yaml:"enableTLS"`
 }
 
 // DynamicClientRegistrationConfig configures OIDC Dynamic Client Registration (RFC 7591)
 type DynamicClientRegistrationConfig struct {
-	// Enabled enables automatic client registration with the OIDC provider
-	Enabled bool `json:"enabled"`
-
-	// InitialAccessToken is an optional bearer token for protected registration endpoints
-	// Some providers require this token to authorize new client registrations
-	InitialAccessToken string `json:"initialAccessToken,omitempty"`
-
-	// RegistrationEndpoint overrides the endpoint discovered from provider metadata
-	// If empty, uses the registration_endpoint from .well-known/openid-configuration
-	RegistrationEndpoint string `json:"registrationEndpoint,omitempty"`
-
-	// ClientMetadata contains the client metadata to register
-	ClientMetadata *ClientRegistrationMetadata `json:"clientMetadata,omitempty"`
-
-	// PersistCredentials determines whether to save registered credentials to a file
-	// This allows reusing the same client_id/client_secret across restarts
-	PersistCredentials bool `json:"persistCredentials"`
-
-	// CredentialsFile is the path to store/load registered client credentials
-	// Defaults to "/tmp/oidc-client-credentials.json" if not specified
-	CredentialsFile string `json:"credentialsFile,omitempty"`
+	ClientMetadata       *ClientRegistrationMetadata `json:"clientMetadata,omitempty"`
+	InitialAccessToken   string                      `json:"initialAccessToken,omitempty"`
+	RegistrationEndpoint string                      `json:"registrationEndpoint,omitempty"`
+	CredentialsFile      string                      `json:"credentialsFile,omitempty"`
+	Enabled              bool                        `json:"enabled"`
+	PersistCredentials   bool                        `json:"persistCredentials"`
 }
 
 // ClientRegistrationMetadata contains client metadata for dynamic registration (RFC 7591)
 type ClientRegistrationMetadata struct {
-	// RedirectURIs is REQUIRED - array of redirect URIs for authorization
-	RedirectURIs []string `json:"redirect_uris"`
-
-	// ResponseTypes specifies OAuth 2.0 response types (default: ["code"])
-	ResponseTypes []string `json:"response_types,omitempty"`
-
-	// GrantTypes specifies OAuth 2.0 grant types (default: ["authorization_code"])
-	GrantTypes []string `json:"grant_types,omitempty"`
-
-	// ApplicationType is either "web" (default) or "native"
-	ApplicationType string `json:"application_type,omitempty"`
-
-	// Contacts is an array of email addresses for responsible parties
-	Contacts []string `json:"contacts,omitempty"`
-
-	// ClientName is a human-readable name for the client
-	ClientName string `json:"client_name,omitempty"`
-
-	// LogoURI is a URL pointing to a logo for the client
-	LogoURI string `json:"logo_uri,omitempty"`
-
-	// ClientURI is a URL of the home page of the client
-	ClientURI string `json:"client_uri,omitempty"`
-
-	// PolicyURI is a URL pointing to the client's privacy policy
-	PolicyURI string `json:"policy_uri,omitempty"`
-
-	// TOSURI is a URL pointing to the client's terms of service
-	TOSURI string `json:"tos_uri,omitempty"`
-
-	// JWKSURI is a URL for the client's JSON Web Key Set
-	JWKSURI string `json:"jwks_uri,omitempty"`
-
-	// SubjectType is "pairwise" or "public" (provider-specific)
-	SubjectType string `json:"subject_type,omitempty"`
-
-	// TokenEndpointAuthMethod specifies how the client authenticates at token endpoint
-	// Values: "client_secret_basic", "client_secret_post", "client_secret_jwt", "private_key_jwt", "none"
-	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
-
-	// DefaultMaxAge is the default maximum authentication age in seconds
-	DefaultMaxAge int `json:"default_max_age,omitempty"`
-
-	// RequireAuthTime specifies whether auth_time claim is required in ID token
-	RequireAuthTime bool `json:"require_auth_time,omitempty"`
-
-	// DefaultACRValues specifies default ACR values
-	DefaultACRValues []string `json:"default_acr_values,omitempty"`
-
-	// Scope is a space-separated list of scopes (alternative to config.Scopes)
-	Scope string `json:"scope,omitempty"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
+	TOSURI                  string   `json:"tos_uri,omitempty"`
+	Scope                   string   `json:"scope,omitempty"`
+	ApplicationType         string   `json:"application_type,omitempty"`
+	SubjectType             string   `json:"subject_type,omitempty"`
+	ClientName              string   `json:"client_name,omitempty"`
+	LogoURI                 string   `json:"logo_uri,omitempty"`
+	ClientURI               string   `json:"client_uri,omitempty"`
+	PolicyURI               string   `json:"policy_uri,omitempty"`
+	JWKSURI                 string   `json:"jwks_uri,omitempty"`
+	ResponseTypes           []string `json:"response_types,omitempty"`
+	Contacts                []string `json:"contacts,omitempty"`
+	RedirectURIs            []string `json:"redirect_uris"`
+	DefaultACRValues        []string `json:"default_acr_values,omitempty"`
+	GrantTypes              []string `json:"grant_types,omitempty"`
+	DefaultMaxAge           int      `json:"default_max_age,omitempty"`
+	RequireAuthTime         bool     `json:"require_auth_time,omitempty"`
 }
 
 // SecurityHeadersConfig configures security headers for the plugin
 type SecurityHeadersConfig struct {
-	// Enable security headers (default: true)
-	Enabled bool `json:"enabled"`
-
-	// Security profile: "default", "strict", "development", "api", or "custom"
-	Profile string `json:"profile"`
-
-	// Content Security Policy
-	ContentSecurityPolicy string `json:"contentSecurityPolicy,omitempty"`
-
-	// HSTS settings
-	StrictTransportSecurity           bool `json:"strictTransportSecurity"`
-	StrictTransportSecurityMaxAge     int  `json:"strictTransportSecurityMaxAge"` // seconds
-	StrictTransportSecuritySubdomains bool `json:"strictTransportSecuritySubdomains"`
-	StrictTransportSecurityPreload    bool `json:"strictTransportSecurityPreload"`
-
-	// Frame options: "DENY", "SAMEORIGIN", or "ALLOW-FROM uri"
-	FrameOptions string `json:"frameOptions,omitempty"`
-
-	// Content type options (default: "nosniff")
-	ContentTypeOptions string `json:"contentTypeOptions,omitempty"`
-
-	// XSS protection (default: "1; mode=block")
-	XSSProtection string `json:"xssProtection,omitempty"`
-
-	// Referrer policy
-	ReferrerPolicy string `json:"referrerPolicy,omitempty"`
-
-	// Permissions policy
-	PermissionsPolicy string `json:"permissionsPolicy,omitempty"`
-
-	// Cross-origin settings
-	CrossOriginEmbedderPolicy string `json:"crossOriginEmbedderPolicy,omitempty"`
-	CrossOriginOpenerPolicy   string `json:"crossOriginOpenerPolicy,omitempty"`
-	CrossOriginResourcePolicy string `json:"crossOriginResourcePolicy,omitempty"`
-
-	// CORS settings
-	CORSEnabled          bool     `json:"corsEnabled"`
-	CORSAllowedOrigins   []string `json:"corsAllowedOrigins,omitempty"`
-	CORSAllowedMethods   []string `json:"corsAllowedMethods,omitempty"`
-	CORSAllowedHeaders   []string `json:"corsAllowedHeaders,omitempty"`
-	CORSAllowCredentials bool     `json:"corsAllowCredentials"`
-	CORSMaxAge           int      `json:"corsMaxAge"` // seconds
-
-	// Custom headers (in addition to standard security headers)
-	CustomHeaders map[string]string `json:"customHeaders,omitempty"`
-
-	// Security features
-	DisableServerHeader    bool `json:"disableServerHeader"`
-	DisablePoweredByHeader bool `json:"disablePoweredByHeader"`
+	CustomHeaders                     map[string]string `json:"customHeaders,omitempty"`
+	PermissionsPolicy                 string            `json:"permissionsPolicy,omitempty"`
+	Profile                           string            `json:"profile"`
+	ContentSecurityPolicy             string            `json:"contentSecurityPolicy,omitempty"`
+	CrossOriginResourcePolicy         string            `json:"crossOriginResourcePolicy,omitempty"`
+	CrossOriginOpenerPolicy           string            `json:"crossOriginOpenerPolicy,omitempty"`
+	CrossOriginEmbedderPolicy         string            `json:"crossOriginEmbedderPolicy,omitempty"`
+	FrameOptions                      string            `json:"frameOptions,omitempty"`
+	ContentTypeOptions                string            `json:"contentTypeOptions,omitempty"`
+	XSSProtection                     string            `json:"xssProtection,omitempty"`
+	ReferrerPolicy                    string            `json:"referrerPolicy,omitempty"`
+	CORSAllowedHeaders                []string          `json:"corsAllowedHeaders,omitempty"`
+	CORSAllowedOrigins                []string          `json:"corsAllowedOrigins,omitempty"`
+	CORSAllowedMethods                []string          `json:"corsAllowedMethods,omitempty"`
+	StrictTransportSecurityMaxAge     int               `json:"strictTransportSecurityMaxAge"`
+	CORSMaxAge                        int               `json:"corsMaxAge"`
+	StrictTransportSecurityPreload    bool              `json:"strictTransportSecurityPreload"`
+	StrictTransportSecuritySubdomains bool              `json:"strictTransportSecuritySubdomains"`
+	CORSEnabled                       bool              `json:"corsEnabled"`
+	Enabled                           bool              `json:"enabled"`
+	CORSAllowCredentials              bool              `json:"corsAllowCredentials"`
+	StrictTransportSecurity           bool              `json:"strictTransportSecurity"`
+	DisableServerHeader               bool              `json:"disableServerHeader"`
+	DisablePoweredByHeader            bool              `json:"disablePoweredByHeader"`
 }
 
 const (

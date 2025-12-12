@@ -10,30 +10,24 @@ import (
 
 // MemoryStats holds comprehensive memory statistics
 type MemoryStats struct {
-	// Go runtime memory stats
-	HeapAllocBytes    uint64    // bytes allocated and still in use
-	HeapSysBytes      uint64    // bytes obtained from system
-	HeapIdleBytes     uint64    // bytes in idle (unused) spans
-	HeapInuseBytes    uint64    // bytes in in-use spans
-	HeapReleasedBytes uint64    // bytes released to the OS
-	HeapObjects       uint64    // total number of allocated objects
-	StackInuseBytes   uint64    // bytes in stack spans
-	StackSysBytes     uint64    // bytes obtained from system for stack
-	GCSysBytes        uint64    // bytes used for garbage collection system metadata
-	NumGoroutines     int       // number of goroutines that currently exist
-	LastGCTime        time.Time // time of last garbage collection
-
-	// Application-specific memory tracking
-	SessionCount    int   // current number of sessions
-	TaskCount       int   // current number of background tasks
-	CacheSize       int64 // estimated cache memory usage
-	ConnectionPools int   // number of HTTP connection pools
-
-	// Memory pressure indicators
-	MemoryPressure MemoryPressureLevel // overall memory pressure level
-	GCFrequency    float64             // garbage collections per minute
-
-	Timestamp time.Time
+	LastGCTime        time.Time
+	Timestamp         time.Time
+	GCSysBytes        uint64
+	NumGoroutines     int
+	HeapReleasedBytes uint64
+	HeapObjects       uint64
+	StackInuseBytes   uint64
+	StackSysBytes     uint64
+	HeapAllocBytes    uint64
+	HeapInuseBytes    uint64
+	HeapIdleBytes     uint64
+	SessionCount      int
+	TaskCount         int
+	CacheSize         int64
+	ConnectionPools   int
+	MemoryPressure    MemoryPressureLevel
+	GCFrequency       float64
+	HeapSysBytes      uint64
 }
 
 // MemoryPressureLevel indicates the current memory pressure
@@ -66,22 +60,18 @@ func (mpl MemoryPressureLevel) String() string {
 
 // MemoryMonitor provides comprehensive memory monitoring and alerting
 type MemoryMonitor struct {
-	logger          *Logger
-	mu              sync.RWMutex
-	lastStats       *MemoryStats
-	lastGCCount     uint32
-	lastGCTime      time.Time
-	startTime       time.Time
-	alertThresholds MemoryAlertThresholds
-
-	// Memory leak detection
-	baselineHeap     uint64
-	heapGrowthRate   float64 // bytes per second
-	suspiciousGrowth bool
-
-	// Goroutine tracking
+	lastGCTime         time.Time
+	startTime          time.Time
+	lastStats          *MemoryStats
+	logger             *Logger
+	alertThresholds    MemoryAlertThresholds
 	baselineGoroutines int
+	baselineHeap       uint64
+	heapGrowthRate     float64
 	maxGoroutines      int64
+	mu                 sync.RWMutex
+	lastGCCount        uint32
+	suspiciousGrowth   bool
 	goroutineLeakAlert bool
 }
 

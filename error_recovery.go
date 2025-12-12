@@ -642,14 +642,10 @@ func (e *HTTPError) Error() string {
 // OIDCError represents OIDC-specific errors with context information.
 // It provides structured error reporting for authentication and authorization failures.
 type OIDCError struct {
-	// Code identifies the specific error type
-	Code string
-	// Message provides a human-readable description
-	Message string
-	// Context contains additional error context (e.g., provider, session details)
+	Cause   error
 	Context map[string]interface{}
-	// Cause is the underlying error that caused this error
-	Cause error
+	Code    string
+	Message string
 }
 
 // Error returns the string representation of the OIDC error.
@@ -669,14 +665,10 @@ func (e *OIDCError) Unwrap() error {
 // SessionError represents session-related errors with context.
 // Used for session management, validation, and storage errors.
 type SessionError struct {
-	// Operation describes what session operation failed
+	Cause     error
 	Operation string
-	// Message provides a human-readable description
-	Message string
-	// SessionID identifies the session (if available)
+	Message   string
 	SessionID string
-	// Cause is the underlying error that caused this error
-	Cause error
 }
 
 // Error returns the string representation of the session error.
@@ -696,14 +688,10 @@ func (e *SessionError) Unwrap() error {
 // TokenError represents token-related errors with validation context.
 // Used for JWT validation, token refresh, and token format errors.
 type TokenError struct {
-	// TokenType identifies the type of token (id_token, access_token, refresh_token)
+	Cause     error
 	TokenType string
-	// Reason describes why the token is invalid
-	Reason string
-	// Message provides a human-readable description
-	Message string
-	// Cause is the underlying error that caused this error
-	Cause error
+	Reason    string
+	Message   string
 }
 
 // Error returns the string representation of the token error.
@@ -765,24 +753,15 @@ func NewTokenError(tokenType, reason, message string, cause error) *TokenError {
 // It provides fallback mechanisms when primary services are unavailable and monitors
 // service health to automatically recover when services become available again.
 type GracefulDegradation struct {
-	// BaseRecoveryMechanism provides common functionality
 	*BaseRecoveryMechanism
-	// fallbacks stores service-specific fallback implementations
-	fallbacks map[string]func() (interface{}, error)
-	// healthChecks stores service health check functions
-	healthChecks map[string]func() bool
-	// degradedServices tracks which services are currently degraded
+	fallbacks        map[string]func() (interface{}, error)
+	healthChecks     map[string]func() bool
 	degradedServices map[string]time.Time
-	// config contains graceful degradation configuration
-	config GracefulDegradationConfig
-	// mutex protects shared state
-	mutex sync.RWMutex
-	// healthCheckTask manages background health checking
-	healthCheckTask *BackgroundTask
-	// stopChan signals shutdown
-	stopChan chan struct{}
-	// shutdownOnce ensures shutdown happens only once
-	shutdownOnce sync.Once
+	healthCheckTask  *BackgroundTask
+	stopChan         chan struct{}
+	config           GracefulDegradationConfig
+	mutex            sync.RWMutex
+	shutdownOnce     sync.Once
 }
 
 // GracefulDegradationConfig holds configuration for graceful degradation behavior.

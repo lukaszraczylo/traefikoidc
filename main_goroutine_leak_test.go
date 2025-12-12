@@ -13,9 +13,9 @@ import (
 func TestGoroutineLeakPrevention_ContextCancellation(t *testing.T) {
 	tests := []struct {
 		name          string
-		cancelAfter   time.Duration
-		expectedLeaks int // Maximum expected goroutines after cleanup
 		description   string
+		cancelAfter   time.Duration
+		expectedLeaks int
 	}{
 		{
 			name:          "immediate_cancellation",

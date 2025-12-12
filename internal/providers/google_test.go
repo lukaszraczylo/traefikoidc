@@ -172,8 +172,8 @@ func TestGoogleProvider_OfflineAccessFiltering(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		inputScopes []string
 		description string
+		inputScopes []string
 	}{
 		{
 			name:        "Multiple offline_access occurrences",

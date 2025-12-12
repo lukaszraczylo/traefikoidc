@@ -28,8 +28,8 @@ type mockBackend struct {
 }
 
 type mockEntry struct {
-	value     []byte
 	expiresAt time.Time
+	value     []byte
 }
 
 func newMockBackend() *mockBackend {

@@ -96,18 +96,18 @@ const (
 // combinedSessionPayload is the JSON structure for combined cookie storage.
 // Uses short field names to minimize size.
 type combinedSessionPayload struct {
-	A  string                 `json:"a,omitempty"`  // Access token
-	R  string                 `json:"r,omitempty"`  // Refresh token
-	I  string                 `json:"i,omitempty"`  // ID token
-	E  string                 `json:"e,omitempty"`  // Email
-	Au bool                   `json:"au,omitempty"` // Authenticated
-	Cs string                 `json:"cs,omitempty"` // CSRF token
-	N  string                 `json:"n,omitempty"`  // Nonce
-	Cv string                 `json:"cv,omitempty"` // Code verifier
-	Ip string                 `json:"ip,omitempty"` // Incoming path
-	Ca int64                  `json:"ca,omitempty"` // Created at timestamp
-	Rc int                    `json:"rc,omitempty"` // Redirect count
-	X  map[string]interface{} `json:"x,omitempty"`  // Extra custom session values
+	X  map[string]interface{} `json:"x,omitempty"`
+	A  string                 `json:"a,omitempty"`
+	R  string                 `json:"r,omitempty"`
+	I  string                 `json:"i,omitempty"`
+	E  string                 `json:"e,omitempty"`
+	Cs string                 `json:"cs,omitempty"`
+	N  string                 `json:"n,omitempty"`
+	Cv string                 `json:"cv,omitempty"`
+	Ip string                 `json:"ip,omitempty"`
+	Ca int64                  `json:"ca,omitempty"`
+	Rc int                    `json:"rc,omitempty"`
+	Au bool                   `json:"au,omitempty"`
 }
 
 // knownSessionKeys are the standard keys that are handled explicitly in the combined payload.
@@ -374,22 +374,22 @@ func decompressTokenInternal(compressed string) string {
 // session object reuse and supports both HTTP and HTTPS schemes.
 type SessionManager struct {
 	sessionPool    sync.Pool
+	ctx            context.Context
 	store          sessions.Store
 	logger         *Logger
 	chunkManager   *ChunkManager
-	cookieDomain   string
-	cookiePrefix   string        // Prefix for cookie names (default: "_oidc_raczylo_")
-	sessionMaxAge  time.Duration // Maximum session age (default: 24 hours)
-	cleanupMutex   sync.RWMutex
-	forceHTTPS     bool
-	cleanupDone    bool
-	ctx            context.Context
-	cancel         context.CancelFunc
 	memoryMonitor  *TaskMemoryMonitor
+	cancel         context.CancelFunc
+	cookieDomain   string
+	cookiePrefix   string
+	sessionMaxAge  time.Duration
 	activeSessions int64
 	poolHits       int64
 	poolMisses     int64
+	cleanupMutex   sync.RWMutex
 	shutdownOnce   sync.Once
+	forceHTTPS     bool
+	cleanupDone    bool
 }
 
 // NewSessionManager creates a new SessionManager instance with secure defaults.

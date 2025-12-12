@@ -14,50 +14,41 @@ import (
 // and resource leaks. It provides centralized management of HTTP client transports with
 // proper lifecycle management and security controls.
 type TransportPool struct {
-	mu          sync.RWMutex
-	transports  map[string]*sharedTransport
-	maxConns    int
 	ctx         context.Context
+	transports  map[string]*sharedTransport
 	cancel      context.CancelFunc
-	clientCount int32 // Track total HTTP clients
-	maxClients  int32 // Limit total clients
+	maxConns    int
+	mu          sync.RWMutex
+	clientCount int32
+	maxClients  int32
 }
 
 // sharedTransport wraps an HTTP transport with reference counting
 type sharedTransport struct {
-	transport *http.Transport
-	refCount  int32
 	lastUsed  time.Time
+	transport *http.Transport
 	config    TransportConfig
+	refCount  int32
 }
 
 // TransportConfig defines configuration for HTTP transports
 type TransportConfig struct {
-	// Timeouts
-	DialTimeout           time.Duration
-	TLSHandshakeTimeout   time.Duration
+	MaxConnsPerHost       int
+	WriteBufferSize       int
 	ResponseHeaderTimeout time.Duration
 	ExpectContinueTimeout time.Duration
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
-
-	// Connection limits
-	MaxIdleConns        int
-	MaxIdleConnsPerHost int
-	MaxConnsPerHost     int
-
-	// Features
-	ForceHTTP2         bool
-	DisableKeepAlives  bool
-	DisableCompression bool
-
-	// Buffer sizes
-	WriteBufferSize int
-	ReadBufferSize  int
-
-	// TLS
-	InsecureSkipVerify bool
-	MinTLSVersion      uint16
+	TLSHandshakeTimeout   time.Duration
+	MaxIdleConns          int
+	DialTimeout           time.Duration
+	MaxIdleConnsPerHost   int
+	ReadBufferSize        int
+	MinTLSVersion         uint16
+	ForceHTTP2            bool
+	DisableCompression    bool
+	InsecureSkipVerify    bool
+	DisableKeepAlives     bool
 }
 
 var (

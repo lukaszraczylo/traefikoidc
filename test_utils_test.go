@@ -20,9 +20,9 @@ func generateRandomString(length int) string {
 // Test createCaseInsensitiveStringMap function
 func TestCreateCaseInsensitiveStringMap(t *testing.T) {
 	tests := []struct {
+		expected map[string]struct{}
 		name     string
 		items    []string
-		expected map[string]struct{}
 	}{
 		{
 			name:  "Mixed case items",

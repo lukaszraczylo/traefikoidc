@@ -41,53 +41,22 @@ type CacheBackend interface {
 
 // BackendStats represents statistics for a cache backend
 type BackendStats struct {
-	// Type is the backend type
-	Type BackendType
-
-	// Hits is the number of cache hits
-	Hits int64
-
-	// Misses is the number of cache misses
-	Misses int64
-
-	// Sets is the number of set operations
-	Sets int64
-
-	// Deletes is the number of delete operations
-	Deletes int64
-
-	// Errors is the number of errors
-	Errors int64
-
-	// Evictions is the number of evicted items
-	Evictions int64
-
-	// CurrentSize is the current number of items in cache
-	CurrentSize int64
-
-	// MaxSize is the maximum number of items (0 means unlimited)
-	MaxSize int64
-
-	// MemoryUsage is the approximate memory usage in bytes
-	MemoryUsage int64
-
-	// AverageGetLatency is the average latency for get operations
+	StartTime         time.Time
+	LastErrorTime     time.Time
+	Type              BackendType
+	LastError         string
+	Deletes           int64
+	Errors            int64
+	Evictions         int64
+	CurrentSize       int64
+	MaxSize           int64
+	MemoryUsage       int64
 	AverageGetLatency time.Duration
-
-	// AverageSetLatency is the average latency for set operations
 	AverageSetLatency time.Duration
-
-	// LastError is the last error encountered
-	LastError string
-
-	// LastErrorTime is when the last error occurred
-	LastErrorTime time.Time
-
-	// Uptime is how long the backend has been running
-	Uptime time.Duration
-
-	// StartTime is when the backend was started
-	StartTime time.Time
+	Sets              int64
+	Misses            int64
+	Uptime            time.Duration
+	Hits              int64
 }
 
 // BackendCapabilities describes the capabilities of a cache backend

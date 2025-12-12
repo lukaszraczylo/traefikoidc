@@ -8,16 +8,16 @@ import (
 
 // SessionData represents session data for testing
 type SessionData struct {
+	Claims       map[string]interface{}
 	Email        string
 	AccessToken  string
 	RefreshToken string
 	IDToken      string
-	Expiry       int64
 	Nonce        string
 	State        string
 	CodeVerifier string
 	RedirectURL  string
-	Claims       map[string]interface{}
+	Expiry       int64
 }
 
 // SessionManager is a testify mock for session management

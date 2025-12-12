@@ -20,8 +20,8 @@ func TestValidateIssuerURL(t *testing.T) {
 	tests := []struct {
 		name      string
 		issuerURL string
-		wantErr   bool
 		errMsg    string
+		wantErr   bool
 	}{
 		{
 			name:      "valid https URL",
@@ -106,8 +106,8 @@ func TestValidateClientID(t *testing.T) {
 	tests := []struct {
 		name     string
 		clientID string
-		wantErr  bool
 		errMsg   string
+		wantErr  bool
 	}{
 		{
 			name:     "valid client ID",
@@ -173,9 +173,9 @@ func TestValidateClientID(t *testing.T) {
 func TestValidateScopes(t *testing.T) {
 	tests := []struct {
 		name    string
+		errMsg  string
 		scopes  []string
 		wantErr bool
-		errMsg  string
 	}{
 		{
 			name:    "valid scopes with openid",
@@ -248,8 +248,8 @@ func TestValidateRedirectURL(t *testing.T) {
 	tests := []struct {
 		name        string
 		redirectURL string
-		wantErr     bool
 		errMsg      string
+		wantErr     bool
 	}{
 		{
 			name:        "valid https redirect URL",
@@ -315,11 +315,11 @@ func TestValidateRedirectURL(t *testing.T) {
 // TestValidateProviderSpecificConfig tests provider-specific configuration validation
 func TestValidateProviderSpecificConfig(t *testing.T) {
 	tests := []struct {
-		name     string
 		provider OIDCProvider
 		config   map[string]interface{}
-		wantErr  bool
+		name     string
 		errMsg   string
+		wantErr  bool
 	}{
 		{
 			name:     "valid Google config",
@@ -458,8 +458,8 @@ func TestValidateGoogleConfig_EdgeCases(t *testing.T) {
 	googleProvider := NewGoogleProvider()
 
 	tests := []struct {
-		name    string
 		config  map[string]interface{}
+		name    string
 		wantErr bool
 	}{
 		{
@@ -502,10 +502,10 @@ func TestValidateAzureConfig_EdgeCases(t *testing.T) {
 	azureProvider := NewAzureProvider()
 
 	tests := []struct {
-		name    string
 		config  map[string]interface{}
-		wantErr bool
+		name    string
 		errMsg  string
+		wantErr bool
 	}{
 		{
 			name: "valid tenant ID format",

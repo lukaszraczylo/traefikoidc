@@ -135,9 +135,9 @@ func TestIsTestMode(t *testing.T) {
 	// We'll test what we can control via environment variables.
 
 	tests := []struct {
-		name     string
 		setup    func()
 		cleanup  func()
+		name     string
 		expected bool
 	}{
 		{
@@ -206,8 +206,8 @@ func TestIsTestMode(t *testing.T) {
 func TestIsTestModeEdgeCases(t *testing.T) {
 	// Test with various environment variable combinations
 	tests := []struct {
-		name string
 		env  map[string]string
+		name string
 	}{
 		{
 			name: "all env vars empty",
@@ -560,11 +560,11 @@ func TestIsTestModeYaegiCompiler(t *testing.T) {
 
 // mockLogger is a simple mock implementation for testing
 type mockLogger struct {
+	lastFormat string
+	lastArgs   []interface{}
 	infoCalls  int
 	debugCalls int
 	errorCalls int
-	lastFormat string
-	lastArgs   []interface{}
 }
 
 func (m *mockLogger) Infof(format string, args ...interface{}) {

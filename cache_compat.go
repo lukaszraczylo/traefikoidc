@@ -155,9 +155,9 @@ type CacheStrategy interface {
 
 // CacheEntry for backward compatibility
 type CacheEntry struct {
-	Key       string
-	Value     interface{}
 	ExpiresAt time.Time
+	Value     interface{}
+	Key       string
 }
 
 // Cache is an alias for backward compatibility
@@ -175,10 +175,10 @@ func NewOptimizedCacheWithConfig(config OptimizedCacheConfig) *CacheInterfaceWra
 
 // ListNode for backward compatibility
 type ListNode struct {
-	Key   string
 	Value interface{}
 	Next  *ListNode
 	Prev  *ListNode
+	Key   string
 }
 
 // NewFixedMetadataCache creates a metadata cache with fixed configuration

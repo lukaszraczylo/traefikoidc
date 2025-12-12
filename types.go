@@ -55,9 +55,9 @@ type ProviderMetadata struct {
 	JWKSURL          string   `json:"jwks_uri"`
 	RevokeURL        string   `json:"revocation_endpoint"`
 	EndSessionURL    string   `json:"end_session_endpoint"`
-	IntrospectionURL string   `json:"introspection_endpoint,omitempty"` // OAuth 2.0 Token Introspection (RFC 7662)
-	ScopesSupported  []string `json:"scopes_supported,omitempty"`       // Supported scopes from discovery
-	RegistrationURL  string   `json:"registration_endpoint,omitempty"`  // OIDC Dynamic Client Registration (RFC 7591)
+	IntrospectionURL string   `json:"introspection_endpoint,omitempty"`
+	RegistrationURL  string   `json:"registration_endpoint,omitempty"`
+	ScopesSupported  []string `json:"scopes_supported,omitempty"`
 }
 
 // TraefikOidc is the main middleware struct that implements OIDC authentication for Traefik.
@@ -65,16 +65,18 @@ type ProviderMetadata struct {
 // the complete authentication flow. It's designed to work seamlessly with Traefik's
 // plugin system and provides flexible configuration options.
 type TraefikOidc struct {
+	lastMetadataRetryTime      time.Time
 	jwkCache                   JWKCacheInterface
 	jwtVerifier                JWTVerifier
 	ctx                        context.Context
 	tokenVerifier              TokenVerifier
 	next                       http.Handler
 	tokenExchanger             TokenExchanger
+	tokenBlacklist             CacheInterface
+	tokenTypeCache             CacheInterface
+	introspectionCache         CacheInterface
 	initComplete               chan struct{}
 	limiter                    *rate.Limiter
-	tokenBlacklist             CacheInterface
-	tokenTypeCache             CacheInterface // Cache for token type detection results
 	headerTemplates            map[string]*template.Template
 	sessionManager             *SessionManager
 	tokenCleanupStopChan       chan struct{}
@@ -94,50 +96,46 @@ type TraefikOidc struct {
 	errorRecoveryManager       *ErrorRecoveryManager
 	tokenResilienceManager     *TokenResilienceManager
 	goroutineWG                *sync.WaitGroup
-	clientSecret               string
-	clientID                   string
-	audience                   string // Expected JWT audience, defaults to clientID
-	roleClaimName              string // JWT claim name for extracting roles, defaults to "roles"
-	groupClaimName             string // JWT claim name for extracting groups, defaults to "groups"
-	userIdentifierClaim        string // JWT claim for user identification, defaults to "email"
+	dcrConfig                  *DynamicClientRegistrationConfig
+	dynamicClientRegistrar     *DynamicClientRegistrar
+	scopeFilter                *ScopeFilter
+	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
+	userIdentifierClaim        string
+	revocationURL              string
 	name                       string
 	redirURLPath               string
 	logoutURLPath              string
-	metadataMu                 sync.RWMutex // Protects metadata endpoint fields
 	tokenURL                   string
 	authURL                    string
 	endSessionURL              string
 	postLogoutRedirectURI      string
 	jwksURL                    string
 	issuerURL                  string
-	revocationURL              string
-	introspectionURL           string // OAuth 2.0 Token Introspection endpoint (RFC 7662)
+	groupClaimName             string
+	introspectionURL           string
 	providerURL                string
+	roleClaimName              string
+	audience                   string
+	clientID                   string
+	clientSecret               string
+	registrationURL            string
+	scopesSupported            []string
 	scopes                     []string
 	refreshGracePeriod         time.Duration
-	introspectionCache         CacheInterface // Cache for token introspection results
+	metadataMu                 sync.RWMutex
 	shutdownOnce               sync.Once
+	metadataRetryMutex         sync.Mutex
 	firstRequestMutex          sync.Mutex
-	forceHTTPS                 bool
-	enablePKCE                 bool
-	overrideScopes             bool
-	strictAudienceValidation   bool // Prevents Scenario 2 fallback to ID token
-	allowOpaqueTokens          bool // Enables opaque token support via introspection
-	requireTokenIntrospection  bool // Forces introspection for opaque tokens
-	disableReplayDetection     bool // Disables JTI-based replay detection for multi-replica deployments
-	suppressDiagnosticLogs     bool
+	minimalHeaders             bool
 	firstRequestReceived       bool
+	requireTokenIntrospection  bool
 	metadataRefreshStarted     bool
-	lastMetadataRetryTime      time.Time  // Track last metadata retry for failed state recovery
-	metadataRetryMutex         sync.Mutex // Protects lastMetadataRetryTime
-	allowPrivateIPAddresses    bool       // Allow private IP addresses in URLs (for internal networks)
-	minimalHeaders             bool       // Reduce headers to prevent 431 errors
-	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
-	scopeFilter                *ScopeFilter // NEW - for discovery-based scope filtering
-	scopesSupported            []string     // NEW - from provider metadata
-
-	// Dynamic Client Registration (RFC 7591)
-	dynamicClientRegistrar *DynamicClientRegistrar
-	dcrConfig              *DynamicClientRegistrationConfig
-	registrationURL        string // OIDC Dynamic Client Registration endpoint
+	allowPrivateIPAddresses    bool
+	disableReplayDetection     bool
+	allowOpaqueTokens          bool
+	strictAudienceValidation   bool
+	overrideScopes             bool
+	enablePKCE                 bool
+	forceHTTPS                 bool
+	suppressDiagnosticLogs     bool
 }

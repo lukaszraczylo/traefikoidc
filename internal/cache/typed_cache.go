@@ -292,12 +292,12 @@ type SessionCache struct {
 
 // SessionData represents session information
 type SessionData struct {
+	ExpiresAt    time.Time              `json:"expires_at"`
+	Claims       map[string]interface{} `json:"claims"`
 	ID           string                 `json:"id"`
 	UserID       string                 `json:"user_id"`
 	AccessToken  string                 `json:"access_token"`
 	RefreshToken string                 `json:"refresh_token"`
-	ExpiresAt    time.Time              `json:"expires_at"`
-	Claims       map[string]interface{} `json:"claims"`
 }
 
 // NewSessionCache creates a new session cache

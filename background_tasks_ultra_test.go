@@ -97,15 +97,15 @@ func TestMemoryMonitorComprehensive(t *testing.T) {
 
 	t.Run("String method returns pressure name", func(t *testing.T) {
 		pressures := []struct {
-			level MemoryPressureLevel
 			name  string
+			level MemoryPressureLevel
 		}{
-			{MemoryPressureNone, "None"},
-			{MemoryPressureLow, "Low"},
-			{MemoryPressureModerate, "Moderate"},
-			{MemoryPressureHigh, "High"},
-			{MemoryPressureCritical, "Critical"},
-			{MemoryPressureLevel(999), "Unknown"},
+			{level: MemoryPressureNone, name: "None"},
+			{level: MemoryPressureLow, name: "Low"},
+			{level: MemoryPressureModerate, name: "Moderate"},
+			{level: MemoryPressureHigh, name: "High"},
+			{level: MemoryPressureCritical, name: "Critical"},
+			{level: MemoryPressureLevel(999), name: "Unknown"},
 		}
 
 		for _, p := range pressures {

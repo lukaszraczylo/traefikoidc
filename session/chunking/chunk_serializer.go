@@ -254,10 +254,10 @@ func (cs *ChunkSerializer) calculateChecksum(content string) string {
 
 // ChunkData represents a single chunk of token data
 type ChunkData struct {
-	Index    int    // Position of this chunk in the sequence
-	Total    int    // Total number of chunks for this token
-	Content  string // The actual chunk content
-	Checksum string // Simple checksum for integrity verification
+	Content  string
+	Checksum string
+	Index    int
+	Total    int
 }
 
 // EstimateChunkCount estimates how many chunks a token will need

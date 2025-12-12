@@ -34,21 +34,15 @@ type Logger interface {
 // for all recovery mechanism implementations. It handles request counting,
 // success/failure tracking, and timestamp management in a thread-safe manner.
 type BaseRecoveryMechanism struct {
-	// name identifies the recovery mechanism instance
-	name string
-	// logger provides structured logging capabilities
-	logger Logger
-
-	// Metrics tracked with atomic operations for thread safety
+	logger         Logger
+	name           string
+	lastSuccessStr string
+	lastFailureStr string
 	totalRequests  int64
 	successCount   int64
 	failureCount   int64
-	lastSuccessStr string
-	lastFailureStr string
-
-	// mutexes for thread-safe timestamp updates
-	successMutex sync.RWMutex
-	failureMutex sync.RWMutex
+	successMutex   sync.RWMutex
+	failureMutex   sync.RWMutex
 }
 
 // NewBaseRecoveryMechanism creates a new base recovery mechanism with the given name and logger.
@@ -182,10 +176,10 @@ const (
 
 // HTTPError represents an HTTP error with status code and message
 type HTTPError struct {
-	StatusCode int
+	Headers    map[string]string
 	Message    string
 	Body       []byte
-	Headers    map[string]string
+	StatusCode int
 }
 
 // Error implements the error interface

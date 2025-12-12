@@ -20,10 +20,10 @@ import (
 func TestCircuitBreakerStateTransitions(t *testing.T) {
 	tests := []struct {
 		name                string
-		failures            int
-		maxFailures         int
 		expectedStateBefore string
 		expectedStateAfter  string
+		failures            int
+		maxFailures         int
 	}{
 		{
 			name:                "stays closed below threshold",
@@ -543,8 +543,8 @@ func TestRetryExecutorNetworkErrors(t *testing.T) {
 	}, nil)
 
 	tests := []struct {
-		name        string
 		err         error
+		name        string
 		shouldRetry bool
 	}{
 		{
@@ -1647,8 +1647,8 @@ func TestGracefulDegradationFullScenario(t *testing.T) {
 
 func TestIsTraefikDefaultCertError(t *testing.T) {
 	tests := []struct {
-		name     string
 		err      error
+		name     string
 		expected bool
 	}{
 		{
@@ -1680,8 +1680,8 @@ func TestIsTraefikDefaultCertError(t *testing.T) {
 
 func TestIsEOFError(t *testing.T) {
 	tests := []struct {
-		name     string
 		err      error
+		name     string
 		expected bool
 	}{
 		{
@@ -1723,8 +1723,8 @@ func TestIsEOFError(t *testing.T) {
 
 func TestIsCertificateError(t *testing.T) {
 	tests := []struct {
-		name     string
 		err      error
+		name     string
 		expected bool
 	}{
 		{
@@ -1811,8 +1811,8 @@ func TestRetryExecutorStartupErrors(t *testing.T) {
 	_ = NewRetryExecutor(MetadataFetchRetryConfig(), nil)
 
 	tests := []struct {
-		name        string
 		err         error
+		name        string
 		shouldRetry bool
 	}{
 		{
@@ -1890,8 +1890,8 @@ func TestRetryExecutorIsRetryableErrorIntegration(t *testing.T) {
 	re := NewRetryExecutor(DefaultRetryConfig(), nil)
 
 	tests := []struct {
-		name        string
 		err         error
+		name        string
 		shouldRetry bool
 	}{
 		{
@@ -1977,9 +1977,9 @@ func circuitBreakerStateToString(state CircuitBreakerState) string {
 }
 
 type mockNetError struct {
+	msg       string
 	timeout   bool
 	temporary bool
-	msg       string
 }
 
 func (e *mockNetError) Error() string   { return e.msg }

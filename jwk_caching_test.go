@@ -309,18 +309,18 @@ func TestJWKCacheCleanupAndClose(t *testing.T) {
 func TestFetchJWKSEdgeCases(t *testing.T) {
 	t.Run("handles various HTTP status codes", func(t *testing.T) {
 		testCases := []struct {
+			errContains string
 			status      int
 			wantErr     bool
-			errContains string
 		}{
-			{200, false, ""},
-			{400, true, "400"},
-			{401, true, "401"},
-			{403, true, "403"},
-			{404, true, "404"},
-			{500, true, "500"},
-			{502, true, "502"},
-			{503, true, "503"},
+			{status: 200, wantErr: false, errContains: ""},
+			{status: 400, wantErr: true, errContains: "400"},
+			{status: 401, wantErr: true, errContains: "401"},
+			{status: 403, wantErr: true, errContains: "403"},
+			{status: 404, wantErr: true, errContains: "404"},
+			{status: 500, wantErr: true, errContains: "500"},
+			{status: 502, wantErr: true, errContains: "502"},
+			{status: 503, wantErr: true, errContains: "503"},
 		}
 
 		for _, tc := range testCases {

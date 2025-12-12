@@ -8,10 +8,10 @@ import (
 
 // Mock implementations for testing
 type mockSession struct {
-	authenticated bool
 	idToken       string
 	accessToken   string
 	refreshToken  string
+	authenticated bool
 }
 
 func (s *mockSession) GetIDToken() string      { return s.idToken }
@@ -338,10 +338,10 @@ func TestBaseProvider_ValidateTokenExpiry(t *testing.T) {
 	gracePeriod := 5 * time.Minute
 
 	tests := []struct {
-		name           string
 		claims         map[string]interface{}
-		cacheFound     bool
+		name           string
 		expectedResult ValidationResult
+		cacheFound     bool
 	}{
 		{
 			name:       "Token not found in cache, has refresh token",
@@ -438,10 +438,10 @@ func TestBaseProvider_ValidateTokenExpiry_NoRefreshToken(t *testing.T) {
 	gracePeriod := 5 * time.Minute
 
 	tests := []struct {
-		name           string
 		claims         map[string]interface{}
-		cacheFound     bool
+		name           string
 		expectedResult ValidationResult
+		cacheFound     bool
 	}{
 		{
 			name:       "Token not found in cache, no refresh token",

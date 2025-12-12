@@ -9,30 +9,24 @@ import (
 
 // HealthMonitor continuously monitors Redis connection health and triggers reconnections
 type HealthMonitor struct {
-	pool   *ConnectionPool
-	config *HealthMonitorConfig
-
-	// State
-	healthy       atomic.Bool
-	running       atomic.Bool
-	lastCheckTime atomic.Int64 // Unix timestamp
-
-	// Metrics
+	pool                *ConnectionPool
+	config              *HealthMonitorConfig
+	stopChan            chan struct{}
+	wg                  sync.WaitGroup
+	lastCheckTime       atomic.Int64
 	consecutiveFailures atomic.Int64
 	totalChecks         atomic.Int64
 	totalFailures       atomic.Int64
-
-	// Lifecycle
-	stopChan chan struct{}
-	wg       sync.WaitGroup
+	healthy             atomic.Bool
+	running             atomic.Bool
 }
 
 // HealthMonitorConfig configures the health monitor
 type HealthMonitorConfig struct {
-	CheckInterval      time.Duration // How often to check health
-	Timeout            time.Duration // Timeout for health check
-	UnhealthyThreshold int           // Consecutive failures before marking unhealthy
 	OnHealthChange     func(healthy bool)
+	CheckInterval      time.Duration
+	Timeout            time.Duration
+	UnhealthyThreshold int
 }
 
 // DefaultHealthMonitorConfig returns default health monitor configuration

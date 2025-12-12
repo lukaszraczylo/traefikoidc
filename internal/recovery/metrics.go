@@ -15,20 +15,13 @@ import (
 
 // RetryConfig defines configuration for the retry executor
 type RetryConfig struct {
-	// MaxAttempts is the maximum number of retry attempts
-	MaxAttempts int
-	// InitialDelay is the initial delay between retries
-	InitialDelay time.Duration
-	// MaxDelay is the maximum delay between retries
-	MaxDelay time.Duration
-	// Multiplier is the backoff multiplier
-	Multiplier float64
-	// RandomizationFactor adds jitter to delays (0.0 to 1.0)
-	RandomizationFactor float64
-	// RetryableErrors defines which errors should trigger a retry
-	RetryableErrors []string
-	// RetryableStatusCodes defines which HTTP status codes should trigger a retry
+	RetryableErrors      []string
 	RetryableStatusCodes []int
+	MaxAttempts          int
+	InitialDelay         time.Duration
+	MaxDelay             time.Duration
+	Multiplier           float64
+	RandomizationFactor  float64
 }
 
 // DefaultRetryConfig returns sensible default retry configuration
@@ -46,13 +39,11 @@ func DefaultRetryConfig() RetryConfig {
 
 // RetryExecutor implements retry logic with exponential backoff
 type RetryExecutor struct {
+	lastRetryTime time.Time
 	*BaseRecoveryMechanism
-	config RetryConfig
-
-	// Metrics
+	config         RetryConfig
 	totalRetries   int64
 	maxRetriesHit  int64
-	lastRetryTime  time.Time
 	retryTimeMutex sync.RWMutex
 }
 

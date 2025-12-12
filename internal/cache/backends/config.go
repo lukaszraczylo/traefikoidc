@@ -18,33 +18,22 @@ const (
 
 // Config provides common configuration for cache backends
 type Config struct {
-	// Type specifies the backend type
-	Type BackendType
-
-	// Memory backend settings
-	MaxSize         int
-	MaxMemoryBytes  int64
-	CleanupInterval time.Duration
-
-	// Redis backend settings
-	RedisAddr     string
-	RedisPassword string
-	RedisDB       int
-	RedisPrefix   string
-	PoolSize      int
-
-	// Hybrid backend settings
-	L1Config    *Config // Memory cache (L1)
-	L2Config    *Config // Redis cache (L2)
-	AsyncWrites bool    // Write to L2 asynchronously
-
-	// Resilience settings
+	L2Config             *Config
+	L1Config             *Config
+	RedisPrefix          string
+	Type                 BackendType
+	RedisAddr            string
+	RedisPassword        string
+	PoolSize             int
+	RedisDB              int
+	CleanupInterval      time.Duration
+	MaxMemoryBytes       int64
+	MaxSize              int
+	HealthCheckInterval  time.Duration
+	AsyncWrites          bool
 	EnableCircuitBreaker bool
 	EnableHealthCheck    bool
-	HealthCheckInterval  time.Duration
-
-	// Metrics
-	EnableMetrics bool
+	EnableMetrics        bool
 }
 
 // DefaultConfig returns a default configuration for in-memory caching
