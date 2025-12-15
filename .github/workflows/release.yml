@@ -11,7 +11,9 @@ on:
   workflow_dispatch:
 
 permissions:
+  id-token: write
   contents: write
+  packages: write
 
 jobs:
   release:

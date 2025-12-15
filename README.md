@@ -82,6 +82,19 @@ experimental:
 
 2. Configure the middleware in your dynamic configuration (see examples below).
 
+### Verifying Release Signatures
+
+All release checksums are signed with [cosign](https://github.com/sigstore/cosign) using keyless signing. To verify:
+
+```bash
+# Download the checksum file and its sigstore bundle from the release
+cosign verify-blob \
+  --certificate-identity-regexp "https://github.com/lukaszraczylo/traefikoidc/.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --bundle "traefikoidc_v<version>_checksums.txt.sigstore.json" \
+  traefikoidc_v<version>_checksums.txt
+```
+
 ### Local Development with Docker Compose
 
 For local development or testing, you can use the provided Docker Compose setup:
