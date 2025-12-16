@@ -2,11 +2,18 @@
 package backends
 
 import (
-	"container/list"
 	"context"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+// Default configuration values
+const (
+	defaultShardCount      = 256
+	defaultMaxSize         = int64(10000)
+	defaultMaxMemory       = int64(100 * 1024 * 1024) // 100MB
+	defaultCleanupInterval = 5 * time.Minute
 )
 
 // memoryCacheItem represents an item in the memory cache
@@ -15,7 +22,7 @@ type memoryCacheItem struct {
 	createdAt   time.Time
 	accessedAt  time.Time
 	value       interface{}
-	element     *list.Element
+	element     interface{} // *list.Element, using interface{} to avoid import cycle
 	key         string
 	accessCount int64
 	size        int64
@@ -29,56 +36,89 @@ func (item *memoryCacheItem) isExpired() bool {
 	return time.Now().After(item.expiresAt)
 }
 
-// MemoryCacheBackend implements the CacheBackend interface using in-memory storage
+// MemoryCacheBackend implements the CacheBackend interface using sharded in-memory storage
+// The sharded design reduces lock contention by partitioning keys across multiple shards,
+// each with its own lock.
 type MemoryCacheBackend struct {
+	shards          []*cacheShard
 	startTime       time.Time
 	lastErrorTime   time.Time
-	items           map[string]*memoryCacheItem
-	lruList         *list.List
-	cleanupDone     chan bool
+	cleanupDone     chan struct{}
 	cleanupTicker   *time.Ticker
-	evictionPolicy  string
 	lastError       string
-	currentMemory   int64
-	misses          atomic.Int64
-	deletes         atomic.Int64
-	evictions       atomic.Int64
-	errors          atomic.Int64
-	totalGetTime    atomic.Int64
-	totalSetTime    atomic.Int64
-	getCount        atomic.Int64
-	setCount        atomic.Int64
-	sets            atomic.Int64
-	hits            atomic.Int64
+	shardCount      uint32
+	shardMask       uint32
 	maxSize         int64
-	currentSize     int64
 	maxMemory       int64
 	cleanupInterval time.Duration
-	mu              sync.RWMutex
-	closed          atomic.Bool
+
+	// Global stats (aggregated from shards)
+	hits      atomic.Int64
+	misses    atomic.Int64
+	sets      atomic.Int64
+	deletes   atomic.Int64
+	evictions atomic.Int64
+	errors    atomic.Int64
+
+	// Latency tracking
+	totalGetTime atomic.Int64
+	totalSetTime atomic.Int64
+	getCount     atomic.Int64
+	setCount     atomic.Int64
+
+	// State
+	closed atomic.Bool
+	mu     sync.RWMutex // For global operations like stats and error tracking
 }
 
-// NewMemoryCacheBackend creates a new memory cache backend
+// NewMemoryCacheBackend creates a new sharded memory cache backend
 func NewMemoryCacheBackend(maxSize int64, maxMemory int64, cleanupInterval time.Duration) *MemoryCacheBackend {
 	if maxSize <= 0 {
-		maxSize = 10000 // Default to 10k items
+		maxSize = defaultMaxSize
 	}
 	if maxMemory <= 0 {
-		maxMemory = 100 * 1024 * 1024 // Default to 100MB
+		maxMemory = defaultMaxMemory
 	}
 	if cleanupInterval <= 0 {
-		cleanupInterval = 5 * time.Minute
+		cleanupInterval = defaultCleanupInterval
+	}
+
+	shardCount := uint32(defaultShardCount)
+
+	// For very small caches, reduce shard count to maintain sensible per-shard limits
+	// Ensure each shard can hold at least 2 items for proper LRU behavior
+	for shardCount > 1 && maxSize/int64(shardCount) < 2 {
+		shardCount /= 2
+	}
+	if shardCount < 1 {
+		shardCount = 1
+	}
+
+	// Per-shard limits are soft hints; global limits are enforced
+	// Give shards 2x the average to allow for uneven distribution
+	shardMaxSize := (maxSize * 2) / int64(shardCount)
+	if shardMaxSize < 4 {
+		shardMaxSize = 4
+	}
+	shardMaxMemory := (maxMemory * 2) / int64(shardCount)
+	if shardMaxMemory < 4096 {
+		shardMaxMemory = 4096 // Minimum 4KB per shard
 	}
 
 	m := &MemoryCacheBackend{
-		items:           make(map[string]*memoryCacheItem),
-		lruList:         list.New(),
+		shards:          make([]*cacheShard, shardCount),
+		shardCount:      shardCount,
+		shardMask:       shardCount - 1, // For fast modulo with power-of-2
 		maxSize:         maxSize,
 		maxMemory:       maxMemory,
 		startTime:       time.Now(),
 		cleanupInterval: cleanupInterval,
-		evictionPolicy:  "lru",
-		cleanupDone:     make(chan bool),
+		cleanupDone:     make(chan struct{}),
+	}
+
+	// Initialize shards
+	for i := uint32(0); i < shardCount; i++ {
+		m.shards[i] = newCacheShard(shardMaxSize, shardMaxMemory)
 	}
 
 	// Start cleanup goroutine
@@ -86,6 +126,12 @@ func NewMemoryCacheBackend(maxSize int64, maxMemory int64, cleanupInterval time.
 	go m.cleanupLoop()
 
 	return m
+}
+
+// getShard returns the shard for a given key
+func (m *MemoryCacheBackend) getShard(key string) *cacheShard {
+	hash := fnv32(key)
+	return m.shards[hash&m.shardMask]
 }
 
 // cleanupLoop runs periodic cleanup of expired items
@@ -100,20 +146,19 @@ func (m *MemoryCacheBackend) cleanupLoop() {
 	}
 }
 
-// cleanupExpired removes all expired items from the cache
+// cleanupExpired removes all expired items from all shards
 func (m *MemoryCacheBackend) cleanupExpired() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var keysToDelete []string
-	for key, item := range m.items {
-		if item.isExpired() {
-			keysToDelete = append(keysToDelete, key)
-		}
+	if m.closed.Load() {
+		return
 	}
 
-	for _, key := range keysToDelete {
-		m.deleteItemLocked(key)
+	totalRemoved := 0
+	for _, shard := range m.shards {
+		totalRemoved += shard.cleanup()
+	}
+
+	if totalRemoved > 0 {
+		m.evictions.Add(int64(totalRemoved))
 	}
 }
 
@@ -130,35 +175,23 @@ func (m *MemoryCacheBackend) Get(ctx context.Context, key string) (interface{}, 
 		m.getCount.Add(1)
 	}()
 
-	m.mu.RLock()
-	item, exists := m.items[key]
-	m.mu.RUnlock()
+	shard := m.getShard(key)
+	value, exists, expired := shard.get(key)
+
+	if expired {
+		// Clean up expired item
+		shard.delete(key)
+		m.misses.Add(1)
+		return nil, ErrCacheMiss
+	}
 
 	if !exists {
 		m.misses.Add(1)
 		return nil, ErrCacheMiss
 	}
 
-	if item.isExpired() {
-		m.mu.Lock()
-		m.deleteItemLocked(key)
-		m.mu.Unlock()
-		m.misses.Add(1)
-		return nil, ErrCacheMiss
-	}
-
-	// Update access time and count
-	m.mu.Lock()
-	item.accessedAt = time.Now()
-	item.accessCount++
-	// Move to front of LRU list
-	if m.evictionPolicy == "lru" && item.element != nil {
-		m.lruList.MoveToFront(item.element)
-	}
-	m.mu.Unlock()
-
 	m.hits.Add(1)
-	return item.value, nil
+	return value, nil
 }
 
 // Set stores a value in the cache with optional TTL
@@ -174,53 +207,81 @@ func (m *MemoryCacheBackend) Set(ctx context.Context, key string, value interfac
 		m.setCount.Add(1)
 	}()
 
-	// Calculate item size (simplified estimation)
+	// Calculate item size
 	itemSize := int64(len(key)) + estimateValueSize(value)
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Enforce global limits before adding new item
+	m.enforceGlobalLimits(itemSize)
 
-	// Check if we need to evict items
-	if m.currentSize >= m.maxSize || m.currentMemory+itemSize > m.maxMemory {
-		m.evictLocked()
-	}
-
-	// Check if key exists
-	if oldItem, exists := m.items[key]; exists {
-		m.currentMemory -= oldItem.size
-		if oldItem.element != nil {
-			m.lruList.Remove(oldItem.element)
-		}
-	} else {
-		m.currentSize++
-	}
-
-	now := time.Now()
 	var expiresAt time.Time
 	if ttl > 0 {
-		expiresAt = now.Add(ttl)
+		expiresAt = time.Now().Add(ttl)
 	}
 
-	item := &memoryCacheItem{
-		key:         key,
-		value:       value,
-		expiresAt:   expiresAt,
-		createdAt:   now,
-		accessedAt:  now,
-		accessCount: 0,
-		size:        itemSize,
-	}
+	shard := m.getShard(key)
+	shard.set(key, value, expiresAt, itemSize)
 
-	// Add to LRU list
-	if m.evictionPolicy == "lru" {
-		item.element = m.lruList.PushFront(item)
-	}
-
-	m.items[key] = item
-	m.currentMemory += itemSize
 	m.sets.Add(1)
-
 	return nil
+}
+
+// enforceGlobalLimits ensures global size and memory limits are respected
+// by evicting from shards when necessary
+func (m *MemoryCacheBackend) enforceGlobalLimits(newItemSize int64) {
+	// Check and enforce size limit
+	for {
+		totalSize, totalMemory := m.getGlobalStats()
+
+		needsSizeEviction := m.maxSize > 0 && totalSize >= m.maxSize
+		needsMemoryEviction := m.maxMemory > 0 && totalMemory+newItemSize > m.maxMemory
+
+		if !needsSizeEviction && !needsMemoryEviction {
+			break
+		}
+
+		// Find the shard with the most items and evict from it
+		evicted := m.evictFromLargestShard()
+		if !evicted {
+			break // No more items to evict
+		}
+		m.evictions.Add(1)
+	}
+}
+
+// getGlobalStats returns the total size and memory usage across all shards
+func (m *MemoryCacheBackend) getGlobalStats() (totalSize, totalMemory int64) {
+	for _, shard := range m.shards {
+		size, memory := shard.stats()
+		totalSize += size
+		totalMemory += memory
+	}
+	return
+}
+
+// evictFromLargestShard evicts the globally oldest item across all shards
+// This provides true LRU behavior even with sharding
+func (m *MemoryCacheBackend) evictFromLargestShard() bool {
+	var oldestShard *cacheShard
+	var oldestTime time.Time
+
+	for _, shard := range m.shards {
+		accessTime := shard.getOldestAccessTime()
+		// Skip empty shards
+		if accessTime.IsZero() {
+			continue
+		}
+		// Find the shard with the oldest (earliest) access time
+		if oldestShard == nil || accessTime.Before(oldestTime) {
+			oldestTime = accessTime
+			oldestShard = shard
+		}
+	}
+
+	if oldestShard == nil {
+		return false
+	}
+
+	return oldestShard.evictOne()
 }
 
 // Delete removes a key from the cache
@@ -229,41 +290,12 @@ func (m *MemoryCacheBackend) Delete(ctx context.Context, key string) error {
 		return ErrBackendUnavailable
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if _, exists := m.items[key]; !exists {
-		return nil
+	shard := m.getShard(key)
+	if shard.delete(key) {
+		m.deletes.Add(1)
 	}
 
-	m.deleteItemLocked(key)
-	m.deletes.Add(1)
 	return nil
-}
-
-// deleteItemLocked deletes an item without acquiring the lock (must be called with lock held)
-func (m *MemoryCacheBackend) deleteItemLocked(key string) {
-	if item, exists := m.items[key]; exists {
-		m.currentMemory -= item.size
-		m.currentSize--
-		if item.element != nil {
-			m.lruList.Remove(item.element)
-		}
-		delete(m.items, key)
-	}
-}
-
-// evictLocked evicts items based on the eviction policy (must be called with lock held)
-func (m *MemoryCacheBackend) evictLocked() {
-	if m.evictionPolicy == "lru" && m.lruList.Len() > 0 {
-		// Evict least recently used item
-		element := m.lruList.Back()
-		if element != nil {
-			item := element.Value.(*memoryCacheItem)
-			m.deleteItemLocked(item.key)
-			m.evictions.Add(1)
-		}
-	}
 }
 
 // Exists checks if a key exists in the cache
@@ -272,15 +304,8 @@ func (m *MemoryCacheBackend) Exists(ctx context.Context, key string) (bool, erro
 		return false, ErrBackendUnavailable
 	}
 
-	m.mu.RLock()
-	item, exists := m.items[key]
-	m.mu.RUnlock()
-
-	if !exists {
-		return false, nil
-	}
-
-	return !item.isExpired(), nil
+	shard := m.getShard(key)
+	return shard.exists(key), nil
 }
 
 // Clear removes all items from the cache
@@ -289,13 +314,9 @@ func (m *MemoryCacheBackend) Clear(ctx context.Context) error {
 		return ErrBackendUnavailable
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.items = make(map[string]*memoryCacheItem)
-	m.lruList = list.New()
-	m.currentSize = 0
-	m.currentMemory = 0
+	for _, shard := range m.shards {
+		shard.clear()
+	}
 
 	return nil
 }
@@ -306,29 +327,28 @@ func (m *MemoryCacheBackend) Keys(ctx context.Context, pattern string) ([]string
 		return nil, ErrBackendUnavailable
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var keys []string
-	for key, item := range m.items {
-		if !item.isExpired() && matchPattern(pattern, key) {
-			keys = append(keys, key)
-		}
+	var allKeys []string
+	for _, shard := range m.shards {
+		keys := shard.keys(pattern)
+		allKeys = append(allKeys, keys...)
 	}
 
-	return keys, nil
+	return allKeys, nil
 }
 
-// Size returns the number of items in the cache
+// Size returns the total number of items in the cache
 func (m *MemoryCacheBackend) Size(ctx context.Context) (int64, error) {
 	if m.closed.Load() {
 		return 0, ErrBackendUnavailable
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	var total int64
+	for _, shard := range m.shards {
+		size, _ := shard.stats()
+		total += size
+	}
 
-	return m.currentSize, nil
+	return total, nil
 }
 
 // TTL returns the remaining time-to-live for a key
@@ -337,24 +357,13 @@ func (m *MemoryCacheBackend) TTL(ctx context.Context, key string) (time.Duration
 		return 0, ErrBackendUnavailable
 	}
 
-	m.mu.RLock()
-	item, exists := m.items[key]
-	m.mu.RUnlock()
-
-	if !exists || item.isExpired() {
+	shard := m.getShard(key)
+	ttl, exists := shard.ttl(key)
+	if !exists {
 		return 0, ErrCacheMiss
 	}
 
-	if item.expiresAt.IsZero() {
-		return 0, nil // No expiration
-	}
-
-	remaining := time.Until(item.expiresAt)
-	if remaining < 0 {
-		return 0, nil
-	}
-
-	return remaining, nil
+	return ttl, nil
 }
 
 // Expire updates the TTL for an existing key
@@ -363,18 +372,9 @@ func (m *MemoryCacheBackend) Expire(ctx context.Context, key string, ttl time.Du
 		return ErrBackendUnavailable
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	item, exists := m.items[key]
-	if !exists || item.isExpired() {
+	shard := m.getShard(key)
+	if !shard.expire(key, ttl) {
 		return ErrCacheMiss
-	}
-
-	if ttl > 0 {
-		item.expiresAt = time.Now().Add(ttl)
-	} else {
-		item.expiresAt = time.Time{} // Remove expiration
 	}
 
 	return nil
@@ -384,6 +384,14 @@ func (m *MemoryCacheBackend) Expire(ctx context.Context, key string, ttl time.Du
 func (m *MemoryCacheBackend) GetStats(ctx context.Context) (*BackendStats, error) {
 	if m.closed.Load() {
 		return nil, ErrBackendUnavailable
+	}
+
+	// Aggregate stats from all shards
+	var totalSize, totalMemory int64
+	for _, shard := range m.shards {
+		size, memory := shard.stats()
+		totalSize += size
+		totalMemory += memory
 	}
 
 	m.mu.RLock()
@@ -409,9 +417,9 @@ func (m *MemoryCacheBackend) GetStats(ctx context.Context) (*BackendStats, error
 		Deletes:           m.deletes.Load(),
 		Errors:            m.errors.Load(),
 		Evictions:         m.evictions.Load(),
-		CurrentSize:       m.currentSize,
+		CurrentSize:       totalSize,
 		MaxSize:           m.maxSize,
-		MemoryUsage:       m.currentMemory,
+		MemoryUsage:       totalMemory,
 		AverageGetLatency: avgGetLatency,
 		AverageSetLatency: avgSetLatency,
 		LastError:         lastError,
@@ -438,10 +446,10 @@ func (m *MemoryCacheBackend) Close() error {
 	m.cleanupTicker.Stop()
 	close(m.cleanupDone)
 
-	m.mu.Lock()
-	m.items = nil
-	m.lruList = nil
-	m.mu.Unlock()
+	// Clear all shards
+	for _, shard := range m.shards {
+		shard.clear()
+	}
 
 	return nil
 }
@@ -474,12 +482,28 @@ func (m *MemoryCacheBackend) Capabilities() *BackendCapabilities {
 	}
 }
 
+// GetShardCount returns the number of shards (for testing/monitoring)
+func (m *MemoryCacheBackend) GetShardCount() uint32 {
+	return m.shardCount
+}
+
+// GetShardStats returns per-shard statistics (for monitoring)
+func (m *MemoryCacheBackend) GetShardStats() []map[string]int64 {
+	stats := make([]map[string]int64, m.shardCount)
+	for i, shard := range m.shards {
+		size, memory := shard.stats()
+		stats[i] = map[string]int64{
+			"size":   size,
+			"memory": memory,
+		}
+	}
+	return stats
+}
+
 // Helper functions
 
 // estimateValueSize estimates the size of a value in bytes
 func estimateValueSize(value interface{}) int64 {
-	// This is a simplified estimation
-	// In production, you might want to use a more accurate method
 	switch v := value.(type) {
 	case string:
 		return int64(len(v))
@@ -502,7 +526,10 @@ func matchPattern(pattern, key string) bool {
 	if pattern == "*" {
 		return true
 	}
-	// Simplified pattern matching - in production, use a proper glob library
-	return key == pattern || (len(pattern) > 0 && pattern[0] == '*' &&
-		len(key) >= len(pattern)-1 && key[len(key)-len(pattern)+1:] == pattern[1:])
+	// Simplified pattern matching
+	if len(pattern) > 0 && pattern[0] == '*' {
+		suffix := pattern[1:]
+		return len(key) >= len(suffix) && key[len(key)-len(suffix):] == suffix
+	}
+	return key == pattern
 }
