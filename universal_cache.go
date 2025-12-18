@@ -436,7 +436,7 @@ func (c *UniversalCache) Clear() {
 	c.currentSize = 0
 	c.currentMemory = 0
 
-	c.logger.Infof("UniversalCache[%s]: Cleared all items", c.config.Type)
+	c.logger.Debugf("UniversalCache[%s]: Cleared all items", c.config.Type)
 }
 
 // Size returns the number of items in the cache

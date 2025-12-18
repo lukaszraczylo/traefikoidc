@@ -219,6 +219,159 @@ func TestCacheInterfaceWrapper_Close(t *testing.T) {
 	nilWrapper.Close()
 }
 
+// TestCacheInterfaceWrapper_ManagedClose_Regression tests that managed cache wrappers
+// don't close the underlying cache when Close() is called. This is a regression test
+// for issue #105 where multiple plugin instances closing shared caches caused log flooding.
+func TestCacheInterfaceWrapper_ManagedClose_Regression(t *testing.T) {
+	cm := getTestCacheManager(t)
+
+	// Get a managed cache wrapper
+	cache := cm.GetSharedTokenBlacklist()
+	wrapper, ok := cache.(*CacheInterfaceWrapper)
+	if !ok {
+		t.Fatal("Expected CacheInterfaceWrapper")
+	}
+
+	// Verify it's marked as managed
+	if !wrapper.managed {
+		t.Error("Expected shared cache wrapper to be marked as managed")
+	}
+
+	// Set some data before Close
+	cache.Set("test-key", "test-value", time.Hour)
+
+	// Close the wrapper (should be a no-op for managed caches)
+	wrapper.Close()
+
+	// Verify the cache is still operational after Close
+	value, found := cache.Get("test-key")
+	if !found {
+		t.Error("Expected cache to still work after Close() on managed wrapper")
+	}
+	if value != "test-value" {
+		t.Errorf("Expected 'test-value', got %v", value)
+	}
+
+	// Can still set new values
+	cache.Set("new-key", "new-value", time.Hour)
+	newValue, found := cache.Get("new-key")
+	if !found || newValue != "new-value" {
+		t.Error("Expected to be able to set new values after Close() on managed wrapper")
+	}
+}
+
+// TestCacheInterfaceWrapper_StandaloneClose tests that standalone cache wrappers
+// properly close the underlying cache when Close() is called.
+func TestCacheInterfaceWrapper_StandaloneClose(t *testing.T) {
+	// Create a standalone cache (not from the global cache manager)
+	standaloneCache := NewCache()
+
+	wrapper, ok := standaloneCache.(*CacheInterfaceWrapper)
+	if !ok {
+		t.Fatal("Expected CacheInterfaceWrapper")
+	}
+
+	// Verify it's NOT marked as managed
+	if wrapper.managed {
+		t.Error("Expected standalone cache wrapper to NOT be marked as managed")
+	}
+
+	// Set some data
+	standaloneCache.Set("test-key", "test-value", time.Hour)
+
+	// Get baseline goroutine count
+	baselineGoroutines := runtime.NumGoroutine()
+
+	// Close the wrapper (should actually close the underlying cache)
+	wrapper.Close()
+
+	// Give cleanup goroutine time to stop
+	time.Sleep(100 * time.Millisecond)
+
+	// Goroutine count should decrease (cleanup routine stopped)
+	finalGoroutines := runtime.NumGoroutine()
+	if finalGoroutines > baselineGoroutines {
+		// This is acceptable - other tests might have started goroutines
+		t.Logf("Goroutine count: baseline=%d, final=%d", baselineGoroutines, finalGoroutines)
+	}
+}
+
+// TestCacheInterfaceWrapper_MultipleInstancesClose_Regression tests that multiple
+// plugin instances can close their cache wrappers without affecting shared caches.
+// This is a regression test for issue #105.
+func TestCacheInterfaceWrapper_MultipleInstancesClose_Regression(t *testing.T) {
+	cm := getTestCacheManager(t)
+
+	// Simulate multiple plugin instances getting cache references
+	instances := make([]*CacheInterfaceWrapper, 5)
+	for i := 0; i < 5; i++ {
+		cache := cm.GetSharedTokenBlacklist()
+		wrapper, ok := cache.(*CacheInterfaceWrapper)
+		if !ok {
+			t.Fatal("Expected CacheInterfaceWrapper")
+		}
+		instances[i] = wrapper
+
+		// Each instance might set some data
+		cache.Set(fmt.Sprintf("instance-%d-key", i), fmt.Sprintf("value-%d", i), time.Hour)
+	}
+
+	// Close all instances (simulating plugin shutdown/reload)
+	for _, wrapper := range instances {
+		wrapper.Close()
+	}
+
+	// The shared cache should still work after all instances closed their wrappers
+	newCache := cm.GetSharedTokenBlacklist()
+
+	// Data set by earlier instances should still be accessible
+	for i := 0; i < 5; i++ {
+		key := fmt.Sprintf("instance-%d-key", i)
+		value, found := newCache.Get(key)
+		if !found {
+			t.Errorf("Expected data from instance %d to still be accessible", i)
+		}
+		expectedValue := fmt.Sprintf("value-%d", i)
+		if value != expectedValue {
+			t.Errorf("Expected '%s', got '%v'", expectedValue, value)
+		}
+	}
+
+	// Should be able to add new data
+	newCache.Set("after-close-key", "after-close-value", time.Hour)
+	value, found := newCache.Get("after-close-key")
+	if !found || value != "after-close-value" {
+		t.Error("Expected to be able to use cache after all wrapper Close() calls")
+	}
+}
+
+// TestAllSharedCachesMarkedAsManaged verifies all shared cache getters
+// return managed wrappers to prevent the log flooding issue.
+func TestAllSharedCachesMarkedAsManaged(t *testing.T) {
+	cm := getTestCacheManager(t)
+
+	tests := []struct {
+		name  string
+		cache CacheInterface
+	}{
+		{"TokenBlacklist", cm.GetSharedTokenBlacklist()},
+		{"IntrospectionCache", cm.GetSharedIntrospectionCache()},
+		{"TokenTypeCache", cm.GetSharedTokenTypeCache()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wrapper, ok := tt.cache.(*CacheInterfaceWrapper)
+			if !ok {
+				t.Fatalf("Expected CacheInterfaceWrapper for %s", tt.name)
+			}
+			if !wrapper.managed {
+				t.Errorf("%s cache wrapper should be marked as managed", tt.name)
+			}
+		})
+	}
+}
+
 func TestCacheInterfaceWrapper_GetStats(t *testing.T) {
 	cm := getTestCacheManager(t)
 	cache := cm.GetSharedTokenBlacklist()

@@ -61,7 +61,7 @@ func GetGlobalCacheManagerWithConfig(wg *sync.WaitGroup, config *Config) *CacheM
 func (cm *CacheManager) GetSharedTokenBlacklist() CacheInterface {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return &CacheInterfaceWrapper{cache: cm.manager.GetBlacklistCache()}
+	return &CacheInterfaceWrapper{cache: cm.manager.GetBlacklistCache(), managed: true}
 }
 
 // GetSharedTokenCache returns the shared token cache
@@ -93,7 +93,7 @@ func (cm *CacheManager) GetSharedJWKCache() JWKCacheInterface {
 func (cm *CacheManager) GetSharedIntrospectionCache() CacheInterface {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return &CacheInterfaceWrapper{cache: cm.manager.GetIntrospectionCache()}
+	return &CacheInterfaceWrapper{cache: cm.manager.GetIntrospectionCache(), managed: true}
 }
 
 // GetSharedTokenTypeCache returns the shared token type cache
@@ -101,7 +101,7 @@ func (cm *CacheManager) GetSharedIntrospectionCache() CacheInterface {
 func (cm *CacheManager) GetSharedTokenTypeCache() CacheInterface {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return &CacheInterfaceWrapper{cache: cm.manager.GetTokenTypeCache()}
+	return &CacheInterfaceWrapper{cache: cm.manager.GetTokenTypeCache(), managed: true}
 }
 
 // Close gracefully shuts down all cache components
@@ -121,7 +121,8 @@ func CleanupGlobalCacheManager() error {
 
 // CacheInterfaceWrapper wraps UniversalCache to implement CacheInterface
 type CacheInterfaceWrapper struct {
-	cache *UniversalCache
+	cache   *UniversalCache
+	managed bool // If true, cache is managed globally and Close() is a no-op
 }
 
 // Set stores a value
@@ -149,9 +150,15 @@ func (c *CacheInterfaceWrapper) Cleanup() {
 	c.cache.Cleanup()
 }
 
-// Close shuts down the cache
+// Close shuts down the cache if it's not managed globally.
+// For managed caches (from UniversalCacheManager), this is a no-op to prevent log flooding
+// when multiple plugin instances are closed during Traefik configuration reloads.
 func (c *CacheInterfaceWrapper) Close() {
-	// Close the underlying cache to stop goroutines
+	if c.managed {
+		// Cache is managed globally by UniversalCacheManager, so we don't close it here.
+		return
+	}
+	// Standalone cache - close it properly to stop cleanup goroutines
 	if c.cache != nil {
 		_ = c.cache.Close() // Safe to ignore: closing cache is best-effort during shutdown
 	}
