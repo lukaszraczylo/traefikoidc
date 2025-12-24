@@ -353,6 +353,8 @@ allowPrivateIPAddresses: true  # Required for private IPs
    - Roles: User Client Role mapper with "Add to ID token" enabled
    - Groups: Group Membership mapper with "Add to ID token" enabled
 
+See [KEYCLOAK_SETUP_GUIDE.md](KEYCLOAK_SETUP_GUIDE.md) for detailed step-by-step setup instructions, mapper configuration, troubleshooting, and performance optimization.
+
 ---
 
 ## AWS Cognito
