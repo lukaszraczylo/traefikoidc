@@ -45,21 +45,11 @@ func (m *MemoryBackend) Get(ctx context.Context, key string) ([]byte, time.Durat
 		return nil, 0, false, err
 	}
 
-	// Get the item directly to check TTL
-	m.MemoryCacheBackend.mu.RLock()
-	item, exists := m.MemoryCacheBackend.items[key]
-	m.MemoryCacheBackend.mu.RUnlock()
-
-	if !exists {
-		return nil, 0, false, nil
-	}
-
-	var ttl time.Duration
-	if !item.expiresAt.IsZero() {
-		ttl = time.Until(item.expiresAt)
-		if ttl < 0 {
-			ttl = 0
-		}
+	// Get TTL using the TTL method
+	ttl, ttlErr := m.MemoryCacheBackend.TTL(ctx, key)
+	if ttlErr != nil {
+		// If we can't get TTL, still return the value with 0 TTL
+		ttl = 0
 	}
 
 	// Convert interface{} to []byte
@@ -68,8 +58,7 @@ func (m *MemoryBackend) Get(ctx context.Context, key string) ([]byte, time.Durat
 		if bytes, ok := val.([]byte); ok {
 			valueBytes = bytes
 		} else {
-			// If it's not already []byte, we might need to handle other types
-			// For now, we'll just return an error
+			// If it's not already []byte, return an error
 			return nil, 0, false, ErrInvalidValue
 		}
 	}
@@ -123,19 +112,20 @@ func (m *MemoryBackend) GetStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"type":       stats.Type,
-		"hits":       stats.Hits,
-		"misses":     stats.Misses,
-		"sets":       stats.Sets,
-		"deletes":    stats.Deletes,
-		"errors":     stats.Errors,
-		"evictions":  stats.Evictions,
-		"size":       stats.CurrentSize,
-		"max_size":   stats.MaxSize,
-		"memory":     stats.MemoryUsage,
-		"hit_rate":   hitRate,
-		"uptime":     stats.Uptime,
-		"start_time": stats.StartTime,
+		"type":        stats.Type,
+		"hits":        stats.Hits,
+		"misses":      stats.Misses,
+		"sets":        stats.Sets,
+		"deletes":     stats.Deletes,
+		"errors":      stats.Errors,
+		"evictions":   stats.Evictions,
+		"size":        stats.CurrentSize,
+		"max_size":    stats.MaxSize,
+		"memory":      stats.MemoryUsage,
+		"hit_rate":    hitRate,
+		"uptime":      stats.Uptime,
+		"start_time":  stats.StartTime,
+		"shard_count": m.MemoryCacheBackend.GetShardCount(),
 	}
 }
 

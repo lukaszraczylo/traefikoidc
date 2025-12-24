@@ -336,3 +336,120 @@ func (p *ConnectionPool) isConnectionHealthy(conn *RedisConn) bool {
 	_, err := conn.Do("PING")
 	return err == nil
 }
+
+// Pipeline represents a Redis pipeline for batch operations
+// It queues multiple commands and executes them in a single round-trip
+type Pipeline struct {
+	conn     *RedisConn
+	commands []pipelineCommand
+	mu       sync.Mutex
+}
+
+// pipelineCommand represents a single command in the pipeline
+type pipelineCommand struct {
+	command string
+	args    []string
+}
+
+// NewPipeline creates a new pipeline for the connection
+func (c *RedisConn) NewPipeline() *Pipeline {
+	return &Pipeline{
+		conn:     c,
+		commands: make([]pipelineCommand, 0, 16), // Pre-allocate for typical batch size
+	}
+}
+
+// Queue adds a command to the pipeline
+func (p *Pipeline) Queue(command string, args ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.commands = append(p.commands, pipelineCommand{
+		command: command,
+		args:    args,
+	})
+}
+
+// Execute sends all queued commands and returns all responses
+// Returns a slice of responses in the same order as commands were queued
+func (p *Pipeline) Execute() ([]interface{}, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.commands) == 0 {
+		return nil, nil
+	}
+
+	if p.conn.closed.Load() {
+		return nil, ErrBackendClosed
+	}
+
+	p.conn.mu.Lock()
+	defer p.conn.mu.Unlock()
+
+	// Set write timeout for all commands
+	if p.conn.writeTimeout > 0 {
+		// Use longer timeout for batch operations
+		timeout := p.conn.writeTimeout * time.Duration(len(p.commands))
+		if timeout > 30*time.Second {
+			timeout = 30 * time.Second // Cap at 30 seconds
+		}
+		_ = p.conn.conn.SetWriteDeadline(time.Now().Add(timeout))
+	}
+
+	// Write all commands (pipelining - send all before reading any responses)
+	writer := NewRESPWriter(p.conn.conn)
+	for _, cmd := range p.commands {
+		cmdArgs := append([]string{cmd.command}, cmd.args...)
+		if err := writer.WriteCommand(cmdArgs...); err != nil {
+			writer.Release()
+			p.conn.closed.Store(true)
+			return nil, fmt.Errorf("pipeline write error: %w", err)
+		}
+	}
+	writer.Release()
+
+	// Set read timeout for all responses
+	if p.conn.readTimeout > 0 {
+		timeout := p.conn.readTimeout * time.Duration(len(p.commands))
+		if timeout > 30*time.Second {
+			timeout = 30 * time.Second
+		}
+		_ = p.conn.conn.SetReadDeadline(time.Now().Add(timeout))
+	}
+
+	// Read all responses
+	responses := make([]interface{}, len(p.commands))
+	reader := NewRESPReader(p.conn.conn)
+	defer reader.Release()
+
+	for i := range p.commands {
+		resp, err := reader.ReadResponse()
+		if err != nil {
+			// For nil responses, store nil instead of erroring
+			if errors.Is(err, ErrNilResponse) {
+				responses[i] = nil
+				continue
+			}
+			p.conn.closed.Store(true)
+			return responses[:i], fmt.Errorf("pipeline read error at command %d: %w", i, err)
+		}
+		responses[i] = resp
+	}
+
+	return responses, nil
+}
+
+// Clear resets the pipeline for reuse
+func (p *Pipeline) Clear() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.commands = p.commands[:0]
+}
+
+// Len returns the number of queued commands
+func (p *Pipeline) Len() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.commands)
+}

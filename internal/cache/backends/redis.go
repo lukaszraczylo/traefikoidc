@@ -431,39 +431,135 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-// SetMany stores multiple values in Redis (batch operation)
+// SetMany stores multiple values in Redis using pipelining for efficiency
+// This reduces N round-trips to a single round-trip
 func (r *RedisBackend) SetMany(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
 	if r.closed.Load() {
 		return ErrBackendClosed
 	}
 
-	// For simplicity, execute sequentially (can be optimized with pipelining later)
-	for key, value := range items {
-		if err := r.Set(ctx, key, value, ttl); err != nil {
-			return err
+	if len(items) == 0 {
+		return nil
+	}
+
+	// For single items, use regular Set
+	if len(items) == 1 {
+		for key, value := range items {
+			return r.Set(ctx, key, value, ttl)
 		}
+	}
+
+	conn, err := r.pool.Get(ctx)
+	if err != nil {
+		return err
+	}
+	defer r.pool.Put(conn)
+
+	pipeline := conn.NewPipeline()
+
+	// Queue all SET commands
+	ttlSeconds := int(ttl.Seconds())
+	ttlMillis := ttl.Milliseconds()
+
+	for key, value := range items {
+		prefixedKey := r.prefixKey(key)
+
+		if ttl > 0 {
+			if ttlMillis < 1000 {
+				// Use PSETEX for sub-second TTLs
+				pipeline.Queue("PSETEX", prefixedKey, fmt.Sprintf("%d", ttlMillis), string(value))
+			} else {
+				// Use SETEX for larger TTLs
+				pipeline.Queue("SETEX", prefixedKey, fmt.Sprintf("%d", ttlSeconds), string(value))
+			}
+		} else {
+			pipeline.Queue("SET", prefixedKey, string(value))
+		}
+	}
+
+	// Execute pipeline
+	responses, err := pipeline.Execute()
+	if err != nil {
+		return fmt.Errorf("pipeline SetMany failed: %w", err)
+	}
+
+	// Check responses for errors (each should be "OK")
+	for i, resp := range responses {
+		if resp == nil {
+			continue
+		}
+		if str, ok := resp.(string); ok && str == "OK" {
+			continue
+		}
+		return fmt.Errorf("SetMany: unexpected response at index %d: %v", i, resp)
 	}
 
 	return nil
 }
 
-// GetMany retrieves multiple values from Redis
+// GetMany retrieves multiple values from Redis using pipelining for efficiency
+// This reduces N round-trips to a single round-trip
 func (r *RedisBackend) GetMany(ctx context.Context, keys []string) (map[string][]byte, error) {
 	if r.closed.Load() {
 		return nil, ErrBackendClosed
 	}
 
-	result := make(map[string][]byte)
+	if len(keys) == 0 {
+		return make(map[string][]byte), nil
+	}
 
-	// For simplicity, execute sequentially
-	for _, key := range keys {
-		value, _, exists, err := r.Get(ctx, key)
+	// For single key, use regular Get
+	if len(keys) == 1 {
+		result := make(map[string][]byte)
+		value, _, exists, err := r.Get(ctx, keys[0])
 		if err != nil {
 			return nil, err
 		}
 		if exists {
-			result[key] = value
+			result[keys[0]] = value
 		}
+		return result, nil
+	}
+
+	conn, err := r.pool.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer r.pool.Put(conn)
+
+	pipeline := conn.NewPipeline()
+
+	// Queue all GET commands
+	prefixedKeys := make([]string, len(keys))
+	for i, key := range keys {
+		prefixedKeys[i] = r.prefixKey(key)
+		pipeline.Queue("GET", prefixedKeys[i])
+	}
+
+	// Execute pipeline
+	responses, err := pipeline.Execute()
+	if err != nil {
+		return nil, fmt.Errorf("pipeline GetMany failed: %w", err)
+	}
+
+	// Process responses
+	result := make(map[string][]byte)
+	for i, resp := range responses {
+		if resp == nil {
+			// Key doesn't exist
+			r.misses.Add(1)
+			continue
+		}
+
+		value, err := RESPString(resp)
+		if err != nil {
+			// Invalid response, skip this key
+			r.misses.Add(1)
+			continue
+		}
+
+		r.hits.Add(1)
+		result[keys[i]] = []byte(value)
 	}
 
 	return result, nil
