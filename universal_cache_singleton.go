@@ -13,20 +13,21 @@ import (
 // It runs a single consolidated cleanup goroutine for all caches, reducing
 // goroutine count and CPU overhead compared to per-cache cleanup routines.
 type UniversalCacheManager struct {
-	sharedBackend      backends.CacheBackend
-	ctx                context.Context
-	tokenTypeCache     *UniversalCache
-	jwkCache           *UniversalCache
-	sessionCache       *UniversalCache
-	introspectionCache *UniversalCache
-	tokenCache         *UniversalCache
-	metadataCache      *UniversalCache
-	logger             *Logger
-	blacklistCache     *UniversalCache
-	cancel             context.CancelFunc
-	wg                 sync.WaitGroup
-	mu                 sync.RWMutex
-	cleanupStarted     bool
+	sharedBackend       backends.CacheBackend
+	ctx                 context.Context
+	tokenTypeCache      *UniversalCache
+	jwkCache            *UniversalCache
+	sessionCache        *UniversalCache
+	introspectionCache  *UniversalCache
+	tokenCache          *UniversalCache
+	metadataCache       *UniversalCache
+	dcrCredentialsCache *UniversalCache // DCR credentials storage for distributed environments
+	logger              *Logger
+	blacklistCache      *UniversalCache
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	mu                  sync.RWMutex
+	cleanupStarted      bool
 }
 
 var (
@@ -349,6 +350,19 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 		SkipAutoCleanup: true, // Managed cleanup
 	})
 
+	// DCR credentials cache - CRITICAL for distributed DCR across multiple nodes
+	// Uses Redis backend to share client credentials across all Traefik replicas
+	manager.dcrCredentialsCache = NewUniversalCacheWithBackend(
+		UniversalCacheConfig{
+			Type:            CacheTypeGeneral,
+			MaxSize:         100,                 // Few providers expected
+			DefaultTTL:      30 * 24 * time.Hour, // 30 days default (credentials are long-lived)
+			Logger:          logger,
+			SkipAutoCleanup: true, // Managed cleanup
+		},
+		createBackend("dcr"),
+	)
+
 	logger.Infof("Cache manager initialized with %s backend configuration", redisConfig.CacheMode)
 }
 
@@ -396,6 +410,7 @@ func (m *UniversalCacheManager) performConsolidatedCleanup() {
 		m.sessionCache,
 		m.introspectionCache,
 		m.tokenTypeCache,
+		m.dcrCredentialsCache,
 	}
 	m.mu.RUnlock()
 
@@ -458,6 +473,13 @@ func (m *UniversalCacheManager) GetTokenTypeCache() *UniversalCache {
 	return m.tokenTypeCache
 }
 
+// GetDCRCredentialsCache returns the DCR credentials cache for distributed storage
+func (m *UniversalCacheManager) GetDCRCredentialsCache() *UniversalCache {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.dcrCredentialsCache
+}
+
 // Close shuts down all caches and the consolidated cleanup routine
 func (m *UniversalCacheManager) Close() error {
 	// Stop the consolidated cleanup routine first
@@ -473,7 +495,7 @@ func (m *UniversalCacheManager) Close() error {
 
 	// Close all caches first (they won't close the shared backend)
 	for _, cache := range []*UniversalCache{
-		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache, m.tokenTypeCache,
+		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache, m.tokenTypeCache, m.dcrCredentialsCache,
 	} {
 		if cache != nil {
 			_ = cache.Close() // Safe to ignore: best effort cache cleanup

@@ -8,7 +8,7 @@ The Traefik OIDC middleware provides a complete OIDC authentication solution wit
 
 - **Universal provider support**: Works with 9+ OIDC providers including Google, Azure AD, Auth0, Okta, Keycloak, AWS Cognito, GitLab, and more
 - **Automatic provider detection**: Automatically detects and configures provider-specific settings
-- **Dynamic Client Registration (RFC 7591)**: Automatic client registration with OIDC providers without manual pre-registration
+- **Dynamic Client Registration (RFC 7591)**: Automatic client registration with OIDC providers without manual pre-registration, with Redis storage support for multi-replica deployments
 - **Automatic scope filtering**: Intelligently filters OAuth scopes based on provider capabilities declared in OIDC discovery documents, preventing authentication failures with unsupported scopes
 - **Security headers**: Comprehensive security headers with CORS, CSP, HSTS, and custom profiles
 - **Domain restrictions**: Limit access to specific email domains or individual users

@@ -433,6 +433,19 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 			t.dcrConfig,
 			t.providerURL,
 		)
+
+		// Set up storage backend for credentials persistence
+		if t.dcrConfig.PersistCredentials {
+			cacheManager := GetGlobalCacheManagerWithConfig(t.goroutineWG, nil)
+			store, err := NewDCRCredentialsStore(t.dcrConfig, cacheManager, t.logger)
+			if err != nil {
+				t.logger.Errorf("Failed to create DCR credentials store: %v", err)
+				// Continue without persistence - registration will still work
+			} else {
+				t.dynamicClientRegistrar.SetStore(store)
+				t.logger.Debugf("DCR credentials store initialized with backend: %s", t.dcrConfig.StorageBackend)
+			}
+		}
 	}
 
 	// Get registration endpoint (from metadata or config override)
