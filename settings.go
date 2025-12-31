@@ -98,8 +98,15 @@ type DynamicClientRegistrationConfig struct {
 	InitialAccessToken   string                      `json:"initialAccessToken,omitempty"`
 	RegistrationEndpoint string                      `json:"registrationEndpoint,omitempty"`
 	CredentialsFile      string                      `json:"credentialsFile,omitempty"`
-	Enabled              bool                        `json:"enabled"`
-	PersistCredentials   bool                        `json:"persistCredentials"`
+	// StorageBackend specifies where to store DCR credentials: "file", "redis", or "auto"
+	// - "file": Use file-based storage (default for backward compatibility)
+	// - "redis": Use Redis exclusively (fails if Redis unavailable)
+	// - "auto": Use Redis if available, fallback to file (default)
+	StorageBackend string `json:"storageBackend,omitempty"`
+	// RedisKeyPrefix is the prefix for Redis keys when using Redis storage (default: "dcr:creds:")
+	RedisKeyPrefix     string `json:"redisKeyPrefix,omitempty"`
+	Enabled            bool   `json:"enabled"`
+	PersistCredentials bool   `json:"persistCredentials"`
 }
 
 // ClientRegistrationMetadata contains client metadata for dynamic registration (RFC 7591)

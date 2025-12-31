@@ -193,7 +193,7 @@
                             </div>
                             <div>
                                 <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Dynamic Registration</h3>
-                                <p class="text-sm text-gray-600 dark:text-gray-400">RFC 7591 Dynamic Client Registration for automatic client setup without manual configuration</p>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">RFC 7591 Dynamic Client Registration with Redis storage support for multi-replica deployments</p>
                             </div>
                         </div>
                     </div>
@@ -857,6 +857,48 @@ spec:
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.enableTLS</code></td>
                                         <td class="py-2 px-3">false</td>
                                         <td class="py-2 px-3">Enable TLS for Redis connections</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4">Dynamic Client Registration (RFC 7591)</h3>
+                        <p class="text-gray-600 dark:text-gray-400 mb-3 text-sm">Automatically register your application with the OIDC provider. Supports Redis storage for multi-replica deployments:</p>
+                        <div class="overflow-x-auto mb-4">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="border-b border-gray-200 dark:border-gray-700">
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Parameter</th>
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Default</th>
+                                        <th class="text-left py-2 px-3 text-gray-900 dark:text-gray-100">Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="text-gray-600 dark:text-gray-400">
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">dynamicClientRegistration.enabled</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Enable dynamic client registration</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">dynamicClientRegistration.persistCredentials</code></td>
+                                        <td class="py-2 px-3">true</td>
+                                        <td class="py-2 px-3">Persist registered credentials across restarts</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">dynamicClientRegistration.storageBackend</code></td>
+                                        <td class="py-2 px-3">auto</td>
+                                        <td class="py-2 px-3">Storage backend: <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">file</code>, <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis</code>, or <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">auto</code> (uses Redis if available)</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">dynamicClientRegistration.redisKeyPrefix</code></td>
+                                        <td class="py-2 px-3">dcr:creds:</td>
+                                        <td class="py-2 px-3">Redis key prefix for DCR credentials</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">dynamicClientRegistration.clientMetadata.redirect_uris</code></td>
+                                        <td class="py-2 px-3">-</td>
+                                        <td class="py-2 px-3">Redirect URIs for the registered client (required)</td>
                                     </tr>
                                 </tbody>
                             </table>

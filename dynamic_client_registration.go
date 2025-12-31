@@ -50,6 +50,7 @@ type DynamicClientRegistrar struct {
 	logger               *Logger
 	config               *DynamicClientRegistrationConfig
 	registrationResponse *ClientRegistrationResponse
+	store                DCRCredentialsStore // Storage backend for credentials
 	providerURL          string
 	mu                   sync.RWMutex
 }
@@ -73,8 +74,37 @@ func NewDynamicClientRegistrar(
 	}
 }
 
+// NewDynamicClientRegistrarWithStore creates a new dynamic client registrar with a specific storage backend
+func NewDynamicClientRegistrarWithStore(
+	httpClient *http.Client,
+	logger *Logger,
+	dcrConfig *DynamicClientRegistrationConfig,
+	providerURL string,
+	store DCRCredentialsStore,
+) *DynamicClientRegistrar {
+	if logger == nil {
+		logger = GetSingletonNoOpLogger()
+	}
+
+	return &DynamicClientRegistrar{
+		httpClient:  httpClient,
+		logger:      logger,
+		config:      dcrConfig,
+		providerURL: providerURL,
+		store:       store,
+	}
+}
+
+// SetStore sets the credentials store for the registrar
+// This allows setting the store after creation when the cache manager is available
+func (r *DynamicClientRegistrar) SetStore(store DCRCredentialsStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.store = store
+}
+
 // RegisterClient performs dynamic client registration with the OIDC provider
-// It first attempts to load existing credentials from a file if persistence is enabled,
+// It first attempts to load existing credentials from storage if persistence is enabled,
 // then registers a new client if no valid credentials exist.
 func (r *DynamicClientRegistrar) RegisterClient(ctx context.Context, registrationEndpoint string) (*ClientRegistrationResponse, error) {
 	if r.config == nil || !r.config.Enabled {
@@ -83,10 +113,13 @@ func (r *DynamicClientRegistrar) RegisterClient(ctx context.Context, registratio
 
 	// Try to load existing credentials if persistence is enabled
 	if r.config.PersistCredentials {
-		if resp, err := r.loadCredentials(); err == nil && resp != nil {
+		resp, err := r.loadCredentialsFromStore(ctx)
+		if err != nil {
+			r.logger.Debugf("Failed to load credentials from store: %v", err)
+		} else if resp != nil {
 			// Check if credentials are still valid (not expired)
 			if r.areCredentialsValid(resp) {
-				r.logger.Info("Loaded existing client credentials from file")
+				r.logger.Info("Loaded existing client credentials from storage")
 				r.mu.Lock()
 				r.registrationResponse = resp
 				r.mu.Unlock()
@@ -179,7 +212,7 @@ func (r *DynamicClientRegistrar) RegisterClient(ctx context.Context, registratio
 
 	// Persist credentials if enabled
 	if r.config.PersistCredentials {
-		if err := r.saveCredentials(&regResp); err != nil {
+		if err := r.saveCredentialsToStore(ctx, &regResp); err != nil {
 			r.logger.Errorf("Failed to persist client credentials: %v", err)
 			// Don't fail registration if persistence fails
 		}
@@ -315,7 +348,44 @@ func (r *DynamicClientRegistrar) credentialsFilePath() string {
 	return "/tmp/oidc-client-credentials.json"
 }
 
-// saveCredentials persists client credentials to a file
+// loadCredentialsFromStore loads client credentials from the configured storage backend
+// Falls back to legacy file-based loading if no store is configured
+func (r *DynamicClientRegistrar) loadCredentialsFromStore(ctx context.Context) (*ClientRegistrationResponse, error) {
+	// Use store if available
+	if r.store != nil {
+		return r.store.Load(ctx, r.providerURL)
+	}
+	// Fallback to legacy file-based loading
+	return r.loadCredentials()
+}
+
+// saveCredentialsToStore persists client credentials to the configured storage backend
+// Falls back to legacy file-based saving if no store is configured
+func (r *DynamicClientRegistrar) saveCredentialsToStore(ctx context.Context, resp *ClientRegistrationResponse) error {
+	// Use store if available
+	if r.store != nil {
+		return r.store.Save(ctx, r.providerURL, resp)
+	}
+	// Fallback to legacy file-based saving
+	return r.saveCredentials(resp)
+}
+
+// deleteCredentialsFromStore removes credentials from the configured storage backend
+// Falls back to legacy file-based deletion if no store is configured
+func (r *DynamicClientRegistrar) deleteCredentialsFromStore(ctx context.Context) error {
+	// Use store if available
+	if r.store != nil {
+		return r.store.Delete(ctx, r.providerURL)
+	}
+	// Fallback to legacy file-based deletion
+	filePath := r.credentialsFilePath()
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// saveCredentials persists client credentials to a file (legacy method)
 func (r *DynamicClientRegistrar) saveCredentials(resp *ClientRegistrationResponse) error {
 	filePath := r.credentialsFilePath()
 
@@ -333,7 +403,7 @@ func (r *DynamicClientRegistrar) saveCredentials(resp *ClientRegistrationRespons
 	return nil
 }
 
-// loadCredentials loads client credentials from a file
+// loadCredentials loads client credentials from a file (legacy method)
 func (r *DynamicClientRegistrar) loadCredentials() (*ClientRegistrationResponse, error) {
 	filePath := r.credentialsFilePath()
 
@@ -420,7 +490,7 @@ func (r *DynamicClientRegistrar) UpdateClientRegistration(ctx context.Context) (
 
 	// Persist updated credentials if enabled
 	if r.config.PersistCredentials {
-		if err := r.saveCredentials(&regResp); err != nil {
+		if err := r.saveCredentialsToStore(ctx, &regResp); err != nil {
 			r.logger.Errorf("Failed to persist updated credentials: %v", err)
 		}
 	}
@@ -527,11 +597,10 @@ func (r *DynamicClientRegistrar) DeleteClientRegistration(ctx context.Context) e
 	r.registrationResponse = nil
 	r.mu.Unlock()
 
-	// Remove credentials file if persistence is enabled
+	// Remove credentials from storage if persistence is enabled
 	if r.config.PersistCredentials {
-		filePath := r.credentialsFilePath()
-		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-			r.logger.Errorf("Failed to remove credentials file: %v", err)
+		if err := r.deleteCredentialsFromStore(ctx); err != nil {
+			r.logger.Errorf("Failed to remove credentials from storage: %v", err)
 		}
 	}
 

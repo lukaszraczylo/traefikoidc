@@ -384,10 +384,14 @@ scopes:
 
 ### Dynamic Client Registration (RFC 7591)
 
+Dynamic Client Registration allows the middleware to automatically register itself with the OIDC provider, eliminating the need to manually create client credentials.
+
+**Basic Configuration (Single Instance):**
+
 ```yaml
 dynamicClientRegistration:
   enabled: true
-  initialAccessToken: "your-token"  # Optional
+  initialAccessToken: "your-token"  # Optional, if provider requires it
   persistCredentials: true
   credentialsFile: "/tmp/oidc-credentials.json"
   clientMetadata:
@@ -399,6 +403,35 @@ dynamicClientRegistration:
       - "authorization_code"
       - "refresh_token"
 ```
+
+**Multi-Replica Deployment (Kubernetes):**
+
+For Kubernetes deployments with multiple replicas, use Redis storage to share credentials across all instances and prevent registration race conditions:
+
+```yaml
+dynamicClientRegistration:
+  enabled: true
+  persistCredentials: true
+  storageBackend: "redis"  # Share credentials via Redis
+  redisKeyPrefix: "myapp:dcr:"  # Optional custom prefix
+  clientMetadata:
+    redirect_uris:
+      - "https://your-app.com/oauth2/callback"
+    client_name: "My Application"
+
+redis:
+  enabled: true
+  address: "redis:6379"
+  cacheMode: "redis"
+```
+
+**Storage Backend Options:**
+
+| Backend | Description | Use Case |
+|---------|-------------|----------|
+| `file` | Store credentials in local file | Single instance deployments |
+| `redis` | Store credentials in Redis | Multi-replica Kubernetes deployments |
+| `auto` | Use Redis if available, fallback to file | Flexible deployments (default) |
 
 ### Multi-Replica Deployment
 
