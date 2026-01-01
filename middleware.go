@@ -86,6 +86,17 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	acceptHeader := req.Header.Get("Accept")
 	if strings.Contains(acceptHeader, "text/event-stream") {
 		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
+		// Set forwarded user headers from existing session before bypassing
+		if session, err := t.sessionManager.GetSession(req); err == nil {
+			defer session.returnToPoolSafely()
+			if email := session.GetEmail(); email != "" {
+				req.Header.Set("X-Forwarded-User", email)
+				if !t.minimalHeaders {
+					req.Header.Set("X-Auth-Request-User", email)
+				}
+				t.logger.Debugf("SSE bypass: forwarded user %s from session", email)
+			}
+		}
 		t.next.ServeHTTP(rw, req)
 		return
 	}
