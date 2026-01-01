@@ -26,6 +26,17 @@ import (
 //   - rw: The HTTP response writer.
 //   - req: The incoming HTTP request.
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// Log request entry for debugging routing issues
+	t.logger.Debugf("Incoming request: %s %s", req.Method, req.URL.Path)
+
+	// Handle logout requests early - before waiting for OIDC initialization
+	// This allows users to logout even if the OIDC provider is unavailable
+	if req.URL.Path == t.logoutURLPath {
+		t.logger.Debugf("Logout path matched early: %s", req.URL.Path)
+		t.handleLogout(rw, req)
+		return
+	}
+
 	if !strings.HasPrefix(req.URL.Path, "/health") {
 		t.firstRequestMutex.Lock()
 		if !t.firstRequestReceived {
@@ -41,6 +52,24 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		t.firstRequestMutex.Unlock()
 	}
+
+	// Check excluded URLs before waiting for initialization
+	if t.determineExcludedURL(req.URL.Path) {
+		t.logger.Debugf("Request path %s excluded by configuration, bypassing OIDC", req.URL.Path)
+		t.next.ServeHTTP(rw, req)
+		return
+	}
+
+	// Check for SSE requests before waiting for initialization
+	acceptHeader := req.Header.Get("Accept")
+	if strings.Contains(acceptHeader, "text/event-stream") {
+		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
+		t.next.ServeHTTP(rw, req)
+		return
+	}
+
+	// Log waiting for initialization to help diagnose hanging requests
+	t.logger.Debug("Waiting for OIDC provider initialization...")
 
 	select {
 	case <-t.initComplete:
@@ -78,18 +107,6 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if t.determineExcludedURL(req.URL.Path) {
-		t.logger.Debugf("Request path %s excluded by configuration, bypassing OIDC", req.URL.Path)
-		t.next.ServeHTTP(rw, req)
-		return
-	}
-	acceptHeader := req.Header.Get("Accept")
-	if strings.Contains(acceptHeader, "text/event-stream") {
-		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
-		t.next.ServeHTTP(rw, req)
-		return
-	}
-
 	t.sessionManager.CleanupOldCookies(rw, req)
 
 	session, err := t.sessionManager.GetSession(req)
@@ -120,10 +137,6 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	host := utils.DetermineHost(req)
 	redirectURL := buildFullURL(scheme, host, t.redirURLPath)
 
-	if req.URL.Path == t.logoutURLPath {
-		t.handleLogout(rw, req)
-		return
-	}
 	if req.URL.Path == t.redirURLPath {
 		t.handleCallback(rw, req, redirectURL)
 		return

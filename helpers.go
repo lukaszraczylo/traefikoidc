@@ -336,6 +336,7 @@ func createStringMap(keys []string) map[string]struct{} {
 // and redirects to the provider's logout endpoint or configured post-logout URI.
 // It handles potential errors during session retrieval or clearing.
 func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
+	t.logger.Debug("Processing logout request")
 	session, err := t.sessionManager.GetSession(req)
 	if err != nil {
 		t.logger.Errorf("Error getting session: %v", err)
