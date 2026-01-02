@@ -126,7 +126,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		t.next.ServeHTTP(rw, req)
 		return
 	}
-	acceptHeader := req.Header.Get("Accept")
+	acceptHeader = req.Header.Get("Accept")
 	if strings.Contains(acceptHeader, "text/event-stream") {
 		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
 		// Set forwarded user headers from existing session before bypassing
