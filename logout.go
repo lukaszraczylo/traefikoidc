@@ -481,13 +481,22 @@ func (t *TraefikOidc) determineLogoutPath(path string) string {
 	return ""
 }
 
-// normalizeLogoutPath ensures logout paths start with /
+// normalizeLogoutPath ensures logout paths start with / and prevents open redirects
 func normalizeLogoutPath(path string) string {
 	if path == "" {
 		return ""
 	}
 	if !strings.HasPrefix(path, "/") {
-		return "/" + path
+		path = "/" + path
+	}
+	// Prevent open redirect: ensure second character is not / or \
+	// This prevents URLs like //example.com or /\example.com from being treated as absolute URLs
+	if len(path) > 1 && (path[1] == '/' || path[1] == '\\') {
+		// Strip leading slashes/backslashes and re-normalize
+		path = strings.TrimLeft(path, "/\\")
+		if path != "" {
+			path = "/" + path
+		}
 	}
 	return path
 }

@@ -488,6 +488,16 @@ func TestNormalizeLogoutPath(t *testing.T) {
 		{"logout", "/logout"},
 		{"/backchannel-logout", "/backchannel-logout"},
 		{"backchannel-logout", "/backchannel-logout"},
+		// Security: prevent open redirect via //
+		{"//evil.com", "/evil.com"},
+		{"//evil.com/path", "/evil.com/path"},
+		// Security: prevent open redirect via /\
+		{"/\\evil.com", "/evil.com"},
+		{"/\\evil.com/path", "/evil.com/path"},
+		// Security: multiple leading slashes
+		{"///example.com", "/example.com"},
+		// Security: mixed slashes
+		{"//\\example.com", "/example.com"},
 	}
 
 	for _, tc := range tests {
