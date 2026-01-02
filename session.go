@@ -1820,23 +1820,12 @@ func (sd *SessionData) SetAccessToken(token string) {
 	defer sd.sessionMutex.Unlock()
 
 	if token != "" {
-		dotCount := strings.Count(token, ".")
-		// Reject tokens with exactly 1 dot (invalid format - neither JWT nor opaque)
-		if dotCount == 1 {
-			if sd.manager != nil && sd.manager.logger != nil {
-				sd.manager.logger.Debug("Invalid token format during storage (dots: %d) - rejecting", dotCount)
-			}
-			return
-		}
-		// For opaque tokens (no dots), ensure minimum length for security
-		if dotCount == 0 && len(token) < 20 {
+		if len(token) < 20 {
 			if sd.manager != nil && sd.manager.logger != nil {
 				sd.manager.logger.Debug("Token too short for opaque token (length: %d) - rejecting", len(token))
 			}
 			return
 		}
-		// Tokens with 2 dots are JWTs, tokens with 0 dots are opaque
-		// Both are valid formats
 	}
 
 	currentAccessToken := sd.getAccessTokenUnsafe()
