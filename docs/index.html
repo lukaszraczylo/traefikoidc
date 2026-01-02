@@ -90,6 +90,7 @@
                         <a href="#configuration" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Configuration</a>
                         <a href="#deployment" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Deployment</a>
                         <a href="#security" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Security</a>
+                        <a href="#logout" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 font-medium">Logout</a>
                     </div>
                     <div class="flex items-center space-x-4">
                         <button id="theme-toggle" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Toggle theme">
@@ -114,6 +115,7 @@
                     <a href="#configuration" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Configuration</a>
                     <a href="#deployment" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Deployment</a>
                     <a href="#security" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Security</a>
+                    <a href="#logout" class="block px-3 py-3 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 rounded font-medium">Logout</a>
                 </div>
             </div>
         </nav>
@@ -1214,6 +1216,71 @@ spec:
                                 <li>&#8226; Customizable response codes</li>
                             </ul>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- IdP-Initiated Logout Section -->
+        <section id="logout" class="py-12 sm:py-16 md:py-20 bg-white dark:bg-gray-900 theme-transition">
+            <div class="max-w-6xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8 sm:mb-12">
+                    <h2 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">IdP-Initiated Logout</h2>
+                    <p class="text-base sm:text-lg text-gray-600 dark:text-gray-300 px-4">Support for OIDC Back-Channel and Front-Channel Logout specifications</p>
+                </div>
+                <div class="max-w-4xl mx-auto">
+                    <div class="grid md:grid-cols-2 gap-6 mb-8">
+                        <div class="glass p-6 rounded-xl">
+                            <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                                <i class="fas fa-server mr-2 text-blue-500"></i>
+                                Back-Channel Logout
+                            </h3>
+                            <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">
+                                Server-to-server logout notification. The IdP sends a signed JWT (logout_token) directly to your application when a user logs out.
+                            </p>
+                            <ul class="text-gray-600 dark:text-gray-400 space-y-2 text-sm">
+                                <li>&#8226; Signed JWT logout tokens</li>
+                                <li>&#8226; Session ID (sid) based invalidation</li>
+                                <li>&#8226; Subject (sub) based invalidation</li>
+                                <li>&#8226; Works behind firewalls</li>
+                            </ul>
+                        </div>
+                        <div class="glass p-6 rounded-xl">
+                            <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                                <i class="fas fa-browser mr-2 text-purple-500"></i>
+                                Front-Channel Logout
+                            </h3>
+                            <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">
+                                Browser-based logout via iframe. The IdP embeds an iframe pointing to your logout endpoint during user logout.
+                            </p>
+                            <ul class="text-gray-600 dark:text-gray-400 space-y-2 text-sm">
+                                <li>&#8226; Iframe-based session termination</li>
+                                <li>&#8226; Immediate cookie invalidation</li>
+                                <li>&#8226; Simple GET request handling</li>
+                                <li>&#8226; Issuer validation</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="glass p-6 rounded-xl">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-4">Configuration Example</h3>
+                        <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>http:
+  middlewares:
+    oidc-auth:
+      plugin:
+        traefikoidc:
+          # ... other OIDC configuration ...
+
+          # Back-Channel Logout (server-to-server)
+          enableBackchannelLogout: true
+          backchannelLogoutURL: "/backchannel-logout"
+
+          # Front-Channel Logout (browser-based)
+          enableFrontchannelLogout: true
+          frontchannelLogoutURL: "/frontchannel-logout"</code></pre>
+                        <p class="text-gray-600 dark:text-gray-400 text-sm mt-4">
+                            Configure your IdP with the full URLs (e.g., <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">https://your-app.example.com/backchannel-logout</code>). 
+                            When a user logs out from the IdP, all their sessions across your applications will be invalidated.
+                        </p>
                     </div>
                 </div>
             </div>

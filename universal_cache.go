@@ -720,22 +720,6 @@ func (c *UniversalCache) SetWithMetadata(key string, value interface{}, ttl time
 	return nil
 }
 
-// GetTyped retrieves a typed value from the cache
-func GetTyped[T any](c *UniversalCache, key string) (T, bool) {
-	var zero T
-	value, exists := c.Get(key)
-	if !exists {
-		return zero, false
-	}
-
-	typed, ok := value.(T)
-	if !ok {
-		return zero, false
-	}
-
-	return typed, true
-}
-
 // TokenCacheOperations provides token-specific operations
 func (c *UniversalCache) BlacklistToken(token string, ttl time.Duration) error {
 	if c.config.Type != CacheTypeToken {

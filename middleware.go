@@ -37,6 +37,20 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Handle backchannel logout (IdP-initiated POST with logout_token)
+	if t.enableBackchannelLogout && t.backchannelLogoutPath != "" && req.URL.Path == t.backchannelLogoutPath {
+		t.logger.Debug("Backchannel logout path matched")
+		t.handleBackchannelLogout(rw, req)
+		return
+	}
+
+	// Handle front-channel logout (IdP-initiated GET with sid/iss in iframe)
+	if t.enableFrontchannelLogout && t.frontchannelLogoutPath != "" && req.URL.Path == t.frontchannelLogoutPath {
+		t.logger.Debug("Front-channel logout path matched")
+		t.handleFrontchannelLogout(rw, req)
+		return
+	}
+
 	if !strings.HasPrefix(req.URL.Path, "/health") {
 		t.firstRequestMutex.Lock()
 		if !t.firstRequestReceived {
@@ -275,6 +289,24 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		session.ResetRedirectCount()
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		return
+	}
+
+	// Check if session has been invalidated via backchannel or front-channel logout
+	if t.enableBackchannelLogout || t.enableFrontchannelLogout {
+		idToken := session.GetIDToken()
+		if idToken != "" {
+			sid, sub, createdAt := t.extractSessionInfo(idToken)
+			if t.isSessionInvalidated(sid, sub, createdAt) {
+				t.logger.Infof("Session for user %s has been invalidated via IdP-initiated logout", email)
+				// Clear the session and redirect to login
+				if err := session.Clear(req, rw); err != nil {
+					t.logger.Errorf("Error clearing invalidated session: %v", err)
+				}
+				session.ResetRedirectCount()
+				t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+				return
+			}
+		}
 	}
 
 	tokenForClaims := session.GetIDToken()

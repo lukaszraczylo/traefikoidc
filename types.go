@@ -119,6 +119,8 @@ type TraefikOidc struct {
 	clientID                   string
 	clientSecret               string
 	registrationURL            string
+	backchannelLogoutPath      string
+	frontchannelLogoutPath     string
 	scopesSupported            []string
 	scopes                     []string
 	refreshGracePeriod         time.Duration
@@ -126,7 +128,10 @@ type TraefikOidc struct {
 	shutdownOnce               sync.Once
 	metadataRetryMutex         sync.Mutex
 	firstRequestMutex          sync.Mutex
+	sessionInvalidationCache   CacheInterface
 	minimalHeaders             bool
+	enableBackchannelLogout    bool
+	enableFrontchannelLogout   bool
 	firstRequestReceived       bool
 	requireTokenIntrospection  bool
 	metadataRefreshStarted     bool

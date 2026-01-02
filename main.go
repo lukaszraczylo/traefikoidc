@@ -212,16 +212,21 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return 60 * time.Second
 		}(),
-		tokenCleanupStopChan:    make(chan struct{}),
-		metadataRefreshStopChan: make(chan struct{}),
-		ctx:                     pluginCtx,
-		cancelFunc:              cancelFunc,
-		suppressDiagnosticLogs:  isTestMode(),
-		securityHeadersApplier:  config.GetSecurityHeadersApplier(),
-		scopeFilter:             NewScopeFilter(logger), // NEW - for discovery-based scope filtering
-		dcrConfig:               config.DynamicClientRegistration,
-		allowPrivateIPAddresses: config.AllowPrivateIPAddresses,
-		minimalHeaders:          config.MinimalHeaders,
+		tokenCleanupStopChan:     make(chan struct{}),
+		metadataRefreshStopChan:  make(chan struct{}),
+		ctx:                      pluginCtx,
+		cancelFunc:               cancelFunc,
+		suppressDiagnosticLogs:   isTestMode(),
+		securityHeadersApplier:   config.GetSecurityHeadersApplier(),
+		scopeFilter:              NewScopeFilter(logger), // NEW - for discovery-based scope filtering
+		dcrConfig:                config.DynamicClientRegistration,
+		allowPrivateIPAddresses:  config.AllowPrivateIPAddresses,
+		minimalHeaders:           config.MinimalHeaders,
+		enableBackchannelLogout:  config.EnableBackchannelLogout,
+		enableFrontchannelLogout: config.EnableFrontchannelLogout,
+		backchannelLogoutPath:    normalizeLogoutPath(config.BackchannelLogoutURL),
+		frontchannelLogoutPath:   normalizeLogoutPath(config.FrontchannelLogoutURL),
+		sessionInvalidationCache: cacheManager.GetSharedSessionInvalidationCache(),
 	}
 
 	// Log audience configuration
