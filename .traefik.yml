@@ -1021,6 +1021,79 @@ configuration:
       See: https://github.com/lukaszraczylo/traefikoidc/issues/64
     required: false
 
+  enableBackchannelLogout:
+    type: boolean
+    description: |
+      Enable OIDC Back-Channel Logout (IdP-initiated logout via server-to-server POST).
+
+      When enabled, the middleware accepts logout tokens at the configured backchannelLogoutURL.
+      The IdP sends a signed JWT (logout_token) to notify the application that a user's session
+      should be terminated.
+
+      This implements the OIDC Back-Channel Logout 1.0 specification.
+      See: https://openid.net/specs/openid-connect-backchannel-1_0.html
+
+      Requirements:
+      - backchannelLogoutURL must be configured
+      - The IdP must be configured to send logout tokens to your backchannel URL
+      - Logout tokens are validated using the IdP's JWKS
+
+      Default: false
+    required: false
+
+  backchannelLogoutURL:
+    type: string
+    description: |
+      Path for receiving backchannel logout tokens from the IdP.
+
+      This endpoint receives POST requests with a logout_token JWT in the request body.
+      The token is validated against the IdP's JWKS and contains the session ID (sid)
+      and/or subject (sub) to invalidate.
+
+      Example: /backchannel-logout
+
+      The full URL to configure in your IdP would be:
+      https://your-app.example.com/backchannel-logout
+
+      Note: This path should be unique and not conflict with your application routes.
+    required: false
+
+  enableFrontchannelLogout:
+    type: boolean
+    description: |
+      Enable OIDC Front-Channel Logout (IdP-initiated logout via iframe).
+
+      When enabled, the middleware accepts logout requests at the configured frontchannelLogoutURL.
+      The IdP embeds an iframe pointing to this URL when the user logs out, allowing the
+      application to clear the user's session.
+
+      This implements the OIDC Front-Channel Logout 1.0 specification.
+      See: https://openid.net/specs/openid-connect-frontchannel-1_0.html
+
+      Requirements:
+      - frontchannelLogoutURL must be configured
+      - The IdP must be configured with your front-channel logout URL
+      - Your CSP headers must allow being embedded in an iframe from the IdP
+
+      Default: false
+    required: false
+
+  frontchannelLogoutURL:
+    type: string
+    description: |
+      Path for receiving front-channel logout requests from the IdP.
+
+      This endpoint receives GET requests with optional sid (session ID) and iss (issuer)
+      query parameters. When called, it invalidates the user's session.
+
+      Example: /frontchannel-logout
+
+      The full URL to configure in your IdP would be:
+      https://your-app.example.com/frontchannel-logout
+
+      Note: This path should be unique and not conflict with your application routes.
+    required: false
+
   headers:
     type: array
     description: |

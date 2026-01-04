@@ -95,6 +95,38 @@ func TestMiddlewareAJAXRequestHandling(t *testing.T) {
 	}
 }
 
+// TestLogoutWorksWithoutOIDCInitialization tests that logout works even if OIDC provider is unavailable
+// This is critical for allowing users to clear their session when the provider is down
+func TestLogoutWorksWithoutOIDCInitialization(t *testing.T) {
+	oidc := &TraefikOidc{
+		logger:                 NewLogger("debug"),
+		initComplete:           make(chan struct{}), // Never close to simulate provider unavailable
+		sessionManager:         createTestSessionManager(t),
+		firstRequestReceived:   true,
+		metadataRefreshStarted: true,
+		logoutURLPath:          "/logout",
+		postLogoutRedirectURI:  "/",
+		forceHTTPS:             false,
+	}
+	// Note: initComplete is NOT closed, simulating OIDC provider being unavailable
+
+	req := httptest.NewRequest("GET", "/logout", nil)
+	req.Host = "example.com"
+	rw := httptest.NewRecorder()
+
+	oidc.ServeHTTP(rw, req)
+
+	// Should redirect to post-logout URI even without OIDC initialization
+	if rw.Code != http.StatusFound {
+		t.Errorf("Expected redirect (302) for logout, got %d", rw.Code)
+	}
+
+	location := rw.Header().Get("Location")
+	if location == "" {
+		t.Error("Expected Location header for logout redirect")
+	}
+}
+
 // TestMiddlewareDomainRestrictions tests domain-based access control
 // NOTE: Currently commented out due to complex session setup requirements
 // These scenarios are tested indirectly through integration tests
