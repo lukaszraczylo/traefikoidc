@@ -212,16 +212,21 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return 60 * time.Second
 		}(),
-		tokenCleanupStopChan:    make(chan struct{}),
-		metadataRefreshStopChan: make(chan struct{}),
-		ctx:                     pluginCtx,
-		cancelFunc:              cancelFunc,
-		suppressDiagnosticLogs:  isTestMode(),
-		securityHeadersApplier:  config.GetSecurityHeadersApplier(),
-		scopeFilter:             NewScopeFilter(logger), // NEW - for discovery-based scope filtering
-		dcrConfig:               config.DynamicClientRegistration,
-		allowPrivateIPAddresses: config.AllowPrivateIPAddresses,
-		minimalHeaders:          config.MinimalHeaders,
+		tokenCleanupStopChan:     make(chan struct{}),
+		metadataRefreshStopChan:  make(chan struct{}),
+		ctx:                      pluginCtx,
+		cancelFunc:               cancelFunc,
+		suppressDiagnosticLogs:   isTestMode(),
+		securityHeadersApplier:   config.GetSecurityHeadersApplier(),
+		scopeFilter:              NewScopeFilter(logger), // NEW - for discovery-based scope filtering
+		dcrConfig:                config.DynamicClientRegistration,
+		allowPrivateIPAddresses:  config.AllowPrivateIPAddresses,
+		minimalHeaders:           config.MinimalHeaders,
+		enableBackchannelLogout:  config.EnableBackchannelLogout,
+		enableFrontchannelLogout: config.EnableFrontchannelLogout,
+		backchannelLogoutPath:    normalizeLogoutPath(config.BackchannelLogoutURL),
+		frontchannelLogoutPath:   normalizeLogoutPath(config.FrontchannelLogoutURL),
+		sessionInvalidationCache: cacheManager.GetSharedSessionInvalidationCache(),
 	}
 
 	// Log audience configuration
@@ -433,6 +438,19 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 			t.dcrConfig,
 			t.providerURL,
 		)
+
+		// Set up storage backend for credentials persistence
+		if t.dcrConfig.PersistCredentials {
+			cacheManager := GetGlobalCacheManagerWithConfig(t.goroutineWG, nil)
+			store, err := NewDCRCredentialsStore(t.dcrConfig, cacheManager, t.logger)
+			if err != nil {
+				t.logger.Errorf("Failed to create DCR credentials store: %v", err)
+				// Continue without persistence - registration will still work
+			} else {
+				t.dynamicClientRegistrar.SetStore(store)
+				t.logger.Debugf("DCR credentials store initialized with backend: %s", t.dcrConfig.StorageBackend)
+			}
+		}
 	}
 
 	// Get registration endpoint (from metadata or config override)

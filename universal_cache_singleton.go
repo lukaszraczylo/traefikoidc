@@ -13,20 +13,22 @@ import (
 // It runs a single consolidated cleanup goroutine for all caches, reducing
 // goroutine count and CPU overhead compared to per-cache cleanup routines.
 type UniversalCacheManager struct {
-	sharedBackend      backends.CacheBackend
-	ctx                context.Context
-	tokenTypeCache     *UniversalCache
-	jwkCache           *UniversalCache
-	sessionCache       *UniversalCache
-	introspectionCache *UniversalCache
-	tokenCache         *UniversalCache
-	metadataCache      *UniversalCache
-	logger             *Logger
-	blacklistCache     *UniversalCache
-	cancel             context.CancelFunc
-	wg                 sync.WaitGroup
-	mu                 sync.RWMutex
-	cleanupStarted     bool
+	sharedBackend            backends.CacheBackend
+	ctx                      context.Context
+	tokenTypeCache           *UniversalCache
+	jwkCache                 *UniversalCache
+	sessionCache             *UniversalCache
+	introspectionCache       *UniversalCache
+	tokenCache               *UniversalCache
+	metadataCache            *UniversalCache
+	dcrCredentialsCache      *UniversalCache // DCR credentials storage for distributed environments
+	sessionInvalidationCache *UniversalCache // Session invalidation cache for backchannel/front-channel logout
+	logger                   *Logger
+	blacklistCache           *UniversalCache
+	cancel                   context.CancelFunc
+	wg                       sync.WaitGroup
+	mu                       sync.RWMutex
+	cleanupStarted           bool
 }
 
 var (
@@ -166,6 +168,16 @@ func initializeDefaultCaches(manager *UniversalCacheManager, logger *Logger) {
 		Type:            CacheTypeToken,  // Use token cache type for token type detection
 		MaxSize:         2000,            // Cache up to 2000 token type detections
 		DefaultTTL:      5 * time.Minute, // 5 minute TTL for token type detection
+		Logger:          logger,
+		SkipAutoCleanup: true, // Managed cleanup
+	})
+
+	// Initialize session invalidation cache for backchannel/front-channel logout
+	// This cache stores invalidated session IDs and subjects to revoke sessions
+	manager.sessionInvalidationCache = NewUniversalCache(UniversalCacheConfig{
+		Type:            CacheTypeSession,
+		MaxSize:         5000,           // Support many concurrent invalidations
+		DefaultTTL:      25 * time.Hour, // Slightly longer than session max age (24h)
 		Logger:          logger,
 		SkipAutoCleanup: true, // Managed cleanup
 	})
@@ -349,6 +361,32 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 		SkipAutoCleanup: true, // Managed cleanup
 	})
 
+	// DCR credentials cache - CRITICAL for distributed DCR across multiple nodes
+	// Uses Redis backend to share client credentials across all Traefik replicas
+	manager.dcrCredentialsCache = NewUniversalCacheWithBackend(
+		UniversalCacheConfig{
+			Type:            CacheTypeGeneral,
+			MaxSize:         100,                 // Few providers expected
+			DefaultTTL:      30 * 24 * time.Hour, // 30 days default (credentials are long-lived)
+			Logger:          logger,
+			SkipAutoCleanup: true, // Managed cleanup
+		},
+		createBackend("dcr"),
+	)
+
+	// Session invalidation cache - CRITICAL for distributed backchannel/front-channel logout
+	// Uses Redis backend to share session invalidations across all Traefik replicas
+	manager.sessionInvalidationCache = NewUniversalCacheWithBackend(
+		UniversalCacheConfig{
+			Type:            CacheTypeSession,
+			MaxSize:         5000,           // Support many concurrent invalidations
+			DefaultTTL:      25 * time.Hour, // Slightly longer than session max age (24h)
+			Logger:          logger,
+			SkipAutoCleanup: true, // Managed cleanup
+		},
+		createBackend("session_invalidation"),
+	)
+
 	logger.Infof("Cache manager initialized with %s backend configuration", redisConfig.CacheMode)
 }
 
@@ -396,6 +434,8 @@ func (m *UniversalCacheManager) performConsolidatedCleanup() {
 		m.sessionCache,
 		m.introspectionCache,
 		m.tokenTypeCache,
+		m.dcrCredentialsCache,
+		m.sessionInvalidationCache,
 	}
 	m.mu.RUnlock()
 
@@ -437,13 +477,6 @@ func (m *UniversalCacheManager) GetJWKCache() *UniversalCache {
 	return m.jwkCache
 }
 
-// GetSessionCache returns the session cache
-func (m *UniversalCacheManager) GetSessionCache() *UniversalCache {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.sessionCache
-}
-
 // GetIntrospectionCache returns the token introspection cache
 func (m *UniversalCacheManager) GetIntrospectionCache() *UniversalCache {
 	m.mu.RLock()
@@ -456,6 +489,20 @@ func (m *UniversalCacheManager) GetTokenTypeCache() *UniversalCache {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.tokenTypeCache
+}
+
+// GetSessionInvalidationCache returns the session invalidation cache for backchannel/front-channel logout
+func (m *UniversalCacheManager) GetSessionInvalidationCache() *UniversalCache {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sessionInvalidationCache
+}
+
+// GetDCRCredentialsCache returns the DCR credentials cache for distributed storage
+func (m *UniversalCacheManager) GetDCRCredentialsCache() *UniversalCache {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.dcrCredentialsCache
 }
 
 // Close shuts down all caches and the consolidated cleanup routine
@@ -473,7 +520,7 @@ func (m *UniversalCacheManager) Close() error {
 
 	// Close all caches first (they won't close the shared backend)
 	for _, cache := range []*UniversalCache{
-		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache, m.tokenTypeCache,
+		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache, m.tokenTypeCache, m.dcrCredentialsCache, m.sessionInvalidationCache,
 	} {
 		if cache != nil {
 			_ = cache.Close() // Safe to ignore: best effort cache cleanup
@@ -492,35 +539,6 @@ func (m *UniversalCacheManager) Close() error {
 	m.cleanupStarted = false
 	m.logger.Info("UniversalCacheManager: Closed all caches and cleanup routine")
 	return nil
-}
-
-// InitializeCacheManagerFromConfig initializes the cache manager with configuration
-// This should be called early in the application startup with the loaded configuration
-func InitializeCacheManagerFromConfig(config *Config) *UniversalCacheManager {
-	logger := NewLogger(config.LogLevel)
-
-	// Initialize Redis config if not present
-	if config.Redis == nil {
-		config.Redis = &RedisConfig{}
-	}
-
-	// Apply environment variable fallbacks for fields not set in config
-	// This allows env vars to be used as optional overrides only when
-	// the config field is not explicitly set through Traefik
-	config.Redis.ApplyEnvFallbacks()
-
-	// Apply defaults after env fallbacks
-	config.Redis.ApplyDefaults()
-
-	// Log cache backend selection
-	if config.Redis != nil && config.Redis.Enabled {
-		logger.Infof("Initializing cache backend with Redis: mode=%s, address=%s",
-			config.Redis.CacheMode, config.Redis.Address)
-	} else {
-		logger.Info("Initializing cache backend with memory-only mode")
-	}
-
-	return GetUniversalCacheManagerWithConfig(logger, config.Redis)
 }
 
 // ResetUniversalCacheManagerForTesting resets the singleton for testing purposes only

@@ -1021,6 +1021,79 @@ configuration:
       See: https://github.com/lukaszraczylo/traefikoidc/issues/64
     required: false
 
+  enableBackchannelLogout:
+    type: boolean
+    description: |
+      Enable OIDC Back-Channel Logout (IdP-initiated logout via server-to-server POST).
+
+      When enabled, the middleware accepts logout tokens at the configured backchannelLogoutURL.
+      The IdP sends a signed JWT (logout_token) to notify the application that a user's session
+      should be terminated.
+
+      This implements the OIDC Back-Channel Logout 1.0 specification.
+      See: https://openid.net/specs/openid-connect-backchannel-1_0.html
+
+      Requirements:
+      - backchannelLogoutURL must be configured
+      - The IdP must be configured to send logout tokens to your backchannel URL
+      - Logout tokens are validated using the IdP's JWKS
+
+      Default: false
+    required: false
+
+  backchannelLogoutURL:
+    type: string
+    description: |
+      Path for receiving backchannel logout tokens from the IdP.
+
+      This endpoint receives POST requests with a logout_token JWT in the request body.
+      The token is validated against the IdP's JWKS and contains the session ID (sid)
+      and/or subject (sub) to invalidate.
+
+      Example: /backchannel-logout
+
+      The full URL to configure in your IdP would be:
+      https://your-app.example.com/backchannel-logout
+
+      Note: This path should be unique and not conflict with your application routes.
+    required: false
+
+  enableFrontchannelLogout:
+    type: boolean
+    description: |
+      Enable OIDC Front-Channel Logout (IdP-initiated logout via iframe).
+
+      When enabled, the middleware accepts logout requests at the configured frontchannelLogoutURL.
+      The IdP embeds an iframe pointing to this URL when the user logs out, allowing the
+      application to clear the user's session.
+
+      This implements the OIDC Front-Channel Logout 1.0 specification.
+      See: https://openid.net/specs/openid-connect-frontchannel-1_0.html
+
+      Requirements:
+      - frontchannelLogoutURL must be configured
+      - The IdP must be configured with your front-channel logout URL
+      - Your CSP headers must allow being embedded in an iframe from the IdP
+
+      Default: false
+    required: false
+
+  frontchannelLogoutURL:
+    type: string
+    description: |
+      Path for receiving front-channel logout requests from the IdP.
+
+      This endpoint receives GET requests with optional sid (session ID) and iss (issuer)
+      query parameters. When called, it invalidates the user's session.
+
+      Example: /frontchannel-logout
+
+      The full URL to configure in your IdP would be:
+      https://your-app.example.com/frontchannel-logout
+
+      Note: This path should be unique and not conflict with your application routes.
+    required: false
+
   headers:
     type: array
     description: |
@@ -1630,3 +1703,234 @@ configuration:
 
           Default: 30 seconds
         required: false
+
+  dynamicClientRegistration:
+    type: object
+    description: |
+      Configuration for OIDC Dynamic Client Registration (RFC 7591/7592).
+
+      Dynamic Client Registration allows the middleware to automatically register
+      itself as an OAuth 2.0 client with the OIDC provider, eliminating the need
+      to manually create and manage client credentials.
+
+      This is particularly useful for:
+      - Automated deployments where manual client creation is impractical
+      - Multi-tenant scenarios requiring per-deployment client isolation
+      - Development and testing environments
+      - Kubernetes environments with multiple replicas
+
+      For multi-replica deployments (Kubernetes), enable Redis storage to share
+      credentials across all instances and prevent registration race conditions.
+
+      Example configuration:
+      ```yaml
+      dynamicClientRegistration:
+        enabled: true
+        persistCredentials: true
+        storageBackend: "redis"  # Use Redis for distributed storage
+        clientMetadata:
+          redirect_uris:
+            - https://app.example.com/oauth2/callback
+          client_name: "My Application"
+          application_type: "web"
+      ```
+    required: false
+    properties:
+      enabled:
+        type: boolean
+        description: |
+          Enable dynamic client registration with the OIDC provider.
+          When enabled and clientID is not set, the middleware will automatically
+          register itself with the provider using the configuration in clientMetadata.
+
+          Default: false
+        required: false
+
+      persistCredentials:
+        type: boolean
+        description: |
+          Enable persistence of client credentials after registration.
+          When enabled, credentials are saved to the configured storage backend
+          and reloaded on restart to avoid re-registration.
+
+          Default: false
+        required: false
+
+      storageBackend:
+        type: string
+        description: |
+          Storage backend for persisting DCR credentials.
+
+          Options:
+          - "file": Store credentials in a local file (default for backward compatibility)
+          - "redis": Store credentials in Redis (recommended for multi-replica deployments)
+          - "auto": Use Redis if available, fall back to file storage
+
+          For Kubernetes deployments with multiple replicas, use "redis" to ensure
+          all instances share the same client credentials and prevent registration
+          race conditions where each replica registers its own client.
+
+          Default: "auto"
+        required: false
+        enum:
+          - file
+          - redis
+          - auto
+
+      credentialsFile:
+        type: string
+        description: |
+          Path to store client credentials when using file-based storage.
+          The file will be created with restrictive permissions (0600).
+
+          Default: "/tmp/oidc-client-credentials.json"
+        required: false
+
+      redisKeyPrefix:
+        type: string
+        description: |
+          Prefix for Redis keys when using Redis storage.
+          Useful for isolating credentials between different applications
+          or environments sharing the same Redis instance.
+
+          Default: "dcr:creds:"
+        required: false
+
+      registrationEndpoint:
+        type: string
+        description: |
+          Override the registration endpoint URL.
+          If not specified, the endpoint will be discovered from provider metadata.
+
+          Some providers may not advertise their registration endpoint in metadata,
+          in which case you need to specify it explicitly.
+
+          Example: "https://auth.example.com/oauth/register"
+        required: false
+
+      initialAccessToken:
+        type: string
+        description: |
+          Initial Access Token for protected registration endpoints.
+          Some providers require an access token to authorize client registration.
+
+          If your provider requires authentication for registration, obtain an
+          initial access token from the provider and configure it here.
+
+          For Kubernetes, you can use secret references:
+          urn:k8s:secret:namespace:secret-name:key
+        required: false
+
+      clientMetadata:
+        type: object
+        description: |
+          Client metadata to include in the registration request (RFC 7591).
+          This defines the properties of the OAuth 2.0 client to be registered.
+        required: false
+        properties:
+          redirect_uris:
+            type: array
+            description: |
+              Array of redirect URIs for the client. Required for registration.
+              These must match the callback URLs that will be used in authentication flows.
+
+              Example: ["https://app.example.com/oauth2/callback"]
+            required: true
+            items:
+              type: string
+
+          client_name:
+            type: string
+            description: |
+              Human-readable name of the client.
+              This is typically displayed in consent screens.
+
+              Example: "My Application"
+            required: false
+
+          application_type:
+            type: string
+            description: |
+              Type of application. Affects security defaults.
+
+              Options:
+              - "web": Server-side web application (default)
+              - "native": Native/mobile application
+
+              Default: "web"
+            required: false
+
+          grant_types:
+            type: array
+            description: |
+              OAuth 2.0 grant types the client will use.
+
+              Default: ["authorization_code", "refresh_token"]
+            required: false
+            items:
+              type: string
+
+          response_types:
+            type: array
+            description: |
+              OAuth 2.0 response types the client will use.
+
+              Default: ["code"]
+            required: false
+            items:
+              type: string
+
+          token_endpoint_auth_method:
+            type: string
+            description: |
+              Authentication method for the token endpoint.
+
+              Options:
+              - "client_secret_basic": HTTP Basic authentication (default)
+              - "client_secret_post": Client credentials in POST body
+              - "none": Public client (no authentication)
+
+              Default: "client_secret_basic"
+            required: false
+
+          scope:
+            type: string
+            description: |
+              Space-separated list of scopes the client is authorized to request.
+
+              Example: "openid profile email"
+            required: false
+
+          contacts:
+            type: array
+            description: |
+              Array of contact email addresses for the client administrator.
+
+              Example: ["admin@example.com"]
+            required: false
+            items:
+              type: string
+
+          logo_uri:
+            type: string
+            description: |
+              URL to the client's logo image for consent screens.
+            required: false
+
+          client_uri:
+            type: string
+            description: |
+              URL to the client's home page.
+            required: false
+
+          policy_uri:
+            type: string
+            description: |
+              URL to the client's privacy policy.
+            required: false
+
+          tos_uri:
+            type: string
+            description: |
+              URL to the client's terms of service.
+            required: false

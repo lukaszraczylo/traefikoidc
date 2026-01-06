@@ -65,6 +65,10 @@ type Config struct {
 	ForceHTTPS                bool                             `json:"forceHTTPS"`
 	AllowPrivateIPAddresses   bool                             `json:"allowPrivateIPAddresses,omitempty"`
 	MinimalHeaders            bool                             `json:"minimalHeaders,omitempty"`
+	EnableBackchannelLogout   bool                             `json:"enableBackchannelLogout,omitempty"`
+	EnableFrontchannelLogout  bool                             `json:"enableFrontchannelLogout,omitempty"`
+	BackchannelLogoutURL      string                           `json:"backchannelLogoutURL,omitempty"`
+	FrontchannelLogoutURL     string                           `json:"frontchannelLogoutURL,omitempty"`
 }
 
 // RedisConfig configures Redis cache backend settings for distributed caching.
@@ -98,8 +102,15 @@ type DynamicClientRegistrationConfig struct {
 	InitialAccessToken   string                      `json:"initialAccessToken,omitempty"`
 	RegistrationEndpoint string                      `json:"registrationEndpoint,omitempty"`
 	CredentialsFile      string                      `json:"credentialsFile,omitempty"`
-	Enabled              bool                        `json:"enabled"`
-	PersistCredentials   bool                        `json:"persistCredentials"`
+	// StorageBackend specifies where to store DCR credentials: "file", "redis", or "auto"
+	// - "file": Use file-based storage (default for backward compatibility)
+	// - "redis": Use Redis exclusively (fails if Redis unavailable)
+	// - "auto": Use Redis if available, fallback to file (default)
+	StorageBackend string `json:"storageBackend,omitempty"`
+	// RedisKeyPrefix is the prefix for Redis keys when using Redis storage (default: "dcr:creds:")
+	RedisKeyPrefix     string `json:"redisKeyPrefix,omitempty"`
+	Enabled            bool   `json:"enabled"`
+	PersistCredentials bool   `json:"persistCredentials"`
 }
 
 // ClientRegistrationMetadata contains client metadata for dynamic registration (RFC 7591)
@@ -737,15 +748,6 @@ func newNoOpLogger() *Logger {
 //   - code: The HTTP status code for the response.
 //   - logger: The Logger instance to use for logging the error.
 //
-// handleError writes an HTTP error response with the specified status code and message.
-// It logs the error and sets appropriate headers before writing the response.
-//
-//lint:ignore U1000 Kept for potential future error handling
-func handleError(w http.ResponseWriter, message string, code int, logger *Logger) {
-	logger.Error("%s", message)
-	http.Error(w, message, code)
-}
-
 // GetSecurityHeadersApplier returns a function that applies security headers
 func (c *Config) GetSecurityHeadersApplier() func(http.ResponseWriter, *http.Request) {
 	if c.SecurityHeaders == nil || !c.SecurityHeaders.Enabled {
@@ -1049,111 +1051,6 @@ func (rc *RedisConfig) ApplyEnvFallbacks() {
 			}
 		}
 	}
-}
-
-// LoadRedisConfigFromEnv loads Redis configuration from environment variables.
-// Deprecated: Use RedisConfig.ApplyEnvFallbacks() on an existing config instead.
-// This function is kept for backward compatibility but should not be used directly.
-func LoadRedisConfigFromEnv() *RedisConfig {
-	// Check if Redis is enabled
-	enabledStr := os.Getenv("REDIS_ENABLED")
-	if enabledStr == "" || enabledStr == "false" || enabledStr == "0" {
-		return nil
-	}
-
-	config := &RedisConfig{
-		Enabled: true,
-	}
-
-	// Parse numeric values
-	if dbStr := os.Getenv("REDIS_DB"); dbStr != "" {
-		if db, err := strconv.Atoi(dbStr); err == nil {
-			config.DB = db
-		}
-	}
-
-	if poolSizeStr := os.Getenv("REDIS_POOL_SIZE"); poolSizeStr != "" {
-		if poolSize, err := strconv.Atoi(poolSizeStr); err == nil {
-			config.PoolSize = poolSize
-		}
-	}
-
-	if connectTimeoutStr := os.Getenv("REDIS_CONNECT_TIMEOUT"); connectTimeoutStr != "" {
-		if timeout, err := strconv.Atoi(connectTimeoutStr); err == nil {
-			config.ConnectTimeout = timeout
-		}
-	}
-
-	if readTimeoutStr := os.Getenv("REDIS_READ_TIMEOUT"); readTimeoutStr != "" {
-		if timeout, err := strconv.Atoi(readTimeoutStr); err == nil {
-			config.ReadTimeout = timeout
-		}
-	}
-
-	if writeTimeoutStr := os.Getenv("REDIS_WRITE_TIMEOUT"); writeTimeoutStr != "" {
-		if timeout, err := strconv.Atoi(writeTimeoutStr); err == nil {
-			config.WriteTimeout = timeout
-		}
-	}
-
-	// Parse boolean values
-	if enableTLSStr := os.Getenv("REDIS_ENABLE_TLS"); enableTLSStr == "true" || enableTLSStr == "1" {
-		config.EnableTLS = true
-	}
-
-	if skipVerifyStr := os.Getenv("REDIS_TLS_SKIP_VERIFY"); skipVerifyStr == "true" || skipVerifyStr == "1" {
-		config.TLSSkipVerify = true
-	}
-
-	// Parse hybrid mode settings
-	if l1SizeStr := os.Getenv("REDIS_HYBRID_L1_SIZE"); l1SizeStr != "" {
-		if size, err := strconv.Atoi(l1SizeStr); err == nil {
-			config.HybridL1Size = size
-		}
-	}
-
-	if l1MemoryStr := os.Getenv("REDIS_HYBRID_L1_MEMORY_MB"); l1MemoryStr != "" {
-		if memory, err := strconv.ParseInt(l1MemoryStr, 10, 64); err == nil {
-			config.HybridL1MemoryMB = memory
-		}
-	}
-
-	// Parse circuit breaker settings
-	if enableCBStr := os.Getenv("REDIS_ENABLE_CIRCUIT_BREAKER"); enableCBStr == "false" || enableCBStr == "0" {
-		config.EnableCircuitBreaker = false
-	} else {
-		config.EnableCircuitBreaker = true // Default to enabled
-	}
-
-	if cbThresholdStr := os.Getenv("REDIS_CIRCUIT_BREAKER_THRESHOLD"); cbThresholdStr != "" {
-		if threshold, err := strconv.Atoi(cbThresholdStr); err == nil {
-			config.CircuitBreakerThreshold = threshold
-		}
-	}
-
-	if cbTimeoutStr := os.Getenv("REDIS_CIRCUIT_BREAKER_TIMEOUT"); cbTimeoutStr != "" {
-		if timeout, err := strconv.Atoi(cbTimeoutStr); err == nil {
-			config.CircuitBreakerTimeout = timeout
-		}
-	}
-
-	// Parse health check settings
-	if enableHCStr := os.Getenv("REDIS_ENABLE_HEALTH_CHECK"); enableHCStr == "false" || enableHCStr == "0" {
-		config.EnableHealthCheck = false
-	} else {
-		config.EnableHealthCheck = true // Default to enabled
-	}
-
-	if hcIntervalStr := os.Getenv("REDIS_HEALTH_CHECK_INTERVAL"); hcIntervalStr != "" {
-		if interval, err := strconv.Atoi(hcIntervalStr); err == nil {
-			config.HealthCheckInterval = interval
-		}
-	}
-
-	// Apply defaults after loading from env
-	config.ApplyDefaults()
-
-	return config
 }
 
 func isOriginAllowed(origin string, allowedOrigins []string) bool {

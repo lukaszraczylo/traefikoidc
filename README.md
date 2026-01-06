@@ -8,7 +8,7 @@ The Traefik OIDC middleware provides a complete OIDC authentication solution wit
 
 - **Universal provider support**: Works with 9+ OIDC providers including Google, Azure AD, Auth0, Okta, Keycloak, AWS Cognito, GitLab, and more
 - **Automatic provider detection**: Automatically detects and configures provider-specific settings
-- **Dynamic Client Registration (RFC 7591)**: Automatic client registration with OIDC providers without manual pre-registration
+- **Dynamic Client Registration (RFC 7591)**: Automatic client registration with OIDC providers without manual pre-registration, with Redis storage support for multi-replica deployments
 - **Automatic scope filtering**: Intelligently filters OAuth scopes based on provider capabilities declared in OIDC discovery documents, preventing authentication failures with unsupported scopes
 - **Security headers**: Comprehensive security headers with CORS, CSP, HSTS, and custom profiles
 - **Domain restrictions**: Limit access to specific email domains or individual users
@@ -154,6 +154,10 @@ The middleware supports the following configuration options:
 | `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
 | `allowPrivateIPAddresses` | Allow private IP addresses in provider URLs (for internal networks with Keycloak, etc.) | `false` | `true` |
 | `minimalHeaders` | Reduce forwarded headers to prevent "431 Request Header Fields Too Large" errors | `false` | `true` |
+| `enableBackchannelLogout` | Enable OIDC Back-Channel Logout (IdP-initiated logout via server-to-server POST) | `false` | `true` |
+| `backchannelLogoutURL` | The path for receiving backchannel logout tokens from the IdP | none | `/backchannel-logout` |
+| `enableFrontchannelLogout` | Enable OIDC Front-Channel Logout (IdP-initiated logout via iframe) | `false` | `true` |
+| `frontchannelLogoutURL` | The path for receiving front-channel logout requests from the IdP | none | `/frontchannel-logout` |
 | `redis` | Redis cache configuration for distributed deployments | disabled | See "Redis Cache" section |
 
 > **⚠️ IMPORTANT - TLS Termination at Load Balancer:**
@@ -1147,6 +1151,50 @@ spec:
       scopes:
         - roles  # Appended to defaults: ["openid", "profile", "email", "roles"]
 ```
+
+### With IdP-Initiated Logout (Backchannel & Front-Channel)
+
+This plugin supports [OIDC Back-Channel Logout](https://openid.net/specs/openid-connect-backchannel-1_0.html) and [OIDC Front-Channel Logout](https://openid.net/specs/openid-connect-frontchannel-1_0.html) for IdP-initiated single logout.
+
+**Backchannel Logout** (recommended): The IdP sends a server-to-server POST request with a signed `logout_token` JWT when a user logs out.
+
+**Front-Channel Logout**: The IdP loads an iframe with the logout URL to invalidate the session in the browser.
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-with-idp-logout
+  namespace: traefik
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://auth.example.com
+      clientID: your-client-id
+      clientSecret: your-client-secret
+      sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
+      callbackURL: /oauth2/callback
+      logoutURL: /oauth2/logout  # RP-initiated logout
+      
+      # Backchannel Logout (server-to-server)
+      enableBackchannelLogout: true
+      backchannelLogoutURL: /backchannel-logout
+      
+      # Front-Channel Logout (iframe-based)
+      enableFrontchannelLogout: true
+      frontchannelLogoutURL: /frontchannel-logout
+      
+      # For multi-replica deployments, use Redis to share session invalidations
+      redis:
+        enabled: true
+        address: redis:6379
+```
+
+> **Note**: For multi-replica deployments, you **must** enable Redis to share session invalidation state across all instances. Otherwise, a logout on one instance won't invalidate sessions on other instances.
+
+**IdP Configuration**: Configure your IdP to send logout requests to:
+- **Backchannel**: `https://your-app.example.com/backchannel-logout` (POST with `logout_token`)
+- **Front-Channel**: `https://your-app.example.com/frontchannel-logout?sid=SESSION_ID&iss=ISSUER` (GET in iframe)
 
 ### With Templated Headers
 

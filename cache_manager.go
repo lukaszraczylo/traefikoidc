@@ -104,6 +104,14 @@ func (cm *CacheManager) GetSharedTokenTypeCache() CacheInterface {
 	return &CacheInterfaceWrapper{cache: cm.manager.GetTokenTypeCache(), managed: true}
 }
 
+// GetSharedSessionInvalidationCache returns the shared session invalidation cache
+// for backchannel and front-channel logout (IdP-initiated logout)
+func (cm *CacheManager) GetSharedSessionInvalidationCache() CacheInterface {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return &CacheInterfaceWrapper{cache: cm.manager.GetSessionInvalidationCache(), managed: true}
+}
+
 // Close gracefully shuts down all cache components
 func (cm *CacheManager) Close() error {
 	cm.mu.Lock()

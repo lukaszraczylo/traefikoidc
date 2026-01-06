@@ -26,6 +26,31 @@ import (
 //   - rw: The HTTP response writer.
 //   - req: The incoming HTTP request.
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// Log request entry for debugging routing issues
+	t.logger.Debugf("Incoming request: %s %s", req.Method, req.URL.Path)
+
+	// Handle logout requests early - before waiting for OIDC initialization
+	// This allows users to logout even if the OIDC provider is unavailable
+	if req.URL.Path == t.logoutURLPath {
+		t.logger.Debugf("Logout path matched early: %s", req.URL.Path)
+		t.handleLogout(rw, req)
+		return
+	}
+
+	// Handle backchannel logout (IdP-initiated POST with logout_token)
+	if t.enableBackchannelLogout && t.backchannelLogoutPath != "" && req.URL.Path == t.backchannelLogoutPath {
+		t.logger.Debug("Backchannel logout path matched")
+		t.handleBackchannelLogout(rw, req)
+		return
+	}
+
+	// Handle front-channel logout (IdP-initiated GET with sid/iss in iframe)
+	if t.enableFrontchannelLogout && t.frontchannelLogoutPath != "" && req.URL.Path == t.frontchannelLogoutPath {
+		t.logger.Debug("Front-channel logout path matched")
+		t.handleFrontchannelLogout(rw, req)
+		return
+	}
+
 	if !strings.HasPrefix(req.URL.Path, "/health") {
 		t.firstRequestMutex.Lock()
 		if !t.firstRequestReceived {
@@ -41,6 +66,24 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		t.firstRequestMutex.Unlock()
 	}
+
+	// Check excluded URLs before waiting for initialization
+	if t.determineExcludedURL(req.URL.Path) {
+		t.logger.Debugf("Request path %s excluded by configuration, bypassing OIDC", req.URL.Path)
+		t.next.ServeHTTP(rw, req)
+		return
+	}
+
+	// Check for SSE requests before waiting for initialization
+	acceptHeader := req.Header.Get("Accept")
+	if strings.Contains(acceptHeader, "text/event-stream") {
+		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
+		t.next.ServeHTTP(rw, req)
+		return
+	}
+
+	// Log waiting for initialization to help diagnose hanging requests
+	t.logger.Debug("Waiting for OIDC provider initialization...")
 
 	select {
 	case <-t.initComplete:
@@ -83,13 +126,23 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		t.next.ServeHTTP(rw, req)
 		return
 	}
-	acceptHeader := req.Header.Get("Accept")
+	acceptHeader = req.Header.Get("Accept")
 	if strings.Contains(acceptHeader, "text/event-stream") {
 		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
+		// Set forwarded user headers from existing session before bypassing
+		if session, err := t.sessionManager.GetSession(req); err == nil {
+			defer session.returnToPoolSafely()
+			if email := session.GetEmail(); email != "" {
+				req.Header.Set("X-Forwarded-User", email)
+				if !t.minimalHeaders {
+					req.Header.Set("X-Auth-Request-User", email)
+				}
+				t.logger.Debugf("SSE bypass: forwarded user %s from session", email)
+			}
+		}
 		t.next.ServeHTTP(rw, req)
 		return
 	}
-
 	t.sessionManager.CleanupOldCookies(rw, req)
 
 	session, err := t.sessionManager.GetSession(req)
@@ -120,10 +173,6 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	host := utils.DetermineHost(req)
 	redirectURL := buildFullURL(scheme, host, t.redirURLPath)
 
-	if req.URL.Path == t.logoutURLPath {
-		t.handleLogout(rw, req)
-		return
-	}
 	if req.URL.Path == t.redirURLPath {
 		t.handleCallback(rw, req, redirectURL)
 		return
@@ -262,6 +311,24 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		session.ResetRedirectCount()
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 		return
+	}
+
+	// Check if session has been invalidated via backchannel or front-channel logout
+	if t.enableBackchannelLogout || t.enableFrontchannelLogout {
+		idToken := session.GetIDToken()
+		if idToken != "" {
+			sid, sub, createdAt := t.extractSessionInfo(idToken)
+			if t.isSessionInvalidated(sid, sub, createdAt) {
+				t.logger.Infof("Session for user %s has been invalidated via IdP-initiated logout", email)
+				// Clear the session and redirect to login
+				if err := session.Clear(req, rw); err != nil {
+					t.logger.Errorf("Error clearing invalidated session: %v", err)
+				}
+				session.ResetRedirectCount()
+				t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+				return
+			}
+		}
 	}
 
 	tokenForClaims := session.GetIDToken()
