@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -136,6 +137,74 @@ func TestUniversalCache_SerializeDeserialize(t *testing.T) {
 		err := cache.deserialize([]byte{}, &result)
 		assert.Error(t, err, "Should error on empty data")
 		assert.Contains(t, err.Error(), "empty data")
+	})
+
+	t.Run("OverflowProtection_LargeBytes", func(t *testing.T) {
+		cache := NewUniversalCache(UniversalCacheConfig{
+			Type:    CacheTypeGeneral,
+			MaxSize: 100,
+		})
+		defer cache.Close()
+
+		// Create a byte slice that exceeds maxCacheEntrySize (64 MiB)
+		oversizedBytes := make([]byte, 65*1024*1024) // 65 MiB
+
+		// Attempt to serialize - should fail with overflow error
+		_, err := cache.serialize(oversizedBytes)
+		require.Error(t, err, "Should error on oversized byte slice")
+		assert.Contains(t, err.Error(), "exceeds maximum allowed size")
+	})
+
+	t.Run("OverflowProtection_ExactMaxSize", func(t *testing.T) {
+		cache := NewUniversalCache(UniversalCacheConfig{
+			Type:    CacheTypeGeneral,
+			MaxSize: 100,
+		})
+		defer cache.Close()
+
+		// Create a byte slice exactly at maxCacheEntrySize
+		// This should fail because adding marker byte would overflow
+		exactMaxBytes := make([]byte, 64*1024*1024) // Exactly 64 MiB
+
+		_, err := cache.serialize(exactMaxBytes)
+		require.Error(t, err, "Should error when adding marker would overflow")
+		assert.Contains(t, err.Error(), "would overflow when adding marker byte")
+	})
+
+	t.Run("OverflowProtection_SafeSize", func(t *testing.T) {
+		cache := NewUniversalCache(UniversalCacheConfig{
+			Type:    CacheTypeGeneral,
+			MaxSize: 100,
+		})
+		defer cache.Close()
+
+		// Create a byte slice well within limits
+		safeBytes := make([]byte, 1024*1024) // 1 MiB - safe size
+
+		serialized, err := cache.serialize(safeBytes)
+		require.NoError(t, err, "Should succeed with safe size")
+		assert.NotNil(t, serialized)
+		assert.Equal(t, len(safeBytes)+1, len(serialized), "Should add marker byte")
+	})
+
+	t.Run("OverflowProtection_JSONData", func(t *testing.T) {
+		cache := NewUniversalCache(UniversalCacheConfig{
+			Type:    CacheTypeGeneral,
+			MaxSize: 100,
+		})
+		defer cache.Close()
+
+		// Create a very large map that will exceed limits when JSON-encoded
+		largeMap := make(map[string]string)
+		// Each entry is roughly 50 bytes, so we need ~1.3M entries to exceed 64 MiB
+		for i := 0; i < 1400000; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			largeMap[key] = "value_with_some_content_to_make_it_larger"
+		}
+
+		_, err := cache.serialize(largeMap)
+		require.Error(t, err, "Should error when JSON serialization exceeds size limit")
+		assert.Contains(t, err.Error(), "exceeds maximum allowed size")
 	})
 }
 

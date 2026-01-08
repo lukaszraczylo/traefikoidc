@@ -21,6 +21,10 @@ const (
 	CacheTypeJWK      CacheType = "jwk"
 	CacheTypeSession  CacheType = "session"
 	CacheTypeGeneral  CacheType = "general"
+
+	// maxCacheEntrySize defines the maximum size for a single cache entry (64 MiB)
+	// This prevents integer overflow when allocating memory for serialization
+	maxCacheEntrySize = 64 * 1024 * 1024
 )
 
 // UniversalCacheConfig provides configuration for the universal cache
@@ -772,6 +776,15 @@ func (c *UniversalCache) serialize(value interface{}) ([]byte, error) {
 	// store it directly with a marker to prevent double-encoding.
 	// This fixes the issue where []byte was being JSON-marshaled, causing Base64 encoding.
 	if bytes, ok := value.([]byte); ok {
+		// Validate size to prevent integer overflow
+		if len(bytes) > maxCacheEntrySize {
+			return nil, fmt.Errorf("cache entry size %d exceeds maximum allowed size %d", len(bytes), maxCacheEntrySize)
+		}
+		// Check for potential overflow when adding marker byte
+		if len(bytes) == maxCacheEntrySize {
+			return nil, fmt.Errorf("cache entry size would overflow when adding marker byte")
+		}
+
 		// Prepend marker byte 0x00 to indicate raw bytes (not JSON-encoded)
 		result := make([]byte, len(bytes)+1)
 		result[0] = 0x00
@@ -785,6 +798,16 @@ func (c *UniversalCache) serialize(value interface{}) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Validate size to prevent integer overflow
+	if len(jsonData) > maxCacheEntrySize {
+		return nil, fmt.Errorf("serialized cache entry size %d exceeds maximum allowed size %d", len(jsonData), maxCacheEntrySize)
+	}
+	// Check for potential overflow when adding marker byte
+	if len(jsonData) == maxCacheEntrySize {
+		return nil, fmt.Errorf("serialized cache entry size would overflow when adding marker byte")
+	}
+
 	result := make([]byte, len(jsonData)+1)
 	result[0] = 0x01
 	copy(result[1:], jsonData)
