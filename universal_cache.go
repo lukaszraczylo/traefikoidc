@@ -768,14 +768,62 @@ func (c *UniversalCache) Strategy() CacheStrategy {
 
 // serialize converts a value to bytes for backend storage
 func (c *UniversalCache) serialize(value interface{}) ([]byte, error) {
-	// Use JSON for serialization - simple and universal
-	return json.Marshal(value)
+	// If value is already a byte slice (e.g., pre-marshaled JSON from metadata_cache),
+	// store it directly with a marker to prevent double-encoding.
+	// This fixes the issue where []byte was being JSON-marshaled, causing Base64 encoding.
+	if bytes, ok := value.([]byte); ok {
+		// Prepend marker byte 0x00 to indicate raw bytes (not JSON-encoded)
+		result := make([]byte, len(bytes)+1)
+		result[0] = 0x00
+		copy(result[1:], bytes)
+		return result, nil
+	}
+
+	// For all other types (maps, strings, etc.), use JSON encoding
+	// Prepend marker byte 0x01 to indicate JSON-encoded data
+	jsonData, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]byte, len(jsonData)+1)
+	result[0] = 0x01
+	copy(result[1:], jsonData)
+	return result, nil
 }
 
 // deserialize converts bytes from backend storage to a value
 func (c *UniversalCache) deserialize(data []byte, value interface{}) error {
-	// Use JSON for deserialization
-	return json.Unmarshal(data, value)
+	if len(data) == 0 {
+		return fmt.Errorf("cannot deserialize empty data")
+	}
+
+	// Check for type marker (added by serialize)
+	if data[0] == 0x00 {
+		// Raw bytes - strip marker and return as-is
+		rawBytes := data[1:]
+		if ptr, ok := value.(*interface{}); ok {
+			*ptr = rawBytes
+			return nil
+		}
+		return fmt.Errorf("cannot deserialize raw bytes into %T", value)
+	}
+
+	if data[0] == 0x01 {
+		// JSON-encoded - strip marker and unmarshal
+		return json.Unmarshal(data[1:], value)
+	}
+
+	// Legacy data without marker (for backward compatibility)
+	// Try to unmarshal as JSON
+	if err := json.Unmarshal(data, value); err != nil {
+		// If unmarshal fails, treat as raw bytes
+		if ptr, ok := value.(*interface{}); ok {
+			*ptr = data
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // prefixKey adds a cache type prefix to the key for backend storage
