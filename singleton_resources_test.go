@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -251,6 +254,30 @@ func TestSingletonResourceManager(t *testing.T) {
 	})
 }
 
+// createMockOIDCServer creates a mock OIDC server for testing
+func createMockOIDCServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":                 "https://example.com",
+				"authorization_endpoint": "https://example.com/authorize",
+				"token_endpoint":         "https://example.com/token",
+				"jwks_uri":               "https://example.com/jwks",
+				"userinfo_endpoint":      "https://example.com/userinfo",
+			})
+		case "/jwks":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"keys": []interface{}{},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
 // TestContextAwareGoroutineManagement tests context-aware goroutine management
 func TestContextAwareGoroutineManagement(t *testing.T) {
 	t.Run("GoroutineCleanupOnContextCancel", func(t *testing.T) {
@@ -259,13 +286,17 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 		ResetUniversalCacheManagerForTesting()
 		defer ResetUniversalCacheManagerForTesting()
 
+		// Create mock OIDC server
+		mockServer := createMockOIDCServer()
+		defer mockServer.Close()
+
 		initialGoroutines := runtime.NumGoroutine()
 
 		ctx, cancel := context.WithCancel(context.Background())
 
 		// Create a TraefikOidc instance with context
 		config := &Config{
-			ProviderURL:  "https://example.com",
+			ProviderURL:  mockServer.URL,
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 		}
@@ -308,12 +339,20 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 		ResetUniversalCacheManagerForTesting()
 		defer ResetUniversalCacheManagerForTesting()
 
+		// Create mock OIDC servers
+		mockServer1 := createMockOIDCServer()
+		defer mockServer1.Close()
+		mockServer2 := createMockOIDCServer()
+		defer mockServer2.Close()
+		mockServer3 := createMockOIDCServer()
+		defer mockServer3.Close()
+
 		initialGoroutines := runtime.NumGoroutine()
 
 		configs := []Config{
-			{ProviderURL: "https://example1.com", ClientID: "client1", ClientSecret: "secret1"},
-			{ProviderURL: "https://example2.com", ClientID: "client2", ClientSecret: "secret2"},
-			{ProviderURL: "https://example3.com", ClientID: "client3", ClientSecret: "secret3"},
+			{ProviderURL: mockServer1.URL, ClientID: "client1", ClientSecret: "secret1"},
+			{ProviderURL: mockServer2.URL, ClientID: "client2", ClientSecret: "secret2"},
+			{ProviderURL: mockServer3.URL, ClientID: "client3", ClientSecret: "secret3"},
 		}
 
 		var plugins []*TraefikOidc
@@ -366,6 +405,13 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 		ResetUniversalCacheManagerForTesting()
 		defer ResetUniversalCacheManagerForTesting()
 
+		// Create mock OIDC servers
+		mockServers := make([]*httptest.Server, 3)
+		for i := 0; i < 3; i++ {
+			mockServers[i] = createMockOIDCServer()
+			defer mockServers[i].Close()
+		}
+
 		rm := GetResourceManager()
 
 		// Register singleton cleanup task
@@ -386,7 +432,7 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			ctx := context.Background()
 			config := &Config{
-				ProviderURL:  fmt.Sprintf("https://example%d.com", i),
+				ProviderURL:  mockServers[i].URL,
 				ClientID:     fmt.Sprintf("client%d", i),
 				ClientSecret: fmt.Sprintf("secret%d", i),
 			}
