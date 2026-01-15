@@ -345,7 +345,7 @@ func (r *RedisBackend) prefixKey(key string) string {
 
 // executeWithRetry executes a Redis operation with exponential backoff retry logic.
 // It checks context cancellation at multiple points to ensure fast abort when the
-// caller's context is cancelled (e.g., due to request timeout).
+// caller's context is canceled (e.g., due to request timeout).
 func (r *RedisBackend) executeWithRetry(ctx context.Context, operation func(*RedisConn) error) error {
 	maxRetries := 3
 	baseDelay := 50 * time.Millisecond // Reduced from 100ms to fail faster
@@ -377,7 +377,7 @@ func (r *RedisBackend) executeWithRetry(ctx context.Context, operation func(*Red
 		err = operation(conn)
 		r.pool.Put(conn)
 
-		// Check context after operation - if cancelled, don't bother retrying
+		// Check context after operation - if canceled, don't bother retrying
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

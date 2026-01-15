@@ -20,8 +20,9 @@ var (
 	cacheManagerInitOnce       sync.Once
 )
 
-// GetGlobalCacheManager returns a singleton CacheManager instance
-// Deprecated: Use GetGlobalCacheManagerWithConfig instead
+// GetGlobalCacheManager returns a singleton CacheManager instance.
+//
+// Deprecated: Use GetGlobalCacheManagerWithConfig instead.
 func GetGlobalCacheManager(wg *sync.WaitGroup) *CacheManager {
 	return GetGlobalCacheManagerWithConfig(wg, nil)
 }

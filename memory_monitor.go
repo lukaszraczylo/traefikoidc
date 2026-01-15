@@ -229,7 +229,7 @@ func (mm *MemoryMonitor) updateGoroutineTracking(stats *MemoryStats) {
 	}
 
 	// Check for potential goroutine leak
-	if stats.NumGoroutines > mm.baselineGoroutines+int(mm.alertThresholds.GoroutineCount) {
+	if stats.NumGoroutines > mm.baselineGoroutines+mm.alertThresholds.GoroutineCount {
 		mm.mu.Lock()
 		wasAlert := mm.goroutineLeakAlert
 		if !wasAlert {

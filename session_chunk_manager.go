@@ -926,6 +926,8 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 //
 // Returns:
 //   - An error if the token is expired or has invalid expiration, nil if valid.
+//
+//nolint:unparam // error return kept for API consistency and future use
 func (cm *ChunkManager) validateTokenExpiration(token string, config TokenConfig) error {
 	if !strings.Contains(token, ".") {
 		return nil

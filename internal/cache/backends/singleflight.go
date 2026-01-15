@@ -87,7 +87,7 @@ func (s *SingleflightCache) GetOrFetch(ctx context.Context, key string, fetcher 
 	// If successful, store in cache
 	if call.err == nil && call.val != nil {
 		// Use a background context for cache storage to ensure it completes
-		// even if the original context is cancelled
+		// even if the original context is canceled
 		storeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = s.backend.Set(storeCtx, key, call.val, call.ttl)
 		cancel()

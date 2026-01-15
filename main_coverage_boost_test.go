@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config Marshalling Tests
+// Config Marshaling Tests
 
 func TestConfig_MarshalJSON(t *testing.T) {
 	config := &Config{

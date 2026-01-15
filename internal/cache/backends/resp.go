@@ -44,7 +44,7 @@ type RESPWriter struct {
 
 // NewRESPWriter creates a new RESP writer from the pool (memory optimized)
 func NewRESPWriter(w io.Writer) *RESPWriter {
-	writer := writerPool.Get().(*RESPWriter)
+	writer, _ := writerPool.Get().(*RESPWriter)
 	writer.w = w
 	return writer
 }
@@ -80,7 +80,7 @@ type RESPReader struct {
 
 // NewRESPReader creates a new RESP reader from the pool (memory optimized)
 func NewRESPReader(r io.Reader) *RESPReader {
-	reader := readerPool.Get().(*RESPReader)
+	reader, _ := readerPool.Get().(*RESPReader)
 	reader.r.Reset(r)
 	return reader
 }

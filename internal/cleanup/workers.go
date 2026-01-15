@@ -397,7 +397,7 @@ func (wp *WorkerPool) Submit(task func()) error {
 }
 
 // worker is the main worker routine
-func (wp *WorkerPool) worker(id int) {
+func (wp *WorkerPool) worker(_ int) {
 	defer wp.workerWg.Done()
 
 	for {

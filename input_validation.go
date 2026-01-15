@@ -10,6 +10,14 @@ import (
 	"unicode/utf8"
 )
 
+// Pre-compiled regex patterns for validation (const patterns should use MustCompile)
+var (
+	emailRegexPattern    = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+	urlRegexPattern      = regexp.MustCompile(`^https?://[a-zA-Z0-9.-]+(?:\.[a-zA-Z]{2,})?(?::[0-9]+)?(?:/[^\s]*)?$`)
+	tokenRegexPattern    = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	usernameRegexPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+)
+
 // InputValidator provides comprehensive input validation and sanitization
 // to protect against common security vulnerabilities including SQL injection,
 // XSS, path traversal, and other injection attacks. It validates and sanitizes
@@ -73,7 +81,7 @@ func DefaultInputValidationConfig() InputValidationConfig {
 }
 
 // NewInputValidator creates a new input validator with the specified configuration.
-// It compiles all necessary regex patterns and initializes security pattern lists.
+// It uses pre-compiled regex patterns and initializes security pattern lists.
 //
 // Parameters:
 //   - config: Validation configuration with size limits and mode settings.
@@ -81,29 +89,8 @@ func DefaultInputValidationConfig() InputValidationConfig {
 //
 // Returns:
 //   - A configured InputValidator instance.
-//   - An error if regex compilation fails.
+//   - An error (always nil, kept for API compatibility).
 func NewInputValidator(config InputValidationConfig, logger *Logger) (*InputValidator, error) {
-	// Compile regex patterns
-	emailRegex, err := regexp.Compile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile email regex: %w", err)
-	}
-
-	urlRegex, err := regexp.Compile(`^https?://[a-zA-Z0-9.-]+(?:\.[a-zA-Z]{2,})?(?::[0-9]+)?(?:/[^\s]*)?$`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile URL regex: %w", err)
-	}
-
-	tokenRegex, err := regexp.Compile(`^[A-Za-z0-9._-]+$`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile token regex: %w", err)
-	}
-
-	usernameRegex, err := regexp.Compile(`^[a-zA-Z0-9._-]+$`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile username regex: %w", err)
-	}
-
 	return &InputValidator{
 		maxTokenLength:          config.MaxTokenLength,
 		maxURLLength:            config.MaxURLLength,
@@ -112,10 +99,10 @@ func NewInputValidator(config InputValidationConfig, logger *Logger) (*InputVali
 		maxEmailLength:          config.MaxEmailLength,
 		maxUsernameLength:       config.MaxUsernameLength,
 		allowPrivateIPAddresses: config.AllowPrivateIPAddresses,
-		emailRegex:              emailRegex,
-		urlRegex:                urlRegex,
-		tokenRegex:              tokenRegex,
-		usernameRegex:           usernameRegex,
+		emailRegex:              emailRegexPattern,
+		urlRegex:                urlRegexPattern,
+		tokenRegex:              tokenRegexPattern,
+		usernameRegex:           usernameRegexPattern,
 		sqlInjectionPatterns: []string{
 			"'", "\"", ";", "--", "/*", "*/", "xp_", "sp_",
 			"union", "select", "insert", "update", "delete", "drop",

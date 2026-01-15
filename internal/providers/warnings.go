@@ -18,16 +18,17 @@ func GetProviderWarnings(providerType ProviderType) []ProviderWarning {
 
 	switch providerType {
 	case ProviderTypeGitHub:
-		warnings = append(warnings, ProviderWarning{
-			ProviderType: ProviderTypeGitHub,
-			Level:        "warning",
-			Message:      "GitHub uses OAuth 2.0, not OpenID Connect. ID tokens are not available. Use access tokens for API calls only.",
-		})
-		warnings = append(warnings, ProviderWarning{
-			ProviderType: ProviderTypeGitHub,
-			Level:        "info",
-			Message:      "GitHub OAuth apps do not support refresh tokens. Users will need to re-authenticate when tokens expire.",
-		})
+		warnings = append(warnings,
+			ProviderWarning{
+				ProviderType: ProviderTypeGitHub,
+				Level:        "warning",
+				Message:      "GitHub uses OAuth 2.0, not OpenID Connect. ID tokens are not available. Use access tokens for API calls only.",
+			},
+			ProviderWarning{
+				ProviderType: ProviderTypeGitHub,
+				Level:        "info",
+				Message:      "GitHub OAuth apps do not support refresh tokens. Users will need to re-authenticate when tokens expire.",
+			})
 
 	case ProviderTypeAuth0:
 		warnings = append(warnings, ProviderWarning{

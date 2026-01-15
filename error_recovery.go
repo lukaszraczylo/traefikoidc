@@ -954,7 +954,7 @@ func (gd *GracefulDegradation) GetDegradedServices() []string {
 	gd.mutex.RLock()
 	defer gd.mutex.RUnlock()
 
-	var degraded []string
+	degraded := make([]string, 0, len(gd.degradedServices))
 	for serviceName := range gd.degradedServices {
 		degraded = append(degraded, serviceName)
 	}

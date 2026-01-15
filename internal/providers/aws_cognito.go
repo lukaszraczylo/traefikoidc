@@ -40,7 +40,7 @@ func (p *AWSCognitoProvider) BuildAuthParams(baseParams url.Values, scopes []str
 	// Remove offline_access scope as Cognito doesn't use it (case-insensitive)
 	var filteredScopes []string
 	for _, scope := range scopes {
-		if strings.ToLower(scope) != ScopeOfflineAccess {
+		if !strings.EqualFold(scope, ScopeOfflineAccess) {
 			filteredScopes = append(filteredScopes, scope)
 		}
 	}

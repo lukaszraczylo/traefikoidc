@@ -173,7 +173,7 @@ func (m *FeatureManager) LoadFromEnv() {
 	for name, flag := range flags {
 		envVar := "FEATURE_" + name
 		if value := os.Getenv(envVar); value != "" {
-			enabled := strings.ToLower(value) == "true" || value == "1"
+			enabled := strings.EqualFold(value, "true") || value == "1"
 			flag.enabled.Store(enabled)
 		}
 	}

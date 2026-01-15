@@ -201,7 +201,7 @@ func TestConnectionPool_ContextCancellation(t *testing.T) {
 	conn, err := pool.Get(context.Background())
 	require.NoError(t, err)
 
-	// Try to get another with cancelled context
+	// Try to get another with canceled context
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 

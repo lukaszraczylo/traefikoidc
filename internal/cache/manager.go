@@ -232,7 +232,7 @@ func (m *Manager) Close() error {
 
 	var firstErr error
 
-	if err := m.tokenCache.Close(); err != nil && firstErr == nil {
+	if err := m.tokenCache.Close(); err != nil {
 		firstErr = err
 	}
 	if err := m.metadataCache.Close(); err != nil && firstErr == nil {

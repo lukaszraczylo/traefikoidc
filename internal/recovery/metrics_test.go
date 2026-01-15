@@ -223,7 +223,7 @@ func TestRetryExecutor_ExecuteWithContext_ContextCancelled(t *testing.T) {
 	wg.Wait()
 
 	if execErr == nil {
-		t.Error("Expected error when context is cancelled")
+		t.Error("Expected error when context is canceled")
 	}
 }
 
@@ -240,7 +240,7 @@ func TestRetryExecutor_ExecuteWithContext_ContextCancelledBeforeStart(t *testing
 	})
 
 	if err == nil {
-		t.Error("Expected error when context is already cancelled")
+		t.Error("Expected error when context is already canceled")
 	}
 }
 
@@ -282,7 +282,7 @@ func TestRetryExecutor_isRetryableError(t *testing.T) {
 		{name: "timeout", err: errors.New("TIMEOUT"), expected: true}, // case insensitive
 		{name: "EOF", err: errors.New("EOF"), expected: false},
 		{name: "random error", err: errors.New("something else"), expected: false},
-		{name: "context cancelled", err: context.Canceled, expected: false},
+		{name: "context canceled", err: context.Canceled, expected: false},
 		{name: "context deadline exceeded", err: context.DeadlineExceeded, expected: false},
 	}
 

@@ -454,7 +454,6 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	newToken, err := t.tokenExchanger.GetNewTokenWithRefreshToken(initialRefreshToken)
 	if err != nil {
 		errMsg := err.Error()
-		//nolint:gocritic // Complex error handling with provider-specific conditions
 		if strings.Contains(errMsg, "invalid_grant") || strings.Contains(errMsg, "token expired") {
 			t.logger.Debug("Refresh token expired or revoked: %v", err)
 			// Clear all tokens and authentication state when refresh token is invalid
