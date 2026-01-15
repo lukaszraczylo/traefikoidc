@@ -120,7 +120,7 @@ func getReplayCacheStats() (size int, maxSize int) {
 // Parameters:
 //   - ctx: Parent context for cancellation
 //   - logger: Logger for debug output (can be nil)
-func startReplayCacheCleanup(ctx context.Context, logger *Logger) {
+func startReplayCacheCleanup(_ context.Context, logger *Logger) {
 	registry := GetGlobalTaskRegistry()
 
 	// Define the cleanup task function

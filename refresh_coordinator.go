@@ -234,7 +234,7 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 // Returns (operation, false, nil) if joined an existing operation
 // Returns (nil, false, error) if the operation was rejected
 func (rc *RefreshCoordinator) getOrCreateOperation(
-	ctx context.Context,
+	_ context.Context,
 	sessionID string,
 	tokenHash string,
 	refreshToken string,
@@ -293,7 +293,7 @@ func (rc *RefreshCoordinator) getOrCreateOperation(
 // executeRefreshAsync performs the actual refresh operation asynchronously
 func (rc *RefreshCoordinator) executeRefreshAsync(
 	operation *refreshOperation,
-	sessionID string,
+	_ string, // sessionID - reserved for future metrics/logging
 	tokenHash string,
 	refreshFunc func() (*TokenResponse, error),
 ) {

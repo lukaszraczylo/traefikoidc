@@ -213,9 +213,9 @@ func (jwk *JWK) ToECDSAPublicKey() (*ecdsa.PublicKey, error) {
 // GetKey finds a key by its ID (kid) in the JWKSet.
 // Returns nil if no key with the given ID is found.
 func (jwks *JWKSet) GetKey(kid string) *JWK {
-	for _, key := range jwks.Keys {
-		if key.Kid == kid {
-			return &key
+	for i := range jwks.Keys {
+		if jwks.Keys[i].Kid == kid {
+			return &jwks.Keys[i]
 		}
 	}
 	return nil

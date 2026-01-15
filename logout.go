@@ -316,9 +316,9 @@ func (t *TraefikOidc) verifyLogoutTokenSignature(jwt *JWT, tokenString string) e
 
 	// Find the matching key in JWKS
 	var matchingKey *JWK
-	for _, key := range jwks.Keys {
-		if key.Kid == kid {
-			matchingKey = &key
+	for i := range jwks.Keys {
+		if jwks.Keys[i].Kid == kid {
+			matchingKey = &jwks.Keys[i]
 			break
 		}
 	}

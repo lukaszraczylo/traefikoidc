@@ -164,7 +164,7 @@ func decompressCombinedPayload(compressed string) (*combinedSessionPayload, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 
 	// Limit decompressed size to prevent zip bombs
 	limitedReader := io.LimitReader(gr, 512*1024) // 512KB max
@@ -1588,7 +1588,7 @@ func (sd *SessionData) returnToPoolSafely() {
 // Parameters:
 //   - r: The HTTP request context.
 //   - chunks: The map of session chunks (e.g., sd.accessTokenChunks) to clear and expire.
-func (sd *SessionData) clearTokenChunks(r *http.Request, chunks map[int]*sessions.Session) {
+func (sd *SessionData) clearTokenChunks(_ *http.Request, chunks map[int]*sessions.Session) {
 	for _, session := range chunks {
 		clearSessionValues(session, true)
 	}

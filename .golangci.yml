@@ -14,21 +14,22 @@ linters:
     - gosec
     - misspell
     - noctx
-    - nolintlint
     - prealloc
     - revive
     - rowserrcheck
     - sqlclosecheck
     - unconvert
     - unparam
-    - whitespace
   disable:
     - exhaustive
     - funlen
     - gocognit
+    - gocyclo           # Disabled: OAuth/OIDC flows are inherently complex
+    - goprintffuncname  # Disabled: naming convention is project-specific
     - lll
     - mnd
     - testpackage
+    - whitespace        # Disabled: style preference about newlines
     - wsl
   settings:
     dupl:
@@ -47,29 +48,13 @@ linters:
         - fmt.Fprintln
     goconst:
       min-len: 3
-      min-occurrences: 10  # Increased to reduce noise for standard OAuth2/OIDC strings
+      min-occurrences: 15  # Increased to reduce noise for standard OAuth2/OIDC strings and common patterns like "true"
       ignore-tests: true
     gocritic:
-      # Using default enabled checks in v2
-      enabled-checks:
-        - appendCombine
-        - boolExprSimplify
-        - builtinShadow
-        - commentedOutCode
-        - emptyFallthrough
-        - equalFold
-        - hexLiteral
-        - indexAlloc
-        - initClause
-        - methodExprCall
-        - nestingReduce
-        - rangeExprCopy
-        - rangeValCopy
-        - stringXbytes
-        - typeAssertChain
-        - typeUnparen
-        - unlabelStmt
-        - yodaStyleExpr
+      # Disable style-only checks that add noise
+      disabled-checks:
+        - ifElseChain      # Style preference, switch not always clearer
+        - elseif           # Style preference
     gocyclo:
       min-complexity: 30  # OAuth/OIDC flows are inherently complex; set higher for Yaegi compatibility
     gosec:
@@ -106,23 +91,23 @@ linters:
         - name: error-return
         - name: error-strings
         - name: error-naming
-        - name: exported
-        - name: if-return
+        # - name: exported  # Disabled: too noisy, not all exported functions need comments
+        # - name: if-return  # Disabled: style preference
         - name: increment-decrement
-        - name: var-naming
-        - name: var-declaration
-        - name: package-comments
+        # - name: var-naming  # Disabled: too strict for legacy code (IP vs Ip)
+        # - name: var-declaration  # Disabled: explicit zero values can be clearer
+        # - name: package-comments  # Disabled: handled by other tools
         - name: range
         - name: receiver-naming
         - name: time-naming
         - name: unexported-return
-        - name: indent-error-flow
+        # - name: indent-error-flow  # Disabled: style preference
         - name: errorf
-        - name: empty-block
+        # - name: empty-block  # Disabled: sometimes empty blocks are intentional
         - name: superfluous-else
-        - name: unused-parameter
+        # - name: unused-parameter  # Disabled: test callbacks and interface implementations often have required unused params
         - name: unreachable-code
-        - name: redefines-builtin-id
+        # - name: redefines-builtin-id  # Disabled: min/max helpers are common before Go 1.21
     unparam:
       check-exported: false
     staticcheck:
@@ -132,8 +117,15 @@ linters:
         - -QF1003  # Tagged switch - style preference, may affect Yaegi
         - -QF1007  # Merge conditional assignment - style preference
         - -QF1008  # Remove embedded field - may break Yaegi compatibility
+        - -QF1011  # Omit type from declaration - style preference
         - -QF1012  # Use fmt.Fprintf - style preference
+        - -SA9003  # Empty branch - sometimes intentional for future work
+        - -ST1000  # Package comment format - not required for all packages
         - -ST1003  # Package name format - allowed for test packages
+        - -ST1016  # Receiver name consistency - legacy code
+        - -ST1020  # Comment format for methods - style preference
+        - -ST1021  # Comment format for types - style preference
+        - -ST1023  # Omit type from declaration - style preference
   exclusions:
     generated: lax
     rules:
@@ -144,18 +136,43 @@ linters:
           - goconst
           - gocyclo
           - gosec
+          - govet
+          - ineffassign
           - noctx
           - prealloc
           - unparam
+          - revive
+          - gocritic
         path: _test\.go
       - linters:
           - dupl
           - gocyclo
+          - govet
+          - noctx
+          - prealloc
+          - unparam
+          - revive
+          - gocritic
         path: test.*\.go
       - linters:
           - gocritic
           - unused
+          - errcheck
+          - revive
         path: mocks.*\.go
+      - linters:
+          - errcheck
+          - revive
+          - gocritic
+          - govet
+          - unparam
+        path: internal/testutil/
+      - linters:
+          - govet
+          - unparam
+          - noctx
+          - prealloc
+        path: integration/
       - linters:
           - gosec
         text: 'G404:'

@@ -734,6 +734,7 @@ func (l *Logger) Errorf(format string, args ...interface{}) {
 }
 
 // newNoOpLogger creates a logger that discards all output.
+//
 // Deprecated: Use GetSingletonNoOpLogger() instead for better memory efficiency.
 func newNoOpLogger() *Logger {
 	return GetSingletonNoOpLogger()

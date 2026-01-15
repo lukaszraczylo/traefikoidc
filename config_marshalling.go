@@ -7,7 +7,7 @@ import (
 // REDACTED is the placeholder value for sensitive information
 const REDACTED = "[REDACTED]"
 
-// MarshalJSON implements custom JSON marshalling to redact sensitive fields
+// MarshalJSON implements custom JSON marshaling to redact sensitive fields
 // Rewritten without type aliases for yaegi compatibility
 func (c Config) MarshalJSON() ([]byte, error) {
 	// Build a map manually to avoid type alias issues with yaegi
@@ -47,7 +47,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	return json.Marshal(result)
 }
 
-// MarshalYAML implements custom YAML marshalling to redact sensitive fields
+// MarshalYAML implements custom YAML marshaling to redact sensitive fields
 // Rewritten without type aliases for yaegi compatibility
 func (c Config) MarshalYAML() (interface{}, error) {
 	// Build a map manually to avoid type alias issues with yaegi

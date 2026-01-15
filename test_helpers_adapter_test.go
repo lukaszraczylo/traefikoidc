@@ -22,7 +22,7 @@ func (w *testWriter) Write(p []byte) (n int, err error) {
 // Test helper adapters for the new test files
 
 // resetGlobalState resets all global singletons to prevent test interference
-// nolint:unused // Kept for potential future use in integration tests
+//nolint:unused // Kept for potential future use in integration tests
 /*
 func resetGlobalState() {
 	// Reset global task registry first to stop all background tasks
@@ -137,7 +137,7 @@ func (tc *testCleanup) cleanupAll() {
 }
 
 // createTestConfig creates a config with all required fields populated for testing
-// nolint:unused // Kept for potential future use in integration tests
+//nolint:unused // Kept for potential future use in integration tests
 /*
 func createTestConfig() *Config {
 	config := CreateConfig()
@@ -151,7 +151,7 @@ func createTestConfig() *Config {
 */
 
 // setupTestOIDCMiddleware creates a test OIDC middleware instance with mock servers
-// nolint:unused // Kept for potential future use in integration tests
+//nolint:unused // Kept for potential future use in integration tests
 /*
 func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httptest.Server) {
 	// Reset global state to ensure test isolation
@@ -339,7 +339,7 @@ func setupTestOIDCMiddleware(t *testing.T, config *Config) (*TraefikOidc, *httpt
 */
 
 // createMockJWT creates a mock JWT token for testing - adapter for existing tests
-// nolint:unused // Kept for potential future use in integration tests
+//nolint:unused // Kept for potential future use in integration tests
 /*
 func createMockJWT(t *testing.T, sub, email string) string {
 	return ValidIDToken
@@ -361,7 +361,7 @@ func createTestSession() *SessionData {
 }
 
 // injectSessionIntoRequest saves the session and adds the resulting cookies to the request
-// nolint:unused // Kept for potential future use in integration tests
+//nolint:unused // Kept for potential future use in integration tests
 /*
 func injectSessionIntoRequest(t *testing.T, req *http.Request, session *SessionData) {
 	// Create a response recorder to capture cookies

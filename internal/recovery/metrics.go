@@ -116,7 +116,7 @@ func (re *RetryExecutor) ExecuteWithContext(ctx context.Context, fn func() error
 			// Continue to next attempt
 		case <-ctx.Done():
 			re.RecordFailure()
-			return fmt.Errorf("retry cancelled: %w", ctx.Err())
+			return fmt.Errorf("retry canceled: %w", ctx.Err())
 		}
 	}
 
@@ -301,7 +301,7 @@ func (rm *RecoveryMetrics) GetAllMetrics() map[string]interface{} {
 		}
 	}
 
-	allMetrics["summary"] = map[string]interface{}{
+	summary := map[string]interface{}{
 		"totalMechanisms": len(rm.mechanisms),
 		"totalRequests":   totalRequests,
 		"totalSuccesses":  totalSuccesses,
@@ -310,8 +310,9 @@ func (rm *RecoveryMetrics) GetAllMetrics() map[string]interface{} {
 
 	if totalRequests > 0 {
 		successRate := float64(totalSuccesses) / float64(totalRequests) * 100
-		allMetrics["summary"].(map[string]interface{})["overallSuccessRate"] = fmt.Sprintf("%.2f%%", successRate)
+		summary["overallSuccessRate"] = fmt.Sprintf("%.2f%%", successRate)
 	}
+	allMetrics["summary"] = summary
 
 	return allMetrics
 }

@@ -241,9 +241,11 @@ func (s *cacheShard) evictLRULocked() bool {
 
 	element := s.lruList.Back()
 	if element != nil {
-		item := element.Value.(*memoryCacheItem)
-		s.deleteItemLocked(item)
-		return true
+		item, ok := element.Value.(*memoryCacheItem)
+		if ok {
+			s.deleteItemLocked(item)
+			return true
+		}
 	}
 	return false
 }
@@ -267,8 +269,10 @@ func (s *cacheShard) getOldestAccessTime() time.Time {
 
 	element := s.lruList.Back()
 	if element != nil {
-		item := element.Value.(*memoryCacheItem)
-		return item.accessedAt
+		item, ok := element.Value.(*memoryCacheItem)
+		if ok {
+			return item.accessedAt
+		}
 	}
 	return time.Time{}
 }

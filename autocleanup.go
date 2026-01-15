@@ -599,8 +599,9 @@ func GetGlobalTaskMemoryMonitor(logger *Logger) *TaskMemoryMonitor {
 	return globalTaskMemoryMonitor
 }
 
-// NewTaskMemoryMonitor creates a new memory monitor for task registry
-// Deprecated: Use GetGlobalTaskMemoryMonitor instead for singleton behavior
+// NewTaskMemoryMonitor creates a new memory monitor for task registry.
+//
+// Deprecated: Use GetGlobalTaskMemoryMonitor instead for singleton behavior.
 func NewTaskMemoryMonitor(logger *Logger, registry *TaskRegistry) *TaskMemoryMonitor {
 	return GetGlobalTaskMemoryMonitor(logger)
 }
@@ -712,7 +713,7 @@ func (mm *TaskMemoryMonitor) checkForMemoryIssues(stats TaskMemoryStats) {
 
 	// Check for goroutine leaks (arbitrary threshold)
 	if stats.Goroutines > 100 {
-		mm.logger.Infof("High goroutine count detected: %d", stats.Goroutines)
+		mm.logger.Debugf("High goroutine count detected: %d", stats.Goroutines)
 	}
 
 	// Check for heap growth without corresponding GC activity
