@@ -1548,9 +1548,10 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	}()
 
 	sd.sessionMutex.Lock()
-	defer sd.sessionMutex.Unlock()
-
 	sd.clearAllSessionData(r, true)
+	
+	// Release the lock before calling Save to prevent deadlock
+	sd.sessionMutex.Unlock()
 
 	// This is primarily for testing - in production w will often be nil
 	var err error
