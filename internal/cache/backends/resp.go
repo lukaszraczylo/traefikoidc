@@ -7,34 +7,19 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // RESP (REdis Serialization Protocol) implementation
 // Pure Go implementation compatible with Yaegi interpreter (no unsafe package)
+//
+// NOTE: sync.Pool was intentionally removed for Yaegi compatibility.
+// Yaegi (Traefik's Go interpreter) has issues with sync.Pool and reflection
+// that cause "reflect: call of reflect.Value.Field on zero Value" panics.
+// See: https://github.com/lukaszraczylo/traefikoidc/issues/120
 
 var (
 	ErrInvalidRESP = errors.New("invalid RESP response")
 	ErrNilResponse = errors.New("nil response")
-)
-
-// Object pools for memory optimization - reduces allocations by 50-70%
-var (
-	readerPool = sync.Pool{
-		New: func() interface{} {
-			return &RESPReader{
-				r: bufio.NewReaderSize(nil, 4096),
-			}
-		},
-	}
-
-	writerPool = sync.Pool{
-		New: func() interface{} {
-			return &RESPWriter{
-				w: nil,
-			}
-		},
-	}
 )
 
 // RESPWriter writes RESP protocol messages
@@ -42,17 +27,14 @@ type RESPWriter struct {
 	w io.Writer
 }
 
-// NewRESPWriter creates a new RESP writer from the pool (memory optimized)
+// NewRESPWriter creates a new RESP writer
 func NewRESPWriter(w io.Writer) *RESPWriter {
-	writer, _ := writerPool.Get().(*RESPWriter)
-	writer.w = w
-	return writer
+	return &RESPWriter{w: w}
 }
 
-// Release returns the writer to the pool for reuse
+// Release is a no-op for API compatibility (pooling removed for Yaegi compatibility)
 func (w *RESPWriter) Release() {
-	w.w = nil
-	writerPool.Put(w)
+	// No-op: pooling removed for Yaegi compatibility
 }
 
 // WriteCommand writes a Redis command in RESP array format
@@ -78,17 +60,16 @@ type RESPReader struct {
 	r *bufio.Reader
 }
 
-// NewRESPReader creates a new RESP reader from the pool (memory optimized)
+// NewRESPReader creates a new RESP reader
 func NewRESPReader(r io.Reader) *RESPReader {
-	reader, _ := readerPool.Get().(*RESPReader)
-	reader.r.Reset(r)
-	return reader
+	return &RESPReader{
+		r: bufio.NewReaderSize(r, 4096),
+	}
 }
 
-// Release returns the reader to the pool for reuse
+// Release is a no-op for API compatibility (pooling removed for Yaegi compatibility)
 func (r *RESPReader) Release() {
-	r.r.Reset(nil)
-	readerPool.Put(r)
+	// No-op: pooling removed for Yaegi compatibility
 }
 
 // ReadResponse reads a RESP response and returns the parsed value
