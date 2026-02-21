@@ -303,6 +303,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	logger.Debugf("TraefikOidc.New: Final t.scopes initialized to: %v", t.scopes)
 
+	// Log callback URL configuration to help diagnose redirect loop issues.
+	// If callbackURL is a full URL instead of a path, the callback matching
+	// in ServeHTTP will silently fail because req.URL.Path is compared directly.
+	logger.Debugf("TraefikOidc.New: callbackURL (redirURLPath) configured as: %q", t.redirURLPath)
+	logger.Debugf("TraefikOidc.New: logoutURLPath configured as: %q", t.logoutURLPath)
+
 	t.providerURL = config.ProviderURL
 
 	// Use singleton resource manager for metadata initialization
