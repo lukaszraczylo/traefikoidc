@@ -173,10 +173,14 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	host := utils.DetermineHost(req)
 	redirectURL := buildFullURL(scheme, host, t.redirURLPath)
 
+	// Check if the current request is the OIDC callback
+	t.logger.Debugf("Checking callback URL match: request_path=%q, configured_callback=%q", req.URL.Path, t.redirURLPath)
 	if req.URL.Path == t.redirURLPath {
+		t.logger.Debugf("Callback URL matched, processing OIDC callback (redirect_url=%s)", redirectURL)
 		t.handleCallback(rw, req, redirectURL)
 		return
 	}
+	t.logger.Debugf("Callback URL did not match (request_path=%q != configured=%q), continuing auth flow", req.URL.Path, t.redirURLPath)
 
 	authenticated, needsRefresh, expired := t.isUserAuthenticated(session)
 
