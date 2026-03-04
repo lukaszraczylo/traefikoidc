@@ -445,6 +445,22 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		rw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	}
 
+	// Strip OIDC session cookies before forwarding to the backend to prevent
+	// HTTP 431 "Request Header Fields Too Large" errors (GitHub issue #122).
+	if t.stripAuthCookies {
+		prefix := t.sessionManager.GetCookiePrefix()
+		filtered := make([]*http.Cookie, 0, len(req.Cookies()))
+		for _, c := range req.Cookies() {
+			if !strings.HasPrefix(c.Name, prefix) {
+				filtered = append(filtered, c)
+			}
+		}
+		req.Header.Del("Cookie")
+		for _, c := range filtered {
+			req.AddCookie(c)
+		}
+	}
+
 	t.logger.Debugf("Request authorized for user %s, forwarding to next handler", email)
 
 	t.next.ServeHTTP(rw, req)

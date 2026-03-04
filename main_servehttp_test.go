@@ -710,3 +710,344 @@ func TestMinimalHeaders_TokenHeaderNotSet(t *testing.T) {
 		t.Error("expected X-Auth-Request-Redirect to NOT be set with minimalHeaders=true")
 	}
 }
+
+// TestStripAuthCookies tests the stripAuthCookies configuration option.
+// This addresses GitHub issue #122 - OIDC cookies bloating backend requests.
+func TestStripAuthCookies(t *testing.T) {
+	tests := []struct {
+		name              string
+		stripAuthCookies  bool
+		expectOIDCCookies bool
+		expectAppCookies  bool
+	}{
+		{
+			name:              "stripAuthCookies=false (default) forwards all cookies",
+			stripAuthCookies:  false,
+			expectOIDCCookies: true,
+			expectAppCookies:  true,
+		},
+		{
+			name:              "stripAuthCookies=true strips OIDC cookies but keeps app cookies",
+			stripAuthCookies:  true,
+			expectOIDCCookies: false,
+			expectAppCookies:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedCookies []*http.Cookie
+
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedCookies = r.Cookies()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			sessionManager := createTestSessionManager(t)
+			cookiePrefix := sessionManager.GetCookiePrefix()
+
+			oidc := &TraefikOidc{
+				next:                   next,
+				logger:                 NewLogger("debug"),
+				initComplete:           make(chan struct{}),
+				sessionManager:         sessionManager,
+				firstRequestReceived:   true,
+				metadataRefreshStarted: true,
+				issuerURL:              "https://provider.example.com",
+				stripAuthCookies:       tt.stripAuthCookies,
+				extractClaimsFunc: func(token string) (map[string]interface{}, error) {
+					return map[string]interface{}{
+						"email": "user@example.com",
+					}, nil
+				},
+			}
+			close(oidc.initComplete)
+
+			req := httptest.NewRequest("GET", "/protected", nil)
+			rw := httptest.NewRecorder()
+
+			// Get a valid session first (before adding fake cookies)
+			session, err := sessionManager.GetSession(req)
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
+			}
+			session.SetEmail("user@example.com")
+			session.SetAuthenticated(true)
+
+			// Now add OIDC session cookies (simulating what the browser would send)
+			req.AddCookie(&http.Cookie{Name: cookiePrefix + "m", Value: "session-data"})
+			req.AddCookie(&http.Cookie{Name: cookiePrefix + "s_0", Value: "chunk0"})
+			req.AddCookie(&http.Cookie{Name: cookiePrefix + "s_1", Value: "chunk1"})
+			req.AddCookie(&http.Cookie{Name: cookiePrefix + "a", Value: "access-token"})
+			req.AddCookie(&http.Cookie{Name: cookiePrefix + "r", Value: "refresh-token"})
+
+			// Add non-OIDC application cookies (these must always pass through)
+			req.AddCookie(&http.Cookie{Name: "my_app_session", Value: "app-session-id"})
+			req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
+
+			oidc.processAuthorizedRequest(rw, req, session, "https://example.com/callback")
+
+			// Check for OIDC cookies in captured cookies
+			hasOIDCCookie := false
+			hasAppSession := false
+			hasTheme := false
+			for _, c := range capturedCookies {
+				if len(c.Name) >= len(cookiePrefix) && c.Name[:len(cookiePrefix)] == cookiePrefix {
+					hasOIDCCookie = true
+				}
+				if c.Name == "my_app_session" {
+					hasAppSession = true
+				}
+				if c.Name == "theme" {
+					hasTheme = true
+				}
+			}
+
+			if tt.expectOIDCCookies && !hasOIDCCookie {
+				t.Error("expected OIDC cookies to be forwarded to backend")
+			}
+			if !tt.expectOIDCCookies && hasOIDCCookie {
+				t.Error("expected OIDC cookies to be stripped before forwarding to backend")
+			}
+
+			if tt.expectAppCookies && !hasAppSession {
+				t.Error("expected my_app_session cookie to be forwarded to backend")
+			}
+			if tt.expectAppCookies && !hasTheme {
+				t.Error("expected theme cookie to be forwarded to backend")
+			}
+		})
+	}
+}
+
+// TestStripAuthCookies_NoCookies verifies stripping works when the request has no cookies.
+func TestStripAuthCookies_NoCookies(t *testing.T) {
+	var capturedCookies []*http.Cookie
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedCookies = r.Cookies()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	sessionManager := createTestSessionManager(t)
+	oidc := &TraefikOidc{
+		next:                   next,
+		logger:                 NewLogger("debug"),
+		initComplete:           make(chan struct{}),
+		sessionManager:         sessionManager,
+		firstRequestReceived:   true,
+		metadataRefreshStarted: true,
+		issuerURL:              "https://provider.example.com",
+		stripAuthCookies:       true,
+		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
+			return map[string]interface{}{"email": "user@example.com"}, nil
+		},
+	}
+	close(oidc.initComplete)
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	rw := httptest.NewRecorder()
+
+	session, err := sessionManager.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	session.SetEmail("user@example.com")
+	session.SetAuthenticated(true)
+
+	oidc.processAuthorizedRequest(rw, req, session, "https://example.com/callback")
+
+	if len(capturedCookies) != 0 {
+		t.Errorf("expected no cookies, got %d", len(capturedCookies))
+	}
+}
+
+// TestStripAuthCookies_OnlyOIDCCookies verifies that when all cookies are OIDC cookies,
+// the Cookie header is empty after stripping.
+func TestStripAuthCookies_OnlyOIDCCookies(t *testing.T) {
+	var capturedCookieHeader string
+	var capturedCookies []*http.Cookie
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedCookieHeader = r.Header.Get("Cookie")
+		capturedCookies = r.Cookies()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	sessionManager := createTestSessionManager(t)
+	cookiePrefix := sessionManager.GetCookiePrefix()
+
+	oidc := &TraefikOidc{
+		next:                   next,
+		logger:                 NewLogger("debug"),
+		initComplete:           make(chan struct{}),
+		sessionManager:         sessionManager,
+		firstRequestReceived:   true,
+		metadataRefreshStarted: true,
+		issuerURL:              "https://provider.example.com",
+		stripAuthCookies:       true,
+		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
+			return map[string]interface{}{"email": "user@example.com"}, nil
+		},
+	}
+	close(oidc.initComplete)
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	rw := httptest.NewRecorder()
+
+	session, err := sessionManager.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	session.SetEmail("user@example.com")
+	session.SetAuthenticated(true)
+
+	// Add only OIDC cookies
+	req.AddCookie(&http.Cookie{Name: cookiePrefix + "m", Value: "session-data"})
+	req.AddCookie(&http.Cookie{Name: cookiePrefix + "s_0", Value: "chunk0"})
+	req.AddCookie(&http.Cookie{Name: cookiePrefix + "a", Value: "access-token"})
+
+	oidc.processAuthorizedRequest(rw, req, session, "https://example.com/callback")
+
+	if len(capturedCookies) != 0 {
+		t.Errorf("expected all cookies to be stripped, got %d", len(capturedCookies))
+	}
+	if capturedCookieHeader != "" {
+		t.Errorf("expected empty Cookie header, got %q", capturedCookieHeader)
+	}
+}
+
+// TestStripAuthCookies_OnlyAppCookies verifies that non-OIDC cookies pass through
+// untouched when stripping is enabled.
+func TestStripAuthCookies_OnlyAppCookies(t *testing.T) {
+	var capturedCookies []*http.Cookie
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedCookies = r.Cookies()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	sessionManager := createTestSessionManager(t)
+	oidc := &TraefikOidc{
+		next:                   next,
+		logger:                 NewLogger("debug"),
+		initComplete:           make(chan struct{}),
+		sessionManager:         sessionManager,
+		firstRequestReceived:   true,
+		metadataRefreshStarted: true,
+		issuerURL:              "https://provider.example.com",
+		stripAuthCookies:       true,
+		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
+			return map[string]interface{}{"email": "user@example.com"}, nil
+		},
+	}
+	close(oidc.initComplete)
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	rw := httptest.NewRecorder()
+
+	session, err := sessionManager.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	session.SetEmail("user@example.com")
+	session.SetAuthenticated(true)
+
+	// Add only non-OIDC cookies
+	req.AddCookie(&http.Cookie{Name: "my_app_session", Value: "abc123"})
+	req.AddCookie(&http.Cookie{Name: "lang", Value: "en"})
+	req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
+
+	oidc.processAuthorizedRequest(rw, req, session, "https://example.com/callback")
+
+	if len(capturedCookies) != 3 {
+		t.Errorf("expected 3 cookies, got %d", len(capturedCookies))
+	}
+
+	cookieNames := make(map[string]bool)
+	for _, c := range capturedCookies {
+		cookieNames[c.Name] = true
+	}
+	for _, expected := range []string{"my_app_session", "lang", "theme"} {
+		if !cookieNames[expected] {
+			t.Errorf("expected cookie %q to be forwarded", expected)
+		}
+	}
+}
+
+// TestStripAuthCookies_CustomPrefix verifies stripping works with a custom cookie prefix.
+func TestStripAuthCookies_CustomPrefix(t *testing.T) {
+	var capturedCookies []*http.Cookie
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedCookies = r.Cookies()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Create session manager with custom prefix
+	sm, err := NewSessionManager("test-encryption-key-32-characters", false, "", "myapp_oidc_", 0, NewLogger("debug"))
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+	customPrefix := sm.GetCookiePrefix()
+
+	oidc := &TraefikOidc{
+		next:                   next,
+		logger:                 NewLogger("debug"),
+		initComplete:           make(chan struct{}),
+		sessionManager:         sm,
+		firstRequestReceived:   true,
+		metadataRefreshStarted: true,
+		issuerURL:              "https://provider.example.com",
+		stripAuthCookies:       true,
+		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
+			return map[string]interface{}{"email": "user@example.com"}, nil
+		},
+	}
+	close(oidc.initComplete)
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	rw := httptest.NewRecorder()
+
+	session, err := sm.GetSession(req)
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	session.SetEmail("user@example.com")
+	session.SetAuthenticated(true)
+
+	// Add cookies with the custom prefix (should be stripped)
+	req.AddCookie(&http.Cookie{Name: customPrefix + "m", Value: "session-data"})
+	req.AddCookie(&http.Cookie{Name: customPrefix + "s_0", Value: "chunk0"})
+
+	// Add default-prefix cookie (should NOT be stripped — different prefix)
+	req.AddCookie(&http.Cookie{Name: "_oidc_raczylo_m", Value: "other-session"})
+
+	// Add app cookie (should NOT be stripped)
+	req.AddCookie(&http.Cookie{Name: "my_app", Value: "val"})
+
+	oidc.processAuthorizedRequest(rw, req, session, "https://example.com/callback")
+
+	cookieNames := make(map[string]bool)
+	for _, c := range capturedCookies {
+		cookieNames[c.Name] = true
+	}
+
+	// Custom prefix cookies should be stripped
+	if cookieNames[customPrefix+"m"] {
+		t.Errorf("expected cookie %q to be stripped", customPrefix+"m")
+	}
+	if cookieNames[customPrefix+"s_0"] {
+		t.Errorf("expected cookie %q to be stripped", customPrefix+"s_0")
+	}
+
+	// Default prefix cookie should pass through (different prefix)
+	if !cookieNames["_oidc_raczylo_m"] {
+		t.Error("expected _oidc_raczylo_m cookie to pass through (different prefix)")
+	}
+
+	// App cookie should pass through
+	if !cookieNames["my_app"] {
+		t.Error("expected my_app cookie to pass through")
+	}
+}

@@ -130,6 +130,7 @@ type TraefikOidc struct {
 	firstRequestMutex          sync.Mutex
 	sessionInvalidationCache   CacheInterface
 	minimalHeaders             bool
+	stripAuthCookies           bool
 	enableBackchannelLogout    bool
 	enableFrontchannelLogout   bool
 	firstRequestReceived       bool

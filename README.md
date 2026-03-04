@@ -154,6 +154,7 @@ The middleware supports the following configuration options:
 | `disableReplayDetection` | Disable JTI-based replay attack detection for multi-replica deployments | `false` | `true` |
 | `allowPrivateIPAddresses` | Allow private IP addresses in provider URLs (for internal networks with Keycloak, etc.) | `false` | `true` |
 | `minimalHeaders` | Reduce forwarded headers to prevent "431 Request Header Fields Too Large" errors | `false` | `true` |
+| `stripAuthCookies` | Strip OIDC session cookies before forwarding to backend services | `false` | `true` |
 | `enableBackchannelLogout` | Enable OIDC Back-Channel Logout (IdP-initiated logout via server-to-server POST) | `false` | `true` |
 | `backchannelLogoutURL` | The path for receiving backchannel logout tokens from the IdP | none | `/backchannel-logout` |
 | `enableFrontchannelLogout` | Enable OIDC Front-Channel Logout (IdP-initiated logout via iframe) | `false` | `true` |
@@ -1769,6 +1770,29 @@ This is particularly useful when:
 - You don't need the full token forwarded to backend services
 
 See [GitHub Issue #64](https://github.com/lukaszraczylo/traefikoidc/issues/64) for details.
+
+#### Strip Auth Cookies Mode
+
+If your backend services return **"431 Request Header Fields Too Large"** errors due to large OIDC session cookies (which can reach ~28KB with token chunking), you can strip them before forwarding:
+
+```yaml
+http:
+  middlewares:
+    my-auth:
+      plugin:
+        traefikoidc:
+          stripAuthCookies: true
+          # ... other config
+```
+
+When `stripAuthCookies: true` is set:
+- **Strips**: All OIDC session cookies (`_oidc_raczylo_*`) from the request before forwarding to the backend
+- **Preserves**: All non-OIDC cookies (application sessions, preferences, etc.)
+- **No browser impact**: Cookies remain in the browser and are still sent to Traefik for session management
+
+This can be combined with `minimalHeaders: true` for maximum header size reduction.
+
+See [GitHub Issue #122](https://github.com/lukaszraczylo/traefikoidc/issues/122) for details.
 
 ### Security Headers
 

@@ -222,6 +222,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		dcrConfig:                config.DynamicClientRegistration,
 		allowPrivateIPAddresses:  config.AllowPrivateIPAddresses,
 		minimalHeaders:           config.MinimalHeaders,
+		stripAuthCookies:         config.StripAuthCookies,
 		enableBackchannelLogout:  config.EnableBackchannelLogout,
 		enableFrontchannelLogout: config.EnableFrontchannelLogout,
 		backchannelLogoutPath:    normalizeLogoutPath(config.BackchannelLogoutURL),
