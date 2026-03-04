@@ -123,6 +123,7 @@ testData:
   disableReplayDetection: false # Disable JTI replay detection for multi-replica deployments (default: false)
   allowPrivateIPAddresses: false # Allow private IP addresses in provider URLs for internal networks (default: false)
   minimalHeaders: false # Reduce forwarded headers to prevent 431 errors (default: false)
+  stripAuthCookies: false # Strip OIDC session cookies before forwarding to backend (default: false)
 
   # Security Headers Configuration (enabled by default with 'default' profile)
   securityHeaders:
@@ -1019,6 +1020,35 @@ configuration:
 
       Default: false (all headers forwarded for backward compatibility)
       See: https://github.com/lukaszraczylo/traefikoidc/issues/64
+    required: false
+
+  stripAuthCookies:
+    type: boolean
+    description: |
+      Strip OIDC session cookies from the request before forwarding to backend services.
+
+      When enabled, the middleware removes all cookies with the OIDC prefix (default: _oidc_raczylo_)
+      from the Cookie header before the request is forwarded to the backend. The cookies remain
+      in the browser and are still sent to Traefik for session management — they are only removed
+      from the Traefik-to-backend hop.
+
+      This prevents "431 Request Header Fields Too Large" errors caused by large OIDC session
+      cookies (which can reach ~28KB with token chunking) being forwarded to backend services
+      that have limited header buffer sizes.
+
+      Non-OIDC cookies (application sessions, preferences, etc.) are always passed through
+      untouched.
+
+      Use this option when:
+      - Backend services return "431 Request Header Fields Too Large" errors
+      - OIDC session cookies are large due to token chunking
+      - Backend services don't need OIDC session cookies
+      - You want to reduce Cookie header overhead on backend requests
+
+      Can be combined with minimalHeaders for maximum header size reduction.
+
+      Default: false (all cookies forwarded for backward compatibility)
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/122
     required: false
 
   enableBackchannelLogout:

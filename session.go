@@ -500,6 +500,11 @@ func (sm *SessionManager) combinedChunkCookieName(chunkIndex int) string {
 	return fmt.Sprintf("%s_%d", sm.combinedCookieName(), chunkIndex)
 }
 
+// GetCookiePrefix returns the cookie prefix used for all OIDC session cookies.
+func (sm *SessionManager) GetCookiePrefix() string {
+	return sm.cookiePrefix
+}
+
 // Shutdown gracefully shuts down the SessionManager and all its background tasks
 func (sm *SessionManager) Shutdown() error {
 	var shutdownErr error

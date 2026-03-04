@@ -65,6 +65,7 @@ type Config struct {
 	ForceHTTPS                bool                             `json:"forceHTTPS"`
 	AllowPrivateIPAddresses   bool                             `json:"allowPrivateIPAddresses,omitempty"`
 	MinimalHeaders            bool                             `json:"minimalHeaders,omitempty"`
+	StripAuthCookies          bool                             `json:"stripAuthCookies,omitempty"`
 	EnableBackchannelLogout   bool                             `json:"enableBackchannelLogout,omitempty"`
 	EnableFrontchannelLogout  bool                             `json:"enableFrontchannelLogout,omitempty"`
 	BackchannelLogoutURL      string                           `json:"backchannelLogoutURL,omitempty"`
