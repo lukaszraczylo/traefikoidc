@@ -199,6 +199,14 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			t.sendErrorResponse(rw, req, "Critical session error", http.StatusInternalServerError)
 			return
 		}
+		// Sub-resource requests (script/image/fetch/serviceWorker) must not
+		// trigger an OIDC redirect from this path either: they would overwrite
+		// any in-flight CSRF/nonce in the session. Let the next HTML navigation
+		// initiate the flow. See issue #129.
+		if t.isAjaxRequest(req) || t.isNonNavigationRequest(req) {
+			t.sendErrorResponse(rw, req, "Authentication required", http.StatusUnauthorized)
+			return
+		}
 		scheme := utils.DetermineScheme(req, t.forceHTTPS)
 		host := utils.DetermineHost(req)
 		redirectURL := buildFullURL(scheme, host, t.redirURLPath)
@@ -252,8 +260,12 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	refreshTokenPresent := session.GetRefreshToken() != ""
 
-	// Check if this is an AJAX request that should receive 401 instead of redirect
-	isAjaxRequest := t.isAjaxRequest(req)
+	// Decide whether to answer with 401 instead of a redirect. AJAX requests
+	// cannot follow a 302 into an IdP, and sub-resource loads (script/image/
+	// fetch/serviceWorker) must not trigger a fresh OIDC flow because parallel
+	// loads would each overwrite the session CSRF/nonce (issue #129). Only
+	// top-level HTML navigations should redirect.
+	isAjaxRequest := t.isAjaxRequest(req) || t.isNonNavigationRequest(req)
 
 	// Check if refresh token is likely expired (older than 6 hours)
 	refreshTokenExpired := refreshTokenPresent && t.isRefreshTokenExpired(session)

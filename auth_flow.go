@@ -334,6 +334,29 @@ func (t *TraefikOidc) isAjaxRequest(req *http.Request) bool {
 		strings.Contains(accept, "application/json")
 }
 
+// isNonNavigationRequest reports whether the request is a browser
+// sub-resource (script, image, stylesheet, fetch, serviceWorker) rather than
+// a top-level HTML navigation. Non-navigation requests MUST NOT trigger an
+// OIDC redirect flow: several sub-resource loads happening in parallel would
+// each call defaultInitiateAuthentication, each overwriting the session's
+// CSRF/nonce, breaking the eventual callback (issue #129).
+//
+// Detection prefers Sec-Fetch-Mode, which all modern browsers send
+// (Chrome/Edge/Firefox/Safari). For older or non-browser clients we fall
+// back to Accept: if Accept is present and does not list text/html, treat
+// it as a sub-resource. An empty/missing Accept is assumed to be navigation
+// (safer to redirect than 401 on an ambiguous request).
+func (t *TraefikOidc) isNonNavigationRequest(req *http.Request) bool {
+	if mode := req.Header.Get("Sec-Fetch-Mode"); mode != "" {
+		return mode != "navigate"
+	}
+	accept := req.Header.Get("Accept")
+	if accept == "" || accept == "*/*" {
+		return false
+	}
+	return !strings.Contains(accept, "text/html")
+}
+
 // isRefreshTokenExpired checks if refresh token is likely expired (older than 6 hours)
 func (t *TraefikOidc) isRefreshTokenExpired(session *SessionData) bool {
 	// This is a heuristic check - actual implementation would depend on
