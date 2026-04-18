@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,10 +26,16 @@ type HTTPClientConfig struct {
 	Timeout               time.Duration
 	MaxConnsPerHost       int
 	WriteBufferSize       int
-	UseCookieJar          bool
-	ForceHTTP2            bool
-	DisableKeepAlives     bool
-	DisableCompression    bool
+	// RootCAs is an optional certificate pool used for TLS verification.
+	// A nil pool means "use the system trust store" (default behavior).
+	RootCAs *x509.CertPool
+	// InsecureSkipVerify disables TLS certificate verification.
+	// ONLY set this for local development against self-signed certificates.
+	InsecureSkipVerify bool
+	UseCookieJar       bool
+	ForceHTTP2         bool
+	DisableKeepAlives  bool
+	DisableCompression bool
 }
 
 // DefaultHTTPClientConfig returns the default configuration for general use
@@ -203,7 +210,8 @@ func (f *HTTPClientFactory) CreateHTTPClient(config HTTPClientConfig) *http.Clie
 				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			},
 			PreferServerCipherSuites: true,
-			InsecureSkipVerify:       false, // Always verify certificates
+			RootCAs:                  config.RootCAs,
+			InsecureSkipVerify:       config.InsecureSkipVerify, //nolint:gosec // opt-in, loud warning emitted at plugin startup
 		},
 		ForceAttemptHTTP2:     config.ForceHTTP2,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,

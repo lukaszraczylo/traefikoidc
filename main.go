@@ -113,12 +113,26 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		}
 	}
 	// Setup HTTP client
+	caPool, err := config.loadCACertPool()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load CA certificates: %w", err)
+	}
+	if config.InsecureSkipVerify {
+		logger.Errorf("SECURITY WARNING: InsecureSkipVerify is enabled for the OIDC provider. TLS certificate verification is DISABLED. Do not use in production.")
+	}
 	var httpClient *http.Client
 	if config.HTTPClient != nil {
 		httpClient = config.HTTPClient
 	} else {
-		httpClient = CreateDefaultHTTPClient()
+		defaultCfg := DefaultHTTPClientConfig()
+		defaultCfg.RootCAs = caPool
+		defaultCfg.InsecureSkipVerify = config.InsecureSkipVerify
+		httpClient = CreatePooledHTTPClient(defaultCfg)
 	}
+	tokenCfg := TokenHTTPClientConfig()
+	tokenCfg.RootCAs = caPool
+	tokenCfg.InsecureSkipVerify = config.InsecureSkipVerify
+	tokenHTTPClient := CreatePooledHTTPClient(tokenCfg)
 	goroutineWG := &sync.WaitGroup{}
 	cacheManager := GetGlobalCacheManagerWithConfig(goroutineWG, config)
 
@@ -199,7 +213,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
 		tokenCache:            cacheManager.GetSharedTokenCache(),
 		httpClient:            httpClient,
-		tokenHTTPClient:       CreateTokenHTTPClient(),
+		tokenHTTPClient:       tokenHTTPClient,
 		excludedURLs:          createStringMap(config.ExcludedURLs),
 		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
 		allowedUsers:          createCaseInsensitiveStringMap(config.AllowedUsers),
