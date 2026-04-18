@@ -125,6 +125,14 @@ testData:
   minimalHeaders: false # Reduce forwarded headers to prevent 431 errors (default: false)
   stripAuthCookies: false # Strip OIDC session cookies before forwarding to backend (default: false)
 
+  # Custom CA for OIDC providers signed by an internal/private CA
+  # (e.g. self-hosted GitLab, internal Keycloak, ADFS). Use caCertPath
+  # with a mounted secret for Kubernetes, or caCertPEM for inline config.
+  # See: https://github.com/lukaszraczylo/traefikoidc/issues/125
+  caCertPath: "" # Path to PEM-encoded CA bundle (default: use system trust store)
+  caCertPEM: ""  # Inline PEM-encoded CA bundle (may be combined with caCertPath)
+  insecureSkipVerify: false # Disable TLS verification — local dev ONLY (default: false)
+
   # Security Headers Configuration (enabled by default with 'default' profile)
   securityHeaders:
     enabled: true
@@ -1049,6 +1057,60 @@ configuration:
 
       Default: false (all cookies forwarded for backward compatibility)
       See: https://github.com/lukaszraczylo/traefikoidc/issues/122
+    required: false
+
+  caCertPath:
+    type: string
+    description: |
+      Path to a PEM-encoded CA bundle used to verify the OIDC provider's TLS
+      certificate. Use this when the provider is signed by an internal or
+      private CA that is not present in the system trust store (common with
+      self-hosted GitLab, internal Keycloak, ADFS, etc.).
+
+      The file is read once at plugin startup. If the file cannot be read or
+      contains no parseable certificates, the plugin fails to start with a
+      clear error — misconfigurations surface immediately instead of as
+      unexplained TLS failures at runtime.
+
+      For Kubernetes deployments, mount the CA bundle as a Secret and point
+      caCertPath at the mounted file.
+
+      Can be combined with caCertPEM; certificates from both sources are
+      merged into the same trust pool.
+
+      Default: "" (use the system trust store)
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/125
+    required: false
+
+  caCertPEM:
+    type: string
+    description: |
+      Inline PEM-encoded CA bundle used to verify the OIDC provider's TLS
+      certificate. Functionally equivalent to caCertPath but supplied
+      directly in the middleware configuration — useful for Traefik dynamic
+      config, labels, or environments without a convenient filesystem path.
+
+      Can be combined with caCertPath; certificates from both sources are
+      merged into the same trust pool.
+
+      Default: "" (use the system trust store)
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/125
+    required: false
+
+  insecureSkipVerify:
+    type: boolean
+    description: |
+      Disable TLS certificate verification when calling the OIDC provider.
+
+      WARNING: This is a security hole. Enabling it logs a loud SECURITY
+      WARNING at plugin startup and leaves the plugin open to
+      person-in-the-middle attacks on the OIDC traffic.
+
+      Intended ONLY for local development against self-signed providers.
+      For production use, configure caCertPath or caCertPEM instead.
+
+      Default: false
+      See: https://github.com/lukaszraczylo/traefikoidc/issues/125
     required: false
 
   enableBackchannelLogout:

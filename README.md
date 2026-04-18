@@ -155,6 +155,9 @@ The middleware supports the following configuration options:
 | `allowPrivateIPAddresses` | Allow private IP addresses in provider URLs (for internal networks with Keycloak, etc.) | `false` | `true` |
 | `minimalHeaders` | Reduce forwarded headers to prevent "431 Request Header Fields Too Large" errors | `false` | `true` |
 | `stripAuthCookies` | Strip OIDC session cookies before forwarding to backend services | `false` | `true` |
+| `caCertPath` | Path to a PEM-encoded CA bundle used to verify the OIDC provider's TLS certificate (for providers signed by an internal/private CA) | none | `/etc/ssl/certs/internal-ca.pem` |
+| `caCertPEM` | Inline PEM-encoded CA bundle (alternative to `caCertPath`; may be set alongside it) | none | See "Custom CA Certificates" section |
+| `insecureSkipVerify` | Disable TLS certificate verification for the OIDC provider. **For local development only**; logs a loud security warning at startup | `false` | `true` |
 | `enableBackchannelLogout` | Enable OIDC Back-Channel Logout (IdP-initiated logout via server-to-server POST) | `false` | `true` |
 | `backchannelLogoutURL` | The path for receiving backchannel logout tokens from the IdP | none | `/backchannel-logout` |
 | `enableFrontchannelLogout` | Enable OIDC Front-Channel Logout (IdP-initiated logout via iframe) | `false` | `true` |
@@ -174,6 +177,61 @@ The middleware supports the following configuration options:
 > - When `forceHTTPS: false` is explicitly set → scheme detection based on headers/TLS
 >
 > See [GitHub Issue #82](https://github.com/lukaszraczylo/traefikoidc/issues/82) for details.
+
+### Custom CA Certificates
+
+If your OIDC provider's TLS certificate is signed by an internal or private CA
+that is not in the system trust store (common with self-hosted GitLab, internal
+Keycloak, ADFS, etc.), you will see errors like:
+
+```
+Metadata recovery attempt failed: tls: failed to verify certificate:
+x509: certificate signed by unknown authority
+```
+
+Supply the CA bundle via one of the following options:
+
+**Option A — file path (recommended for Kubernetes with mounted secrets):**
+
+```yaml
+http:
+  middlewares:
+    oidc-auth:
+      plugin:
+        traefikoidc:
+          providerURL: https://gitlab.internal.example.com
+          # ... other settings ...
+          caCertPath: /etc/ssl/certs/internal-ca.pem
+```
+
+**Option B — inline PEM (useful for dynamic config / labels):**
+
+```yaml
+http:
+  middlewares:
+    oidc-auth:
+      plugin:
+        traefikoidc:
+          providerURL: https://gitlab.internal.example.com
+          # ... other settings ...
+          caCertPEM: |
+            -----BEGIN CERTIFICATE-----
+            MIIDXTCCAkWgAwIBAgIJAKl...
+            ...
+            -----END CERTIFICATE-----
+```
+
+Both options can be set at once; certificates from both sources are combined
+into the same pool. If the configured CA bundle contains no parseable
+certificates, the plugin fails to start with a clear error — misconfigurations
+surface immediately instead of as unexplained TLS failures at runtime.
+
+**`insecureSkipVerify: true`** is accepted but strongly discouraged. It
+disables certificate verification entirely and logs a loud `SECURITY WARNING`
+at startup. Use it only for local development against self-signed providers;
+prefer `caCertPath` / `caCertPEM` everywhere else.
+
+See [GitHub Issue #125](https://github.com/lukaszraczylo/traefikoidc/issues/125).
 
 ## Scope Configuration
 
