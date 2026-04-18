@@ -29,8 +29,9 @@ func TestMemoryMonitorComprehensive(t *testing.T) {
 		pressure := monitor.GetMemoryPressure()
 		assert.Equal(t, MemoryPressureNone, pressure)
 
-		// Collect stats to populate lastStats
-		monitor.GetCurrentStats()
+		// Explicitly sample to populate lastStats; GetCurrentStats is now a
+		// cached read and no longer forces a runtime.ReadMemStats.
+		monitor.Refresh()
 
 		// Now should return a valid pressure level
 		pressure = monitor.GetMemoryPressure()
@@ -46,11 +47,13 @@ func TestMemoryMonitorComprehensive(t *testing.T) {
 		thresholds := DefaultMemoryAlertThresholds()
 		monitor := NewMemoryMonitor(newNoOpLogger(), thresholds)
 
-		// Start monitoring should not panic
+		// Start monitoring should not panic. Interval is clamped to the
+		// minimum (30s); we rely on Refresh() when we need a synchronous
+		// sample instead of waiting for a tick.
 		assert.NotPanics(t, func() {
 			ctx := context.Background()
-			monitor.StartMonitoring(ctx, 100*time.Millisecond)
-			time.Sleep(GetTestDuration(50 * time.Millisecond))
+			monitor.StartMonitoring(ctx, 0)
+			monitor.Refresh()
 		})
 
 		// Clean up
@@ -117,6 +120,9 @@ func TestMemoryMonitorComprehensive(t *testing.T) {
 		thresholds := DefaultMemoryAlertThresholds()
 		monitor := NewMemoryMonitor(newNoOpLogger(), thresholds)
 
+		// Refresh forces a synchronous sample; GetCurrentStats is a cached
+		// read, so we sample first to guarantee fresh data.
+		monitor.Refresh()
 		stats := monitor.GetCurrentStats()
 		assert.NotNil(t, stats)
 		assert.Greater(t, stats.HeapAllocBytes, uint64(0))
@@ -450,12 +456,12 @@ func TestMemoryMonitorIntegration(t *testing.T) {
 		monitor := NewMemoryMonitor(newNoOpLogger(), thresholds)
 		defer monitor.StopMonitoring()
 
-		// Start monitoring
+		// Start monitoring. The interval is clamped to the minimum (30s) so
+		// the ticker won't fire during the test; drive the sample manually via
+		// Refresh() instead.
 		ctx := context.Background()
-		monitor.StartMonitoring(ctx, 50*time.Millisecond)
-
-		// Wait for at least one check
-		time.Sleep(GetTestDuration(150 * time.Millisecond))
+		monitor.StartMonitoring(ctx, 0)
+		monitor.Refresh()
 
 		// Get pressure (should be a valid pressure level)
 		pressure := monitor.GetMemoryPressure()
@@ -488,6 +494,7 @@ func TestMemoryStatsCollection(t *testing.T) {
 		thresholds := DefaultMemoryAlertThresholds()
 		monitor := NewMemoryMonitor(newNoOpLogger(), thresholds)
 
+		monitor.Refresh()
 		stats := monitor.GetCurrentStats()
 
 		assert.NotNil(t, stats)
@@ -501,6 +508,7 @@ func TestMemoryStatsCollection(t *testing.T) {
 		thresholds := DefaultMemoryAlertThresholds()
 		monitor := NewMemoryMonitor(newNoOpLogger(), thresholds)
 
+		monitor.Refresh()
 		stats := monitor.GetCurrentStats()
 
 		// Should calculate and include pressure level
@@ -521,13 +529,14 @@ func TestMemoryStatsCollection(t *testing.T) {
 		// Allocate some memory
 		_ = make([]byte, 1024*1024) // 1MB
 
-		// Get stats before GC
-		beforeStats := monitor.GetCurrentStats()
+		// Get stats before GC (explicit Refresh so we have a fresh pre-GC
+		// snapshot to compare against, not the constructor baseline).
+		beforeStats := monitor.Refresh()
 
-		// Trigger GC
+		// Trigger GC (internally Refresh()es before and after)
 		monitor.TriggerGC()
 
-		// Get stats after GC
+		// Get stats after GC from cache (TriggerGC already refreshed it)
 		afterStats := monitor.GetCurrentStats()
 
 		// After GC should have different stats

@@ -306,8 +306,10 @@ func (c *UniversalCache) Set(key string, value interface{}, ttl time.Duration) e
 		c.currentMemory += size
 	}
 
-	c.logger.Debugf("UniversalCache[%s]: Set key=%s, ttl=%v, size=%d bytes",
-		c.config.Type, key, ttl, size)
+	if c.logger.IsDebug() {
+		c.logger.Debugf("UniversalCache[%s]: Set key=%s, ttl=%v, size=%d bytes",
+			c.config.Type, key, ttl, size)
+	}
 
 	return nil
 }
@@ -331,10 +333,11 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 				// Fall through to local cache
 			} else {
 				atomic.AddInt64(&c.hits, 1)
-				// Update local cache with backend value
-				go func() {
-					_ = c.updateLocalCache(key, value, c.config.DefaultTTL)
-				}()
+				// Update local cache with backend value synchronously.
+				// Under yaegi, goroutine spawn is 5-10x costlier than compiled Go,
+				// and this path fires per-request on cold local cache.
+				// updateLocalCache is cheap (map write under mutex).
+				_ = c.updateLocalCache(key, value, c.config.DefaultTTL)
 				return value, true
 			}
 		}
@@ -540,7 +543,9 @@ func (c *UniversalCache) evictOldest() {
 		if item, exists := c.items[key]; exists {
 			c.removeItem(key, item)
 			atomic.AddInt64(&c.evictions, 1)
-			c.logger.Debugf("UniversalCache[%s]: Evicted key=%s", c.config.Type, key)
+			if c.logger.IsDebug() {
+				c.logger.Debugf("UniversalCache[%s]: Evicted key=%s", c.config.Type, key)
+			}
 		}
 	}
 }

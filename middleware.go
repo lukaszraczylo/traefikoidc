@@ -13,6 +13,63 @@ import (
 	"github.com/lukaszraczylo/traefikoidc/internal/utils"
 )
 
+// bypassReason describes why a request is being forwarded without OIDC auth.
+// It is only used for logging and to decide whether extra SSE-specific work
+// (propagating the user header from an existing session) should run.
+const (
+	bypassReasonExcluded = "excluded-url"
+	bypassReasonSSE      = "sse"
+)
+
+// shouldBypassAuth decides whether a request must skip OIDC authentication
+// entirely. It returns (true, reason) when either the request path matches a
+// configured excluded URL or the Accept header asks for a text/event-stream
+// response (SSE). The reason lets ServeHTTP apply any side-effects that are
+// unique to the bypass kind (e.g. propagating user headers for SSE).
+//
+// This must be called BEFORE waiting on t.initComplete so excluded and SSE
+// traffic is never blocked by a slow/broken provider.
+func (t *TraefikOidc) shouldBypassAuth(req *http.Request) (bool, string) {
+	if t.determineExcludedURL(req.URL.Path) {
+		return true, bypassReasonExcluded
+	}
+	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
+		return true, bypassReasonSSE
+	}
+	return false, ""
+}
+
+// applySSEUserHeaders attempts to copy the authenticated user's identity from
+// an existing session onto the outgoing SSE request so downstream services
+// can still see who the user is. Failures are logged (not silenced) because
+// they indicate either a corrupt cookie or a misconfigured session manager
+// and are useful for debugging, but they never block the bypass itself.
+func (t *TraefikOidc) applySSEUserHeaders(req *http.Request) {
+	if t.sessionManager == nil {
+		return
+	}
+
+	session, err := t.sessionManager.GetSession(req)
+	if err != nil {
+		// Intentionally not fatal: SSE requests bypass auth, we just lose the
+		// forwarded-user header for this request.
+		t.logger.Debugf("SSE bypass: unable to load session for user header propagation: %v", err)
+		return
+	}
+	defer session.returnToPoolSafely()
+
+	email := session.GetEmail()
+	if email == "" {
+		return
+	}
+
+	req.Header.Set("X-Forwarded-User", email)
+	if !t.minimalHeaders {
+		req.Header.Set("X-Auth-Request-User", email)
+	}
+	t.logger.Debugf("SSE bypass: forwarded user %s from session", email)
+}
+
 // ServeHTTP implements the main middleware logic for processing HTTP requests.
 // It handles the complete OIDC authentication flow including:
 //   - Excluded URL bypass
@@ -67,23 +124,26 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		t.firstRequestMutex.Unlock()
 	}
 
-	// Check excluded URLs before waiting for initialization
-	if t.determineExcludedURL(req.URL.Path) {
-		t.logger.Debugf("Request path %s excluded by configuration, bypassing OIDC", req.URL.Path)
-		t.next.ServeHTTP(rw, req)
-		return
-	}
-
-	// Check for SSE requests before waiting for initialization
-	acceptHeader := req.Header.Get("Accept")
-	if strings.Contains(acceptHeader, "text/event-stream") {
-		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
+	// Evaluate auth-bypass once, before waiting for initialization. Excluded URLs
+	// and SSE requests must not block on provider init. For SSE we additionally
+	// attempt to forward the user identity from an existing session (best
+	// effort) so downstream handlers still see X-Forwarded-User.
+	if bypass, reason := t.shouldBypassAuth(req); bypass {
+		t.logger.Debugf("Bypassing OIDC for %s (%s)", req.URL.Path, reason)
+		if reason == bypassReasonSSE {
+			t.applySSEUserHeaders(req)
+		}
 		t.next.ServeHTTP(rw, req)
 		return
 	}
 
 	// Log waiting for initialization to help diagnose hanging requests
 	t.logger.Debug("Waiting for OIDC provider initialization...")
+
+	// time.NewTimer + Stop avoids leaking a goroutine+channel for 30s on every
+	// request when initComplete fires quickly (would happen with time.After).
+	initTimer := time.NewTimer(30 * time.Second)
+	defer initTimer.Stop()
 
 	select {
 	case <-t.initComplete:
@@ -115,34 +175,13 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		t.logger.Debug("Request canceled while waiting for OIDC initialization")
 		t.sendErrorResponse(rw, req, "Request canceled", http.StatusRequestTimeout)
 		return
-	case <-time.After(30 * time.Second):
+	case <-initTimer.C:
 		t.logger.Error("Timeout waiting for OIDC initialization")
 		t.sendErrorResponse(rw, req, "Timeout waiting for OIDC provider initialization - please try again later", http.StatusServiceUnavailable)
 		return
 	}
 
-	if t.determineExcludedURL(req.URL.Path) {
-		t.logger.Debugf("Request path %s excluded by configuration, bypassing OIDC", req.URL.Path)
-		t.next.ServeHTTP(rw, req)
-		return
-	}
-	acceptHeader = req.Header.Get("Accept")
-	if strings.Contains(acceptHeader, "text/event-stream") {
-		t.logger.Debugf("Request accepts text/event-stream (%s), bypassing OIDC", acceptHeader)
-		// Set forwarded user headers from existing session before bypassing
-		if session, err := t.sessionManager.GetSession(req); err == nil {
-			defer session.returnToPoolSafely()
-			if email := session.GetEmail(); email != "" {
-				req.Header.Set("X-Forwarded-User", email)
-				if !t.minimalHeaders {
-					req.Header.Set("X-Auth-Request-User", email)
-				}
-				t.logger.Debugf("SSE bypass: forwarded user %s from session", email)
-			}
-		}
-		t.next.ServeHTTP(rw, req)
-		return
-	}
+	// Bypass checks already ran before the init wait; no need to repeat them.
 	t.sessionManager.CleanupOldCookies(rw, req)
 
 	session, err := t.sessionManager.GetSession(req)
@@ -397,7 +436,10 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 	}
 
 	if len(t.headerTemplates) > 0 {
-		claims, err := t.extractClaimsFunc(session.GetIDToken())
+		// Reuse claims parsed earlier in this request if the ID token has not
+		// changed. Saves an unnecessary JWT parse on every authenticated
+		// request that uses headerTemplates.
+		claims, err := session.GetIDTokenClaims(t.extractClaimsFunc)
 		if err != nil {
 			t.logger.Errorf("Failed to extract claims from ID Token for template headers: %v", err)
 		} else {

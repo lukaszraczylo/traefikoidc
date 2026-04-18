@@ -18,7 +18,6 @@ type RefreshCoordinator struct {
 	inFlightRefreshes      map[string]*refreshOperation
 	cleanupTimers          map[string]*time.Timer
 	sessionRefreshAttempts map[string]*refreshAttemptTracker
-	delayedCleanupQueue    chan delayedCleanupItem
 	circuitBreaker         *RefreshCircuitBreaker
 	metrics                *RefreshMetrics
 	logger                 *Logger
@@ -107,12 +106,6 @@ type RefreshMetrics struct {
 	currentInFlightRefreshes int32
 }
 
-// delayedCleanupItem represents an item scheduled for delayed cleanup
-type delayedCleanupItem struct {
-	cleanupAt time.Time
-	tokenHash string
-}
-
 // RefreshCircuitBreaker implements a circuit breaker specifically for refresh operations
 type RefreshCircuitBreaker struct {
 	lastFailureTime time.Time
@@ -143,7 +136,6 @@ func NewRefreshCoordinator(config RefreshCoordinatorConfig, logger *Logger) *Ref
 		metrics:                &RefreshMetrics{},
 		logger:                 logger,
 		stopChan:               make(chan struct{}),
-		delayedCleanupQueue:    make(chan delayedCleanupItem, 1000), // Buffered channel for cleanup items
 		cleanupTimers:          make(map[string]*time.Timer),
 		circuitBreaker: &RefreshCircuitBreaker{
 			config: RefreshCircuitBreakerConfig{
@@ -157,10 +149,6 @@ func NewRefreshCoordinator(config RefreshCoordinatorConfig, logger *Logger) *Ref
 	// Start cleanup goroutine
 	rc.wg.Add(1)
 	go rc.cleanupRoutine()
-
-	// Start delayed cleanup processor (single goroutine processes all cleanup timers)
-	rc.wg.Add(1)
-	go rc.processDelayedCleanups()
 
 	return rc
 }
@@ -377,35 +365,19 @@ func (rc *RefreshCoordinator) scheduleDelayedCleanup(tokenHash string) {
 	rc.cleanupTimerMu.Unlock()
 }
 
-// performCleanup removes the operation from the in-flight map
+// performCleanup removes the operation from the in-flight map.
+// Idempotent: only decrements the in-flight counter if an entry was actually
+// removed. This guards against any future path accidentally calling cleanup
+// twice for the same tokenHash (which would corrupt the refresh budget).
 func (rc *RefreshCoordinator) performCleanup(tokenHash string) {
 	rc.refreshMutex.Lock()
-	delete(rc.inFlightRefreshes, tokenHash)
+	_, existed := rc.inFlightRefreshes[tokenHash]
+	if existed {
+		delete(rc.inFlightRefreshes, tokenHash)
+	}
 	rc.refreshMutex.Unlock()
-	atomic.AddInt32(&rc.metrics.currentInFlightRefreshes, -1)
-}
-
-// processDelayedCleanups processes delayed cleanup requests from the queue
-// This is a single goroutine that handles all delayed cleanups
-func (rc *RefreshCoordinator) processDelayedCleanups() {
-	defer rc.wg.Done()
-
-	for {
-		select {
-		case item := <-rc.delayedCleanupQueue:
-			// Wait until cleanup time
-			waitDuration := time.Until(item.cleanupAt)
-			if waitDuration > 0 {
-				select {
-				case <-time.After(waitDuration):
-				case <-rc.stopChan:
-					return
-				}
-			}
-			rc.performCleanup(item.tokenHash)
-		case <-rc.stopChan:
-			return
-		}
+	if existed {
+		atomic.AddInt32(&rc.metrics.currentInFlightRefreshes, -1)
 	}
 }
 
@@ -498,11 +470,16 @@ func (rc *RefreshCoordinator) hashRefreshToken(token string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// isUnderMemoryPressure checks if the system is under memory pressure
+// isUnderMemoryPressure checks if the system is under memory pressure by
+// consulting the global memory monitor. Returns true when pressure reaches
+// High or Critical, at which point we refuse new refresh operations to
+// avoid aggravating an already-stressed heap.
 func (rc *RefreshCoordinator) isUnderMemoryPressure() bool {
-	// This is a simplified check - in production you'd want to use runtime.MemStats
-	// or system-specific memory monitoring
-	return false // Placeholder - implement actual memory check
+	monitor := GetGlobalMemoryMonitor()
+	if monitor == nil {
+		return false
+	}
+	return monitor.GetMemoryPressure() >= MemoryPressureHigh
 }
 
 // cleanupRoutine periodically cleans up stale tracking entries

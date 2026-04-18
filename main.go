@@ -293,13 +293,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	startReplayCacheCleanup(pluginCtx, logger)
 
-	// Start memory monitoring for leak detection and performance insights
+	// Start memory monitoring for leak detection and performance insights.
+	// The interval is clamped to MinMemoryMonitorInterval (30s) inside
+	// StartMonitoring; tests that need deterministic sampling should call
+	// MemoryMonitor.Refresh() directly instead of waiting on a fast ticker.
 	memoryMonitor := GetGlobalMemoryMonitor()
-	monitorInterval := 60 * time.Second
-	if isTestMode() {
-		monitorInterval = 100 * time.Millisecond // Fast interval for tests
-	}
-	memoryMonitor.StartMonitoring(pluginCtx, monitorInterval)
+	memoryMonitor.StartMonitoring(pluginCtx, DefaultMemoryMonitorInterval)
 	logger.Debug("Started global memory monitoring")
 
 	logger.Debugf("TraefikOidc.New: Final t.scopes initialized to: %v", t.scopes)

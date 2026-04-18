@@ -734,6 +734,16 @@ func (l *Logger) Errorf(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
 }
 
+// IsDebug reports whether debug-level logging is enabled.
+// Callers should use this to avoid expensive format-string expansion
+// (e.g. on hot paths under yaegi) when debug output would be discarded.
+func (l *Logger) IsDebug() bool {
+	if l == nil || l.logDebug == nil {
+		return false
+	}
+	return l.logDebug.Writer() != io.Discard
+}
+
 // newNoOpLogger creates a logger that discards all output.
 //
 // Deprecated: Use GetSingletonNoOpLogger() instead for better memory efficiency.

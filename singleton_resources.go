@@ -548,17 +548,24 @@ func (gc *GenericCache) Delete(key string) {
 	delete(gc.data, key)
 }
 
-// cleanupRoutine periodically cleans up the cache
+// cleanupRoutine periodically wipes the cache.
+//
+// NOTE: GenericCache does not track per-entry timestamps, so this is a
+// "clear-all on tick" strategy — every `gc.ttl` interval the entire map
+// is replaced, regardless of when each entry was written. This is the
+// intentional (simplified) behavior of GenericCache, which exists mainly
+// as a generic fallback for tests and non-typed caches. Callers that
+// require true per-entry TTL must use UniversalCache / UnifiedCache which
+// track expiry per entry.
 func (gc *GenericCache) cleanupRoutine() {
-	ticker := time.NewTicker(gc.ttl)
-	defer ticker.Stop()
+	wipeTicker := time.NewTicker(gc.ttl)
+	defer wipeTicker.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-wipeTicker.C:
 			gc.mu.Lock()
-			// Simple cleanup - clear all data after TTL
-			// In production, you'd track individual entry TTLs
+			// Clear-all on tick, not per-entry TTL (see function doc).
 			gc.data = make(map[string]interface{})
 			gc.mu.Unlock()
 		case <-gc.stopChan:
