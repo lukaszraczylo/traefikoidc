@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
 // validateRedirectCount checks if redirect limit is exceeded and handles the error
@@ -77,7 +75,12 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		return
 	}
 
-	csrfToken := uuid.NewString()
+	csrfToken, err := newUUIDv4()
+	if err != nil {
+		t.logger.Errorf("Failed to generate CSRF token: %v", err)
+		http.Error(rw, "Failed to generate CSRF token", http.StatusInternalServerError)
+		return
+	}
 	nonce, err := generateNonce()
 	if err != nil {
 		t.logger.Errorf("Failed to generate nonce: %v", err)
