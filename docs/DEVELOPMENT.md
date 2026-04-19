@@ -16,9 +16,8 @@ Guide for local development, testing, and contributing to the Traefik OIDC middl
 
 ## Prerequisites
 
-- **Go 1.23+** for plugin compilation
-- **Docker & Docker Compose** for local testing
-- **OIDC Provider** credentials (Google, Azure, etc.)
+- **Go 1.24+** (matches `go.mod`; CI runs Go 1.24.11)
+- **OIDC Provider** credentials (Google, Azure, etc.) for any end-to-end test against a real provider
 
 ### Required Development Tools
 
@@ -40,110 +39,32 @@ go install golang.org/x/vuln/cmd/govulncheck@latest
 
 ## Local Development Setup
 
-### Docker Compose Environment
-
-The repository includes a Docker Compose setup for testing the plugin locally.
-
-#### 1. Host Configuration
-
-Add to `/etc/hosts`:
+### Build and unit tests
 
 ```bash
-127.0.0.1 hello.localhost
-127.0.0.1 traefik.localhost
+go mod tidy
+go build ./...
+go test ./... -short          # fast loop, < 30 s
+go test -race -timeout=15m ./...
 ```
 
-#### 2. Plugin Configuration
+### Sample plugin configurations
 
-The plugin is loaded using Traefik's **local plugins mode**:
+Working middleware/Traefik configs live in [`examples/`](../examples/):
 
-- Plugin source: Parent directory (`../`)
-- Mount path: `/plugins-local/src/github.com/lukaszraczylo/traefikoidc`
-- Configuration: `experimental.localPlugins` in `traefik.yml`
+- `complete-traefik-config.yaml` — full middleware example
+- `redis-config.yaml` — Redis cache configuration
 
-#### 3. OIDC Provider Setup
+To run the plugin against a real Traefik instance, drop the project on disk
+and load it via `experimental.localPlugins` in your Traefik static config —
+see the [README install section](../README.md#install).
 
-Edit `docker/dynamic.yml` with your provider details:
+### Integration tests
 
-**Google:**
-```yaml
-http:
-  middlewares:
-    oidc-auth:
-      plugin:
-        traefikoidc:
-          providerURL: "https://accounts.google.com"
-          clientID: "your-client-id.apps.googleusercontent.com"
-          clientSecret: "your-google-client-secret"
-          sessionEncryptionKey: "your-32-character-encryption-key"
-          callbackURL: "/oauth2/callback"
-          logoutURL: "/oauth2/logout"
-          scopes:
-            - "openid"
-            - "email"
-            - "profile"
-```
-
-**Azure AD:**
-```yaml
-http:
-  middlewares:
-    oidc-auth:
-      plugin:
-        traefikoidc:
-          providerURL: "https://login.microsoftonline.com/your-tenant-id/v2.0"
-          clientID: "your-azure-client-id"
-          clientSecret: "your-azure-client-secret"
-          sessionEncryptionKey: "your-32-character-encryption-key"
-          callbackURL: "/oauth2/callback"
-          scopes:
-            - "openid"
-            - "email"
-            - "profile"
-```
-
-#### 4. Start Environment
+Integration tests live in `integration/`. Run them explicitly:
 
 ```bash
-cd docker
-docker-compose up -d
-```
-
-#### 5. Test Plugin
-
-- **Protected App**: http://hello.localhost (redirects to OIDC)
-- **Traefik Dashboard**: http://traefik.localhost:8080
-
-### Development Workflow
-
-1. **Edit plugin code** in the project root
-2. **Build and test** (optional syntax check):
-   ```bash
-   go mod tidy
-   go build .
-   go test ./...
-   ```
-3. **Restart Traefik** to reload plugin:
-   ```bash
-   docker-compose restart traefik
-   ```
-4. **Test changes** at http://hello.localhost
-
-### Debugging
-
-**View plugin logs:**
-```bash
-docker-compose logs -f traefik | grep traefikoidc
-```
-
-**Check plugin loading:**
-```bash
-docker-compose logs traefik | grep -i plugin
-```
-
-**Verify plugin directory:**
-```bash
-docker-compose exec traefik ls -la /plugins-local/src/github.com/lukaszraczylo/traefikoidc/
+go test ./integration/... -run Integration -v
 ```
 
 ---
@@ -299,7 +220,7 @@ The repository uses GitHub Actions for comprehensive validation with 20+ paralle
 
 #### Testing (9 suites)
 - Race Detector
-- Coverage (75% threshold)
+- Coverage (70% threshold, enforced in `pr.yaml`)
 - Memory Leaks
 - Integration Tests
 - Regression Tests
@@ -323,13 +244,13 @@ Tests run in parallel for:
 #### Performance & Build (3 checks)
 - Benchmarks
 - Multi-platform Build (linux/darwin x amd64/arm64)
-- Go Version Compatibility (Go 1.23 & 1.24)
+- Go Version Compatibility (currently Go 1.24.11 in CI)
 
 ### Quality Gates
 
 All PRs must pass:
 - All parallel checks
-- 75% test coverage minimum
+- 70% test coverage minimum
 - Zero security vulnerabilities
 - No race conditions
 - No memory leaks

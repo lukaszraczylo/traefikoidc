@@ -225,8 +225,13 @@ func TestProviderRegistry_DetectProvider(t *testing.T) {
 			expected:  oktaProvider,
 		},
 		{
-			name:      "Keycloak provider detection",
+			name:      "Keycloak provider detection (legacy /auth/realms/)",
 			issuerURL: "https://auth.example.com/auth/realms/master",
+			expected:  keycloakProvider,
+		},
+		{
+			name:      "Keycloak provider detection (modern /realms/, KC 17+)",
+			issuerURL: "https://auth.example.com/realms/master",
 			expected:  keycloakProvider,
 		},
 		{

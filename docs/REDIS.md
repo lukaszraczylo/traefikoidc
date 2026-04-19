@@ -109,11 +109,11 @@ redis:
 | `writeTimeout` | int | `3` | Write timeout (seconds) |
 | `enableTLS` | bool | `false` | Enable TLS for connections |
 | `tlsSkipVerify` | bool | `false` | Skip TLS certificate verification |
-| `enableCircuitBreaker` | bool | `true` | Enable circuit breaker |
-| `circuitBreakerThreshold` | int | `5` | Failures before circuit opens |
-| `circuitBreakerTimeout` | int | `60` | Circuit reset timeout (seconds) |
-| `enableHealthCheck` | bool | `true` | Enable periodic health checks |
-| `healthCheckInterval` | int | `30` | Health check interval (seconds) |
+| `enableCircuitBreaker` | bool | `false` | Wrap the Redis backend with a circuit breaker. **Recommended `true` in production.** |
+| `circuitBreakerThreshold` | int | `5` | Consecutive failures before the circuit opens (only when `enableCircuitBreaker: true`). |
+| `circuitBreakerTimeout` | int | `60` | Seconds the circuit stays open before allowing a probe (only when `enableCircuitBreaker: true`). |
+| `enableHealthCheck` | bool | `false` | Wrap the Redis backend with periodic health checks. **Recommended `true` in production.** |
+| `healthCheckInterval` | int | `30` | Health check interval in seconds (only when `enableHealthCheck: true`). |
 | `hybridL1Size` | int | `500` | Max items in L1 cache (hybrid mode) |
 | `hybridL1MemoryMB` | int64 | `10` | Max memory for L1 cache in MB |
 
@@ -134,13 +134,21 @@ REDIS_READ_TIMEOUT=3
 REDIS_WRITE_TIMEOUT=3
 REDIS_ENABLE_TLS=false
 REDIS_TLS_SKIP_VERIFY=false
+REDIS_HYBRID_L1_SIZE=500
+REDIS_HYBRID_L1_MEMORY_MB=10
 ```
+
+> Resilience fields (`enableCircuitBreaker`, `enableHealthCheck`,
+> `circuitBreakerThreshold`, `circuitBreakerTimeout`, `healthCheckInterval`)
+> have no environment variable fallback — set them in plugin configuration.
+
+Invalid `cacheMode` values are rejected at plugin startup.
 
 ---
 
 ## Cache Modes
 
-### Memory Mode (Default without Redis)
+### Memory Mode (used when Redis is disabled)
 
 ```yaml
 redis:

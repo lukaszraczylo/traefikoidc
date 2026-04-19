@@ -147,7 +147,8 @@ func (r *ProviderRegistry) detectProviderUnsafe(issuerURL string) OIDCProvider {
 				return p
 			}
 		case ProviderTypeKeycloak:
-			if strings.Contains(host, "keycloak") || strings.Contains(normalizedURL.Path, "/auth/realms/") {
+			// Match both Keycloak <17 (`/auth/realms/`) and 17+ (`/realms/`).
+			if strings.Contains(host, "keycloak") || strings.Contains(normalizedURL.Path, "/realms/") {
 				return p
 			}
 		case ProviderTypeAWSCognito:
