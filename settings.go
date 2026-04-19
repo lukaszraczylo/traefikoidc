@@ -1,6 +1,7 @@
 package traefikoidc
 
 import (
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log"
@@ -70,6 +71,46 @@ type Config struct {
 	EnableFrontchannelLogout  bool                             `json:"enableFrontchannelLogout,omitempty"`
 	BackchannelLogoutURL      string                           `json:"backchannelLogoutURL,omitempty"`
 	FrontchannelLogoutURL     string                           `json:"frontchannelLogoutURL,omitempty"`
+	// CACertPath is an optional filesystem path to a PEM-encoded CA bundle used
+	// to verify the OIDC provider's TLS certificate. Use this when the provider
+	// is signed by an internal/private CA that is not in the system trust store.
+	CACertPath string `json:"caCertPath,omitempty"`
+	// CACertPEM is an optional inline PEM-encoded CA bundle, equivalent to
+	// CACertPath but supplied directly in the middleware configuration. Both
+	// may be set; certificates from both sources are combined.
+	CACertPEM string `json:"caCertPEM,omitempty"`
+	// InsecureSkipVerify disables TLS certificate verification for the OIDC
+	// provider. Intended ONLY for local development against self-signed
+	// providers. Enabling this in production is a security hole — prefer
+	// CACertPath/CACertPEM. Emits a loud warning at startup.
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+}
+
+// loadCACertPool assembles an x509.CertPool from CACertPath and CACertPEM.
+// Returns (nil, nil) when neither is configured — callers should fall back to
+// the system trust store. Returns a descriptive error if a PEM source is
+// configured but contains no parseable certificates, so misconfigurations
+// surface at startup rather than as unexplained TLS failures at runtime.
+func (c *Config) loadCACertPool() (*x509.CertPool, error) {
+	if c.CACertPath == "" && c.CACertPEM == "" {
+		return nil, nil
+	}
+	pool := x509.NewCertPool()
+	if c.CACertPath != "" {
+		data, err := os.ReadFile(c.CACertPath)
+		if err != nil {
+			return nil, fmt.Errorf("read caCertPath %q: %w", c.CACertPath, err)
+		}
+		if !pool.AppendCertsFromPEM(data) {
+			return nil, fmt.Errorf("caCertPath %q: no valid PEM certificates found", c.CACertPath)
+		}
+	}
+	if c.CACertPEM != "" {
+		if !pool.AppendCertsFromPEM([]byte(c.CACertPEM)) {
+			return nil, fmt.Errorf("caCertPEM: no valid PEM certificates found")
+		}
+	}
+	return pool, nil
 }
 
 // RedisConfig configures Redis cache backend settings for distributed caching.
@@ -732,6 +773,16 @@ func (l *Logger) Debugf(format string, args ...interface{}) {
 // Errorf logs a formatted error message. Errors are always logged regardless of level.
 func (l *Logger) Errorf(format string, args ...interface{}) {
 	l.logError.Printf(format, args...)
+}
+
+// IsDebug reports whether debug-level logging is enabled.
+// Callers should use this to avoid expensive format-string expansion
+// (e.g. on hot paths under yaegi) when debug output would be discarded.
+func (l *Logger) IsDebug() bool {
+	if l == nil || l.logDebug == nil {
+		return false
+	}
+	return l.logDebug.Writer() != io.Discard
 }
 
 // newNoOpLogger creates a logger that discards all output.

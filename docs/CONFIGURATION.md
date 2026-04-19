@@ -52,7 +52,7 @@ spec:
 | `logoutURL` | string | `callbackURL + "/logout"` | Path for logout requests |
 | `postLogoutRedirectURI` | string | `/` | Redirect URL after logout |
 | `logLevel` | string | `info` | Logging verbosity (`debug`, `info`, `error`) |
-| `forceHTTPS` | bool | `false` | Force HTTPS for redirect URIs |
+| `forceHTTPS` | bool | `true` | Force HTTPS for redirect URIs (set `false` only for plaintext HTTP local dev) |
 | `rateLimit` | int | `100` | Maximum requests per second |
 | `excludedURLs` | []string | none | Paths that bypass authentication |
 | `revocationURL` | string | auto-discovered | Token revocation endpoint |
@@ -62,13 +62,13 @@ spec:
 
 ### TLS Termination at Load Balancer
 
-If running Traefik behind a load balancer (AWS ALB, Google Cloud LB, Azure App Gateway) that terminates TLS:
+`forceHTTPS` defaults to `true`, so redirect URIs always use `https://`. This is
+the correct default behind any TLS-terminating load balancer (AWS ALB, Google
+Cloud LB, Azure App Gateway) — `X-Forwarded-Proto` cannot be trusted (ALB may
+overwrite it).
 
-```yaml
-forceHTTPS: true  # Required for correct redirect URIs
-```
-
-Without this setting, redirect URIs will use `http://` instead of `https://`, causing OAuth callback failures.
+Set `forceHTTPS: false` only when you serve OIDC over plaintext HTTP (local
+dev). Otherwise leave it at default.
 
 ---
 

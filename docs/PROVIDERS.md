@@ -23,10 +23,10 @@ Configuration reference for each supported OIDC provider.
 | Provider | OIDC Support | Refresh Tokens | Auto-Detection | ID Tokens |
 |----------|-------------|----------------|----------------|-----------|
 | Google | Full | Yes | `accounts.google.com` | Yes |
-| Azure AD | Full | Yes | `login.microsoftonline.com` | Yes |
+| Azure AD | Full | Yes | `login.microsoftonline.com`, `sts.windows.net` | Yes |
 | Auth0 | Full | Yes | `*.auth0.com` | Yes |
-| Okta | Full | Yes | `*.okta.com` | Yes |
-| Keycloak | Full | Yes | `/auth/realms/` path | Yes |
+| Okta | Full | Yes | `*.okta.com`, `*.oktapreview.com`, `*.okta-emea.com` | Yes |
+| Keycloak | Full | Yes | host containing `keycloak`, or `/realms/` in path (matches both `/auth/realms/` legacy and `/realms/` modern) | Yes |
 | AWS Cognito | Full | Yes | `cognito-idp.*.amazonaws.com` | Yes |
 | GitLab | Full | Yes | `gitlab.com` | Yes |
 | GitHub | OAuth 2.0 Only | No | `github.com` | No |

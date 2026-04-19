@@ -25,7 +25,10 @@ The **audience** (`aud`) claim in a JWT identifies the intended recipient of the
 
 ### Why Does This Matter?
 
-Proper audience validation prevents **token confusion attacks** where a token intended for one API is used to access another API.
+Audience validation rejects access tokens whose `aud` claim does not match the
+expected audience, blocking the trivial form of token confusion where a token
+issued for API A is presented to API B. (Defence in depth — pair with
+short-lived tokens, rotation, and per-API client credentials.)
 
 ---
 
@@ -137,8 +140,8 @@ http:
 **Recommended:** `true` for production
 
 **What it does:**
-- When `true`: Rejects sessions if access token audience doesn't match (prevents Scenario 2)
-- When `false`: Logs warnings but allows fallback to ID token (backward compatible)
+- When `true`: On audience mismatch, the middleware does **not** silently fall back to ID-token validation. It tries to refresh the access token first; if no refresh token is present (or refresh fails), the user is re-authenticated.
+- When `false`: Logs warnings and falls back to ID-token validation (backward compatible).
 
 **Example:**
 ```yaml
@@ -349,7 +352,7 @@ When opaque tokens are detected:
 
 **Cache behavior:**
 - Cache key: Token hash
-- TTL: 5 minutes or token expiry (whichever is shorter)
+- TTL: 5 minutes; if the token's `exp` is sooner, the cache entry expires at `exp` instead. Tokens without `exp` use the flat 5-minute TTL.
 - Reduces introspection requests for frequently used tokens
 
 ---

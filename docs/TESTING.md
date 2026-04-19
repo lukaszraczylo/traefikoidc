@@ -6,8 +6,8 @@ Comprehensive testing infrastructure for traefikoidc.
 
 | Metric | Value |
 |--------|-------|
-| Test files | 99 |
-| Lines of test code | ~65,500 |
+| Test files | 110 |
+| Lines of test code | ~72,000 |
 | Code coverage | 71.0% |
 | Race conditions | None (all pass with `-race`) |
 

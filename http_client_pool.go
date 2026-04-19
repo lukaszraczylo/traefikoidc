@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -103,7 +104,8 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			},
 			PreferServerCipherSuites: true,
-			InsecureSkipVerify:       false,
+			RootCAs:                  config.RootCAs,
+			InsecureSkipVerify:       config.InsecureSkipVerify, //nolint:gosec // opt-in, loud warning emitted at plugin startup
 		},
 		ForceAttemptHTTP2:     config.ForceHTTP2,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
@@ -205,8 +207,21 @@ func (p *SharedTransportPool) performCleanup() {
 
 // configKey generates a unique key for a config
 func (p *SharedTransportPool) configKey(config HTTPClientConfig) string {
-	// Simple key based on main parameters
-	return string(rune(config.MaxConnsPerHost)) + string(rune(config.MaxIdleConnsPerHost))
+	// Pool transports by the parameters that change TLS or connection
+	// behavior. RootCAs and InsecureSkipVerify MUST be part of the key:
+	// otherwise a middleware configured with a custom CA would share a
+	// transport with one using the system store, silently bypassing its
+	// CA configuration.
+	skip := "0"
+	if config.InsecureSkipVerify {
+		skip = "1"
+	}
+	return fmt.Sprintf("%d|%d|%p|%s",
+		config.MaxConnsPerHost,
+		config.MaxIdleConnsPerHost,
+		config.RootCAs,
+		skip,
+	)
 }
 
 // Cleanup closes all transports and stops the cleanup goroutine

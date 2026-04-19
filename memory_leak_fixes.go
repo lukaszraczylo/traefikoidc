@@ -9,13 +9,18 @@ import (
 // LazyBackgroundTask wraps BackgroundTask to provide delayed initialization.
 // This prevents memory leaks from unnecessary background tasks by starting
 // them only when actually needed, reducing resource usage in idle scenarios.
+//
+// Lifecycle is one-shot: once Stop has been called the task cannot be
+// restarted. The underlying BackgroundTask uses sync.Once for Start and
+// refuses to re-run after Stop, so restart is not supported by design.
 type LazyBackgroundTask struct {
 	// BackgroundTask is the underlying task implementation
 	*BackgroundTask
-	// started tracks whether the task has been activated
+	// mu guards the started flag against concurrent StartIfNeeded / Stop calls.
+	mu sync.Mutex
+	// started tracks whether the task has been activated.
+	// Only mutated while holding mu.
 	started bool
-	// startOnce ensures single initialization
-	startOnce sync.Once
 }
 
 // NewLazyBackgroundTask creates a background task that doesn't start immediately.
@@ -29,24 +34,28 @@ func NewLazyBackgroundTask(name string, interval time.Duration, taskFunc func(),
 }
 
 // StartIfNeeded starts the background task only if it hasn't been started yet.
-// Uses sync.Once to ensure thread-safe single initialization.
+// Safe to call concurrently. After Stop has been called this is a no-op;
+// the task is not restartable.
 func (lt *LazyBackgroundTask) StartIfNeeded() {
-	lt.startOnce.Do(func() {
-		if !lt.started {
-			lt.BackgroundTask.Start()
-			lt.started = true
-		}
-	})
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	if lt.started {
+		return
+	}
+	lt.BackgroundTask.Start()
+	lt.started = true
 }
 
 // Stop stops the background task if it was started.
-// Resets the start state to allow potential future re-initialization.
+// Once stopped, the task cannot be restarted (see type doc).
 func (lt *LazyBackgroundTask) Stop() {
-	if lt.started {
-		lt.BackgroundTask.Stop()
-		lt.started = false
-		lt.startOnce = sync.Once{}
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	if !lt.started {
+		return
 	}
+	lt.BackgroundTask.Stop()
+	lt.started = false
 }
 
 // NewLazyCacheWithLogger creates a cache that doesn't start cleanup until first use.

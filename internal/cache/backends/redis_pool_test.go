@@ -3,6 +3,7 @@ package backends
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -617,4 +618,33 @@ func TestRedisConn_TooManyArguments(t *testing.T) {
 			assert.NotContains(t, err.Error(), "too many arguments")
 		}
 	})
+
+}
+
+// TestRedisConn_RejectOversizedArgumentBytes is a regression test for CodeQL
+// alert #10 (go/allocation-size-overflow). A single argument larger than
+// maxTotalArgBytes (64 MiB) must be rejected by the per-argument overflow
+// guard in Do() before any allocation is attempted.
+func TestRedisConn_RejectOversizedArgumentBytes(t *testing.T) {
+	mr := NewMiniredisServer(t)
+
+	pool, err := NewConnectionPool(&PoolConfig{
+		Address:        mr.GetAddr(),
+		MaxConnections: 1,
+		ConnectTimeout: 5 * time.Second,
+		ReadTimeout:    3 * time.Second,
+		WriteTimeout:   3 * time.Second,
+	})
+	require.NoError(t, err)
+	defer pool.Close()
+
+	conn, err := pool.Get(context.Background())
+	require.NoError(t, err)
+	defer pool.Put(conn)
+
+	largeArg := strings.Repeat("x", (64<<20)+1)
+
+	_, err = conn.Do("SET", "k", largeArg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "arguments too large")
 }

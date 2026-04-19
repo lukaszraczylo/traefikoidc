@@ -1216,6 +1216,18 @@ type SessionData struct {
 	dirty bool
 
 	inUse bool
+
+	// cachedClaimsToken is the ID token string whose claims were last parsed and
+	// cached. A lazy, per-request cache to avoid re-parsing the JWT on every
+	// authenticated request (e.g. for headerTemplates). Protected by sessionMutex.
+	cachedClaimsToken string
+
+	// cachedClaims holds the parsed claims for cachedClaimsToken.
+	cachedClaims map[string]interface{}
+
+	// cachedClaimsErr holds the parse error (if any) for cachedClaimsToken so
+	// failures are not retried within the same request.
+	cachedClaimsErr error
 }
 
 // IsDirty returns true if the session data has been modified since it was last loaded or saved.
@@ -1736,6 +1748,12 @@ func (sd *SessionData) Reset() {
 	sd.inUse = false
 	sd.request = nil
 	sd.useCombinedStorage = true // Reset to use combined storage by default
+
+	// Drop any cached claims so pooled SessionData does not leak claim data
+	// between requests/users.
+	sd.cachedClaimsToken = ""
+	sd.cachedClaims = nil
+	sd.cachedClaimsErr = nil
 
 	// Reset the refresh mutex to ensure clean state
 	// Note: We don't need to lock it since sessionMutex is already held
@@ -2512,6 +2530,41 @@ func (sd *SessionData) GetIDToken() string {
 	defer sd.sessionMutex.RUnlock()
 
 	return sd.getIDTokenUnsafe()
+}
+
+// GetIDTokenClaims returns claims parsed from the current ID token, caching
+// the result on the SessionData so repeated callers within the same request
+// do not re-parse the JWT. The cache is keyed on the ID token string and is
+// cleared when the SessionData is reset (see Reset) or when the ID token
+// changes (e.g. after a refresh).
+//
+// The parser parameter is typically the TraefikOidc.extractClaimsFunc, which
+// lets tests inject mocks just like the direct call it replaces.
+//
+// Returns an empty claims map and a nil error when the session has no ID
+// token, matching the existing "no-op" behavior of the caller sites.
+func (sd *SessionData) GetIDTokenClaims(parser func(string) (map[string]interface{}, error)) (map[string]interface{}, error) {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+
+	token := sd.getIDTokenUnsafe()
+	if token == "" {
+		// Invalidate any stale cache without running the parser.
+		sd.cachedClaimsToken = ""
+		sd.cachedClaims = nil
+		sd.cachedClaimsErr = nil
+		return nil, nil
+	}
+
+	if sd.cachedClaimsToken == token && (sd.cachedClaims != nil || sd.cachedClaimsErr != nil) {
+		return sd.cachedClaims, sd.cachedClaimsErr
+	}
+
+	claims, err := parser(token)
+	sd.cachedClaimsToken = token
+	sd.cachedClaims = claims
+	sd.cachedClaimsErr = err
+	return claims, err
 }
 
 // getIDTokenUnsafe retrieves the ID token without acquiring locks.

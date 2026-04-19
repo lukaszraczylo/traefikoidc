@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
 // validateRedirectCount checks if redirect limit is exceeded and handles the error
@@ -77,7 +75,12 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		return
 	}
 
-	csrfToken := uuid.NewString()
+	csrfToken, err := newUUIDv4()
+	if err != nil {
+		t.logger.Errorf("Failed to generate CSRF token: %v", err)
+		http.Error(rw, "Failed to generate CSRF token", http.StatusInternalServerError)
+		return
+	}
 	nonce, err := generateNonce()
 	if err != nil {
 		t.logger.Errorf("Failed to generate nonce: %v", err)
@@ -332,6 +335,29 @@ func (t *TraefikOidc) isAjaxRequest(req *http.Request) bool {
 	return xhr == "XMLHttpRequest" ||
 		strings.Contains(contentType, "application/json") ||
 		strings.Contains(accept, "application/json")
+}
+
+// isNonNavigationRequest reports whether the request is a browser
+// sub-resource (script, image, stylesheet, fetch, serviceWorker) rather than
+// a top-level HTML navigation. Non-navigation requests MUST NOT trigger an
+// OIDC redirect flow: several sub-resource loads happening in parallel would
+// each call defaultInitiateAuthentication, each overwriting the session's
+// CSRF/nonce, breaking the eventual callback (issue #129).
+//
+// Detection prefers Sec-Fetch-Mode, which all modern browsers send
+// (Chrome/Edge/Firefox/Safari). For older or non-browser clients we fall
+// back to Accept: if Accept is present and does not list text/html, treat
+// it as a sub-resource. An empty/missing Accept is assumed to be navigation
+// (safer to redirect than 401 on an ambiguous request).
+func (t *TraefikOidc) isNonNavigationRequest(req *http.Request) bool {
+	if mode := req.Header.Get("Sec-Fetch-Mode"); mode != "" {
+		return mode != "navigate"
+	}
+	accept := req.Header.Get("Accept")
+	if accept == "" || accept == "*/*" {
+		return false
+	}
+	return !strings.Contains(accept, "text/html")
 }
 
 // isRefreshTokenExpired checks if refresh token is likely expired (older than 6 hours)

@@ -305,6 +305,90 @@ func (s *AuthFlowBehaviourSuite) TestIsAjaxRequest() {
 	}
 }
 
+// TestIsNonNavigationRequest verifies browser sub-resource detection used to
+// suppress OIDC redirects on parallel static-asset loads (issue #129).
+func (s *AuthFlowBehaviourSuite) TestIsNonNavigationRequest() {
+	testCases := []struct {
+		headers             map[string]string
+		name                string
+		expectNonNavigation bool
+	}{
+		{
+			name:                "Sec-Fetch-Mode navigate",
+			headers:             map[string]string{"Sec-Fetch-Mode": "navigate"},
+			expectNonNavigation: false,
+		},
+		{
+			name:                "Sec-Fetch-Mode no-cors",
+			headers:             map[string]string{"Sec-Fetch-Mode": "no-cors"},
+			expectNonNavigation: true,
+		},
+		{
+			name:                "Sec-Fetch-Mode cors",
+			headers:             map[string]string{"Sec-Fetch-Mode": "cors"},
+			expectNonNavigation: true,
+		},
+		{
+			name:                "Sec-Fetch-Mode same-origin (fetch in page)",
+			headers:             map[string]string{"Sec-Fetch-Mode": "same-origin"},
+			expectNonNavigation: true,
+		},
+		{
+			name:                "Accept text/html (fallback)",
+			headers:             map[string]string{"Accept": "text/html,application/xhtml+xml"},
+			expectNonNavigation: false,
+		},
+		{
+			name:                "Accept image/png (fallback)",
+			headers:             map[string]string{"Accept": "image/png,image/*;q=0.8"},
+			expectNonNavigation: true,
+		},
+		{
+			name:                "Accept application/javascript (fallback)",
+			headers:             map[string]string{"Accept": "application/javascript"},
+			expectNonNavigation: true,
+		},
+		{
+			name:                "Accept */* treated as navigation",
+			headers:             map[string]string{"Accept": "*/*"},
+			expectNonNavigation: false,
+		},
+		{
+			name:                "No Accept header assumed navigation",
+			headers:             map[string]string{},
+			expectNonNavigation: false,
+		},
+		{
+			name: "Sec-Fetch-Mode beats Accept (navigate wins)",
+			headers: map[string]string{
+				"Sec-Fetch-Mode": "navigate",
+				"Accept":         "application/javascript",
+			},
+			expectNonNavigation: false,
+		},
+		{
+			name: "Sec-Fetch-Mode beats Accept (no-cors wins)",
+			headers: map[string]string{
+				"Sec-Fetch-Mode": "no-cors",
+				"Accept":         "text/html",
+			},
+			expectNonNavigation: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		s.Run(tc.name, func() {
+			req := httptest.NewRequest(http.MethodGet, "/_static/asset.js", nil)
+			for key, value := range tc.headers {
+				req.Header.Set(key, value)
+			}
+
+			result := s.tOidc.isNonNavigationRequest(req)
+			s.Equal(tc.expectNonNavigation, result)
+		})
+	}
+}
+
 // TestHandleCallback_MissingState tests callback with missing state parameter
 func (s *AuthFlowBehaviourSuite) TestHandleCallback_MissingState() {
 	sessionManager, err := NewSessionManager(
