@@ -250,6 +250,11 @@ func (t *TraefikOidc) Close() error {
 			t.safeLogDebug("metadataRefreshStopChan closed")
 		}
 
+		if t.refreshCoordinator != nil {
+			t.refreshCoordinator.Shutdown()
+			t.safeLogDebug("refreshCoordinator shut down")
+		}
+
 		if t.goroutineWG != nil {
 			done := make(chan struct{})
 			go func() {

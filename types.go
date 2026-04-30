@@ -95,6 +95,7 @@ type TraefikOidc struct {
 	cancelFunc                 context.CancelFunc
 	errorRecoveryManager       *ErrorRecoveryManager
 	tokenResilienceManager     *TokenResilienceManager
+	refreshCoordinator         *RefreshCoordinator
 	goroutineWG                *sync.WaitGroup
 	dcrConfig                  *DynamicClientRegistrationConfig
 	dynamicClientRegistrar     *DynamicClientRegistrar

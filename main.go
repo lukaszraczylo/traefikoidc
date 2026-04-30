@@ -260,6 +260,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	tokenResilienceConfig := DefaultTokenResilienceConfig()
 	t.tokenResilienceManager = NewTokenResilienceManager(tokenResilienceConfig, t.logger)
 
+	// Coalesces concurrent refresh-token grants per refresh_token to one upstream
+	// call, preventing the thundering herd that yields invalid_grant when the IdP
+	// rotates refresh tokens (Zitadel/Authentik default).
+	t.refreshCoordinator = NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), t.logger)
+
 	t.extractClaimsFunc = extractClaims
 	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)

@@ -466,9 +466,22 @@ func (rc *RefreshCoordinator) recordRefreshFailure(sessionID string) {
 
 // hashRefreshToken creates a hash of the refresh token for deduplication
 func (rc *RefreshCoordinator) hashRefreshToken(token string) string {
+	return refreshCoordinatorSessionID(token)
+}
+
+// refreshCoordinatorSessionID derives a stable identifier from a refresh token
+// for both deduplication and per-session attempt tracking. Using sha256 of the
+// raw token means each rotation produces a fresh sessionID with its own attempt
+// budget, which is what we want.
+func refreshCoordinatorSessionID(token string) string {
 	hash := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(hash[:])
 }
+
+// refreshCoordinatorWaitTimeout caps how long a request may wait for a
+// coordinated refresh result. It is wider than RefreshTimeout so a follower
+// always sees the leader's result instead of timing out independently.
+const refreshCoordinatorWaitTimeout = 35 * time.Second
 
 // isUnderMemoryPressure checks if the system is under memory pressure by
 // consulting the global memory monitor. Returns true when pressure reaches

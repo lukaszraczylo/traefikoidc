@@ -416,7 +416,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	}
 	t.logger.Debugf("Attempting refresh with token starting with %s...", tokenPrefix)
 
-	newToken, err := t.tokenExchanger.GetNewTokenWithRefreshToken(initialRefreshToken)
+	newToken, err := t.coordinatedTokenRefresh(req, initialRefreshToken)
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "invalid_grant") || strings.Contains(errMsg, "token expired") {
@@ -516,6 +516,38 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 
 	t.logger.Debugf("Token refresh successful and session saved")
 	return true
+}
+
+// coordinatedTokenRefresh routes a refresh-token grant through the
+// RefreshCoordinator so that concurrent requests sharing the same refresh
+// token coalesce into a single upstream call. This prevents the thundering
+// herd that yields invalid_grant when the IdP rotates refresh tokens.
+//
+// Falls back to a direct call when the coordinator is nil, which only
+// happens in tests that build TraefikOidc literals without going through
+// NewWithContext.
+func (t *TraefikOidc) coordinatedTokenRefresh(req *http.Request, refreshToken string) (*TokenResponse, error) {
+	if t.refreshCoordinator == nil {
+		return t.tokenExchanger.GetNewTokenWithRefreshToken(refreshToken)
+	}
+
+	parentCtx := context.Background()
+	if req != nil {
+		parentCtx = req.Context()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, refreshCoordinatorWaitTimeout)
+	defer cancel()
+
+	sessionID := refreshCoordinatorSessionID(refreshToken)
+
+	return t.refreshCoordinator.CoordinateRefresh(
+		ctx,
+		sessionID,
+		refreshToken,
+		func() (*TokenResponse, error) {
+			return t.tokenExchanger.GetNewTokenWithRefreshToken(refreshToken)
+		},
+	)
 }
 
 // RevokeToken revokes a token locally by adding it to the blacklist cache.
