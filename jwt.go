@@ -528,6 +528,21 @@ func verifyNotBefore(notBefore float64) error {
 //   - An error if the key parsing fails, the algorithm is unsupported,
 //     or the signature verification fails
 func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error {
+	block, _ := pem.Decode(publicKeyPEM)
+	if block == nil {
+		return fmt.Errorf("failed to parse PEM block containing the public key")
+	}
+	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("failed to parse public key: %w", err)
+	}
+	return verifySignatureWithKey(tokenString, pubKey, alg)
+}
+
+// verifySignatureWithKey verifies a JWT signature using an already-parsed
+// public key, skipping the PEM-encode/decode round trip that verifySignature
+// performs. This is the hot path used by VerifyJWTSignatureAndClaims.
+func verifySignatureWithKey(tokenString string, pubKey crypto.PublicKey, alg string) error {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return fmt.Errorf("invalid token format")
@@ -536,14 +551,6 @@ func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error 
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %w", err)
-	}
-	block, _ := pem.Decode(publicKeyPEM)
-	if block == nil {
-		return fmt.Errorf("failed to parse PEM block containing the public key")
-	}
-	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse public key: %w", err)
 	}
 	var hashFunc crypto.Hash
 	switch alg {

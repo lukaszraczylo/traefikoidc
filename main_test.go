@@ -208,6 +208,32 @@ func (m *MockJWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *
 	return m.JWKS, m.Err
 }
 
+func (m *MockJWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	if m.JWKS == nil {
+		return nil, fmt.Errorf("JWKS is nil")
+	}
+	for i := range m.JWKS.Keys {
+		k := &m.JWKS.Keys[i]
+		if k.Kid != kid {
+			continue
+		}
+		switch k.Kty {
+		case "RSA":
+			return k.ToRSAPublicKey()
+		case "EC":
+			return k.ToECDSAPublicKey()
+		default:
+			return nil, fmt.Errorf("unsupported key type: %s", k.Kty)
+		}
+	}
+	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
+}
+
 func (m *MockJWKCache) Cleanup() {
 	// Mock cleanup is a no-op - we don't want to destroy the mock JWKS data
 	// Real cleanup is for expired entries, not resetting all data

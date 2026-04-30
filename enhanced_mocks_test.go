@@ -2,6 +2,8 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -38,6 +40,31 @@ func (m *EnhancedMockJWKCache) GetJWKS(ctx context.Context, jwksURL string, http
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.JWKS, m.Err
+}
+
+func (m *EnhancedMockJWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	jwks, err := m.GetJWKS(ctx, jwksURL, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	if jwks == nil {
+		return nil, fmt.Errorf("JWKS is nil")
+	}
+	for i := range jwks.Keys {
+		k := &jwks.Keys[i]
+		if k.Kid != kid {
+			continue
+		}
+		switch k.Kty {
+		case "RSA":
+			return k.ToRSAPublicKey()
+		case "EC":
+			return k.ToECDSAPublicKey()
+		default:
+			return nil, fmt.Errorf("unsupported key type: %s", k.Kty)
+		}
+	}
+	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
 }
 
 func (m *EnhancedMockJWKCache) Cleanup() {

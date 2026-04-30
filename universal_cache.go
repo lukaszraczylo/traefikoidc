@@ -343,6 +343,31 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 		}
 	}
 
+	// Fast read path for caches whose eviction is dominated by TTL rather than
+	// access-recency (token, JWK, session). Holding only an RLock here lets all
+	// concurrent readers verify cached tokens in parallel — under yaegi the
+	// previous unconditional Lock serialized every JWT verify on a single
+	// mutex and pinned a CPU under load.
+	switch c.config.Type {
+	case CacheTypeToken, CacheTypeJWK, CacheTypeSession:
+		c.mu.RLock()
+		item, exists := c.items[key]
+		if !exists {
+			c.mu.RUnlock()
+			atomic.AddInt64(&c.misses, 1)
+			return nil, false
+		}
+		if !time.Now().After(item.ExpiresAt) {
+			value := item.Value
+			c.mu.RUnlock()
+			atomic.AddInt64(&c.hits, 1)
+			return value, true
+		}
+		c.mu.RUnlock()
+		// Expired — fall through to the write-locked slow path below to
+		// remove the entry under exclusive access.
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

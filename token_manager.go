@@ -315,15 +315,6 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	jwksURL := t.jwksURL
 	t.metadataMu.RUnlock()
 
-	jwks, err := t.jwkCache.GetJWKS(context.Background(), jwksURL, t.httpClient)
-	if err != nil {
-		return fmt.Errorf("failed to get JWKS: %w", err)
-	}
-
-	if !t.suppressDiagnosticLogs && jwks != nil {
-		t.safeLogDebugf("DIAGNOSTIC: Retrieved JWKS with %d keys from URL: %s", len(jwks.Keys), jwksURL)
-	}
-
 	kid, ok := jwt.Header["kid"].(string)
 	if !ok {
 		return fmt.Errorf("missing key ID in token header")
@@ -337,38 +328,12 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 		t.safeLogDebugf("DIAGNOSTIC: Looking for kid=%s, alg=%s in JWKS", kid, alg)
 	}
 
-	if jwks == nil {
-		return fmt.Errorf("JWKS is nil, cannot verify token")
-	}
-
-	// Find the matching key in JWKS
-	var matchingKey *JWK
-	availableKids := make([]string, 0, len(jwks.Keys))
-	for _, key := range jwks.Keys {
-		availableKids = append(availableKids, key.Kid)
-		if key.Kid == kid {
-			matchingKey = &key
-			break
-		}
-	}
-
-	if matchingKey == nil {
-		if !t.suppressDiagnosticLogs {
-			t.safeLogErrorf("DIAGNOSTIC: No matching key found for kid=%s. Available kids: %v", kid, availableKids)
-		}
-		return fmt.Errorf("no matching public key found for kid: %s", kid)
-	}
-
-	if !t.suppressDiagnosticLogs {
-		t.safeLogDebugf("DIAGNOSTIC: Found matching key for kid=%s, key type: %s", kid, matchingKey.Kty)
-	}
-
-	publicKeyPEM, err := jwkToPEM(matchingKey)
+	pubKey, err := t.jwkCache.GetPublicKey(context.Background(), jwksURL, kid, t.httpClient)
 	if err != nil {
-		return fmt.Errorf("failed to convert JWK to PEM: %w", err)
+		return fmt.Errorf("failed to get public key: %w", err)
 	}
 
-	if err := verifySignature(token, publicKeyPEM, alg); err != nil {
+	if err := verifySignatureWithKey(token, pubKey, alg); err != nil {
 		if !t.suppressDiagnosticLogs {
 			t.safeLogErrorf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s: %v", kid, alg, err)
 		}

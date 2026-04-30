@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
@@ -17,6 +18,18 @@ import (
 	"sync"
 	"time"
 )
+
+// parsedKeysSuffix marks the parallel UniversalCache entry that stores
+// pre-parsed public keys for a given JWKS URL.
+const parsedKeysSuffix = ":parsed"
+
+// parsedJWKS holds keys decoded from a JWKSet, indexed by kid. Storing the
+// already-parsed crypto.PublicKey avoids re-running the DER/PEM round trip
+// on every JWT verification — a costly operation under the yaegi interpreter
+// that hosts Traefik plugins.
+type parsedJWKS struct {
+	keys map[string]crypto.PublicKey
+}
 
 // JWK represents a JSON Web Key as defined in RFC 7517.
 // It can represent different key types including RSA, EC, and symmetric keys.
@@ -49,6 +62,7 @@ type JWKCache struct {
 // JWKCacheInterface defines the contract for JWK caching implementations.
 type JWKCacheInterface interface {
 	GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error)
+	GetPublicKey(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error)
 	Cleanup()
 	Close()
 }
@@ -94,6 +108,62 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 	_ = c.cache.Set(jwksURL, jwks, 1*time.Hour) // Safe to ignore: cache failures are non-critical
 
 	return jwks, nil
+}
+
+// GetPublicKey returns the parsed public key for a given kid, fetching and
+// caching the JWKS plus its derived parsedJWKS on miss. The parsed entry is
+// stored alongside the raw JWKSet under a sibling cache key with the same
+// 1-hour TTL, so both invalidate together when the upstream JWKS rotates.
+func (c *JWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	parsedKey := jwksURL + parsedKeysSuffix
+	if v, found := c.cache.Get(parsedKey); found {
+		if pj, ok := v.(*parsedJWKS); ok {
+			if k, ok := pj.keys[kid]; ok {
+				return k, nil
+			}
+		}
+	}
+
+	jwks, err := c.GetJWKS(ctx, jwksURL, httpClient)
+	if err != nil {
+		return nil, err
+	}
+
+	pj := buildParsedJWKS(jwks)
+	_ = c.cache.Set(parsedKey, pj, 1*time.Hour) // Safe to ignore: cache failures are non-critical
+
+	if k, ok := pj.keys[kid]; ok {
+		return k, nil
+	}
+	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
+}
+
+// buildParsedJWKS pre-parses every JWK in the set into the matching
+// crypto.PublicKey, indexed by kid. Errors on individual keys are skipped so
+// a single bad key does not block the rest of the keyset.
+func buildParsedJWKS(jwks *JWKSet) *parsedJWKS {
+	out := make(map[string]crypto.PublicKey, len(jwks.Keys))
+	for i := range jwks.Keys {
+		k := &jwks.Keys[i]
+		if k.Kid == "" {
+			continue
+		}
+		var pub crypto.PublicKey
+		var err error
+		switch k.Kty {
+		case "RSA":
+			pub, err = k.ToRSAPublicKey()
+		case "EC":
+			pub, err = k.ToECDSAPublicKey()
+		default:
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		out[k.Kid] = pub
+	}
+	return &parsedJWKS{keys: out}
 }
 
 // Cleanup is a no-op as cleanup is handled by UniversalCache

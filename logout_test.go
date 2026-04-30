@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -639,6 +640,26 @@ func (m *mockJWKCacheForLogout) GetJWKS(ctx context.Context, jwksURL string, htt
 	}, nil
 }
 
+func (m *mockJWKCacheForLogout) GetPublicKey(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	jwks, err := m.GetJWKS(ctx, jwksURL, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	for i := range jwks.Keys {
+		k := &jwks.Keys[i]
+		if k.Kid != kid {
+			continue
+		}
+		switch k.Kty {
+		case "RSA":
+			return k.ToRSAPublicKey()
+		case "EC":
+			return k.ToECDSAPublicKey()
+		}
+	}
+	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
+}
+
 func (m *mockJWKCacheForLogout) Clear()   {}
 func (m *mockJWKCacheForLogout) Cleanup() {}
 func (m *mockJWKCacheForLogout) Close()   {}
@@ -753,6 +774,22 @@ type staticJWKCache struct {
 
 func (s *staticJWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	return s.jwks, nil
+}
+
+func (s *staticJWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	for i := range s.jwks.Keys {
+		k := &s.jwks.Keys[i]
+		if k.Kid != kid {
+			continue
+		}
+		switch k.Kty {
+		case "RSA":
+			return k.ToRSAPublicKey()
+		case "EC":
+			return k.ToECDSAPublicKey()
+		}
+	}
+	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
 }
 
 func (s *staticJWKCache) Clear()   {}
