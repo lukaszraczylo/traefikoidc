@@ -46,6 +46,17 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		}
 	}
 
+	// Hot-path fast-return: a previously-verified token has already passed
+	// signature, claims, and replay checks. Skipping the parseJWT cost here
+	// matters under bursty traffic (e.g. 10+ concurrent panel requests on
+	// every Grafana dashboard refresh) where the same token is validated
+	// dozens of times per second by validateStandardTokens.
+	if t.tokenCache != nil {
+		if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
+			return nil
+		}
+	}
+
 	parsedJWT, parseErr := parseJWT(token)
 	if parseErr != nil {
 		return fmt.Errorf("failed to parse JWT for blacklist check: %w", parseErr)
@@ -61,12 +72,6 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		if _, ok := scope.(string); ok {
 			tokenType = "ACCESS_TOKEN"
 		}
-	}
-
-	// Check token cache FIRST - if token is already verified and cached, return immediately
-	// This prevents false positives when multiple goroutines validate the same token concurrently
-	if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
-		return nil
 	}
 
 	// Only check JTI blacklist for tokens that aren't already in the cache
