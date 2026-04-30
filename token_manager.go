@@ -550,10 +550,63 @@ func (t *TraefikOidc) coordinatedTokenRefresh(req *http.Request, refreshToken st
 		sessionID,
 		refreshToken,
 		func() (*TokenResponse, error) {
-			return t.tokenExchanger.GetNewTokenWithRefreshToken(refreshToken)
+			// Cross-replica dedup. The in-process coordinator already
+			// collapses concurrent grants on this pod; this Redis-backed
+			// short-TTL cache covers the (rare) case of a failover or
+			// load-balancer reroute mid-refresh, where two pods would
+			// otherwise both POST the same refresh_token to the IdP.
+			if cached, ok := t.lookupCachedRefreshResult(sessionID); ok {
+				return cached, nil
+			}
+			resp, err := t.tokenExchanger.GetNewTokenWithRefreshToken(refreshToken)
+			if err == nil && resp != nil {
+				t.cacheRefreshResult(sessionID, resp)
+			}
+			return resp, err
 		},
 	)
 }
+
+// lookupCachedRefreshResult returns a previously-stored TokenResponse for the
+// given refresh-token hash, if one exists and is still within its short TTL.
+// The cache wraps the universal cache, which is Redis-backed in production -
+// so a "hit" here means another Traefik replica refreshed this same token
+// within the last few seconds.
+func (t *TraefikOidc) lookupCachedRefreshResult(sessionID string) (*TokenResponse, bool) {
+	if t.refreshResultCache == nil {
+		return nil, false
+	}
+	v, ok := t.refreshResultCache.Get(refreshResultCacheKey(sessionID))
+	if !ok || v == nil {
+		return nil, false
+	}
+	if tr, ok := v.(*TokenResponse); ok && tr != nil {
+		return tr, true
+	}
+	return nil, false
+}
+
+// cacheRefreshResult stores the new TokenResponse under the refresh-token
+// hash for a short window. TTL is intentionally tight: the rotated refresh
+// token cannot be re-presented to the IdP, and any peer waiting longer than
+// this window has almost certainly given up via its own coordinator timeout.
+func (t *TraefikOidc) cacheRefreshResult(sessionID string, resp *TokenResponse) {
+	if t.refreshResultCache == nil || resp == nil {
+		return
+	}
+	t.refreshResultCache.Set(refreshResultCacheKey(sessionID), resp, refreshResultCacheTTL)
+}
+
+// refreshResultCacheKey namespaces refresh-result entries inside the shared
+// cache namespace.
+func refreshResultCacheKey(sessionID string) string {
+	return "rt-result:" + sessionID
+}
+
+// refreshResultCacheTTL bounds how long a peer can lean on the dedup cache.
+// Long enough for a sibling replica to observe the result, short enough that
+// a stale entry never re-supplies a token after the IdP has already moved on.
+const refreshResultCacheTTL = 5 * time.Second
 
 // RevokeToken revokes a token locally by adding it to the blacklist cache.
 // It removes the token from the verification cache and adds both the token

@@ -249,6 +249,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		backchannelLogoutPath:    normalizeLogoutPath(config.BackchannelLogoutURL),
 		frontchannelLogoutPath:   normalizeLogoutPath(config.FrontchannelLogoutURL),
 		sessionInvalidationCache: cacheManager.GetSharedSessionInvalidationCache(),
+		refreshResultCache:       cacheManager.GetSharedRefreshResultCache(),
 	}
 
 	// Log audience configuration

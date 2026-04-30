@@ -113,6 +113,14 @@ func (cm *CacheManager) GetSharedSessionInvalidationCache() CacheInterface {
 	return &CacheInterfaceWrapper{cache: cm.manager.GetSessionInvalidationCache(), managed: true}
 }
 
+// GetSharedRefreshResultCache returns the short-lived refresh-result cache used
+// by the refresh path to coalesce grants across Traefik replicas via Redis.
+func (cm *CacheManager) GetSharedRefreshResultCache() CacheInterface {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return &CacheInterfaceWrapper{cache: cm.manager.GetRefreshResultCache(), managed: true}
+}
+
 // Close gracefully shuts down all cache components
 func (cm *CacheManager) Close() error {
 	cm.mu.Lock()

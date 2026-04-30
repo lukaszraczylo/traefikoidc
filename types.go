@@ -131,6 +131,7 @@ type TraefikOidc struct {
 	metadataRetryMutex         sync.Mutex
 	firstRequestMutex          sync.Mutex
 	sessionInvalidationCache   CacheInterface
+	refreshResultCache         CacheInterface
 	minimalHeaders             bool
 	stripAuthCookies           bool
 	enableBackchannelLogout    bool
