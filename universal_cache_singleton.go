@@ -23,6 +23,7 @@ type UniversalCacheManager struct {
 	metadataCache            *UniversalCache
 	dcrCredentialsCache      *UniversalCache // DCR credentials storage for distributed environments
 	sessionInvalidationCache *UniversalCache // Session invalidation cache for backchannel/front-channel logout
+	refreshResultCache       *UniversalCache // Short-lived cross-replica refresh-result dedup (paired with RefreshCoordinator)
 	logger                   *Logger
 	blacklistCache           *UniversalCache
 	cancel                   context.CancelFunc
@@ -178,6 +179,18 @@ func initializeDefaultCaches(manager *UniversalCacheManager, logger *Logger) {
 		Type:            CacheTypeSession,
 		MaxSize:         5000,           // Support many concurrent invalidations
 		DefaultTTL:      25 * time.Hour, // Slightly longer than session max age (24h)
+		Logger:          logger,
+		SkipAutoCleanup: true, // Managed cleanup
+	})
+
+	// Refresh-result cache: short-lived store keyed by sha256(refreshToken).
+	// In Redis-backed mode this gives cross-replica dedup of refresh grants;
+	// in memory-only mode it's effectively redundant with RefreshCoordinator
+	// but safe and cheap to keep.
+	manager.refreshResultCache = NewUniversalCache(UniversalCacheConfig{
+		Type:            CacheTypeToken,
+		MaxSize:         1000,
+		DefaultTTL:      5 * time.Second,
 		Logger:          logger,
 		SkipAutoCleanup: true, // Managed cleanup
 	})
@@ -387,6 +400,21 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 		createBackend("session_invalidation"),
 	)
 
+	// Refresh-result cache - shared via Redis so concurrent refreshes across
+	// Traefik replicas can dedup their grants. The 5s TTL is long enough for
+	// peers to observe a recent refresh and short enough that a stale entry
+	// can't be replayed against a now-rotated refresh token.
+	manager.refreshResultCache = NewUniversalCacheWithBackend(
+		UniversalCacheConfig{
+			Type:            CacheTypeToken,
+			MaxSize:         1000,
+			DefaultTTL:      5 * time.Second,
+			Logger:          logger,
+			SkipAutoCleanup: true, // Managed cleanup
+		},
+		createBackend("refresh_result"),
+	)
+
 	logger.Infof("Cache manager initialized with %s backend configuration", redisConfig.CacheMode)
 }
 
@@ -436,6 +464,7 @@ func (m *UniversalCacheManager) performConsolidatedCleanup() {
 		m.tokenTypeCache,
 		m.dcrCredentialsCache,
 		m.sessionInvalidationCache,
+		m.refreshResultCache,
 	}
 	m.mu.RUnlock()
 
@@ -498,6 +527,14 @@ func (m *UniversalCacheManager) GetSessionInvalidationCache() *UniversalCache {
 	return m.sessionInvalidationCache
 }
 
+// GetRefreshResultCache returns the short-lived refresh-result cache used to
+// coalesce refresh-token grants across Traefik replicas.
+func (m *UniversalCacheManager) GetRefreshResultCache() *UniversalCache {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.refreshResultCache
+}
+
 // GetDCRCredentialsCache returns the DCR credentials cache for distributed storage
 func (m *UniversalCacheManager) GetDCRCredentialsCache() *UniversalCache {
 	m.mu.RLock()
@@ -520,7 +557,7 @@ func (m *UniversalCacheManager) Close() error {
 
 	// Close all caches first (they won't close the shared backend)
 	for _, cache := range []*UniversalCache{
-		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache, m.tokenTypeCache, m.dcrCredentialsCache, m.sessionInvalidationCache,
+		m.tokenCache, m.blacklistCache, m.metadataCache, m.jwkCache, m.sessionCache, m.introspectionCache, m.tokenTypeCache, m.dcrCredentialsCache, m.sessionInvalidationCache, m.refreshResultCache,
 	} {
 		if cache != nil {
 			_ = cache.Close() // Safe to ignore: best effort cache cleanup

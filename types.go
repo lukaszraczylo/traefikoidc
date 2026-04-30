@@ -95,6 +95,7 @@ type TraefikOidc struct {
 	cancelFunc                 context.CancelFunc
 	errorRecoveryManager       *ErrorRecoveryManager
 	tokenResilienceManager     *TokenResilienceManager
+	refreshCoordinator         *RefreshCoordinator
 	goroutineWG                *sync.WaitGroup
 	dcrConfig                  *DynamicClientRegistrationConfig
 	dynamicClientRegistrar     *DynamicClientRegistrar
@@ -124,11 +125,13 @@ type TraefikOidc struct {
 	scopesSupported            []string
 	scopes                     []string
 	refreshGracePeriod         time.Duration
+	maxRefreshTokenAge         time.Duration
 	metadataMu                 sync.RWMutex
 	shutdownOnce               sync.Once
 	metadataRetryMutex         sync.Mutex
 	firstRequestMutex          sync.Mutex
 	sessionInvalidationCache   CacheInterface
+	refreshResultCache         CacheInterface
 	minimalHeaders             bool
 	stripAuthCookies           bool
 	enableBackchannelLogout    bool

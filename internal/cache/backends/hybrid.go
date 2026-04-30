@@ -20,6 +20,7 @@ type HybridBackend struct {
 	ctx                 context.Context
 	syncWriteCacheTypes map[string]bool
 	asyncWriteBuffer    chan *asyncWriteItem
+	l1BackfillBuffer    chan *l1BackfillItem
 	cancel              context.CancelFunc
 	wg                  sync.WaitGroup
 	l1Hits              atomic.Int64
@@ -28,12 +29,22 @@ type HybridBackend struct {
 	l1Writes            atomic.Int64
 	misses              atomic.Int64
 	l2Hits              atomic.Int64
+	l1BackfillDrops     atomic.Int64
 	fallbackMode        atomic.Bool
 }
 
 // asyncWriteItem represents an async write operation
 type asyncWriteItem struct {
 	ctx   context.Context
+	key   string
+	value []byte
+	ttl   time.Duration
+}
+
+// l1BackfillItem represents a deferred write of an L2-resolved value back into
+// L1. Backfills run on a single bounded worker so a burst of L2 hits cannot
+// detonate the goroutine count (issue: ~1000% CPU under sustained polling).
+type l1BackfillItem struct {
 	key   string
 	value []byte
 	ttl   time.Duration
@@ -114,6 +125,7 @@ func NewHybridBackend(config *HybridConfig) (*HybridBackend, error) {
 		secondary:           config.Secondary,
 		syncWriteCacheTypes: config.SyncWriteCacheTypes,
 		asyncWriteBuffer:    make(chan *asyncWriteItem, config.AsyncBufferSize),
+		l1BackfillBuffer:    make(chan *l1BackfillItem, config.AsyncBufferSize),
 		ctx:                 ctx,
 		cancel:              cancel,
 		logger:              config.Logger,
@@ -122,6 +134,11 @@ func NewHybridBackend(config *HybridConfig) (*HybridBackend, error) {
 	// Start async write worker
 	h.wg.Add(1)
 	go h.asyncWriteWorker()
+
+	// Start L1 backfill worker (single goroutine) to bound goroutine growth on
+	// L2 hits regardless of request rate.
+	h.wg.Add(1)
+	go h.l1BackfillWorker()
 
 	// Start health monitoring
 	h.wg.Add(1)
@@ -223,18 +240,10 @@ func (h *HybridBackend) Get(ctx context.Context, key string) ([]byte, time.Durat
 
 	h.l2Hits.Add(1)
 
-	// Populate L1 cache with value from L2 (write-through on read)
-	// Use goroutine to avoid blocking the read path
-	go func() {
-		writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer cancel()
-
-		if err := h.primary.Set(writeCtx, key, value, ttl); err != nil {
-			h.logger.Debugf("Failed to populate L1 cache from L2 for key %s: %v", key, err)
-		} else {
-			h.logger.Debugf("Populated L1 cache from L2 for key: %s", key)
-		}
-	}()
+	// Populate L1 cache with value from L2 (write-through on read).
+	// Hand off to the bounded backfill worker instead of spawning a goroutine
+	// per read - under burst that would mint thousands of goroutines.
+	h.queueL1Backfill(key, value, ttl)
 
 	return value, ttl, true, nil
 }
@@ -371,6 +380,7 @@ func (h *HybridBackend) Close() error {
 
 	// Close async write channel
 	close(h.asyncWriteBuffer)
+	close(h.l1BackfillBuffer)
 
 	// Wait for workers to finish with timeout
 	done := make(chan struct{})
@@ -440,13 +450,7 @@ func (h *HybridBackend) GetMany(ctx context.Context, keys []string) (map[string]
 			for key, value := range l2Results {
 				results[key] = value
 				h.l2Hits.Add(1)
-
-				// Asynchronously populate L1
-				go func(k string, v []byte) {
-					writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-					defer cancel()
-					_ = h.primary.Set(writeCtx, k, v, 0) // Use default TTL
-				}(key, value)
+				h.queueL1Backfill(key, value, 0) // 0 = primary backend default TTL
 			}
 		}
 	} else {
@@ -455,13 +459,7 @@ func (h *HybridBackend) GetMany(ctx context.Context, keys []string) (map[string]
 			if value, ttl, exists, err := h.secondary.Get(ctx, key); err == nil && exists {
 				results[key] = value
 				h.l2Hits.Add(1)
-
-				// Asynchronously populate L1
-				go func(k string, v []byte, t time.Duration) {
-					writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-					defer cancel()
-					_ = h.primary.Set(writeCtx, k, v, t)
-				}(key, value, ttl)
+				h.queueL1Backfill(key, value, ttl)
 			}
 		}
 	}
@@ -536,6 +534,55 @@ func (h *HybridBackend) SetMany(ctx context.Context, items map[string][]byte, tt
 	}
 
 	return nil
+}
+
+// queueL1Backfill enqueues an L2-resolved value for write-through into L1.
+// Drops on full buffer to keep the read path constant-time; the next L2 hit
+// for the same key simply re-queues it.
+func (h *HybridBackend) queueL1Backfill(key string, value []byte, ttl time.Duration) {
+	select {
+	case h.l1BackfillBuffer <- &l1BackfillItem{key: key, value: value, ttl: ttl}:
+	default:
+		h.l1BackfillDrops.Add(1)
+		h.logger.Debugf("L1 backfill buffer full, dropping for key: %s", key)
+	}
+}
+
+// l1BackfillWorker drains the backfill queue serially. Single worker is
+// intentional - L1 writes are local and cheap, and serializing them keeps
+// goroutine count bounded under any read rate.
+func (h *HybridBackend) l1BackfillWorker() {
+	defer h.wg.Done()
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			// Drain remaining items best-effort then exit.
+			for len(h.l1BackfillBuffer) > 0 {
+				select {
+				case item := <-h.l1BackfillBuffer:
+					writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+					_ = h.primary.Set(writeCtx, item.key, item.value, item.ttl)
+					cancel()
+				default:
+					return
+				}
+			}
+			return
+
+		case item, ok := <-h.l1BackfillBuffer:
+			if !ok {
+				return
+			}
+			writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			if err := h.primary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
+				h.logger.Debugf("Failed to populate L1 cache from L2 for key %s: %v", item.key, err)
+			} else {
+				h.logger.Debugf("Populated L1 cache from L2 for key: %s", item.key)
+			}
+			cancel()
+		}
+	}
 }
 
 // asyncWriteWorker processes asynchronous writes to L2

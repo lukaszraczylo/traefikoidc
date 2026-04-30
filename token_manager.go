@@ -46,6 +46,17 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		}
 	}
 
+	// Hot-path fast-return: a previously-verified token has already passed
+	// signature, claims, and replay checks. Skipping the parseJWT cost here
+	// matters under bursty traffic (e.g. 10+ concurrent panel requests on
+	// every Grafana dashboard refresh) where the same token is validated
+	// dozens of times per second by validateStandardTokens.
+	if t.tokenCache != nil {
+		if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
+			return nil
+		}
+	}
+
 	parsedJWT, parseErr := parseJWT(token)
 	if parseErr != nil {
 		return fmt.Errorf("failed to parse JWT for blacklist check: %w", parseErr)
@@ -61,12 +72,6 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 		if _, ok := scope.(string); ok {
 			tokenType = "ACCESS_TOKEN"
 		}
-	}
-
-	// Check token cache FIRST - if token is already verified and cached, return immediately
-	// This prevents false positives when multiple goroutines validate the same token concurrently
-	if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
-		return nil
 	}
 
 	// Only check JTI blacklist for tokens that aren't already in the cache
@@ -416,7 +421,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	}
 	t.logger.Debugf("Attempting refresh with token starting with %s...", tokenPrefix)
 
-	newToken, err := t.tokenExchanger.GetNewTokenWithRefreshToken(initialRefreshToken)
+	newToken, err := t.coordinatedTokenRefresh(req, initialRefreshToken)
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "invalid_grant") || strings.Contains(errMsg, "token expired") {
@@ -517,6 +522,91 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	t.logger.Debugf("Token refresh successful and session saved")
 	return true
 }
+
+// coordinatedTokenRefresh routes a refresh-token grant through the
+// RefreshCoordinator so that concurrent requests sharing the same refresh
+// token coalesce into a single upstream call. This prevents the thundering
+// herd that yields invalid_grant when the IdP rotates refresh tokens.
+//
+// Falls back to a direct call when the coordinator is nil, which only
+// happens in tests that build TraefikOidc literals without going through
+// NewWithContext.
+func (t *TraefikOidc) coordinatedTokenRefresh(req *http.Request, refreshToken string) (*TokenResponse, error) {
+	if t.refreshCoordinator == nil {
+		return t.tokenExchanger.GetNewTokenWithRefreshToken(refreshToken)
+	}
+
+	parentCtx := context.Background()
+	if req != nil {
+		parentCtx = req.Context()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, refreshCoordinatorWaitTimeout)
+	defer cancel()
+
+	sessionID := refreshCoordinatorSessionID(refreshToken)
+
+	return t.refreshCoordinator.CoordinateRefresh(
+		ctx,
+		sessionID,
+		refreshToken,
+		func() (*TokenResponse, error) {
+			// Cross-replica dedup. The in-process coordinator already
+			// collapses concurrent grants on this pod; this Redis-backed
+			// short-TTL cache covers the (rare) case of a failover or
+			// load-balancer reroute mid-refresh, where two pods would
+			// otherwise both POST the same refresh_token to the IdP.
+			if cached, ok := t.lookupCachedRefreshResult(sessionID); ok {
+				return cached, nil
+			}
+			resp, err := t.tokenExchanger.GetNewTokenWithRefreshToken(refreshToken)
+			if err == nil && resp != nil {
+				t.cacheRefreshResult(sessionID, resp)
+			}
+			return resp, err
+		},
+	)
+}
+
+// lookupCachedRefreshResult returns a previously-stored TokenResponse for the
+// given refresh-token hash, if one exists and is still within its short TTL.
+// The cache wraps the universal cache, which is Redis-backed in production -
+// so a "hit" here means another Traefik replica refreshed this same token
+// within the last few seconds.
+func (t *TraefikOidc) lookupCachedRefreshResult(sessionID string) (*TokenResponse, bool) {
+	if t.refreshResultCache == nil {
+		return nil, false
+	}
+	v, ok := t.refreshResultCache.Get(refreshResultCacheKey(sessionID))
+	if !ok || v == nil {
+		return nil, false
+	}
+	if tr, ok := v.(*TokenResponse); ok && tr != nil {
+		return tr, true
+	}
+	return nil, false
+}
+
+// cacheRefreshResult stores the new TokenResponse under the refresh-token
+// hash for a short window. TTL is intentionally tight: the rotated refresh
+// token cannot be re-presented to the IdP, and any peer waiting longer than
+// this window has almost certainly given up via its own coordinator timeout.
+func (t *TraefikOidc) cacheRefreshResult(sessionID string, resp *TokenResponse) {
+	if t.refreshResultCache == nil || resp == nil {
+		return
+	}
+	t.refreshResultCache.Set(refreshResultCacheKey(sessionID), resp, refreshResultCacheTTL)
+}
+
+// refreshResultCacheKey namespaces refresh-result entries inside the shared
+// cache namespace.
+func refreshResultCacheKey(sessionID string) string {
+	return "rt-result:" + sessionID
+}
+
+// refreshResultCacheTTL bounds how long a peer can lean on the dedup cache.
+// Long enough for a sibling replica to observe the result, short enough that
+// a stale entry never re-supplies a token after the IdP has already moved on.
+const refreshResultCacheTTL = 5 * time.Second
 
 // RevokeToken revokes a token locally by adding it to the blacklist cache.
 // It removes the token from the verification cache and adds both the token

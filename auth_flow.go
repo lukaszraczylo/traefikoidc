@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // validateRedirectCount checks if redirect limit is exceeded and handles the error
@@ -360,9 +361,31 @@ func (t *TraefikOidc) isNonNavigationRequest(req *http.Request) bool {
 	return !strings.Contains(accept, "text/html")
 }
 
-// isRefreshTokenExpired checks if refresh token is likely expired (older than 6 hours)
+// isRefreshTokenExpired checks whether the stored refresh token is likely
+// past its useful lifetime, using the cookie-side issued_at timestamp set by
+// SetRefreshToken. IdPs do not expose RT TTL on the wire, so this is a
+// conservative heuristic gated by t.maxRefreshTokenAge (default 6h, set via
+// MaxRefreshTokenAgeSeconds; 0 disables the check).
+//
+// The point of this check is to short-circuit the refresh path BEFORE the
+// thundering herd hits the IdP for a token the provider has almost certainly
+// revoked. Together with the RefreshCoordinator wireup, it keeps Grafana-
+// style polling clients from looping on invalid_grant after a long pause.
 func (t *TraefikOidc) isRefreshTokenExpired(session *SessionData) bool {
-	// This is a heuristic check - actual implementation would depend on
-	// the specific provider and token metadata
-	return false // Placeholder implementation
+	if t == nil || session == nil {
+		return false
+	}
+	if t.maxRefreshTokenAge <= 0 {
+		return false
+	}
+
+	issuedAt := session.GetRefreshTokenIssuedAt()
+	if issuedAt.IsZero() {
+		// No timestamp recorded (legacy session pre-dating the issued_at
+		// field). Don't force a re-auth - attempt refresh once and let the
+		// IdP be the source of truth.
+		return false
+	}
+
+	return time.Since(issuedAt) > t.maxRefreshTokenAge
 }

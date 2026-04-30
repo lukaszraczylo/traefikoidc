@@ -226,6 +226,13 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return 60 * time.Second
 		}(),
+		maxRefreshTokenAge: func() time.Duration {
+			// 0 (or unset) disables the heuristic; negative is rejected by Validate.
+			if config.MaxRefreshTokenAgeSeconds > 0 {
+				return time.Duration(config.MaxRefreshTokenAgeSeconds) * time.Second
+			}
+			return 0
+		}(),
 		tokenCleanupStopChan:     make(chan struct{}),
 		metadataRefreshStopChan:  make(chan struct{}),
 		ctx:                      pluginCtx,
@@ -242,6 +249,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		backchannelLogoutPath:    normalizeLogoutPath(config.BackchannelLogoutURL),
 		frontchannelLogoutPath:   normalizeLogoutPath(config.FrontchannelLogoutURL),
 		sessionInvalidationCache: cacheManager.GetSharedSessionInvalidationCache(),
+		refreshResultCache:       cacheManager.GetSharedRefreshResultCache(),
 	}
 
 	// Log audience configuration
@@ -259,6 +267,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	// Initialize token resilience manager with default configuration
 	tokenResilienceConfig := DefaultTokenResilienceConfig()
 	t.tokenResilienceManager = NewTokenResilienceManager(tokenResilienceConfig, t.logger)
+
+	// Coalesces concurrent refresh-token grants per refresh_token to one upstream
+	// call, preventing the thundering herd that yields invalid_grant when the IdP
+	// rotates refresh tokens (Zitadel/Authentik default).
+	t.refreshCoordinator = NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), t.logger)
 
 	t.extractClaimsFunc = extractClaims
 	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {

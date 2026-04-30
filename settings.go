@@ -55,6 +55,15 @@ type Config struct {
 	AllowedUsers              []string                         `json:"allowedUsers"`
 	Headers                   []TemplatedHeader                `json:"headers"`
 	RefreshGracePeriodSeconds int                              `json:"refreshGracePeriodSeconds"`
+	// MaxRefreshTokenAgeSeconds is a heuristic upper bound on the lifetime of
+	// a stored refresh token. Once the token has been in the session longer
+	// than this, requests treat it as expired up-front - returning 401 to
+	// AJAX callers and triggering full re-auth on navigations - instead of
+	// hammering the IdP with grants that will only fail with invalid_grant.
+	// IdPs do not expose RT TTL on the wire, so this is intentionally a
+	// conservative heuristic; tune to match your provider configuration.
+	// Default 21600 (6h). Set to 0 to disable the check.
+	MaxRefreshTokenAgeSeconds int                              `json:"maxRefreshTokenAgeSeconds"`
 	SessionMaxAge             int                              `json:"sessionMaxAge"`
 	RateLimit                 int                              `json:"rateLimit"`
 	OverrideScopes            bool                             `json:"overrideScopes"`
@@ -247,6 +256,7 @@ func CreateConfig() *Config {
 		EnablePKCE:                false, // PKCE is opt-in
 		OverrideScopes:            false, // Default to appending scopes, not overriding
 		RefreshGracePeriodSeconds: 60,    // Default grace period of 60 seconds
+		MaxRefreshTokenAgeSeconds: 21600, // 6h - conservative heuristic, see field doc
 		SecurityHeaders:           createDefaultSecurityConfig(),
 		Redis:                     nil, // Redis is disabled by default, configure via Traefik or env vars
 	}
@@ -368,6 +378,11 @@ func (c *Config) Validate() error {
 	// Validate refresh grace period
 	if c.RefreshGracePeriodSeconds < 0 {
 		return fmt.Errorf("refreshGracePeriodSeconds cannot be negative")
+	}
+
+	// Validate refresh-token max-age heuristic
+	if c.MaxRefreshTokenAgeSeconds < 0 {
+		return fmt.Errorf("maxRefreshTokenAgeSeconds cannot be negative")
 	}
 
 	// Validate audience if specified
