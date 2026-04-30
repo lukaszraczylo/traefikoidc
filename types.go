@@ -125,6 +125,7 @@ type TraefikOidc struct {
 	scopesSupported            []string
 	scopes                     []string
 	refreshGracePeriod         time.Duration
+	maxRefreshTokenAge         time.Duration
 	metadataMu                 sync.RWMutex
 	shutdownOnce               sync.Once
 	metadataRetryMutex         sync.Mutex

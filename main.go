@@ -226,6 +226,13 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return 60 * time.Second
 		}(),
+		maxRefreshTokenAge: func() time.Duration {
+			// 0 (or unset) disables the heuristic; negative is rejected by Validate.
+			if config.MaxRefreshTokenAgeSeconds > 0 {
+				return time.Duration(config.MaxRefreshTokenAgeSeconds) * time.Second
+			}
+			return 0
+		}(),
 		tokenCleanupStopChan:     make(chan struct{}),
 		metadataRefreshStopChan:  make(chan struct{}),
 		ctx:                      pluginCtx,
