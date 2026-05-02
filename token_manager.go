@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -1193,9 +1194,14 @@ func (t *TraefikOidc) startTokenCleanup() {
 	sessionManager := t.sessionManager
 	logger := t.logger
 
+	// Only use the fast cleanup interval when actually running under `go test`.
+	// runtime.Compiler == "yaegi" makes isTestMode() return true in production
+	// (Traefik interprets the plugin via yaegi), which would otherwise pin this
+	// ticker to 20 Hz on a real cluster despite tokenCache.Cleanup and
+	// jwkCache.Cleanup both being no-ops there.
 	cleanupInterval := 1 * time.Minute
-	if isTestMode() {
-		cleanupInterval = 50 * time.Millisecond // Fast interval for tests
+	if isTestMode() && runtime.Compiler != "yaegi" {
+		cleanupInterval = 50 * time.Millisecond
 	}
 
 	// Create cleanup function
@@ -1237,25 +1243,27 @@ func (t *TraefikOidc) startTokenCleanup() {
 }
 
 // extractGroupsAndRoles extracts group and role information from token claims.
-// It parses the 'groups' and 'roles' claims from the ID token and validates their format.
-// Parameters:
-//   - idToken: The ID token containing claims to extract.
+// It parses the configured group/role claims from the supplied ID token.
 //
-// Returns:
-//   - groups: Array of group names from the 'groups' claim.
-//   - roles: Array of role names from the 'roles' claim.
-//   - An error if claim extraction fails or if the 'groups' or 'roles' claims are present
-//     but not arrays of strings.
+// Most callers should prefer extractGroupsAndRolesFromClaims when claims have
+// already been parsed for the request (e.g. via SessionData.GetIDTokenClaims),
+// to avoid re-parsing the JWT.
 func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string, error) {
 	claims, err := t.extractClaimsFunc(idToken)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to extract claims: %w", err)
 	}
+	return t.extractGroupsAndRolesFromClaims(claims)
+}
 
+// extractGroupsAndRolesFromClaims extracts group and role information from
+// already-parsed claims. Hot path: callers that have a cached claims map (such
+// as SessionData.GetIDTokenClaims) should use this to skip a redundant
+// base64+JSON decode of the JWT on every authenticated request.
+func (t *TraefikOidc) extractGroupsAndRolesFromClaims(claims map[string]interface{}) ([]string, []string, error) {
 	var groups []string
 	var roles []string
 
-	// Extract groups using configurable claim name (defaults to "groups")
 	if groupsClaim, exists := claims[t.groupClaimName]; exists {
 		groupsSlice, ok := groupsClaim.([]interface{})
 		if !ok {
@@ -1271,7 +1279,6 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 		}
 	}
 
-	// Extract roles using configurable claim name (defaults to "roles")
 	if rolesClaim, exists := claims[t.roleClaimName]; exists {
 		rolesSlice, ok := rolesClaim.([]interface{})
 		if !ok {

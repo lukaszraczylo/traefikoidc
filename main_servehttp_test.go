@@ -79,34 +79,186 @@ func TestServeHTTP_ExcludedURLs(t *testing.T) {
 	}
 }
 
-// TestServeHTTP_EventStream tests the event-stream bypass functionality
+// TestServeHTTP_EventStream tests the event-stream (SSE) bypass: the
+// handshake must skip the OIDC redirect dance (clients can't follow it
+// mid-stream) but it must STILL require an authenticated session, otherwise
+// any caller could reach the backend by setting Accept: text/event-stream.
 func TestServeHTTP_EventStream(t *testing.T) {
-	nextCalled := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalled = true
-		w.WriteHeader(http.StatusOK)
+	sessionManager := createTestSessionManager(t)
+
+	newOidc := func(next http.Handler) *TraefikOidc {
+		oidc := &TraefikOidc{
+			next:                   next,
+			logger:                 NewLogger("debug"),
+			initComplete:           make(chan struct{}),
+			sessionManager:         sessionManager,
+			firstRequestReceived:   true,
+			metadataRefreshStarted: true,
+			issuerURL:              "https://provider.example.com",
+		}
+		close(oidc.initComplete)
+		return oidc
+	}
+
+	t.Run("unauthenticated_request_is_rejected", func(t *testing.T) {
+		nextCalled := false
+		oidc := newOidc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		req := httptest.NewRequest("GET", "/events", nil)
+		req.Header.Set("Accept", "text/event-stream")
+		rw := httptest.NewRecorder()
+
+		oidc.ServeHTTP(rw, req)
+
+		if rw.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 for unauthenticated SSE request, got %d", rw.Code)
+		}
+		if nextCalled {
+			t.Error("backend handler must NOT be called for unauthenticated SSE bypass")
+		}
 	})
 
-	oidc := &TraefikOidc{
-		next:                   next,
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}),
-		sessionManager:         createTestSessionManager(t),
-		firstRequestReceived:   true,
-		metadataRefreshStarted: true,
-		issuerURL:              "https://provider.example.com",
+	t.Run("authenticated_request_bypasses_to_backend", func(t *testing.T) {
+		nextCalled := false
+		var forwardedUser string
+		oidc := newOidc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			forwardedUser = r.Header.Get("X-Forwarded-User")
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		req := httptest.NewRequest("GET", "/events", nil)
+		req.Header.Set("Accept", "text/event-stream")
+
+		// Build an authenticated session and inject its cookies onto req.
+		session, err := sessionManager.GetSession(req)
+		if err != nil {
+			t.Fatalf("failed to create test session: %v", err)
+		}
+		session.SetEmail("user@example.com")
+		if err := session.SetAuthenticated(true); err != nil {
+			t.Fatalf("failed to mark session authenticated: %v", err)
+		}
+		setupRW := httptest.NewRecorder()
+		if err := session.Save(req, setupRW); err != nil {
+			t.Fatalf("failed to save session: %v", err)
+		}
+		for _, c := range setupRW.Result().Cookies() {
+			req.AddCookie(c)
+		}
+
+		rw := httptest.NewRecorder()
+		oidc.ServeHTTP(rw, req)
+
+		if !nextCalled {
+			t.Fatal("expected authenticated SSE request to be forwarded to backend")
+		}
+		if forwardedUser != "user@example.com" {
+			t.Errorf("expected X-Forwarded-User=user@example.com, got %q", forwardedUser)
+		}
+	})
+}
+
+// TestServeHTTP_WebSocketUpgrade mirrors the SSE behavior: WebSocket
+// handshake bypasses the OIDC redirect (clients can't follow it) but the
+// session must already be authenticated, otherwise the backend is exposed
+// to any caller setting `Connection: Upgrade` + `Upgrade: websocket`.
+func TestServeHTTP_WebSocketUpgrade(t *testing.T) {
+	sessionManager := createTestSessionManager(t)
+
+	newOidc := func(next http.Handler) *TraefikOidc {
+		oidc := &TraefikOidc{
+			next:                   next,
+			logger:                 NewLogger("debug"),
+			initComplete:           make(chan struct{}),
+			sessionManager:         sessionManager,
+			firstRequestReceived:   true,
+			metadataRefreshStarted: true,
+			issuerURL:              "https://provider.example.com",
+		}
+		close(oidc.initComplete)
+		return oidc
 	}
-	close(oidc.initComplete)
 
-	req := httptest.NewRequest("GET", "/events", nil)
-	req.Header.Set("Accept", "text/event-stream")
-	rw := httptest.NewRecorder()
+	t.Run("unauthenticated_upgrade_is_rejected", func(t *testing.T) {
+		nextCalled := false
+		oidc := newOidc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+		}))
 
-	oidc.ServeHTTP(rw, req)
+		req := httptest.NewRequest("GET", "/ws", nil)
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "websocket")
+		rw := httptest.NewRecorder()
 
-	if !nextCalled {
-		t.Error("expected event-stream request to bypass OIDC")
-	}
+		oidc.ServeHTTP(rw, req)
+
+		if rw.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 for unauthenticated WS upgrade, got %d", rw.Code)
+		}
+		if nextCalled {
+			t.Error("backend handler must NOT be called for unauthenticated WS bypass")
+		}
+	})
+
+	t.Run("authenticated_upgrade_bypasses_to_backend", func(t *testing.T) {
+		nextCalled := false
+		var forwardedUser string
+		oidc := newOidc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			forwardedUser = r.Header.Get("X-Forwarded-User")
+		}))
+
+		req := httptest.NewRequest("GET", "/ws", nil)
+		// Mixed-case + multi-token Connection header to exercise parsing.
+		req.Header.Set("Connection", "keep-alive, Upgrade")
+		req.Header.Set("Upgrade", "WebSocket")
+
+		session, err := sessionManager.GetSession(req)
+		if err != nil {
+			t.Fatalf("failed to create test session: %v", err)
+		}
+		session.SetEmail("ws-user@example.com")
+		if err := session.SetAuthenticated(true); err != nil {
+			t.Fatalf("failed to mark session authenticated: %v", err)
+		}
+		setupRW := httptest.NewRecorder()
+		if err := session.Save(req, setupRW); err != nil {
+			t.Fatalf("failed to save session: %v", err)
+		}
+		for _, c := range setupRW.Result().Cookies() {
+			req.AddCookie(c)
+		}
+
+		rw := httptest.NewRecorder()
+		oidc.ServeHTTP(rw, req)
+
+		if !nextCalled {
+			t.Fatal("expected authenticated WS handshake to be forwarded to backend")
+		}
+		if forwardedUser != "ws-user@example.com" {
+			t.Errorf("expected X-Forwarded-User=ws-user@example.com, got %q", forwardedUser)
+		}
+	})
+
+	t.Run("plain_http_does_not_bypass", func(t *testing.T) {
+		// Sanity: requests without Upgrade headers must NOT hit the WS
+		// bypass branch (otherwise the new code path could short-circuit
+		// normal authentication).
+		oidc := newOidc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("backend must not be called for unauthenticated plain HTTP")
+		}))
+		req := httptest.NewRequest("GET", "/ws", nil)
+		req.Header.Set("Connection", "keep-alive")
+		rw := httptest.NewRecorder()
+		oidc.ServeHTTP(rw, req)
+		if rw.Code == http.StatusOK {
+			t.Errorf("expected redirect or 401 for plain HTTP without auth, got 200")
+		}
+	})
 }
 
 // TestServeHTTP_InitializationTimeout tests initialization timeout handling
