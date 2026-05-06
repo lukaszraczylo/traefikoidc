@@ -31,7 +31,7 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 		session.SetCSRF(csrfToken)
 		session.SetNonce("test-nonce")
 		session.SetAuthenticated(true)
-		session.SetEmail("user@example.com")
+		session.SetUserIdentifier("user@example.com")
 		session.SetAccessToken("old-access-token")
 		session.SetRefreshToken("old-refresh-token")
 		session.SetIDToken("old-id-token")
@@ -61,7 +61,7 @@ func TestCSRFTokenSessionManagement(t *testing.T) {
 
 		// Now perform selective clearing (as done in the fix)
 		session2.SetAuthenticated(false)
-		session2.SetEmail("")
+		session2.SetUserIdentifier("")
 		session2.SetAccessToken("")
 		session2.SetRefreshToken("")
 		session2.SetIDToken("")
@@ -303,7 +303,7 @@ func TestRegressionLoginLoop(t *testing.T) {
 
 		// Set initial session data
 		session.SetAuthenticated(true)
-		session.SetEmail("old@example.com")
+		session.SetUserIdentifier("old@example.com")
 		session.SetAccessToken("old-token")
 		session.SetCSRF("existing-csrf")
 
@@ -325,7 +325,7 @@ func TestRegressionLoginLoop(t *testing.T) {
 		// OLD BEHAVIOR: session.Clear() would have been called here, losing CSRF
 		// NEW BEHAVIOR: Selective clearing
 		session2.SetAuthenticated(false)
-		session2.SetEmail("")
+		session2.SetUserIdentifier("")
 		session2.SetAccessToken("")
 		session2.SetRefreshToken("")
 		session2.SetIDToken("")

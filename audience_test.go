@@ -1491,7 +1491,7 @@ func TestAudienceEndToEndScenario(t *testing.T) {
 		if err := session.SetAuthenticated(true); err != nil {
 			t.Fatalf("Failed to set authenticated: %v", err)
 		}
-		session.SetEmail("user@company.com")
+		session.SetUserIdentifier("user@company.com")
 		session.SetIDToken(validJWT)
 		session.SetAccessToken(validJWT)
 

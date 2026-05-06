@@ -100,7 +100,7 @@ type combinedSessionPayload struct {
 	A  string                 `json:"a,omitempty"`
 	R  string                 `json:"r,omitempty"`
 	I  string                 `json:"i,omitempty"`
-	E  string                 `json:"e,omitempty"`
+	Ui string                 `json:"ui,omitempty"`
 	Cs string                 `json:"cs,omitempty"`
 	N  string                 `json:"n,omitempty"`
 	Cv string                 `json:"cv,omitempty"`
@@ -113,11 +113,11 @@ type combinedSessionPayload struct {
 // knownSessionKeys are the standard keys that are handled explicitly in the combined payload.
 // All other mainSession.Values keys are stored in the X (extra) field.
 var knownSessionKeys = map[string]bool{
-	"access_token":   true,
-	"refresh_token":  true,
-	"id_token":       true,
-	"email":          true,
-	"authenticated":  true,
+	"access_token":    true,
+	"refresh_token":   true,
+	"id_token":        true,
+	"user_identifier": true,
+	"authenticated":   true,
 	"csrf":           true,
 	"nonce":          true,
 	"code_verifier":  true,
@@ -1134,7 +1134,7 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 	sessionData.idTokenSession, _ = sm.store.Get(r, sm.idTokenCookieName())
 
 	// Populate legacy session values from combined payload
-	sessionData.mainSession.Values["email"] = payload.E
+	sessionData.mainSession.Values["user_identifier"] = payload.Ui
 	sessionData.mainSession.Values["authenticated"] = payload.Au
 	sessionData.mainSession.Values["csrf"] = payload.Cs
 	sessionData.mainSession.Values["nonce"] = payload.N
@@ -1278,7 +1278,7 @@ func (sd *SessionData) saveCombined(r *http.Request, w http.ResponseWriter, opti
 		A:  sd.getAccessTokenUnsafe(),
 		R:  sd.getRefreshTokenUnsafe(),
 		I:  sd.getIDTokenUnsafe(),
-		E:  sd.getEmailUnsafe(),
+		Ui: sd.getUserIdentifierUnsafe(),
 		Au: sd.getAuthenticatedUnsafe(),
 		Cs: sd.getCSRFUnsafe(),
 		N:  sd.getNonceUnsafe(),
@@ -2469,30 +2469,30 @@ func (sd *SessionData) SetCodeVerifier(codeVerifier string) {
 	}
 }
 
-// GetEmail retrieves the authenticated user's email address.
-// The email is extracted from ID token claims and used for
-// authorization decisions and header injection.
+// GetUserIdentifier retrieves the authenticated user's identifier as extracted
+// from the configured userIdentifierClaim of the ID token (email, sub, oid,
+// upn, preferred_username, etc.). The value is used for authorization
+// decisions and header injection.
 // Returns:
-//   - The user's email address string, or an empty string if not set.
-func (sd *SessionData) GetEmail() string {
+//   - The user identifier string, or an empty string if not set.
+func (sd *SessionData) GetUserIdentifier() string {
 	sd.sessionMutex.RLock()
 	defer sd.sessionMutex.RUnlock()
 
-	email, _ := sd.mainSession.Values["email"].(string)
-	return email
+	userIdentifier, _ := sd.mainSession.Values["user_identifier"].(string)
+	return userIdentifier
 }
 
-// SetEmail stores the authenticated user's email address.
-// The email is typically extracted from the 'email' claim in the ID token.
+// SetUserIdentifier stores the authenticated user's identifier value.
 // Parameters:
-//   - email: The user's email address to store.
-func (sd *SessionData) SetEmail(email string) {
+//   - userIdentifier: The user identifier to store (email, sub, or other claim value).
+func (sd *SessionData) SetUserIdentifier(userIdentifier string) {
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	currentVal, _ := sd.mainSession.Values["email"].(string)
-	if currentVal != email {
-		sd.mainSession.Values["email"] = email
+	currentVal, _ := sd.mainSession.Values["user_identifier"].(string)
+	if currentVal != userIdentifier {
+		sd.mainSession.Values["user_identifier"] = userIdentifier
 		sd.dirty = true
 	}
 }
@@ -2626,10 +2626,10 @@ func (sd *SessionData) getRefreshTokenUnsafe() string {
 	return result.Token
 }
 
-// getEmailUnsafe retrieves the email without acquiring locks.
-func (sd *SessionData) getEmailUnsafe() string {
-	email, _ := sd.mainSession.Values["email"].(string)
-	return email
+// getUserIdentifierUnsafe retrieves the user identifier without acquiring locks.
+func (sd *SessionData) getUserIdentifierUnsafe() string {
+	userIdentifier, _ := sd.mainSession.Values["user_identifier"].(string)
+	return userIdentifier
 }
 
 // getCSRFUnsafe retrieves the CSRF token without acquiring locks.

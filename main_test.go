@@ -580,7 +580,7 @@ func TestServeHTTP(t *testing.T) {
 			requestPath: "/protected",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 				// Generate a fresh valid token for this test case to avoid replay issues
 				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
@@ -603,7 +603,7 @@ func TestServeHTTP(t *testing.T) {
 				// even if session.SetAuthenticated(true) was called.
 				// We rely on needsRefresh=true and the presence of the refresh token to trigger the refresh attempt.
 				session.SetAuthenticated(true) // Set flag initially, though isUserAuthenticated will override based on token
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 				// Create an expired token for this test
 				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
@@ -660,7 +660,7 @@ func TestServeHTTP(t *testing.T) {
 			requestPath: "/callback/logout", // Match the default logout path set in TestSuite.Setup
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 				// Generate a fresh valid token for this test case
 				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
@@ -678,7 +678,7 @@ func TestServeHTTP(t *testing.T) {
 			requestPath: "/protected",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true) // Set flag initially
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 				// Create an expired token for this test
 				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
@@ -706,7 +706,7 @@ func TestServeHTTP(t *testing.T) {
 			requestPath: "/protected",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true) // Set flag initially
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 				// Create an expired token for this test
 				expiredToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(-1 * time.Hour).Unix(),
@@ -741,7 +741,7 @@ func TestServeHTTP(t *testing.T) {
 					"sub": "test-subject", "email": "user@example.com", "jti": generateRandomString(16),
 				})
 				session.SetAuthenticated(true)
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 				session.SetAccessToken(nearExpiryToken)
 				session.SetRefreshToken("valid-refresh-token-for-near-expiry") // Refresh token MUST exist for proactive refresh
 			},
@@ -772,7 +772,7 @@ func TestServeHTTP(t *testing.T) {
 					"sub": "test-subject", "email": "user@example.com", "jti": generateRandomString(16),
 				})
 				session.SetAuthenticated(true)
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 				session.SetAccessToken(validToken)
 				session.SetIDToken(validToken) // Ensure ID token is also set
 				session.SetRefreshToken("should-not-be-used-refresh-token")
@@ -792,7 +792,7 @@ func TestServeHTTP(t *testing.T) {
 			requestPath: "/protected",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetEmail("user@disallowed.com") // Use disallowed domain
+				session.SetUserIdentifier("user@disallowed.com") // Use disallowed domain
 				// Generate a fresh valid token for this test case
 				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
@@ -814,7 +814,7 @@ func TestServeHTTP(t *testing.T) {
 			requestPath: "/protected",
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetEmail("user@disallowed.com") // Use disallowed domain
+				session.SetUserIdentifier("user@disallowed.com") // Use disallowed domain
 				// Generate a fresh valid token for this test case
 				freshToken, _ := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 					"iss": "https://test-issuer.com", "aud": "test-client-id", "exp": time.Now().Add(1 * time.Hour).Unix(),
@@ -2179,7 +2179,7 @@ func TestHandleExpiredToken(t *testing.T) {
 					"sub": "test-subject", "email": "test@example.com", "jti": generateRandomString(16),
 				})
 				session.SetAccessToken(expiredToken)
-				session.SetEmail("test@example.com")
+				session.SetUserIdentifier("test@example.com")
 			},
 			expectedPath: "/original/path",
 		},
@@ -2756,7 +2756,7 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 			},
 			expectedStatus: http.StatusOK,
 			expectedHeaders: map[string]string{
@@ -2782,7 +2782,7 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 			},
 			expectedStatus: http.StatusOK,
 			expectedHeaders: map[string]string{
@@ -2809,7 +2809,7 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 			},
 			expectedStatus: http.StatusForbidden,
 		},
@@ -2829,7 +2829,7 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 			},
 			expectedStatus: http.StatusOK,
 			expectedHeaders: map[string]string{
@@ -2851,7 +2851,7 @@ func TestServeHTTPRolesAndGroups(t *testing.T) {
 			},
 			setupSession: func(session *SessionData) {
 				session.SetAuthenticated(true)
-				session.SetEmail("user@example.com")
+				session.SetUserIdentifier("user@example.com")
 			},
 			expectedStatus:  http.StatusOK,
 			expectedHeaders: map[string]string{},

@@ -320,17 +320,16 @@ func (s *SessionBehaviourSuite) TestSessionData_DirtyTracking() {
 	s.False(session.IsDirty())
 }
 
-// TestSessionData_SetEmail tests email setter with dirty tracking
-func (s *SessionBehaviourSuite) TestSessionData_SetEmail() {
+// TestSessionData_SetUserIdentifier tests user identifier setter with dirty tracking
+func (s *SessionBehaviourSuite) TestSessionData_SetUserIdentifier() {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
 	session, err := s.sessionManager.GetSession(req)
 	s.Require().NoError(err)
 	defer session.returnToPoolSafely()
 
-	// Set email
-	session.SetEmail("test@example.com")
-	s.Equal("test@example.com", session.GetEmail())
+	session.SetUserIdentifier("test@example.com")
+	s.Equal("test@example.com", session.GetUserIdentifier())
 	s.True(session.IsDirty())
 }
 
@@ -568,7 +567,7 @@ func (s *SessionBehaviourSuite) TestSessionData_Clear() {
 	// Set some data
 	err = session.SetAuthenticated(true)
 	s.Require().NoError(err)
-	session.SetEmail("test@example.com")
+	session.SetUserIdentifier("test@example.com")
 	session.SetCSRF("csrf-token")
 
 	// Clear session
@@ -588,7 +587,7 @@ func (s *SessionBehaviourSuite) TestSessionData_Save() {
 	defer session.returnToPoolSafely()
 
 	// Modify session
-	session.SetEmail("test@example.com")
+	session.SetUserIdentifier("test@example.com")
 	s.True(session.IsDirty())
 
 	// Save session

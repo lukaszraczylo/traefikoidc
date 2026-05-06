@@ -43,7 +43,7 @@ func (t *TraefikOidc) generatePKCEParameters() (string, string, error) {
 func (t *TraefikOidc) prepareSessionForAuthentication(session *SessionData, csrfToken, nonce, codeVerifier, incomingPath string) {
 	// Clear all existing session data
 	_ = session.SetAuthenticated(false) // Safe to ignore: clearing authentication state on new flow
-	session.SetEmail("")
+	session.SetUserIdentifier("")
 	session.SetAccessToken("")
 	session.SetRefreshToken("")
 	session.SetIDToken("")
@@ -250,7 +250,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		t.sendErrorResponse(rw, req, "Failed to update session", http.StatusInternalServerError)
 		return
 	}
-	session.SetEmail(userIdentifier) // SetEmail stores the user identifier (email or other claim)
+	session.SetUserIdentifier(userIdentifier)
 	session.SetIDToken(tokenResponse.IDToken)
 	session.SetAccessToken(tokenResponse.AccessToken)
 	session.SetRefreshToken(tokenResponse.RefreshToken)
@@ -290,7 +290,7 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	session.SetIDToken("")
 	session.SetAccessToken("")
 	session.SetRefreshToken("")
-	session.SetEmail("")
+	session.SetUserIdentifier("")
 	// Clear CSRF tokens to prevent replay attacks
 	session.SetCSRF("")
 	session.SetNonce("")

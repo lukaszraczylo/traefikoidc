@@ -192,7 +192,7 @@ func (s *AuthFlowBehaviourSuite) TestPrepareSessionForAuthentication() {
 
 	// Pre-populate session with old data
 	_ = session.SetAuthenticated(true)
-	session.SetEmail("old@example.com")
+	session.SetUserIdentifier("old@example.com")
 	session.SetAccessToken("old-access-token-with-many-characters")
 	session.SetRefreshToken("old-refresh-token-with-many-characters")
 	session.SetIDToken("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.signature")
@@ -207,7 +207,7 @@ func (s *AuthFlowBehaviourSuite) TestPrepareSessionForAuthentication() {
 
 	// Verify old data is cleared
 	s.False(session.GetAuthenticated())
-	s.Empty(session.GetEmail())
+	s.Empty(session.GetUserIdentifier())
 
 	// Verify new data is set
 	s.Equal(csrfToken, session.GetCSRF())
@@ -711,7 +711,7 @@ func (s *AuthFlowBehaviourSuite) TestHandleExpiredToken() {
 	session, err := sessionManager.GetSession(req)
 	s.Require().NoError(err)
 	_ = session.SetAuthenticated(true)
-	session.SetEmail("test@example.com")
+	session.SetUserIdentifier("test@example.com")
 	session.SetIDToken("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.signature")
 	session.mainSession.Values["redirect_count"] = 3
 
@@ -720,7 +720,7 @@ func (s *AuthFlowBehaviourSuite) TestHandleExpiredToken() {
 
 	// Session should be cleared
 	s.False(session.GetAuthenticated())
-	s.Empty(session.GetEmail())
+	s.Empty(session.GetUserIdentifier())
 	s.Empty(session.GetIDToken())
 
 	// Redirect count should be reset to 0 and then incremented by defaultInitiateAuthentication

@@ -138,7 +138,7 @@ func TestServeHTTP_EventStream(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create test session: %v", err)
 		}
-		session.SetEmail("user@example.com")
+		session.SetUserIdentifier("user@example.com")
 		if err := session.SetAuthenticated(true); err != nil {
 			t.Fatalf("failed to mark session authenticated: %v", err)
 		}
@@ -221,7 +221,7 @@ func TestServeHTTP_WebSocketUpgrade(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create test session: %v", err)
 		}
-		session.SetEmail("ws-user@example.com")
+		session.SetUserIdentifier("ws-user@example.com")
 		if err := session.SetAuthenticated(true); err != nil {
 			t.Fatalf("failed to mark session authenticated: %v", err)
 		}
@@ -408,7 +408,7 @@ func TestProcessAuthorizedRequest(t *testing.T) {
 			name: "successful authorization with email",
 			setupSession: func() *MockSessionData {
 				session := &MockSessionData{
-					email:        "user@example.com",
+					userIdentifier: "user@example.com",
 					idToken:      "test-id-token",
 					accessToken:  "test-access-token",
 					isDirty:      false,
@@ -440,7 +440,7 @@ func TestProcessAuthorizedRequest(t *testing.T) {
 			name: "no email triggers reauth",
 			setupSession: func() *MockSessionData {
 				return &MockSessionData{
-					email:       "",
+					userIdentifier: "",
 					idToken:     "test-id-token",
 					accessToken: "test-access-token",
 				}
@@ -461,7 +461,7 @@ func TestProcessAuthorizedRequest(t *testing.T) {
 			name: "roles and groups authorization",
 			setupSession: func() *MockSessionData {
 				return &MockSessionData{
-					email:       "user@example.com",
+					userIdentifier: "user@example.com",
 					idToken:     "test-id-token",
 					accessToken: "test-access-token",
 				}
@@ -494,7 +494,7 @@ func TestProcessAuthorizedRequest(t *testing.T) {
 			name: "unauthorized role/group returns 403",
 			setupSession: func() *MockSessionData {
 				return &MockSessionData{
-					email:       "user@example.com",
+					userIdentifier: "user@example.com",
 					idToken:     "test-id-token",
 					accessToken: "test-access-token",
 				}
@@ -521,7 +521,7 @@ func TestProcessAuthorizedRequest(t *testing.T) {
 			name: "template headers processing",
 			setupSession: func() *MockSessionData {
 				return &MockSessionData{
-					email:       "user@example.com",
+					userIdentifier: "user@example.com",
 					idToken:     "test-id-token",
 					accessToken: "test-access-token",
 					isDirty:     false,
@@ -553,7 +553,7 @@ func TestProcessAuthorizedRequest(t *testing.T) {
 			name: "OPTIONS request with CORS",
 			setupSession: func() *MockSessionData {
 				return &MockSessionData{
-					email:       "user@example.com",
+					userIdentifier: "user@example.com",
 					idToken:     "test-id-token",
 					accessToken: "test-access-token",
 				}
@@ -604,7 +604,7 @@ func TestProcessAuthorizedRequest(t *testing.T) {
 				manager: &SessionManager{logger: NewLogger("debug")},
 			}
 			// Copy values from mock to concrete session
-			concreteSession.SetEmail(session.email)
+			concreteSession.SetUserIdentifier(session.userIdentifier)
 			concreteSession.SetIDToken(session.idToken)
 			concreteSession.SetAccessToken(session.accessToken)
 			concreteSession.SetRefreshToken(session.refreshToken)
@@ -654,23 +654,23 @@ func TestProcessAuthorizedRequest(t *testing.T) {
 
 // MockSessionData is a test implementation of SessionData interface
 type MockSessionData struct {
-	email         string
-	idToken       string
-	accessToken   string
-	refreshToken  string
-	csrf          string
-	nonce         string
-	codeVerifier  string
-	redirectCount int
-	authenticated bool
-	isDirty       bool
+	userIdentifier string
+	idToken        string
+	accessToken    string
+	refreshToken   string
+	csrf           string
+	nonce          string
+	codeVerifier   string
+	redirectCount  int
+	authenticated  bool
+	isDirty        bool
 }
 
-func (m *MockSessionData) GetEmail() string                                   { return m.email }
+func (m *MockSessionData) GetUserIdentifier() string                          { return m.userIdentifier }
 func (m *MockSessionData) GetIDToken() string                                 { return m.idToken }
 func (m *MockSessionData) GetAccessToken() string                             { return m.accessToken }
 func (m *MockSessionData) GetRefreshToken() string                            { return m.refreshToken }
-func (m *MockSessionData) SetEmail(email string)                              { m.email = email }
+func (m *MockSessionData) SetUserIdentifier(userIdentifier string)            { m.userIdentifier = userIdentifier }
 func (m *MockSessionData) SetIDToken(token string)                            { m.idToken = token }
 func (m *MockSessionData) SetAccessToken(token string)                        { m.accessToken = token }
 func (m *MockSessionData) SetRefreshToken(token string)                       { m.refreshToken = token }
@@ -762,7 +762,7 @@ func TestMinimalHeaders(t *testing.T) {
 			}
 
 			// Set up session data
-			session.SetEmail("user@example.com")
+			session.SetUserIdentifier("user@example.com")
 			session.SetAuthenticated(true)
 
 			// Call processAuthorizedRequest directly
@@ -837,7 +837,7 @@ func TestMinimalHeaders_TokenHeaderNotSet(t *testing.T) {
 		t.Fatalf("Failed to get session: %v", err)
 	}
 
-	session.SetEmail("user@example.com")
+	session.SetUserIdentifier("user@example.com")
 	session.SetAuthenticated(true)
 
 	oidc.processAuthorizedRequest(rw, req, session, "https://example.com/callback")
@@ -923,7 +923,7 @@ func TestStripAuthCookies(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to get session: %v", err)
 			}
-			session.SetEmail("user@example.com")
+			session.SetUserIdentifier("user@example.com")
 			session.SetAuthenticated(true)
 
 			// Now add OIDC session cookies (simulating what the browser would send)
@@ -1004,7 +1004,7 @@ func TestStripAuthCookies_NoCookies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get session: %v", err)
 	}
-	session.SetEmail("user@example.com")
+	session.SetUserIdentifier("user@example.com")
 	session.SetAuthenticated(true)
 
 	oidc.processAuthorizedRequest(rw, req, session, "https://example.com/callback")
@@ -1051,7 +1051,7 @@ func TestStripAuthCookies_OnlyOIDCCookies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get session: %v", err)
 	}
-	session.SetEmail("user@example.com")
+	session.SetUserIdentifier("user@example.com")
 	session.SetAuthenticated(true)
 
 	// Add only OIDC cookies
@@ -1102,7 +1102,7 @@ func TestStripAuthCookies_OnlyAppCookies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get session: %v", err)
 	}
-	session.SetEmail("user@example.com")
+	session.SetUserIdentifier("user@example.com")
 	session.SetAuthenticated(true)
 
 	// Add only non-OIDC cookies
@@ -1165,7 +1165,7 @@ func TestStripAuthCookies_CustomPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get session: %v", err)
 	}
-	session.SetEmail("user@example.com")
+	session.SetUserIdentifier("user@example.com")
 	session.SetAuthenticated(true)
 
 	// Add cookies with the custom prefix (should be stripped)

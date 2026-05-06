@@ -434,7 +434,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 			session.SetRefreshToken("")
 			session.SetAccessToken("")
 			session.SetIDToken("")
-			session.SetEmail("")
+			session.SetUserIdentifier("")
 			// Clear CSRF tokens as well to prevent any replay attacks
 			session.SetCSRF("")
 			session.SetNonce("")
@@ -476,12 +476,18 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		t.logger.Errorf("refreshToken failed: Failed to extract claims from refreshed token: %v", err)
 		return false
 	}
-	email, _ := claims["email"].(string)
-	if email == "" {
-		t.logger.Errorf("refreshToken failed: Email claim missing or empty in refreshed token")
-		return false
+	userIdentifier, _ := claims[t.userIdentifierClaim].(string)
+	if userIdentifier == "" {
+		if t.userIdentifierClaim != "sub" {
+			userIdentifier, _ = claims["sub"].(string)
+		}
+		if userIdentifier == "" {
+			t.logger.Errorf("refreshToken failed: User identifier claim '%s' missing or empty in refreshed token", t.userIdentifierClaim)
+			return false
+		}
+		t.logger.Debugf("Configured claim '%s' not found in refreshed token, using 'sub' claim as fallback", t.userIdentifierClaim)
 	}
-	session.SetEmail(email)
+	session.SetUserIdentifier(userIdentifier)
 
 	// Get token expiry information for logging
 	var expiryTime time.Time
@@ -507,7 +513,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		session.SetAccessToken("")
 		session.SetIDToken("")
 		session.SetRefreshToken("")
-		session.SetEmail("")
+		session.SetUserIdentifier("")
 		return false
 	}
 

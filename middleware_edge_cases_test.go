@@ -161,7 +161,7 @@ func TestMiddlewareDomainRestrictions(t *testing.T) {
 		// Create authenticated session
 		req := httptest.NewRequest("GET", "/api/test", nil)
 		session, _ := sessionManager.GetSession(req)
-		session.SetEmail("user@example.com")
+		session.SetUserIdentifier("user@example.com")
 		session.SetAuthenticated(true)
 		session.SetIDToken("dummy-token")
 		session.Save(req, httptest.NewRecorder())
@@ -203,7 +203,7 @@ func TestMiddlewareDomainRestrictions(t *testing.T) {
 		// Create session with forbidden domain
 		req := httptest.NewRequest("GET", "/api/test", nil)
 		session, _ := sessionManager.GetSession(req)
-		session.SetEmail("user@forbidden.com")
+		session.SetUserIdentifier("user@forbidden.com")
 		session.SetAuthenticated(true)
 
 		// Save and inject cookies
@@ -252,7 +252,7 @@ func TestMiddlewareOpaqueTokenHandling(t *testing.T) {
 	// Create session with opaque token
 	req := httptest.NewRequest("GET", "/api/test", nil)
 	session, _ := sessionManager.GetSession(req)
-	session.SetEmail("user@example.com")
+	session.SetUserIdentifier("user@example.com")
 	session.SetAccessToken("sk_live_abcdefghijklmnopqrstuvwxyz")  // Opaque token (no dots)
 	session.SetAuthenticated(true)
 
@@ -291,7 +291,7 @@ func TestMiddlewareProcessAuthorizedRequestEdgeCases(t *testing.T) {
 
 		req := httptest.NewRequest("GET", "/api/test", nil)
 		session, _ := sessionManager.GetSession(req)
-		session.SetEmail("") // No email
+		session.SetUserIdentifier("") // No email
 		session.SetIDToken("dummy-token")
 
 		rw := httptest.NewRecorder()
@@ -321,7 +321,7 @@ func TestMiddlewareProcessAuthorizedRequestEdgeCases(t *testing.T) {
 
 		req := httptest.NewRequest("GET", "/api/test", nil)
 		session, _ := sessionManager.GetSession(req)
-		session.SetEmail("user@example.com")
+		session.SetUserIdentifier("user@example.com")
 		session.SetIDToken("")     // No ID token
 		session.SetAccessToken("") // No access token
 
@@ -349,7 +349,7 @@ func TestMiddlewareProcessAuthorizedRequestEdgeCases(t *testing.T) {
 
 		req := httptest.NewRequest("GET", "/api/test", nil)
 		session, _ := sessionManager.GetSession(req)
-		session.SetEmail("user@example.com")
+		session.SetUserIdentifier("user@example.com")
 		session.SetIDToken("dummy-token")
 
 		rw := httptest.NewRecorder()
@@ -383,7 +383,7 @@ func TestMiddlewareProcessAuthorizedRequestEdgeCases(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/test", nil)
 		session, _ := sessionManager.GetSession(req)
 		testEmail := "user@example.com"
-		session.SetEmail(testEmail)
+		session.SetUserIdentifier(testEmail)
 		session.SetIDToken("dummy-id-token")
 
 		rw := httptest.NewRecorder()

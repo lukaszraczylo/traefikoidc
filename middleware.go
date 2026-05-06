@@ -92,17 +92,17 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) b
 		return false
 	}
 
-	email := session.GetEmail()
-	if email == "" {
+	userIdentifier := session.GetUserIdentifier()
+	if userIdentifier == "" {
 		t.logger.Debugf("%s bypass: rejecting request, session has no user identifier", reason)
 		return false
 	}
 
-	req.Header.Set("X-Forwarded-User", email)
+	req.Header.Set("X-Forwarded-User", userIdentifier)
 	if !t.minimalHeaders {
-		req.Header.Set("X-Auth-Request-User", email)
+		req.Header.Set("X-Auth-Request-User", userIdentifier)
 	}
-	t.logger.Debugf("%s bypass: forwarded user %s from session", reason, email)
+	t.logger.Debugf("%s bypass: forwarded user %s from session", reason, userIdentifier)
 	return true
 }
 
@@ -289,7 +289,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	userIdentifier := session.GetEmail() // GetEmail returns the stored user identifier (email or other claim)
+	userIdentifier := session.GetUserIdentifier()
 	// User authorization check
 	if authenticated && userIdentifier != "" {
 		if !t.isAllowedUser(userIdentifier) {
@@ -361,7 +361,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		refreshed := t.refreshToken(rw, req, session)
 		if refreshed {
-			userIdentifier = session.GetEmail() // GetEmail returns the stored user identifier
+			userIdentifier = session.GetUserIdentifier()
 			if userIdentifier != "" && !t.isAllowedUser(userIdentifier) {
 				t.logger.Infof("User with refreshed token %s is not authorized", userIdentifier)
 				errorMsg := fmt.Sprintf("Access denied: You are not authorized to access this resource. To log out, visit: %s", t.logoutURLPath)
@@ -411,9 +411,9 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 //   - session: The user's session data containing tokens and claims.
 //   - redirectURL: The callback URL for re-authentication if needed.
 func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
-	email := session.GetEmail()
-	if email == "" {
-		t.logger.Info("No email found in session during final processing, initiating re-auth")
+	userIdentifier := session.GetUserIdentifier()
+	if userIdentifier == "" {
+		t.logger.Info("No user identifier found in session during final processing, initiating re-auth")
 		// Reset redirect count to prevent loops when session is invalid
 		session.ResetRedirectCount()
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
@@ -426,7 +426,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		if idToken != "" {
 			sid, sub, createdAt := t.extractSessionInfo(idToken)
 			if t.isSessionInvalidated(sid, sub, createdAt) {
-				t.logger.Infof("Session for user %s has been invalidated via IdP-initiated logout", email)
+				t.logger.Infof("Session for user %s has been invalidated via IdP-initiated logout", userIdentifier)
 				// Clear the session and redirect to login
 				if err := session.Clear(req, rw); err != nil {
 					t.logger.Errorf("Error clearing invalidated session: %v", err)
@@ -502,19 +502,19 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 			}
 		}
 		if !allowed {
-			t.logger.Infof("User with email %s does not have any allowed roles or groups", email)
+			t.logger.Infof("User %s does not have any allowed roles or groups", userIdentifier)
 			errorMsg := fmt.Sprintf("Access denied: You do not have any of the allowed roles or groups. To log out, visit: %s", t.logoutURLPath)
 			t.sendErrorResponse(rw, req, errorMsg, http.StatusForbidden)
 			return
 		}
 	}
 
-	req.Header.Set("X-Forwarded-User", email)
+	req.Header.Set("X-Forwarded-User", userIdentifier)
 
 	// When minimalHeaders is enabled, skip extra headers to prevent 431 errors
 	if !t.minimalHeaders {
 		req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
-		req.Header.Set("X-Auth-Request-User", email)
+		req.Header.Set("X-Auth-Request-User", userIdentifier)
 		if idToken != "" {
 			req.Header.Set("X-Auth-Request-Token", idToken)
 		}
@@ -587,7 +587,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		}
 	}
 
-	t.logger.Debugf("Request authorized for user %s, forwarding to next handler", email)
+	t.logger.Debugf("Request authorized for user %s, forwarding to next handler", userIdentifier)
 
 	t.next.ServeHTTP(rw, req)
 }

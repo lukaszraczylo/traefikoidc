@@ -485,7 +485,7 @@ func TestSessionFixationAttack(t *testing.T) {
 
 	// Set up the attacker's session with malicious data
 	attackerSession.SetAuthenticated(true)
-	attackerSession.SetEmail("attacker@evil.com")
+	attackerSession.SetUserIdentifier("attacker@evil.com")
 	attackerSession.SetIDToken(ValidIDToken)
 	attackerSession.SetAccessToken(ValidAccessToken)
 
@@ -512,7 +512,7 @@ func TestSessionFixationAttack(t *testing.T) {
 		}
 
 		// Get the email from the session
-		email := session.GetEmail()
+		email := session.GetUserIdentifier()
 		w.Header().Set("X-User-Email", email)
 		w.WriteHeader(http.StatusOK)
 	})

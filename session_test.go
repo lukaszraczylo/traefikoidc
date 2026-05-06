@@ -2688,7 +2688,7 @@ func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
 
 	// Set up initial session state (what user has when first logging in)
 	session1.SetAuthenticated(true)
-	session1.SetEmail(originalUserData["email"].(string))
+	session1.SetUserIdentifier(originalUserData["email"].(string))
 	session1.SetAccessToken("initial-valid-access-token-longer-than-20-chars")
 	session1.SetIDToken("initial-valid-id-token-longer-than-20-chars")
 	session1.SetRefreshToken("valid-refresh-token-should-last-30-days")
@@ -2732,7 +2732,7 @@ func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
 	// Simulate what happens when middleware detects expired tokens
 	// It should preserve session state while attempting token refresh
 	originalAuth := session2.GetAuthenticated()
-	originalEmail := session2.GetEmail()
+	originalEmail := session2.GetUserIdentifier()
 
 	// Reconstruct user data from individual stored keys
 	originalUserDataStored := make(map[string]interface{})
@@ -2813,7 +2813,7 @@ func TestSessionStatePreservationWithExpiredTokens(t *testing.T) {
 
 	// Verify all session data is still intact after token refresh
 	postRefreshAuth := session2.GetAuthenticated()
-	postRefreshEmail := session2.GetEmail()
+	postRefreshEmail := session2.GetUserIdentifier()
 	userDataPresent := true
 	for k := range originalUserData {
 		if session2.mainSession.Values["user_data_"+k] == nil {
@@ -2907,7 +2907,7 @@ func TestSessionExpiryVsTokenExpiry(t *testing.T) {
 
 			// Set up session with specific creation time
 			session.SetAuthenticated(true)
-			session.SetEmail("test@example.com")
+			session.SetUserIdentifier("test@example.com")
 			session.mainSession.Values["created_at"] = sessionCreatedAt.Unix()
 
 			// Create tokens with specific expiry
@@ -3018,7 +3018,7 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 
 			// Set up session with data that should be preserved or removed
 			session.SetAuthenticated(true)
-			session.SetEmail("cleanup@example.com")
+			session.SetUserIdentifier("cleanup@example.com")
 
 			session.mainSession.Values["user_data"] = "Test User|user-123"
 			session.mainSession.Values["preferences"] = "theme:dark,lang:en"
@@ -3049,7 +3049,7 @@ func TestSessionCleanupOnTokenExpiry(t *testing.T) {
 			if scenario.shouldCleanup {
 				if sessionTooOld {
 					session.SetAuthenticated(false)
-					session.SetEmail("")
+					session.SetUserIdentifier("")
 					session.SetAccessToken("")
 					session.SetRefreshToken("")
 					for key := range session.mainSession.Values {

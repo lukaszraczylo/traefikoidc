@@ -293,7 +293,7 @@ func (tf *TestFramework) CreateAuthenticatedRequest(method, path string) (*http.
 	}
 
 	session.SetAuthenticated(true)
-	session.SetEmail(tf.fixtures.UserEmail)
+	session.SetUserIdentifier(tf.fixtures.UserEmail)
 	session.SetAccessToken(tf.fixtures.AccessToken)
 	session.SetRefreshToken(tf.fixtures.RefreshToken)
 	session.SetIDToken(tf.GenerateJWT(tf.fixtures.Claims))
