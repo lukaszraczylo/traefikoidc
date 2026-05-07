@@ -719,6 +719,11 @@ spec:
                                         <td class="py-2 px-3">Maximum session age in seconds (24 hours default)</td>
                                     </tr>
                                     <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">maxRefreshTokenAgeSeconds</code></td>
+                                        <td class="py-2 px-3">21600</td>
+                                        <td class="py-2 px-3">Heuristic upper bound on stored refresh-token lifetime (6 hours default). Past this, the plugin treats the RT as expired without contacting the IdP. Set <code>0</code> to disable.</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">cookiePrefix</code></td>
                                         <td class="py-2 px-3">_oidc_raczylo_</td>
                                         <td class="py-2 px-3">Custom prefix for session cookies</td>
@@ -858,7 +863,12 @@ spec:
                                     <tr>
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.enableTLS</code></td>
                                         <td class="py-2 px-3">false</td>
-                                        <td class="py-2 px-3">Enable TLS for Redis connections</td>
+                                        <td class="py-2 px-3">Enable TLS for Redis connections (e.g. AWS ElastiCache in-transit encryption)</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">redis.tlsSkipVerify</code></td>
+                                        <td class="py-2 px-3">false</td>
+                                        <td class="py-2 px-3">Skip TLS server certificate verification (testing only; not recommended in production)</td>
                                     </tr>
                                 </tbody>
                             </table>

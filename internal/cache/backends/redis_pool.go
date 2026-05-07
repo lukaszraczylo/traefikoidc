@@ -2,6 +2,7 @@ package backends
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -31,6 +32,7 @@ type ConnectionPool struct {
 type PoolConfig struct {
 	Address           string
 	Password          string
+	TLSServerName     string // SNI server name; defaults to host(Address) when empty
 	DB                int
 	MaxConnections    int
 	ConnectTimeout    time.Duration
@@ -39,6 +41,8 @@ type PoolConfig struct {
 	EnableHealthCheck bool          // Enable connection health validation
 	MaxRetries        int           // Max retries for failed operations
 	RetryDelay        time.Duration // Initial delay between retries
+	EnableTLS         bool          // Wrap connection with TLS (e.g. AWS ElastiCache in-transit encryption)
+	TLSSkipVerify     bool          // Skip server certificate verification (escape hatch; not recommended)
 }
 
 // NewConnectionPool creates a new connection pool
@@ -96,7 +100,7 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 			// No available connection, create new one if under limit
 			// #nosec G115 -- MaxConnections is a small config value that fits in int32
 			if p.totalConns.Load() < int32(p.config.MaxConnections) {
-				conn, err = p.createConnection()
+				conn, err = p.createConnection(ctx)
 				if err != nil {
 					// If this is the last attempt, return error
 					if attempt == maxAttempts-1 {
@@ -193,13 +197,31 @@ func (p *ConnectionPool) Stats() map[string]interface{} {
 }
 
 // createConnection creates a new Redis connection
-func (p *ConnectionPool) createConnection() (*RedisConn, error) {
+func (p *ConnectionPool) createConnection(ctx context.Context) (*RedisConn, error) {
 	// Connect with timeout
 	dialer := &net.Dialer{
 		Timeout: p.config.ConnectTimeout,
 	}
 
-	conn, err := dialer.Dial("tcp", p.config.Address)
+	var conn net.Conn
+	var err error
+	if p.config.EnableTLS {
+		serverName := p.config.TLSServerName
+		if serverName == "" {
+			if host, _, splitErr := net.SplitHostPort(p.config.Address); splitErr == nil {
+				serverName = host
+			}
+		}
+		tlsCfg := &tls.Config{
+			ServerName:         serverName,
+			InsecureSkipVerify: p.config.TLSSkipVerify, // #nosec G402 -- opt-in escape hatch via TLSSkipVerify config
+			MinVersion:         tls.VersionTLS12,
+		}
+		tlsDialer := &tls.Dialer{NetDialer: dialer, Config: tlsCfg}
+		conn, err = tlsDialer.DialContext(ctx, "tcp", p.config.Address)
+	} else {
+		conn, err = dialer.DialContext(ctx, "tcp", p.config.Address)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
 	}

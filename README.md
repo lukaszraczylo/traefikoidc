@@ -121,6 +121,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `cookiePrefix` | `_oidc_raczylo_` | Unique prefix per middleware instance to isolate sessions. |
 | `sessionMaxAge` | `86400` | Session lifetime in seconds. |
 | `refreshGracePeriodSeconds` | `60` | Proactively refresh tokens this many seconds before expiry. |
+| `maxRefreshTokenAgeSeconds` | `21600` | Heuristic max stored refresh-token lifetime (6h). Past this, the plugin treats the RT as expired without contacting the IdP — returns 401 to AJAX, full re-auth on navigations. Set `0` to disable. Tune to match your IdP's RT TTL. |
 | `rateLimit` | `100` | Requests/sec. Min `10`. |
 | `logLevel` | `info` | `debug`, `info`, `error`. |
 | `audience` | `clientID` | Custom access-token audience (Auth0 custom APIs). |
@@ -164,6 +165,22 @@ For IdP-initiated logout (back/front-channel) in multi-replica setups, Redis is
 Each instance must use a unique `cookiePrefix` **and** `sessionEncryptionKey`,
 otherwise a session minted by one instance can grant access through another.
 See [issue #87](https://github.com/lukaszraczylo/traefikoidc/issues/87).
+
+### SSE and WebSocket endpoints
+
+Browser clients cannot follow an OIDC `302` redirect on an SSE stream or a
+WebSocket upgrade. The middleware handles this automatically:
+
+- **SSE** (`Accept: text/event-stream`) and **WebSocket** (`Upgrade: websocket`)
+  requests skip the OIDC redirect.
+- They are **not** unauthenticated — a valid encrypted session cookie is
+  required, otherwise the request is rejected. The session must already exist
+  (i.e. the user logged in via a normal HTTP page first).
+- `X-Forwarded-User` is forwarded from the session.
+- Validation is cookie-only (no JWK fetch), so streaming keeps working during
+  brief IdP outages.
+
+No configuration needed — this is implicit behavior.
 
 ### HTTP 431 from backends
 

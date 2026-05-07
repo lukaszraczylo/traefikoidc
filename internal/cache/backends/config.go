@@ -24,6 +24,7 @@ type Config struct {
 	Type                 BackendType
 	RedisAddr            string
 	RedisPassword        string
+	TLSServerName        string
 	PoolSize             int
 	RedisDB              int
 	CleanupInterval      time.Duration
@@ -34,6 +35,8 @@ type Config struct {
 	EnableCircuitBreaker bool
 	EnableHealthCheck    bool
 	EnableMetrics        bool
+	EnableTLS            bool
+	TLSSkipVerify        bool
 }
 
 // DefaultConfig returns a default configuration for in-memory caching

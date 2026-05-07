@@ -49,6 +49,7 @@ func NewRedisBackend(config *Config) (*RedisBackend, error) {
 	poolConfig := &PoolConfig{
 		Address:           config.RedisAddr,
 		Password:          config.RedisPassword,
+		TLSServerName:     config.TLSServerName,
 		DB:                config.RedisDB,
 		MaxConnections:    config.PoolSize,
 		ConnectTimeout:    2 * time.Second,
@@ -57,6 +58,8 @@ func NewRedisBackend(config *Config) (*RedisBackend, error) {
 		EnableHealthCheck: true,
 		MaxRetries:        3,
 		RetryDelay:        100 * time.Millisecond,
+		EnableTLS:         config.EnableTLS,
+		TLSSkipVerify:     config.TLSSkipVerify,
 	}
 
 	pool, err := NewConnectionPool(poolConfig)

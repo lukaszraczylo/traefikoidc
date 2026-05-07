@@ -210,6 +210,8 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 		RedisPrefix:   redisConfig.KeyPrefix,
 		PoolSize:      redisConfig.PoolSize,
 		EnableMetrics: true,
+		EnableTLS:     redisConfig.EnableTLS,
+		TLSSkipVerify: redisConfig.TLSSkipVerify,
 	}
 
 	// Use concrete type to avoid Yaegi reflection issues with interface assignment

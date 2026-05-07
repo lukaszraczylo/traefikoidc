@@ -70,6 +70,33 @@ overwrite it).
 Set `forceHTTPS: false` only when you serve OIDC over plaintext HTTP (local
 dev). Otherwise leave it at default.
 
+### Streaming Endpoints (SSE and WebSocket)
+
+The middleware automatically bypasses the OIDC redirect for two request kinds
+that browsers cannot follow a 302 on:
+
+| Bypass | Triggered by |
+|--------|--------------|
+| Server-Sent Events (SSE) | `Accept: text/event-stream` |
+| WebSocket upgrade | `Upgrade: websocket` + `Connection: upgrade` (RFC 6455) |
+
+These requests do **not** require any explicit configuration — they are
+handled implicitly. However, the bypass is **not** unauthenticated:
+
+- A valid, encrypted session cookie is required. Requests without one are
+  rejected (the connection cannot proceed to the backend).
+- The session cookie is sealed with `sessionEncryptionKey`, so the
+  `authenticated` flag cannot be forged.
+- Validation is cookie-only — no JWK fetch / signature verification — so
+  streaming endpoints keep working when the OIDC provider is briefly
+  unavailable.
+- The user identifier from the session is forwarded as `X-Forwarded-User`
+  (and `X-Auth-Request-User` unless `minimalHeaders: true`).
+
+For browser clients, the user must complete the normal OIDC flow on a
+regular HTTP page first; the resulting session cookie is then reused on the
+SSE / WebSocket connection.
+
 ---
 
 ## Security Options
@@ -113,6 +140,7 @@ strictAudienceValidation: true
 |-----------|------|---------|-------------|
 | `sessionMaxAge` | int | `86400` (24h) | Maximum session age in seconds |
 | `refreshGracePeriodSeconds` | int | `60` | Seconds before expiry to attempt refresh |
+| `maxRefreshTokenAgeSeconds` | int | `21600` | Heuristic max age (in seconds) of a stored refresh token. Once exceeded, requests treat the RT as expired up front (returns 401 to AJAX, triggers full re-auth on navigations) instead of grant-spamming the IdP with `invalid_grant` retries. IdPs do not advertise RT TTL on the wire, so this is intentionally a conservative heuristic — tune to match your provider. Set `0` to disable. Default `21600` (6h). |
 | `cookieDomain` | string | auto-detected | Domain for session cookies |
 | `cookiePrefix` | string | `_oidc_raczylo_` | Prefix for cookie names |
 
