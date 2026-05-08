@@ -76,9 +76,15 @@ func NewJWKCache() *JWKCache {
 }
 
 // GetJWKS retrieves JWKS from cache or fetches from the remote URL if not cached.
+//
+// The entry is stored locally only via SetLocal/GetLocal. Going through a
+// distributed backend defeats the cache: JSON round-tripping turns *JWKSet
+// into map[string]interface{}, the type assertion below fails, and every
+// request refetches from the upstream. JWK rotation is rare and a per-replica
+// HTTP fetch on cold cache is cheap, so cross-replica coherence buys nothing.
 func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error) {
 	// Check cache first
-	if cachedValue, found := c.cache.Get(jwksURL); found {
+	if cachedValue, found := c.cache.GetLocal(jwksURL); found {
 		if jwks, ok := cachedValue.(*JWKSet); ok {
 			return jwks, nil
 		}
@@ -88,7 +94,7 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 	defer c.mutex.Unlock()
 
 	// Double-check after acquiring lock
-	if cachedValue, found := c.cache.Get(jwksURL); found {
+	if cachedValue, found := c.cache.GetLocal(jwksURL); found {
 		if jwks, ok := cachedValue.(*JWKSet); ok {
 			return jwks, nil
 		}
@@ -105,7 +111,7 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 	}
 
 	// Cache for 1 hour
-	_ = c.cache.Set(jwksURL, jwks, 1*time.Hour) // Safe to ignore: cache failures are non-critical
+	_ = c.cache.SetLocal(jwksURL, jwks, 1*time.Hour) // Safe to ignore: cache failures are non-critical
 
 	return jwks, nil
 }
@@ -114,9 +120,17 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 // caching the JWKS plus its derived parsedJWKS on miss. The parsed entry is
 // stored alongside the raw JWKSet under a sibling cache key with the same
 // 1-hour TTL, so both invalidate together when the upstream JWKS rotates.
+//
+// parsedJWKS is stored locally only (SetLocal/GetLocal). Its values are
+// crypto.PublicKey interfaces wrapping *rsa.PublicKey/*ecdsa.PublicKey,
+// which contain *big.Int that marshals to a hundreds-digit JSON number.
+// On a distributed backend round-trip, json.Unmarshal into interface{} would
+// try to fit that into float64 and fail with UnmarshalTypeError. Under yaegi
+// the unexported parsedJWKS.keys field is exposed via an X-prefixed name on
+// Marshal, leaking the modulus into the cached payload (issue #134).
 func (c *JWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
 	parsedKey := jwksURL + parsedKeysSuffix
-	if v, found := c.cache.Get(parsedKey); found {
+	if v, found := c.cache.GetLocal(parsedKey); found {
 		if pj, ok := v.(*parsedJWKS); ok {
 			if k, ok := pj.keys[kid]; ok {
 				return k, nil
@@ -130,7 +144,7 @@ func (c *JWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, httpCl
 	}
 
 	pj := buildParsedJWKS(jwks)
-	_ = c.cache.Set(parsedKey, pj, 1*time.Hour) // Safe to ignore: cache failures are non-critical
+	_ = c.cache.SetLocal(parsedKey, pj, 1*time.Hour) // Safe to ignore: cache failures are non-critical
 
 	if k, ok := pj.keys[kid]; ok {
 		return k, nil
