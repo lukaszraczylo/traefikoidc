@@ -252,6 +252,25 @@ func (c *UniversalCache) Set(key string, value interface{}, ttl time.Duration) e
 		}
 	}
 
+	return c.setLocal(key, value, ttl)
+}
+
+// SetLocal stores a value only in the in-memory LRU, bypassing any
+// distributed backend. Use for values that don't survive JSON round-tripping
+// — interfaces holding concrete crypto keys, *big.Int, or types whose
+// unexported fields yaegi exposes under an X prefix on Marshal. Each replica
+// caches independently; correctness must not depend on cross-replica
+// coherence for these keys.
+func (c *UniversalCache) SetLocal(key string, value interface{}, ttl time.Duration) error {
+	if ttl == 0 {
+		ttl = c.config.DefaultTTL
+	}
+	return c.setLocal(key, value, ttl)
+}
+
+// setLocal performs the in-memory portion of a write. ttl must already be
+// resolved against DefaultTTL by the caller.
+func (c *UniversalCache) setLocal(key string, value interface{}, ttl time.Duration) error {
 	size := c.estimateSize(value)
 
 	c.mu.Lock()
@@ -343,6 +362,19 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 		}
 	}
 
+	return c.getLocal(key)
+}
+
+// GetLocal retrieves a value only from the in-memory LRU, never querying the
+// distributed backend. Pair with SetLocal for values that aren't safe to
+// serialize (see SetLocal docstring).
+func (c *UniversalCache) GetLocal(key string) (interface{}, bool) {
+	return c.getLocal(key)
+}
+
+// getLocal returns the in-memory entry for key honoring expiry, grace
+// periods, and the RLock fast path used by token/JWK/session caches.
+func (c *UniversalCache) getLocal(key string) (interface{}, bool) {
 	// Fast read path for caches whose eviction is dominated by TTL rather than
 	// access-recency (token, JWK, session). Holding only an RLock here lets all
 	// concurrent readers verify cached tokens in parallel — under yaegi the
