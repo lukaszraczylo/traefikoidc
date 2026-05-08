@@ -119,6 +119,8 @@ type TraefikOidc struct {
 	audience                   string
 	clientID                   string
 	clientSecret               string
+	clientAuthMethod           string
+	clientAssertion            *ClientAssertionSigner
 	registrationURL            string
 	backchannelLogoutPath      string
 	frontchannelLogoutPath     string

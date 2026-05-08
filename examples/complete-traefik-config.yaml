@@ -101,6 +101,16 @@ http:
           providerURL: "https://auth.example.com"
           callbackURL: "/oauth2/callback"
 
+          # ----------------------------------------------------------------
+          # Optional: switch to RFC 7523 private_key_jwt client auth
+          # (Entra ID, Okta, Auth0, Keycloak). Replaces clientSecret with a
+          # signed JWT assertion. See README for details and PEM formats.
+          # ----------------------------------------------------------------
+          # clientAuthMethod: "private_key_jwt"
+          # clientAssertionKeyPath: "/etc/traefik/oidc/client-key.pem"
+          # clientAssertionKeyID: "prod-key-2026"
+          # clientAssertionAlg: "RS256"   # or PS256/384/512, ES256/384/512
+
           # Session Configuration
           sessionEncryptionKey: "prod-encryption-key-64-chars-long-keep-it-secret-and-safe"
           sessionMaxAge: 28800  # 8 hours

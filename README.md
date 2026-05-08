@@ -96,7 +96,7 @@ More example configs in [`examples/`](examples/).
 |-----------|-------------|
 | `providerURL` | Issuer URL (used for OIDC discovery). |
 | `clientID` | OAuth 2.0 client ID. |
-| `clientSecret` | OAuth 2.0 client secret. Supports `urn:k8s:secret:ns:name:key`. |
+| `clientSecret` | OAuth 2.0 client secret. Supports `urn:k8s:secret:ns:name:key`. Required when `clientAuthMethod` is unset, `client_secret_post`, or `client_secret_basic`; optional with `private_key_jwt`. |
 | `sessionEncryptionKey` | Cookie encryption key, **min 32 bytes**. |
 | `callbackURL` | Callback path, e.g. `/oauth2/callback`. |
 
@@ -133,6 +133,11 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `stripAuthCookies` | `false` | Strip OIDC cookies from backend hop (mitigates HTTP 431). |
 | `caCertPath` / `caCertPEM` | none | Trust an internal CA for the provider's TLS. |
 | `insecureSkipVerify` | `false` | **Local dev only.** Disables TLS verification, logs a security warning. |
+| `clientAuthMethod` | `client_secret_post` | Client auth method. Set `private_key_jwt` for RFC 7523 JWT assertions (Entra ID, Okta, Auth0, Keycloak). See [Client authentication via private key JWT](#client-authentication-via-private-key-jwt). |
+| `clientAssertionPrivateKey` | none | Inline PEM private key for `private_key_jwt`. Mutually exclusive with `clientAssertionKeyPath`. |
+| `clientAssertionKeyPath` | none | File path to PEM private key for `private_key_jwt`. |
+| `clientAssertionKeyID` | none | JWS `kid` header. Required when `clientAuthMethod=private_key_jwt`; must match the public key registered with the IdP. |
+| `clientAssertionAlg` | `RS256` | JWS alg for `private_key_jwt`. Supported: `RS256/384/512`, `PS256/384/512`, `ES256/384/512`. |
 | `enableBackchannelLogout` / `backchannelLogoutURL` | `false` / none | OIDC Back-Channel Logout (server-to-server). |
 | `enableFrontchannelLogout` / `frontchannelLogoutURL` | `false` / none | OIDC Front-Channel Logout (iframe). |
 | `redis` | disabled | See [docs/REDIS.md](docs/REDIS.md). |
@@ -212,6 +217,44 @@ caCertPEM: |
 
 Both can be combined. An unparseable bundle fails the plugin at startup.
 See [#125](https://github.com/lukaszraczylo/traefikoidc/issues/125).
+
+### Client authentication via private key JWT
+
+Use when your IdP enforces short-lived secrets or pushes secretless client auth
+— Microsoft Entra ID / Azure AD, Okta, Auth0, Keycloak. Instead of sending a
+static `clientSecret`, the plugin signs a short-lived JWT and submits it as
+`client_assertion` per [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523).
+
+Minimal config:
+
+```yaml
+clientAuthMethod: private_key_jwt
+clientAssertionKeyPath: /etc/traefik/oidc/client-key.pem
+clientAssertionKeyID: my-key-2026
+# clientAssertionAlg: RS256   # default; or PS256/384/512, ES256/384/512
+```
+
+Or inline:
+
+```yaml
+clientAuthMethod: private_key_jwt
+clientAssertionPrivateKey: |
+  -----BEGIN PRIVATE KEY-----
+  ...
+  -----END PRIVATE KEY-----
+clientAssertionKeyID: my-key-2026
+```
+
+Accepted PEM forms: PKCS#8 (`PRIVATE KEY`), PKCS#1 (`RSA PRIVATE KEY`), SEC1
+(`EC PRIVATE KEY`). The assertion uses `iss=sub=clientID`, `aud=tokenURL`, 60s
+lifetime, random hex `jti` per request. Sent on `/token` (auth-code + refresh)
+and `/revoke`. The `kid` must match the public key registered with the IdP.
+
+`clientSecret` becomes optional with `private_key_jwt`. Existing
+`client_secret_post` setups are unaffected. Keys are parsed once at startup —
+rotation requires a Traefik reload.
+
+See [issue #135](https://github.com/lukaszraczylo/traefikoidc/issues/135).
 
 ### Environment variable names containing `API`
 

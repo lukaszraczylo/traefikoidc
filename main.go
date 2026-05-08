@@ -169,6 +169,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		introspectionCache: cacheManager.GetSharedIntrospectionCache(), // Cache for introspection results
 		clientID:           config.ClientID,
 		clientSecret:       config.ClientSecret,
+		clientAuthMethod: func() string {
+			if config.ClientAuthMethod != "" {
+				return config.ClientAuthMethod
+			}
+			return "client_secret_post"
+		}(),
 		audience: func() string {
 			if config.Audience != "" {
 				return config.Audience
@@ -272,6 +278,15 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	// call, preventing the thundering herd that yields invalid_grant when the IdP
 	// rotates refresh tokens (Zitadel/Authentik default).
 	t.refreshCoordinator = NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), t.logger)
+
+	if config.ClientAuthMethod == "private_key_jwt" {
+		signer, err := buildClientAssertionSignerFromConfig(config)
+		if err != nil {
+			cancelFunc()
+			return nil, fmt.Errorf("failed to build client assertion signer: %w", err)
+		}
+		t.clientAssertion = signer
+	}
 
 	t.extractClaimsFunc = extractClaims
 	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {

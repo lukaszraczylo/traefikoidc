@@ -23,6 +23,19 @@ testData:
   providerURL: https://accounts.google.com
   clientID: 1234567890.apps.googleusercontent.com
   clientSecret: your-client-secret
+  # Alternative: RFC 7523 private_key_jwt client authentication (Entra ID,
+  # Okta, Auth0, Keycloak). Replaces clientSecret with a signed JWT assertion.
+  # See README "Client authentication via private key JWT".
+  # clientAuthMethod: private_key_jwt
+  # clientAssertionKeyID: my-key-2026
+  # clientAssertionAlg: RS256             # default; or PS256/384/512, ES256/384/512
+  # # File path option:
+  # clientAssertionKeyPath: /etc/traefik/oidc/client-key.pem
+  # # Or inline PEM (PKCS#8 / PKCS#1 / SEC1):
+  # clientAssertionPrivateKey: |
+  #   -----BEGIN PRIVATE KEY-----
+  #   MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDexampleexample
+  #   -----END PRIVATE KEY-----
   sessionEncryptionKey: potato-secret-is-at-least-32-bytes-long
   callbackURL: /oauth2/callback
 
