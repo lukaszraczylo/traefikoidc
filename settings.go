@@ -93,6 +93,38 @@ type Config struct {
 	// providers. Enabling this in production is a security hole — prefer
 	// CACertPath/CACertPEM. Emits a loud warning at startup.
 	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+
+	// ClientAuthMethod selects the OAuth 2.0 client authentication method used
+	// at the token / revocation / introspection endpoints. Supported values:
+	//
+	//   - "client_secret_post" (default, current behavior): clientSecret is
+	//     sent in the request body alongside client_id.
+	//   - "private_key_jwt" (RFC 7523 §2.2): the plugin signs a short-lived JWT
+	//     assertion with a configured private key and sends it as
+	//     client_assertion. Use this when your IdP enforces short-lived secrets
+	//     or mandates secretless client auth (Entra ID, Okta, Auth0, Keycloak).
+	//
+	// When set to "private_key_jwt", clientSecret may be left empty and one of
+	// clientAssertionPrivateKey / clientAssertionKeyPath must be configured.
+	ClientAuthMethod string `json:"clientAuthMethod,omitempty"`
+
+	// ClientAssertionPrivateKey is an inline PEM-encoded private key used to
+	// sign client_assertion JWTs. Mutually exclusive with
+	// ClientAssertionKeyPath. Supports PKCS#8, PKCS#1 (RSA), and SEC1 (EC).
+	ClientAssertionPrivateKey string `json:"clientAssertionPrivateKey,omitempty"`
+
+	// ClientAssertionKeyPath is a filesystem path to a PEM-encoded private key,
+	// equivalent to ClientAssertionPrivateKey but loaded from disk.
+	ClientAssertionKeyPath string `json:"clientAssertionKeyPath,omitempty"`
+
+	// ClientAssertionKeyID is the JWK key id (kid) advertised in the JWS
+	// header. Required when using private_key_jwt so the IdP can locate the
+	// matching public key registered for the client.
+	ClientAssertionKeyID string `json:"clientAssertionKeyID,omitempty"`
+
+	// ClientAssertionAlg is the JWS signing algorithm. Defaults to RS256.
+	// Supported: RS256/384/512, PS256/384/512, ES256/384/512.
+	ClientAssertionAlg string `json:"clientAssertionAlg,omitempty"`
 }
 
 // loadCACertPool assembles an x509.CertPool from CACertPath and CACertPEM.
@@ -323,8 +355,30 @@ func (c *Config) Validate() error {
 	if c.ClientID == "" {
 		return fmt.Errorf("clientID is required")
 	}
-	if c.ClientSecret == "" {
-		return fmt.Errorf("clientSecret is required")
+	authMethod := c.ClientAuthMethod
+	if authMethod == "" {
+		authMethod = "client_secret_post"
+	}
+	switch authMethod {
+	case "client_secret_post", "client_secret_basic":
+		if c.ClientSecret == "" {
+			return fmt.Errorf("clientSecret is required when clientAuthMethod is %q", authMethod)
+		}
+	case "private_key_jwt":
+		if c.ClientAssertionPrivateKey == "" && c.ClientAssertionKeyPath == "" {
+			return fmt.Errorf("clientAssertionPrivateKey or clientAssertionKeyPath is required when clientAuthMethod is private_key_jwt")
+		}
+		if c.ClientAssertionPrivateKey != "" && c.ClientAssertionKeyPath != "" {
+			return fmt.Errorf("only one of clientAssertionPrivateKey or clientAssertionKeyPath may be set")
+		}
+		if c.ClientAssertionKeyID == "" {
+			return fmt.Errorf("clientAssertionKeyID is required when clientAuthMethod is private_key_jwt")
+		}
+		if c.ClientAssertionAlg != "" && !isSupportedClientAssertionAlg(c.ClientAssertionAlg) {
+			return fmt.Errorf("clientAssertionAlg %q is not supported (use RS256/384/512, PS256/384/512, or ES256/384/512)", c.ClientAssertionAlg)
+		}
+	default:
+		return fmt.Errorf("clientAuthMethod %q is not supported", authMethod)
 	}
 
 	// Validate session encryption key

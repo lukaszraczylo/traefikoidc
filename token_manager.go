@@ -660,11 +660,33 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	}
 	t.logger.Debugf("Attempting to revoke token (type: %s) with provider at %s", tokenType, revocationURL)
 
+	// Read tokenURL with RLock — used as audience for private_key_jwt (RFC 7523 §3).
+	t.metadataMu.RLock()
+	tokenURL := t.tokenURL
+	t.metadataMu.RUnlock()
+
 	data := url.Values{
 		"token":           {token},
 		"token_type_hint": {tokenType},
-		"client_id":       {t.clientID},
-		"client_secret":   {t.clientSecret},
+	}
+	// client_id is sent in the body for every method except client_secret_basic,
+	// where it is carried in the Authorization header per RFC 6749 §2.3.1.
+	if t.clientAuthMethod != "client_secret_basic" || t.clientAssertion != nil {
+		data.Set("client_id", t.clientID)
+	}
+
+	useBasicAuth := false
+	if t.clientAssertion != nil {
+		assertion, err := t.clientAssertion.Sign(tokenURL, t.clientID)
+		if err != nil {
+			return fmt.Errorf("failed to sign client assertion: %w", err)
+		}
+		data.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+		data.Set("client_assertion", assertion)
+	} else if t.clientAuthMethod == "client_secret_basic" {
+		useBasicAuth = true
+	} else {
+		data.Set("client_secret", t.clientSecret)
 	}
 
 	req, err := http.NewRequestWithContext(context.Background(), "POST", revocationURL, strings.NewReader(data.Encode()))
@@ -674,6 +696,9 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	if useBasicAuth {
+		setOAuthBasicAuth(req, t.clientID, t.clientSecret)
+	}
 
 	// Send the request with circuit breaker protection if available
 	var resp *http.Response

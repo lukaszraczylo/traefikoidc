@@ -5,6 +5,7 @@ Complete reference for all Traefik OIDC middleware configuration options.
 ## Table of Contents
 
 - [Required Parameters](#required-parameters)
+- [Client Authentication](#client-authentication)
 - [Optional Parameters](#optional-parameters)
 - [Security Options](#security-options)
 - [Session Management](#session-management)
@@ -22,7 +23,7 @@ Complete reference for all Traefik OIDC middleware configuration options.
 |-----------|------|-------------|---------|
 | `providerURL` | string | Base URL of the OIDC provider | `https://accounts.google.com` |
 | `clientID` | string | OAuth 2.0 client identifier | `1234567890.apps.googleusercontent.com` |
-| `clientSecret` | string | OAuth 2.0 client secret | `your-client-secret` |
+| `clientSecret` | string | OAuth 2.0 client secret. Required when `clientAuthMethod` is unset, `client_secret_post`, or `client_secret_basic`. Optional when `clientAuthMethod: private_key_jwt`. | `your-client-secret` |
 | `sessionEncryptionKey` | string | Key for encrypting session data (min 32 bytes) | `your-32-byte-encryption-key-here` |
 | `callbackURL` | string | Path where provider redirects after authentication | `/oauth2/callback` |
 
@@ -45,6 +46,129 @@ spec:
 
 ---
 
+## Client Authentication
+
+The middleware supports three client authentication methods at the token and
+revocation endpoints. The default is `client_secret_post` (current behavior);
+`private_key_jwt` is opt-in and backwards compatible.
+
+| Method | Default | Description |
+|--------|---------|-------------|
+| `client_secret_post` | yes | `client_id` + `client_secret` in the request body. |
+| `client_secret_basic` | no | RFC 6749 §2.3.1 — `client_id` + `client_secret` in the `Authorization: Basic` header (form-urlencoded then base64); not in the body. |
+| `private_key_jwt` | no | RFC 7523 §2.2 — plugin signs a short-lived JWT with a private key and sends it as `client_assertion`. |
+
+Select via `clientAuthMethod`:
+
+```yaml
+clientAuthMethod: private_key_jwt
+```
+
+### client_secret_post
+
+Default. The plugin sends `client_id` and `client_secret` as form parameters
+in the token / revocation request body. No additional configuration required.
+
+### private_key_jwt
+
+Asymmetric client authentication per
+[RFC 7523 §2.2](https://www.rfc-editor.org/rfc/rfc7523). Use this when your
+IdP enforces short secret TTLs, when policy mandates secretless clients, or
+when you want to avoid distributing a shared secret to the proxy.
+
+For each token / revocation request the plugin builds a JWS with:
+
+- `iss` = `sub` = `clientID`
+- `aud` = token endpoint URL
+- `iat` = now, `exp` = now + 60s
+- `jti` = random hex per request
+- `kid` header = `clientAssertionKeyID`
+
+**Required fields:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `clientAuthMethod` | string | `client_secret_post` | Set to `private_key_jwt`. |
+| `clientAssertionPrivateKey` | string | none | Inline PEM private key. Mutually exclusive with `clientAssertionKeyPath`. PKCS#8, PKCS#1, and SEC1 formats accepted. |
+| `clientAssertionKeyPath` | string | none | Path to PEM private key on disk. Mutually exclusive with `clientAssertionPrivateKey`. |
+| `clientAssertionKeyID` | string | none | `kid` header inserted in the JWS. Must match the public key registered with the IdP. |
+| `clientAssertionAlg` | string | `RS256` | One of `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`. |
+
+When `clientAuthMethod: private_key_jwt`, `clientSecret` is optional.
+
+**Example — inline PEM:**
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oidc-auth
+spec:
+  plugin:
+    traefikoidc:
+      providerURL: https://idp.example.com
+      clientID: my-client-id
+      sessionEncryptionKey: your-32-byte-encryption-key-here
+      callbackURL: /oauth2/callback
+      clientAuthMethod: private_key_jwt
+      clientAssertionKeyID: key-2026-01
+      clientAssertionAlg: RS256
+      clientAssertionPrivateKey: |
+        -----BEGIN PRIVATE KEY-----
+        MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj
+        MZj4ev7QnMa1mYV3Kx1jRkH5YwXQ7N2J2j8K5pP6h0oZmXq1yQv4r8wZb3sH9D2k
+        ... (truncated) ...
+        -----END PRIVATE KEY-----
+```
+
+**Example — key on disk:**
+
+```yaml
+clientAuthMethod: private_key_jwt
+clientAssertionKeyPath: /etc/traefik/oidc/client-key.pem
+clientAssertionKeyID: key-2026-01
+clientAssertionAlg: RS256
+```
+
+**Generating an RS256 key with OpenSSL:**
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+  -out client-key.pem
+openssl rsa -in client-key.pem -pubout -out client-pub.pem
+```
+
+Register `client-pub.pem` (or its JWK form) with your IdP under the same
+`kid` you set in `clientAssertionKeyID`.
+
+**Notes:**
+
+- The private key is parsed once at plugin startup. Key rotation requires a
+  Traefik reload.
+- Assertion lifetime is fixed at 60 seconds.
+- A fresh random `jti` is generated per request.
+- The `aud` claim is the token endpoint URL (from discovery).
+- Tracking issue:
+  [#135](https://github.com/lukaszraczylo/traefikoidc/issues/135).
+
+### client_secret_basic
+
+Per [RFC 6749 §2.3.1][rfc6749-2-3-1], the plugin sends the client credentials
+in an `Authorization: Basic` header instead of the body. Both halves
+(`client_id`, `client_secret`) are form-urlencoded individually, joined with
+a colon, then base64-encoded. Use this when your IdP requires Basic auth at
+the token endpoint and rejects credentials in the body.
+
+```yaml
+clientAuthMethod: client_secret_basic
+clientID: your-client-id
+clientSecret: your-client-secret
+```
+
+[rfc6749-2-3-1]: https://www.rfc-editor.org/rfc/rfc6749#section-2.3.1
+
+---
+
 ## Optional Parameters
 
 | Parameter | Type | Default | Description |
@@ -59,6 +183,11 @@ spec:
 | `oidcEndSessionURL` | string | auto-discovered | Provider's end session endpoint |
 | `enablePKCE` | bool | `false` | Enable PKCE for authorization code flow |
 | `minimalHeaders` | bool | `false` | Reduce forwarded headers |
+| `clientAuthMethod` | string | `client_secret_post` | Client authentication method at token/revocation endpoints. One of `client_secret_post`, `client_secret_basic`, `private_key_jwt`. See [Client Authentication](#client-authentication). |
+| `clientAssertionPrivateKey` | string | none | Inline PEM private key for `private_key_jwt`. Mutually exclusive with `clientAssertionKeyPath`. PKCS#8 / PKCS#1 / SEC1. |
+| `clientAssertionKeyPath` | string | none | Path to PEM private key on disk for `private_key_jwt`. Mutually exclusive with `clientAssertionPrivateKey`. |
+| `clientAssertionKeyID` | string | none | `kid` header for `private_key_jwt` assertions. Required when `clientAuthMethod: private_key_jwt`. |
+| `clientAssertionAlg` | string | `RS256` | Signing algorithm for `private_key_jwt`. One of `RS256/384/512`, `PS256/384/512`, `ES256/384/512`. |
 
 ### TLS Termination at Load Balancer
 

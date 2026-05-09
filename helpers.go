@@ -107,9 +107,12 @@ type TokenResponse struct {
 //   - An error if the token exchange fails (e.g., network error, provider error, invalid grant)
 func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, codeOrToken string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 	data := url.Values{
-		"grant_type":    {grantType},
-		"client_id":     {t.clientID},
-		"client_secret": {t.clientSecret},
+		"grant_type": {grantType},
+	}
+	// client_id is sent in the body for every method except client_secret_basic,
+	// where it is carried in the Authorization header per RFC 6749 §2.3.1.
+	if t.clientAuthMethod != "client_secret_basic" || t.clientAssertion != nil {
+		data.Set("client_id", t.clientID)
 	}
 
 	if grantType == "authorization_code" {
@@ -141,16 +144,33 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 		}
 	}
 
-	// Read tokenURL with RLock
+	// Read tokenURL with RLock — needed as audience for private_key_jwt (RFC 7523 §3).
 	t.metadataMu.RLock()
 	tokenURL := t.tokenURL
 	t.metadataMu.RUnlock()
+
+	useBasicAuth := false
+	if t.clientAssertion != nil {
+		assertion, err := t.clientAssertion.Sign(tokenURL, t.clientID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sign client assertion: %w", err)
+		}
+		data.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+		data.Set("client_assertion", assertion)
+	} else if t.clientAuthMethod == "client_secret_basic" {
+		useBasicAuth = true
+	} else {
+		data.Set("client_secret", t.clientSecret)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if useBasicAuth {
+		setOAuthBasicAuth(req, t.clientID, t.clientSecret)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -421,6 +441,19 @@ func BuildLogoutURL(endSessionURL, idToken, postLogoutRedirectURI string) (strin
 	u.RawQuery = q.Encode()
 
 	return u.String(), nil
+}
+
+// setOAuthBasicAuth sets the Authorization header per RFC 6749 §2.3.1: the
+// client_id and client_secret are form-urlencoded individually, joined with a
+// colon, then base64-encoded. This differs from http.Request.SetBasicAuth,
+// which skips the form-urlencode step — that matters for credentials with
+// reserved characters (`:`, `@`, `+`, `%`, etc.) where the wire format would
+// otherwise diverge from what the spec mandates.
+func setOAuthBasicAuth(req *http.Request, clientID, clientSecret string) {
+	user := url.QueryEscape(clientID)
+	pass := url.QueryEscape(clientSecret)
+	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
+	req.Header.Set("Authorization", "Basic "+auth)
 }
 
 // deduplicateScopes removes duplicate scopes from a slice while preserving order.
