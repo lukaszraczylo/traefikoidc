@@ -341,7 +341,17 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 
 	if err := verifySignatureWithKey(token, pubKey, alg); err != nil {
 		if !t.suppressDiagnosticLogs {
-			t.safeLogErrorf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s: %v", kid, alg, err)
+			// Microsoft Graph access tokens carry a `nonce` JWT header and are
+			// signed in a proprietary form Microsoft documents as unverifiable
+			// by client applications. They reach this path only when the
+			// per-provider classifier (validateAzureTokens) didn't catch them,
+			// so log at debug to keep the error stream actionable while still
+			// surfacing the cause for diagnostics.
+			if _, isMSProprietary := jwt.Header["nonce"]; isMSProprietary {
+				t.safeLogDebugf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s (Microsoft proprietary nonce header — token is opaque to clients): %v", kid, alg, err)
+			} else {
+				t.safeLogErrorf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s: %v", kid, alg, err)
+			}
 		}
 		return fmt.Errorf("signature verification failed: %w", err)
 	}
@@ -785,6 +795,27 @@ func (t *TraefikOidc) isGoogleProvider() bool {
 	return strings.Contains(issuerURL, "google") || strings.Contains(issuerURL, "accounts.google.com")
 }
 
+// isUnverifiableAzureAccessToken reports whether a JWT-shaped access token
+// matches the Microsoft proprietary format that client applications must not
+// validate. Microsoft injects a `nonce` value into the JWT header, signs over
+// the SHA256 hash of that nonce, and ships the original nonce on the wire,
+// guaranteeing that any standard JWS verifier rejects the signature. This is
+// the documented mechanism that keeps access tokens opaque to non-resource
+// holders (Microsoft Graph, Azure Management API).
+//
+// https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens
+//
+// Returns true on parse failure as well — a token we cannot parse should not
+// be passed through the verification path that emits ERROR logs.
+func (t *TraefikOidc) isUnverifiableAzureAccessToken(token string) bool {
+	parsed, err := parseJWT(token)
+	if err != nil {
+		return true
+	}
+	_, hasProprietaryNonce := parsed.Header["nonce"]
+	return hasProprietaryNonce
+}
+
 // isAzureProvider detects if the configured OIDC provider is Azure AD.
 // It checks the issuer URL for Microsoft Azure AD domains.
 // Returns:
@@ -827,6 +858,31 @@ func (t *TraefikOidc) validateAzureTokens(session *SessionData) (bool, bool, boo
 
 	if accessToken != "" {
 		if strings.Count(accessToken, ".") == 2 {
+			// Microsoft documents that client apps cannot validate access
+			// tokens issued for Microsoft-owned APIs (Graph, Azure Mgmt) due
+			// to their proprietary signing format (nonce in JWT header is
+			// the marker — signed bytes hash the nonce, wire bytes ship the
+			// raw value, so rsa verification always fails). Treat such
+			// tokens as opaque, matching Microsoft's guidance and avoiding
+			// per-request signature-error log spam (issue #134 followup).
+			//
+			// https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens
+			//   "you can't validate tokens for Microsoft Graph according to
+			//    these rules due to their proprietary format"
+			if t.isUnverifiableAzureAccessToken(accessToken) {
+				t.logger.Debug("Azure access token is Microsoft-proprietary (Graph/Mgmt) — treating as opaque per Microsoft guidance")
+				if idToken != "" {
+					if err := t.verifyToken(idToken); err != nil {
+						t.logger.Debugf("Azure: ID token validation failed while access token was opaque: %v", err)
+						if session.GetRefreshToken() != "" {
+							return false, true, false
+						}
+						return false, false, true
+					}
+					return t.validateTokenExpiry(session, idToken)
+				}
+				return true, false, false
+			}
 			if err := t.verifyToken(accessToken); err != nil {
 				if idToken != "" {
 					if err := t.verifyToken(idToken); err != nil {
