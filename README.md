@@ -232,6 +232,29 @@ Hardening built in by default:
   immediately. Introspection endpoint failures return `503` (distinguishes
   infra outage from credential rejection).
 
+**Obtaining bearer tokens** — minting is the IdP's job, not the
+middleware's. The canonical M2M flow is OAuth 2.0 `client_credentials`
+(RFC 6749 §4.4); Google requires JWT bearer assertion (RFC 7523) instead.
+Minimal Auth0-shape request:
+
+```bash
+curl -s -X POST https://issuer.example.com/oauth/token \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "grant_type":    "client_credentials",
+    "client_id":     "your-m2m-client-id",
+    "client_secret": "your-m2m-client-secret",
+    "audience":      "https://api.example.com",
+    "scope":         "api:read api:write"
+  }'
+```
+
+The `audience` you request from the IdP **must match** the `audience` you
+configured on the middleware. Per-provider endpoints, parameter names, and
+gotchas (Entra v2 endpoint, Cognito Resource Servers, Keycloak audience
+mappers, Google's opaque-token quirk) are documented in
+[docs/BEARER_AUTH.md](docs/BEARER_AUTH.md#obtaining-bearer-tokens-from-your-oidc-provider).
+
 Full threat model, configuration matrix, and follow-up gaps in
 [docs/BEARER_AUTH.md](docs/BEARER_AUTH.md).
 

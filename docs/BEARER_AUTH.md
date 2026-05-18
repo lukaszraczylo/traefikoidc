@@ -24,6 +24,104 @@ callbackURL: /oauth2/callback
 
 That is the minimum. Everything else has a secure default.
 
+## Obtaining bearer tokens from your OIDC provider
+
+The middleware only **validates** bearer tokens — minting them is the IdP's job. For M2M traffic the canonical mint flow is OAuth 2.0 **`client_credentials`** (RFC 6749 §4.4); some providers require **JWT bearer assertion** (RFC 7523) instead.
+
+```
+┌────────────┐  POST /token                    ┌──────────┐
+│  client    │ ───────────────────────────────►│  IdP     │
+│  (service) │   grant_type=client_credentials │ /token   │
+│            │   client_id=…                   │          │
+│            │   client_secret=…  (or JWT)     │          │
+│            │   audience=https://api.…   ←── critical    │
+│            │   scope=api:read …                         │
+│            │ ◄───────────────────────────────│          │
+│            │     access_token (JWT)          │          │
+└────────────┘                                 └──────────┘
+         │
+         │  GET /protected
+         │  Authorization: Bearer <access_token>
+         ▼
+   Your service (behind Traefik + this plugin)
+```
+
+The IdP returns a JWT signed by the same JWKs the middleware already trusts (it discovers them from `providerURL`/.well-known). On the first protected request, the middleware verifies signature + issuer + **audience** + `exp` + identifier claim, then forwards downstream with `X-Forwarded-User` set.
+
+### Minimal worked example (Auth0-shape)
+
+```bash
+# 1. Mint a token
+curl -s -X POST https://issuer.example.com/oauth/token \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "grant_type":    "client_credentials",
+    "client_id":     "your-m2m-client-id",
+    "client_secret": "your-m2m-client-secret",
+    "audience":      "https://api.example.com",
+    "scope":         "api:read api:write"
+  }'
+# → {"access_token":"eyJhbGciOiJSUzI1NiIs…","token_type":"Bearer","expires_in":86400,…}
+
+# 2. Use it
+curl -H 'Authorization: Bearer eyJhbGciOiJSUzI1NiIs…' https://api.example.com/protected
+```
+
+The `audience` field in the token request **must match** the `audience` you configured on the middleware. Mismatch → 401 with `Bearer error="invalid_token"`.
+
+### Per-provider quick reference
+
+| Provider | Grant | Token endpoint | Audience parameter | Notes |
+|---|---|---|---|---|
+| **Auth0** | `client_credentials` | `https://TENANT.auth0.com/oauth/token` | `audience=<your API identifier>` | Register an "API" + "Machine to Machine Application" authorised against that API. Without `audience` you get an opaque /userinfo token, which the bearer path rejects. See `docs/AUTH0_AUDIENCE_GUIDE.md`. |
+| **Okta** | `client_credentials` | `https://TENANT.okta.com/oauth2/default/v1/token` | Configured in the authorization server; default `aud` is the auth-server URL | Service app must enable the `client_credentials` flow and be granted the requested scopes. |
+| **Keycloak** | `client_credentials` | `https://kc/realms/REALM/protocol/openid-connect/token` | Configure an "Audience" mapper on a client scope, or use `client_id` as the audience | Client must have `serviceAccountsEnabled: true` plus role mappings. |
+| **Entra ID / Azure AD** | `client_credentials` (v2.0 endpoint) | `https://login.microsoftonline.com/TENANT/oauth2/v2.0/token` | Pass `scope=<App ID URI>/.default`; `aud` ends up being the API's App ID URI | Requires an App Registration + API permissions + admin consent. **Use the v2.0 endpoint** — v1 issues Microsoft-proprietary access tokens that are opaque to non-Microsoft clients. |
+| **AWS Cognito** | `client_credentials` | `https://YOUR_DOMAIN.auth.REGION.amazoncognito.com/oauth2/token` | Scopes from a "Resource Server" attached to your User Pool | App client must have `client_credentials` flow enabled. Use HTTP **Basic** auth header for `client_id:client_secret`. |
+| **GitLab** | `client_credentials` | `https://gitlab.com/oauth/token` | Audience matches the GitLab issuer | Rarely used for protecting external APIs; better suited for GitLab's own resources. |
+| **Google** | **JWT bearer (RFC 7523)** — *not* `client_credentials` | `https://oauth2.googleapis.com/token` | Signed assertion JWT carries `aud=https://oauth2.googleapis.com/token`; resulting access token is **opaque** unless you specifically request a Google-issued JWT for your API | Google service-account flow is not the best fit for this middleware (opaque tokens are rejected on the bearer path). Run Auth0 / Okta / Keycloak in front, or use ID-token-based flows on the cookie path. |
+
+### RFC 7523 (JWT bearer assertion) — secretless alternative
+
+When shared secrets are forbidden (FAPI, internal compliance), swap `client_secret` for a signed JWT assertion:
+
+```
+POST /token
+grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
+assertion=<JWT signed by the client's private key>
+```
+
+The assertion JWT carries `iss=<client_id>`, `sub=<client_id>`, `aud=<token endpoint>`, `exp`. The IdP verifies the signature against a public key you've pre-registered and returns an access token.
+
+This middleware already supports JWT assertions on the *middleware → IdP* hop via `clientAuthMethod: private_key_jwt` (see `docs/CONFIGURATION.md`). For the *client → IdP* hop, the same pattern applies — the client signs its own assertion.
+
+### Operational notes
+
+- **Token TTL is typically 1–24 hours.** Clients should refresh on `401`, not on a polling timer — saves the IdP.
+- **Cache and reuse tokens.** The middleware caches verified tokens too, so repeated presentations are cheap. Clients SHOULD reuse a token until ~80 % of `expires_in`.
+- **JWKS rotation is transparent.** The middleware auto-refreshes its JWKS cache when the IdP rotates keys. Clients don't need to do anything.
+- **Revocation is generally not per-token** with `client_credentials`. If you need real-time revocation, set `requireTokenIntrospection: true` on the middleware and the IdP is consulted on every cache miss.
+- **`scope` vs `audience`.** Scope says *what the client may do*; audience says *which service the token is for*. The middleware enforces audience; the backend service should enforce scope.
+- **Secret hygiene.** Store `client_secret` in a secrets manager (Vault, AWS Secrets Manager, Kubernetes `Secret`). For higher assurance, switch the client to `private_key_jwt` (no shared secret at all).
+
+### Quickest validation loop
+
+```bash
+# 1. Mint
+TOKEN=$(curl -s -X POST https://issuer.example.com/oauth/token \
+  -H 'Content-Type: application/json' \
+  -d '{"grant_type":"client_credentials","client_id":"…","client_secret":"…","audience":"https://api.example.com"}' \
+  | jq -r .access_token)
+
+# 2. Inspect claims to confirm aud/iss/exp match the middleware config
+echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq
+
+# 3. Hit the protected route
+curl -i -H "Authorization: Bearer $TOKEN" https://api.example.com/protected
+```
+
+`HTTP/1.1 200` with `X-Forwarded-User` on the backend confirms the loop works end-to-end. `401` with `WWW-Authenticate: Bearer error="invalid_token"` plus a middleware debug log explaining the rejection (audience mismatch, ID token presented, `iat` outside the 24h window, etc.) confirms the hardening is firing as designed.
+
 ## Threat model and design rules
 
 Bearer authentication has materially different security properties from
