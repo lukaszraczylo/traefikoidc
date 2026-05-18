@@ -554,3 +554,54 @@ func TestForceHTTPSIntegration(t *testing.T) {
 			"should use https from X-Forwarded-Proto when forceHTTPS is false")
 	})
 }
+
+// TestBuildAuthURLExtraAuthParams verifies operator-configured extra
+// authorization parameters are appended to the authorization URL, and that
+// they can never override parameters the plugin itself manages.
+func TestBuildAuthURLExtraAuthParams(t *testing.T) {
+	t.Run("extra params are added (e.g. screen_hint=signup)", func(t *testing.T) {
+		middleware := createMinimalMiddleware()
+		middleware.extraAuthParams = map[string]string{
+			"screen_hint": "signup",
+			"ui_locales":  "en",
+		}
+
+		authURL := middleware.buildAuthURL(
+			"https://app.com/callback", "state123", "nonce456", "",
+		)
+
+		assert.Contains(t, authURL, "screen_hint=signup")
+		assert.Contains(t, authURL, "ui_locales=en")
+	})
+
+	t.Run("nil/empty extraAuthParams is a no-op", func(t *testing.T) {
+		middleware := createMinimalMiddleware()
+		// extraAuthParams left nil
+		authURL := middleware.buildAuthURL(
+			"https://app.com/callback", "state123", "nonce456", "",
+		)
+
+		assert.Contains(t, authURL, "client_id=test-client")
+		assert.NotContains(t, authURL, "screen_hint")
+	})
+
+	t.Run("extra params CANNOT override plugin-managed params", func(t *testing.T) {
+		middleware := createMinimalMiddleware()
+		middleware.extraAuthParams = map[string]string{
+			"client_id":     "ATTACKER",
+			"state":         "ATTACKER",
+			"redirect_uri":  "https://evil.example.com",
+			"response_type": "token",
+		}
+
+		authURL := middleware.buildAuthURL(
+			"https://app.com/callback", "state123", "nonce456", "",
+		)
+
+		// Plugin-managed values must win; injected values must be absent.
+		assert.Contains(t, authURL, "client_id=test-client")
+		assert.NotContains(t, authURL, "ATTACKER")
+		assert.NotContains(t, authURL, "evil.example.com")
+		assert.Contains(t, authURL, "response_type=code")
+	})
+}

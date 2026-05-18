@@ -110,6 +110,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `logoutURL` | `callbackURL + "/logout"` | RP-initiated logout path. |
 | `postLogoutRedirectURI` | `/` | Where to send users after logout. |
 | `scopes` | appended to `openid profile email` | Extra OAuth scopes. Set `overrideScopes: true` to replace defaults. |
+| `extraAuthParams` | none | Map of extra query parameters appended to the authorization request (e.g. `screen_hint: signup`, `login_hint`, `ui_locales`, `prompt`). Plugin-managed params (`client_id`, `state`, `nonce`, `redirect_uri`, `code_challenge`, `scope`, `response_type`, …) cannot be overridden. |
 | `excludedURLs` | none | Prefix-matched paths that bypass auth. |
 | `allowedUserDomains` | none | Restrict to email domains. |
 | `allowedUsers` | none | Restrict to specific addresses (or claim values when `userIdentifierClaim != email`). |
