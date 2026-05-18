@@ -261,6 +261,26 @@ strictAudienceValidation: true
 | `disableReplayDetection` | bool | `false` | Disable JTI-based replay attack detection |
 | `allowPrivateIPAddresses` | bool | `false` | Allow private IPs in provider URLs |
 
+### Bearer-token (M2M) authentication
+
+Opt-in path that accepts `Authorization: Bearer <jwt>` instead of the cookie
+session flow. M2M-only, default off, audience-mandatory. See
+[docs/BEARER_AUTH.md](BEARER_AUTH.md) for the threat model and operational
+guidance.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enableBearerAuth` | bool | `false` | Master switch. Startup fails if true with empty `audience` or with `bearerIdentifierClaim=email`. |
+| `bearerIdentifierClaim` | string | `"sub"` | JWT claim used as the principal identifier. `"email"` is rejected at startup. |
+| `stripAuthorizationHeader` | bool | `true` | Strip `Authorization` from forwarded requests after successful bearer auth. |
+| `bearerEmitWWWAuthenticate` | bool | `true` | Emit RFC 6750 `WWW-Authenticate: Bearer error="..."` hints on 401. |
+| `bearerOverridesCookie` | bool | `false` | Cookie wins when both bearer and cookie are present (default). Set true for bearer-wins. |
+| `maxTokenAgeSeconds` | int64 | `86400` | Upper bound on `iat` claim age (24h). 0 disables the check. |
+| `maxIdentifierLength` | int | `256` | Length cap on the sanitised principal identifier. |
+| `bearerFailureThreshold` | int | `20` | Consecutive 401s from one source IP that trip the throttle. |
+| `bearerFailureWindowSeconds` | int | `60` | Rolling window for counting 401s. |
+| `bearerFailurePenaltySeconds` | int | `60` | 429 + `Retry-After` duration after the threshold trips. |
+
 ---
 
 ## Session Management

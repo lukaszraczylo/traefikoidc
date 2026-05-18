@@ -149,4 +149,17 @@ type TraefikOidc struct {
 	enablePKCE                 bool
 	forceHTTPS                 bool
 	suppressDiagnosticLogs     bool
+
+	// Bearer-auth runtime state (populated only when EnableBearerAuth=true).
+	bearerIdentifierClaim     string
+	bearerFailureTracker      *bearerFailureTracker
+	maxTokenAge               time.Duration
+	maxIdentifierLength       int
+	bearerFailureThreshold    int
+	bearerFailureWindow       time.Duration
+	bearerFailurePenalty      time.Duration
+	enableBearerAuth          bool
+	stripAuthorizationHeader  bool
+	bearerEmitWWWAuthenticate bool
+	bearerOverridesCookie     bool
 }

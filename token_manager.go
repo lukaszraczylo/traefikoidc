@@ -29,6 +29,29 @@ import (
 //
 //nolint:gocognit,gocyclo // Complex token verification logic requires multiple security checks
 func (t *TraefikOidc) VerifyToken(token string) error {
+	return t.verifyTokenWithOpts(token, verifyOpts{})
+}
+
+// verifyOpts are internal-only knobs for verifyTokenWithOpts. Kept unexported
+// because they expose subtle replay-protection semantics that are dangerous
+// to misuse.
+type verifyOpts struct {
+	// skipReplayMarking suppresses the JTI -> blacklist Set near the bottom
+	// of verifyTokenWithOpts. The Get at the top remains active, so revoked
+	// tokens (added to the blacklist by RevokeToken) are still rejected.
+	// Used exclusively by the bearer-auth path, where bearer tokens are
+	// designed to be reused until exp.
+	skipReplayMarking bool
+}
+
+// verifyTokenWithOpts runs the full token verification pipeline used by both
+// the cookie path and the bearer path. The cookie path uses the zero-value
+// opts; the bearer path sets skipReplayMarking=true. See the security spec
+// (docs/superpowers/specs/2026-05-18-bearer-token-auth-design.md §7.7) for
+// the exact contract: skipReplayMarking gates ONLY the JTI Set, never the Get.
+//
+//nolint:gocognit,gocyclo // Complex token verification logic requires multiple security checks
+func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 	if token == "" {
 		return fmt.Errorf("invalid JWT format: token is empty")
 	}
@@ -76,7 +99,9 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 	}
 
 	// Only check JTI blacklist for tokens that aren't already in the cache
-	// This is for FIRST-TIME validation to detect replay attacks
+	// This is for FIRST-TIME validation to detect replay attacks. The
+	// blacklist Get is ALWAYS active on the bearer path too — only the
+	// Set below is gated by opts.skipReplayMarking.
 	if jti, ok := parsedJWT.Claims["jti"].(string); ok && jti != "" {
 		// Skip JTI blacklist check if replay detection is disabled
 		if !t.disableReplayDetection {
@@ -105,8 +130,12 @@ func (t *TraefikOidc) VerifyToken(token string) error {
 
 	t.cacheVerifiedToken(token, jwt.Claims)
 
-	if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" && !t.disableReplayDetection {
-		// Only add to blacklist if replay detection is enabled
+	// Replay marking: add JTI to blacklist so subsequent presentations of
+	// the SAME token can short-circuit via cache. Bearer path suppresses
+	// this Set (opts.skipReplayMarking=true) because bearer tokens are
+	// designed for reuse until exp; the cache-evict-then-replay scenario
+	// would otherwise trigger false replay detection.
+	if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" && !t.disableReplayDetection && !opts.skipReplayMarking {
 		expiry := time.Now().Add(defaultBlacklistDuration)
 		if expClaim, expOk := jwt.Claims["exp"].(float64); expOk {
 			expTime := time.Unix(int64(expClaim), 0)

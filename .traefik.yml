@@ -80,3 +80,25 @@ testData:
   #   address: redis:6379
   #   password: urn:k8s:secret:redis:password
   #   cacheMode: hybrid
+
+  # Optional: bearer-token authentication for M2M (machine-to-machine) API
+  # clients. Default off. When enabled, requests presenting
+  # "Authorization: Bearer <jwt>" are validated against the configured OIDC
+  # provider (signature/issuer/audience/exp) and forwarded without creating
+  # a cookie session. The bearer path REJECTS ID tokens, requires a non-
+  # default audience, and never trusts the `email` claim as the identifier.
+  # See docs/BEARER_AUTH.md for the full threat model.
+  #
+  # enableBearerAuth: true                # opt-in
+  # audience: https://api.example.com     # REQUIRED when bearer is enabled
+  # bearerIdentifierClaim: sub            # default; used as X-Forwarded-User. `email` is rejected.
+  # stripAuthorizationHeader: true        # default; drops the raw token before forwarding
+  # bearerEmitWWWAuthenticate: true       # default; RFC 6750 hint on 401s
+  # bearerOverridesCookie: false          # default; cookie wins when both are present
+  # requireTokenIntrospection: false      # opt-in; calls RFC 7662 introspection per request
+  # maxTokenAgeSeconds: 86400             # 24h cap on iat (rejects clock-skew/forever tokens)
+  # maxIdentifierLength: 256              # cap on the sanitised principal identifier
+  # bearerFailureThreshold: 20            # consecutive 401s/IP that trip the throttle
+  # bearerFailureWindowSeconds: 60        # rolling window over which 401s are counted
+  # bearerFailurePenaltySeconds: 60       # 429 + Retry-After duration after threshold trips
+

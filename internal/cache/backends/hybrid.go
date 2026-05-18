@@ -164,7 +164,7 @@ func (h *HybridBackend) Set(ctx context.Context, key string, value []byte, ttl t
 
 	// Check if we're in fallback mode
 	if h.fallbackMode.Load() {
-		h.logger.Debugf("Operating in fallback mode, skipping L2 write for key: %s", key)
+		h.logger.Debugf("Operating in fallback mode, skipping L2 write for key: %s", redactKey(key))
 		return nil // Don't fail the operation if L2 is down
 	}
 
@@ -176,13 +176,13 @@ func (h *HybridBackend) Set(ctx context.Context, key string, value []byte, ttl t
 		// Synchronous write for critical cache types
 		if err := h.secondary.Set(ctx, key, value, ttl); err != nil {
 			h.errors.Add(1)
-			h.logger.Warnf("Failed to write to L2 cache (sync) for key %s: %v", key, err)
+			h.logger.Warnf("Failed to write to L2 cache (sync) for key %s: %v", redactKey(key), err)
 			h.recordL2Error()
 			// Don't fail the operation - L1 write succeeded
 			return nil
 		}
 		h.l2Writes.Add(1)
-		h.logger.Debugf("Synchronous write to L2 completed for critical key: %s", key)
+		h.logger.Debugf("Synchronous write to L2 completed for critical key: %s", redactKey(key))
 	} else {
 		// Asynchronous write for non-critical cache types
 		select {
@@ -192,10 +192,10 @@ func (h *HybridBackend) Set(ctx context.Context, key string, value []byte, ttl t
 			ttl:   ttl,
 			ctx:   ctx,
 		}:
-			h.logger.Debugf("Queued async write to L2 for key: %s", key)
+			h.logger.Debugf("Queued async write to L2 for key: %s", redactKey(key))
 		default:
 			// Buffer is full, log and continue
-			h.logger.Warnf("Async write buffer full, dropping L2 write for key: %s", key)
+			h.logger.Warnf("Async write buffer full, dropping L2 write for key: %s", redactKey(key))
 			h.errors.Add(1)
 		}
 	}
@@ -209,7 +209,7 @@ func (h *HybridBackend) Get(ctx context.Context, key string) ([]byte, time.Durat
 	value, ttl, exists, err := h.primary.Get(ctx, key)
 	if err != nil {
 		h.errors.Add(1)
-		h.logger.Debugf("L1 get error for key %s: %v", key, err)
+		h.logger.Debugf("L1 get error for key %s: %v", redactKey(key), err)
 	}
 
 	if exists {
@@ -227,7 +227,7 @@ func (h *HybridBackend) Get(ctx context.Context, key string) ([]byte, time.Durat
 	value, ttl, exists, err = h.secondary.Get(ctx, key)
 	if err != nil {
 		h.errors.Add(1)
-		h.logger.Debugf("L2 get error for key %s: %v", key, err)
+		h.logger.Debugf("L2 get error for key %s: %v", redactKey(key), err)
 		h.recordL2Error()
 		h.misses.Add(1)
 		return nil, 0, false, nil // Don't propagate L2 errors
@@ -544,7 +544,7 @@ func (h *HybridBackend) queueL1Backfill(key string, value []byte, ttl time.Durat
 	case h.l1BackfillBuffer <- &l1BackfillItem{key: key, value: value, ttl: ttl}:
 	default:
 		h.l1BackfillDrops.Add(1)
-		h.logger.Debugf("L1 backfill buffer full, dropping for key: %s", key)
+		h.logger.Debugf("L1 backfill buffer full, dropping for key: %s", redactKey(key))
 	}
 }
 
@@ -576,9 +576,9 @@ func (h *HybridBackend) l1BackfillWorker() {
 			}
 			writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			if err := h.primary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
-				h.logger.Debugf("Failed to populate L1 cache from L2 for key %s: %v", item.key, err)
+				h.logger.Debugf("Failed to populate L1 cache from L2 for key %s: %v", redactKey(item.key), err)
 			} else {
-				h.logger.Debugf("Populated L1 cache from L2 for key: %s", item.key)
+				h.logger.Debugf("Populated L1 cache from L2 for key: %s", redactKey(item.key))
 			}
 			cancel()
 		}
@@ -619,11 +619,11 @@ func (h *HybridBackend) asyncWriteWorker() {
 			writeCtx, cancel := context.WithTimeout(item.ctx, 500*time.Millisecond)
 			if err := h.secondary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
 				h.errors.Add(1)
-				h.logger.Debugf("Async write to L2 failed for key %s: %v", item.key, err)
+				h.logger.Debugf("Async write to L2 failed for key %s: %v", redactKey(item.key), err)
 				h.recordL2Error()
 			} else {
 				h.l2Writes.Add(1)
-				h.logger.Debugf("Async write to L2 completed for key: %s", item.key)
+				h.logger.Debugf("Async write to L2 completed for key: %s", redactKey(item.key))
 			}
 			cancel()
 		}

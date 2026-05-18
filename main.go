@@ -239,23 +239,63 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return 0
 		}(),
-		tokenCleanupStopChan:     make(chan struct{}),
-		metadataRefreshStopChan:  make(chan struct{}),
-		ctx:                      pluginCtx,
-		cancelFunc:               cancelFunc,
-		suppressDiagnosticLogs:   isTestMode(),
-		securityHeadersApplier:   config.GetSecurityHeadersApplier(),
-		scopeFilter:              NewScopeFilter(logger), // NEW - for discovery-based scope filtering
-		dcrConfig:                config.DynamicClientRegistration,
-		allowPrivateIPAddresses:  config.AllowPrivateIPAddresses,
-		minimalHeaders:           config.MinimalHeaders,
-		stripAuthCookies:         config.StripAuthCookies,
-		enableBackchannelLogout:  config.EnableBackchannelLogout,
-		enableFrontchannelLogout: config.EnableFrontchannelLogout,
-		backchannelLogoutPath:    normalizeLogoutPath(config.BackchannelLogoutURL),
-		frontchannelLogoutPath:   normalizeLogoutPath(config.FrontchannelLogoutURL),
-		sessionInvalidationCache: cacheManager.GetSharedSessionInvalidationCache(),
-		refreshResultCache:       cacheManager.GetSharedRefreshResultCache(),
+		tokenCleanupStopChan:      make(chan struct{}),
+		metadataRefreshStopChan:   make(chan struct{}),
+		ctx:                       pluginCtx,
+		cancelFunc:                cancelFunc,
+		suppressDiagnosticLogs:    isTestMode(),
+		securityHeadersApplier:    config.GetSecurityHeadersApplier(),
+		scopeFilter:               NewScopeFilter(logger), // NEW - for discovery-based scope filtering
+		dcrConfig:                 config.DynamicClientRegistration,
+		allowPrivateIPAddresses:   config.AllowPrivateIPAddresses,
+		minimalHeaders:            config.MinimalHeaders,
+		stripAuthCookies:          config.StripAuthCookies,
+		enableBackchannelLogout:   config.EnableBackchannelLogout,
+		enableFrontchannelLogout:  config.EnableFrontchannelLogout,
+		backchannelLogoutPath:     normalizeLogoutPath(config.BackchannelLogoutURL),
+		frontchannelLogoutPath:    normalizeLogoutPath(config.FrontchannelLogoutURL),
+		sessionInvalidationCache:  cacheManager.GetSharedSessionInvalidationCache(),
+		refreshResultCache:        cacheManager.GetSharedRefreshResultCache(),
+		enableBearerAuth:          config.EnableBearerAuth,
+		stripAuthorizationHeader:  config.StripAuthorizationHeader,
+		bearerEmitWWWAuthenticate: config.BearerEmitWWWAuthenticate,
+		bearerOverridesCookie:     config.BearerOverridesCookie,
+		bearerIdentifierClaim: func() string {
+			if config.BearerIdentifierClaim != "" {
+				return config.BearerIdentifierClaim
+			}
+			return "sub"
+		}(),
+		maxIdentifierLength: func() int {
+			if config.MaxIdentifierLength > 0 {
+				return config.MaxIdentifierLength
+			}
+			return 256
+		}(),
+		maxTokenAge: func() time.Duration {
+			if config.MaxTokenAgeSeconds > 0 {
+				return time.Duration(config.MaxTokenAgeSeconds) * time.Second
+			}
+			return 24 * time.Hour
+		}(),
+		bearerFailureThreshold: func() int {
+			if config.BearerFailureThreshold > 0 {
+				return config.BearerFailureThreshold
+			}
+			return 20
+		}(),
+		bearerFailureWindow: func() time.Duration {
+			if config.BearerFailureWindowSeconds > 0 {
+				return time.Duration(config.BearerFailureWindowSeconds) * time.Second
+			}
+			return 60 * time.Second
+		}(),
+		bearerFailurePenalty: func() time.Duration {
+			if config.BearerFailurePenaltySeconds > 0 {
+				return time.Duration(config.BearerFailurePenaltySeconds) * time.Second
+			}
+			return 60 * time.Second
+		}(),
 	}
 
 	// Log audience configuration
@@ -263,6 +303,31 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		t.logger.Infof("Custom audience configured: %s", config.Audience)
 	} else {
 		t.logger.Debugf("No custom audience specified, using clientID as audience: %s", t.clientID)
+	}
+
+	// Bearer-auth startup validation. The bearer path is M2M-only and demands
+	// a non-default audience so tokens issued for a different resource cannot
+	// be replayed against this service. The BearerIdentifierClaim guard blocks
+	// the `email` claim explicitly — without email_verified enforcement (out of
+	// scope for M2M), trusting email is a spoofing vector for federated IdPs.
+	// See spec §7.9 / §13.
+	if config.EnableBearerAuth {
+		if config.Audience == "" {
+			cancelFunc()
+			return nil, fmt.Errorf("EnableBearerAuth=true requires Audience to be set explicitly (cannot default to clientID — that path accepts ID tokens)")
+		}
+		if t.bearerIdentifierClaim == "email" {
+			cancelFunc()
+			return nil, fmt.Errorf("enableBearerAuth=true with bearerIdentifierClaim=%q is rejected: email-based identity without email_verified enforcement is a spoofing vector for federated IdPs (use \"sub\" or a custom claim; cookie-path userIdentifierClaim is unaffected)", t.bearerIdentifierClaim)
+		}
+		if !config.StrictAudienceValidation {
+			t.logger.Infof("EnableBearerAuth=true with StrictAudienceValidation=false: recommend enabling strict audience validation for hardening")
+		}
+		t.bearerFailureTracker = newBearerFailureTracker(
+			t.bearerFailureThreshold, t.bearerFailureWindow, t.bearerFailurePenalty,
+		)
+		t.logger.Infof("Bearer-token auth enabled: audience=%q identifierClaim=%q stripAuthz=%t bearerOverridesCookie=%t maxTokenAge=%s",
+			config.Audience, t.bearerIdentifierClaim, t.stripAuthorizationHeader, t.bearerOverridesCookie, t.maxTokenAge)
 	}
 
 	// Convert sessionMaxAge from seconds to duration (0 will use default 24 hours)
