@@ -168,6 +168,14 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// unauthenticated traffic would silently expose the backend.
 	if bypass, reason := t.shouldBypassAuth(req); bypass {
 		t.logger.Debugf("Bypassing OIDC for %s (%s)", req.URL.Path, reason)
+		// When bearer auth is enabled, strip the Authorization header on
+		// bypassed paths so a bearer token can't leak into health/metrics/
+		// public endpoint logs via downstream services that don't expect it.
+		// Excluded URLs are explicitly public; bearer is an artifact of the
+		// API auth flow that doesn't belong on them.
+		if t.enableBearerAuth {
+			req.Header.Del("Authorization")
+		}
 		switch reason {
 		case bypassReasonExcluded:
 			// Operator-declared excluded URLs forward unconditionally.
@@ -235,6 +243,24 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// Bypass checks already ran before the init wait; no need to repeat them.
 	t.sessionManager.CleanupOldCookies(rw, req)
+
+	// Bearer-token auth (opt-in). Runs after init (we need issuer+JWKs+aud
+	// available) and after bypass (excluded URLs always win). Cookie-vs-
+	// bearer precedence is configurable; the safe default is cookie-wins.
+	// See bearer_auth.go for the full pipeline.
+	if t.enableBearerAuth {
+		if _, hasBearer := detectBearerToken(req); hasBearer {
+			cookiePresent := t.hasSessionCookie(req)
+			if !cookiePresent || t.bearerOverridesCookie {
+				if cookiePresent {
+					t.logger.Infof("Both Authorization: Bearer and session cookie present on %s; bearer-wins per BearerOverridesCookie=true", req.URL.Path)
+				}
+				t.handleBearerRequest(rw, req)
+				return
+			}
+			t.logger.Infof("Both Authorization: Bearer and session cookie present on %s; cookie-wins (default); bearer ignored", req.URL.Path)
+		}
+	}
 
 	session, err := t.sessionManager.GetSession(req)
 	if err != nil {
@@ -401,10 +427,17 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 }
 
-// processAuthorizedRequest processes requests for authenticated users.
-// It extracts claims, validates roles/groups if configured, sets authentication headers,
-// processes header templates, and forwards the request to the next handler.
-// Domain checks should be performed before calling this method.
+// processAuthorizedRequest processes requests for authenticated cookie/session
+// users. It performs session-specific checks (identifier presence, backchannel-
+// logout invalidation, claims extraction with potential re-auth), persists
+// dirty session state, then delegates the post-auth pipeline (roles/groups,
+// header injection, security headers, cookie strip, forward) to
+// forwardAuthorized.
+//
+// The bearer-token path uses the same forwardAuthorized helper but takes a
+// different route to it (see bearer_auth.go). Keeping forwardAuthorized
+// session-agnostic is what lets the two auth methods share one pipeline.
+//
 // Parameters:
 //   - rw: The HTTP response writer.
 //   - req: The HTTP request to process.
@@ -442,8 +475,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 	// the parsed claims keyed on the raw ID token, so concurrent dashboard
 	// panel requests on the same session don't repeatedly base64-decode and
 	// JSON-unmarshal the same JWT (a real cost under the yaegi interpreter
-	// that hosts Traefik plugins). idClaims is reused below by the
-	// header-templates branch.
+	// that hosts Traefik plugins).
 	idToken := session.GetIDToken()
 	var (
 		idClaims    map[string]interface{}
@@ -472,18 +504,76 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		return
 	}
 
-	var groups, roles []string
+	if groupClaimsErr != nil && len(t.allowedRolesAndGroups) > 0 {
+		// Claims couldn't be extracted but roles checks are required:
+		// re-authenticate rather than 403 (session may be salvageable on
+		// re-issue). Bearer path uses 401 for the equivalent failure.
+		t.logger.Errorf("Failed to extract claims for roles/groups check: %v", groupClaimsErr)
+		session.ResetRedirectCount()
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+		return
+	}
 
-	if groupClaimsErr == nil && groupClaims != nil {
-		var err error
-		groups, roles, err = t.extractGroupsAndRolesFromClaims(groupClaims)
-		if err != nil && len(t.allowedRolesAndGroups) > 0 {
-			t.logger.Errorf("Failed to extract groups and roles: %v", err)
-			session.ResetRedirectCount()
-			t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+	// Persist any dirty session state BEFORE forwardAuthorized writes the
+	// response. Once next.ServeHTTP fires, Set-Cookie can no longer reach
+	// the client. The forwardAuthorized pipeline does not mutate session
+	// state, so saving here is safe.
+	if session.IsDirty() {
+		if err := session.Save(req, rw); err != nil {
+			t.logger.Errorf("Failed to save session after processing headers: %v", err)
+		}
+	} else {
+		t.logger.Debug("Session not dirty, skipping save in processAuthorizedRequest")
+	}
+
+	// Build the source-agnostic principal. ID-token claims drive header
+	// templates and roles when present; otherwise fall back to access-token
+	// claims (matches prior behavior for opaque-ID-token providers).
+	p := &principal{
+		Source:       sourceSession,
+		Identifier:   userIdentifier,
+		AccessToken:  session.GetAccessToken(),
+		IDToken:      idToken,
+		RefreshToken: session.GetRefreshToken(),
+		Claims:       groupClaims,
+	}
+
+	t.forwardAuthorized(rw, req, p)
+}
+
+// forwardAuthorized completes the post-authentication pipeline shared by the
+// cookie/session path and the bearer-token path. It performs:
+//
+//  1. Roles/groups extraction from p.Claims (idempotent; existing
+//     extractGroupsAndRolesFromClaims helper).
+//  2. allowedRolesAndGroups gate — writes a 403 and returns if denied.
+//  3. Identity-header injection (X-Forwarded-User, X-User-Groups, X-User-Roles,
+//     plus X-Auth-Request-* when !minimalHeaders).
+//  4. Operator-defined header templates.
+//  5. Security headers (delegated to t.securityHeadersApplier or fallback).
+//  6. OIDC session-cookie strip (stripAuthCookies).
+//  7. Authorization header strip on bearer source when stripAuthorizationHeader.
+//  8. next.ServeHTTP.
+//
+// Session persistence is the CALLER's responsibility — it must happen before
+// this function so Set-Cookie reaches the response.
+func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Request, p *principal) {
+	var (
+		groups, roles []string
+		extractErr    error
+	)
+	if p.Claims != nil {
+		groups, roles, extractErr = t.extractGroupsAndRolesFromClaims(p.Claims)
+		if extractErr != nil && len(t.allowedRolesAndGroups) > 0 {
+			// Bearer path: 403 (caller already verified the token; principal
+			// claims are present but malformed for roles purposes).
+			// Cookie path can't reach here because processAuthorizedRequest
+			// catches groupClaimsErr earlier.
+			t.logger.Errorf("Failed to extract groups and roles: %v", extractErr)
+			t.sendErrorResponse(rw, req, "Access denied", http.StatusForbidden)
 			return
 		}
-		if err == nil {
+		if extractErr == nil {
 			if len(groups) > 0 {
 				req.Header.Set("X-User-Groups", strings.Join(groups, ","))
 			}
@@ -502,62 +592,46 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 			}
 		}
 		if !allowed {
-			t.logger.Infof("User %s does not have any allowed roles or groups", userIdentifier)
+			t.logger.Infof("User %s does not have any allowed roles or groups", p.Identifier)
 			errorMsg := fmt.Sprintf("Access denied: You do not have any of the allowed roles or groups. To log out, visit: %s", t.logoutURLPath)
 			t.sendErrorResponse(rw, req, errorMsg, http.StatusForbidden)
 			return
 		}
 	}
 
-	req.Header.Set("X-Forwarded-User", userIdentifier)
+	req.Header.Set("X-Forwarded-User", p.Identifier)
 
 	// When minimalHeaders is enabled, skip extra headers to prevent 431 errors
 	if !t.minimalHeaders {
 		req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
-		req.Header.Set("X-Auth-Request-User", userIdentifier)
-		if idToken != "" {
-			req.Header.Set("X-Auth-Request-Token", idToken)
+		req.Header.Set("X-Auth-Request-User", p.Identifier)
+		if p.IDToken != "" {
+			req.Header.Set("X-Auth-Request-Token", p.IDToken)
 		}
 	}
 
 	if len(t.headerTemplates) > 0 {
-		if idClaimsErr != nil {
-			t.logger.Errorf("Failed to extract claims from ID Token for template headers: %v", idClaimsErr)
-		} else {
-			// idClaims may be nil when no ID token is present; templates
-			// referencing .Claims.* will simply produce empty values, which
-			// matches the prior behavior.
-			templateData := map[string]interface{}{
-				"AccessToken":  session.GetAccessToken(),
-				"IDToken":      idToken,
-				"RefreshToken": session.GetRefreshToken(),
-				"Claims":       idClaims,
-			}
-
-			for headerName, tmpl := range t.headerTemplates {
-				var buf bytes.Buffer
-				if err := tmpl.Execute(&buf, templateData); err != nil {
-					t.logger.Errorf("Failed to execute template for header %s: %v", headerName, err)
-					continue
-				}
-				headerValue := buf.String()
-				req.Header.Set(headerName, headerValue)
-				t.logger.Debugf("Set templated header %s = %s", headerName, headerValue)
-			}
-			// NOTE: templates only mutate request headers (not session state),
-			// so we deliberately do NOT MarkDirty / Save here. Previously every
-			// authenticated request with header templates re-encrypted and
-			// rewrote all session cookies, which was a measurable CPU and
-			// Set-Cookie tax on dashboards that poll many panels per second.
+		// p.Claims may be nil (e.g. session without an ID token). Templates
+		// referencing .Claims.* will simply produce empty values — matches
+		// the prior behavior. Bearer-source principals always carry access-
+		// token claims (post-verifyToken).
+		templateData := map[string]interface{}{
+			"AccessToken":  p.AccessToken,
+			"IDToken":      p.IDToken,
+			"RefreshToken": p.RefreshToken,
+			"Claims":       p.Claims,
 		}
-	}
 
-	if session.IsDirty() {
-		if err := session.Save(req, rw); err != nil {
-			t.logger.Errorf("Failed to save session after processing headers: %v", err)
+		for headerName, tmpl := range t.headerTemplates {
+			var buf bytes.Buffer
+			if err := tmpl.Execute(&buf, templateData); err != nil {
+				t.logger.Errorf("Failed to execute template for header %s: %v", headerName, err)
+				continue
+			}
+			headerValue := buf.String()
+			req.Header.Set(headerName, headerValue)
+			t.logger.Debugf("Set templated header %s = %s", headerName, headerValue)
 		}
-	} else {
-		t.logger.Debug("Session not dirty, skipping save in processAuthorizedRequest")
 	}
 
 	// Apply security headers if configured
@@ -573,7 +647,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 
 	// Strip OIDC session cookies before forwarding to the backend to prevent
 	// HTTP 431 "Request Header Fields Too Large" errors (GitHub issue #122).
-	if t.stripAuthCookies {
+	if t.stripAuthCookies && t.sessionManager != nil {
 		prefix := t.sessionManager.GetCookiePrefix()
 		filtered := make([]*http.Cookie, 0, len(req.Cookies()))
 		for _, c := range req.Cookies() {
@@ -587,7 +661,14 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 		}
 	}
 
-	t.logger.Debugf("Request authorized for user %s, forwarding to next handler", userIdentifier)
+	// Bearer source: strip the Authorization header to keep the raw token
+	// out of downstream service logs. Off-by-config for operators who chain
+	// services that each re-verify the bearer.
+	if p.Source == sourceBearer && t.stripAuthorizationHeader {
+		req.Header.Del("Authorization")
+	}
+
+	t.logger.Debugf("Request authorized for user %s (source=%d), forwarding to next handler", p.Identifier, p.Source)
 
 	t.next.ServeHTTP(rw, req)
 }

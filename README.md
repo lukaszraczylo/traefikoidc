@@ -9,6 +9,7 @@ manages sessions, and forwards user identity to downstream services.
 - [Configuration reference](docs/CONFIGURATION.md) — every parameter
 - [Provider guide](docs/PROVIDERS.md) — Google, Azure, Auth0, Okta, Keycloak, Cognito, GitLab, GitHub, generic
 - [Auth0 audience guide](docs/AUTH0_AUDIENCE_GUIDE.md) — custom APIs, opaque tokens, token confusion
+- [Bearer-token (M2M) auth](docs/BEARER_AUTH.md) — opt-in `Authorization: Bearer` path, threat model
 - [Redis cache](docs/REDIS.md) — multi-replica deployments
 - [Dynamic Client Registration](docs/DCR.md) — RFC 7591
 - [Development](docs/DEVELOPMENT.md) · [Testing](docs/TESTING.md)
@@ -170,6 +171,69 @@ For IdP-initiated logout (back/front-channel) in multi-replica setups, Redis is
 Each instance must use a unique `cookiePrefix` **and** `sessionEncryptionKey`,
 otherwise a session minted by one instance can grant access through another.
 See [issue #87](https://github.com/lukaszraczylo/traefikoidc/issues/87).
+
+### Bearer-token (M2M) authentication
+
+Opt-in path for API clients that present `Authorization: Bearer <jwt>` instead
+of logging in via the browser flow. Default off. When enabled, the middleware
+validates the bearer JWT against the configured OIDC provider (signature,
+issuer, audience, expiry) and forwards the request downstream with the
+principal headers — no cookie session is created.
+
+```yaml
+enableBearerAuth: true
+audience: https://api.example.com   # REQUIRED when bearer is enabled
+# optional, defaults shown:
+bearerIdentifierClaim: sub          # claim used as X-Forwarded-User
+stripAuthorizationHeader: true      # drop the raw token before forwarding
+bearerEmitWWWAuthenticate: true     # RFC 6750 hint on 401s
+bearerOverridesCookie: false        # cookie wins when both are present (safer)
+maxTokenAgeSeconds: 86400           # 24h cap on iat
+bearerFailureThreshold: 20          # consecutive 401s/IP before 429 throttle
+```
+
+Hardening built in by default:
+
+- **Audience required.** Startup fails if `enableBearerAuth=true` and
+  `audience` is unset. Eliminates the "token issued for service B accepted
+  by A" confusion vector.
+- **ID tokens explicitly rejected.** Bearer is access-token-only. ID tokens
+  (detected via `nonce`, `typ: at+jwt`, `token_use`, `scope`, or audience
+  shape) return `401`.
+- **`alg` and `kid` pinned at the entrypoint.** Asymmetric-only allowlist
+  (`RS256/384/512`, `PS256/384/512`, `ES256/384/512`); `kid` length and
+  charset capped — both checked **before** any JWKS fetch so attacker noise
+  can't amplify into upstream calls.
+- **Identifier sanitised.** Default identifier source is `sub`; `email` is
+  rejected unless explicitly opted in (which the middleware still refuses to
+  avoid the unverified-email spoofing footgun). Control characters, bidi-
+  override codepoints, and the delimiters `, ; =` are all rejected before
+  the value reaches `X-Forwarded-User`.
+- **Multi-audience tokens require `azp`.** When `aud` is an array of more
+  than one element, the token must carry `azp == clientID`.
+- **`iat` upper-age bound.** Tokens older than `maxTokenAgeSeconds` are
+  rejected even if `exp` is far in the future.
+- **Per-IP 401 throttle.** After `bearerFailureThreshold` consecutive 401s
+  from one source IP, further bearer requests from that IP are rejected
+  with `429 Too Many Requests` + `Retry-After`.
+- **Cookie-wins by default.** When both a session cookie and an
+  `Authorization: Bearer` header arrive on the same request, the cookie path
+  runs (safer against browser/extension/proxy bearer injection). Set
+  `bearerOverridesCookie: true` for the AWS/GCP/Kubernetes convention.
+- **Replay protection preserved.** The bearer path skips the JTI **Set**
+  (so the same token can be reused) but the **Get** stays active —
+  `RevokeToken` still terminates a bearer token immediately.
+- **Excluded URLs strip Authorization.** When `enableBearerAuth=true`,
+  excluded paths (e.g. `/health`, `/metrics`) get the `Authorization` header
+  removed before forwarding so the token can't leak into public endpoint
+  logs.
+- **Optional real-time revocation.** Set `requireTokenIntrospection: true`
+  to call RFC 7662 introspection on every cache miss; revoked tokens fail
+  immediately. Introspection endpoint failures return `503` (distinguishes
+  infra outage from credential rejection).
+
+Full threat model, configuration matrix, and follow-up gaps in
+[docs/BEARER_AUTH.md](docs/BEARER_AUTH.md).
 
 ### SSE and WebSocket endpoints
 
