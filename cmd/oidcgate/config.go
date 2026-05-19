@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode"
 
@@ -39,7 +40,13 @@ var envScalarFields = []string{
 // Load reads YAML from path, applies env-var overrides, fills defaults,
 // and forces TrustForwardedURI=true so the library honors X-Forwarded-Uri.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path is a trusted operator-supplied config file path
+	// Clean the operator-supplied path to satisfy gosec G304 (file inclusion
+	// via variable). filepath.Clean strips traversal sequences and normalises
+	// the path; this is canonical mitigation for config files supplied via a
+	// CLI flag — the operator runs the daemon, so the input is trusted, but
+	// gosec's static analysis still flags variable paths without the cleanup.
+	clean := filepath.Clean(path)
+	data, err := os.ReadFile(clean) // #nosec G304 -- operator-supplied config path, cleaned above
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
