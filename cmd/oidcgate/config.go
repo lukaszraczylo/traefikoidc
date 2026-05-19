@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/lukaszraczylo/traefikoidc"
 	"gopkg.in/yaml.v3"
@@ -77,6 +77,10 @@ func Load(path string) (*Config, error) {
 
 	applyEnvOverrides(cfg)
 	applyDefaults(cfg)
+
+	if cfg.Listen == "" {
+		return nil, fmt.Errorf("config: missing required 'listen' (or OIDCGATE_LISTEN env var)")
+	}
 
 	// Force standalone semantics: trust X-Forwarded-Uri.
 	cfg.OIDC.TrustForwardedURI = true
@@ -152,8 +156,6 @@ func setScalarField(cfg *Config, field, value string) {
 	case "CACertPEM":
 		cfg.OIDC.CACertPEM = value
 	}
-	// strconv reserved for future int/bool fields when added to the allow-list.
-	_ = strconv.Atoi
 }
 
 func applyDefaults(cfg *Config) {
@@ -170,22 +172,20 @@ func applyDefaults(cfg *Config) {
 // Multi-letter acronyms keep their grouping: "OIDCEndSessionURL" →
 // "OIDC_END_SESSION_URL", "CACertPEM" → "CA_CERT_PEM".
 func camelToSnakeUpper(s string) string {
+	runes := []rune(s)
 	var b strings.Builder
-	for i, r := range s {
+	for i, r := range runes {
 		if i > 0 && isUpper(r) {
-			prev := rune(s[i-1])
+			prev := runes[i-1]
 			next := rune(0)
-			if i+1 < len(s) {
-				next = rune(s[i+1])
+			if i+1 < len(runes) {
+				next = runes[i+1]
 			}
 			if !isUpper(prev) || (next != 0 && !isUpper(next)) {
 				b.WriteByte('_')
 			}
 		}
-		if r >= 'a' && r <= 'z' {
-			r -= 32
-		}
-		b.WriteRune(r)
+		b.WriteRune(unicode.ToUpper(r))
 	}
 	return b.String()
 }

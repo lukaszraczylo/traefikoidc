@@ -106,3 +106,32 @@ func TestLoad_MissingFile(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+func TestLoad_NestedStructRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+listen: ":8080"
+providerURL: "https://idp.example"
+clientID: "abc"
+clientSecret: "secret"
+sessionEncryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+callbackURL: "/oauth2/callback"
+logoutURL: "/oauth2/logout"
+redis:
+  address: "redis:6379"
+  password: "redispw"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OIDC.Redis == nil {
+		t.Fatal("redis block should populate cfg.OIDC.Redis")
+	}
+	if cfg.OIDC.Redis.Address != "redis:6379" {
+		t.Errorf("redis address: want redis:6379, got %q", cfg.OIDC.Redis.Address)
+	}
+}
