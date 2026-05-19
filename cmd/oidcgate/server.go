@@ -25,17 +25,18 @@ func buildMux(cfg *Config, middleware http.Handler, ready readyReporter) *http.S
 }
 
 // buildServer wraps the mux in an http.Server with sensible timeouts.
-func buildServer(cfg *Config, mux http.Handler) *http.Server { //nolint:unused
+func buildServer(cfg *Config, mux http.Handler) *http.Server { //nolint:unused // consumed by main.go in Task 9
 	return &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 }
 
 // shutdown gracefully stops the server with a 15s deadline.
-func shutdown(srv *http.Server) error { //nolint:unused
+func shutdown(srv *http.Server) error { //nolint:unused // consumed by main.go in Task 9
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(ctx)
