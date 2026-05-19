@@ -8,8 +8,8 @@ import "net/http"
 // silent-probe contracts cannot follow redirects. authInterceptor buffers
 // the header/body and, at Finalize() time:
 //
-//   - if status was 302 or 303 (redirect class we care about), rewrites
-//     it to 401, moves the original Location header to X-Auth-Redirect
+//   - if status was a redirect class (302, 303, 307, 308), rewrites it
+//     to 401, moves the original Location header to X-Auth-Redirect
 //     (advisory), strips Location, preserves Set-Cookie headers (state,
 //     PKCE, nonce — the browser will carry them into the next request),
 //     and writes an empty body.
@@ -20,6 +20,7 @@ type authInterceptor struct {
 	status      int
 	body        []byte
 	wroteHeader bool
+	finalized   bool
 }
 
 func newAuthInterceptor(inner http.ResponseWriter) *authInterceptor {
@@ -51,6 +52,10 @@ func (w *authInterceptor) Write(b []byte) (int, error) { //nolint:unparam // sig
 // Finalize flushes the buffered response, applying the 302/303 → 401 rewrite.
 // Must be called exactly once after the wrapped handler returns.
 func (w *authInterceptor) Finalize() {
+	if w.finalized {
+		return
+	}
+	w.finalized = true
 	switch w.status {
 	case http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
 		// Move Location → X-Auth-Redirect, strip Location, force 401, drop body.

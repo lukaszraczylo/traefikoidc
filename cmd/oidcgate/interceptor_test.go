@@ -68,3 +68,41 @@ func TestInterceptor_303SeeOtherAlsoIntercepted(t *testing.T) {
 		t.Fatalf("303 should be intercepted to 401, got %d", rec.Code)
 	}
 }
+
+func TestInterceptor_307TemporaryRedirectIntercepted(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := newAuthInterceptor(rec)
+	w.Header().Set("Location", "/elsewhere")
+	w.WriteHeader(http.StatusTemporaryRedirect)
+	w.Finalize()
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("307 should be intercepted to 401, got %d", rec.Code)
+	}
+}
+
+func TestInterceptor_308PermanentRedirectIntercepted(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := newAuthInterceptor(rec)
+	w.Header().Set("Location", "/elsewhere")
+	w.WriteHeader(http.StatusPermanentRedirect)
+	w.Finalize()
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("308 should be intercepted to 401, got %d", rec.Code)
+	}
+}
+
+func TestInterceptor_DoubleFinalizeIsNoop(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := newAuthInterceptor(rec)
+	w.Header().Set("X-Forwarded-User", "alice")
+	w.WriteHeader(http.StatusOK)
+	w.Finalize()
+	// Second call must not panic, must not change anything observable.
+	w.Finalize()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("double Finalize must not change status, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Forwarded-User"); got != "alice" {
+		t.Errorf("double Finalize must not duplicate headers, got %q", got)
+	}
+}
