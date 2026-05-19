@@ -6,6 +6,7 @@ package traefikoidc
 // has been fetched and the authorization endpoint is known.
 func (t *TraefikOidc) Ready() bool {
 	t.metadataMu.RLock()
-	defer t.metadataMu.RUnlock()
-	return t.authURL != ""
+	u := t.authURL
+	t.metadataMu.RUnlock()
+	return u != ""
 }
