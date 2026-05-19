@@ -82,6 +82,28 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: missing required 'listen' (or OIDCGATE_LISTEN env var)")
 	}
 
+	if !strings.HasPrefix(cfg.OIDC.CallbackURL, "/") {
+		return nil, fmt.Errorf("config: callbackURL must be a path starting with '/', got %q", cfg.OIDC.CallbackURL)
+	}
+	if !strings.HasPrefix(cfg.OIDC.LogoutURL, "/") {
+		return nil, fmt.Errorf("config: logoutURL must be a path starting with '/', got %q", cfg.OIDC.LogoutURL)
+	}
+
+	reserved := []string{
+		sentinelPath,
+		cfg.AuthPath,
+		cfg.StartPath,
+		cfg.OIDC.CallbackURL,
+		cfg.OIDC.LogoutURL,
+	}
+	for _, ex := range cfg.OIDC.ExcludedURLs {
+		for _, r := range reserved {
+			if r != "" && strings.HasPrefix(r, ex) {
+				return nil, fmt.Errorf("config: excludedURL %q would bypass reserved oidcgate path %q", ex, r)
+			}
+		}
+	}
+
 	// Force standalone semantics: trust X-Forwarded-Uri.
 	cfg.OIDC.TrustForwardedURI = true
 	return cfg, nil

@@ -23,6 +23,7 @@ func main() {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	success := newSuccessHandler()
 	middleware, err := traefikoidc.NewWithContext(ctx, &cfg.OIDC, success, "oidcgate")
@@ -42,11 +43,11 @@ func main() {
 		if err := shutdown(srv); err != nil {
 			log.Printf("oidcgate: shutdown error: %v", err)
 		}
-		cancel()
 	}()
 
 	log.Printf("oidcgate: listening on %s", cfg.Listen)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		cancel()
 		log.Fatalf("oidcgate: serve: %v", err)
 	}
 	log.Println("oidcgate: stopped")
