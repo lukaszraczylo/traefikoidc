@@ -55,3 +55,16 @@ func TestSuccessHandler_EmptyBody(t *testing.T) {
 		t.Fatalf("body: want empty, got %q", body)
 	}
 }
+
+func TestSuccessHandler_MultiValueHeader(t *testing.T) {
+	h := newSuccessHandler()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Add("X-Role", "admin")
+	req.Header.Add("X-Role", "editor")
+	h.ServeHTTP(rec, req)
+	got := rec.Header()["X-Role"]
+	if len(got) != 2 || got[0] != "admin" || got[1] != "editor" {
+		t.Errorf("X-Role multi-value: want [admin editor], got %v", got)
+	}
+}

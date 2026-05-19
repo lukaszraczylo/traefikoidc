@@ -34,7 +34,7 @@ func newSuccessHandler() http.Handler {
 }
 
 func shouldMirror(name string) bool {
-	if strings.HasPrefix(name, "X-") || strings.HasPrefix(name, "x-") {
+	if strings.HasPrefix(name, "X-") {
 		return true
 	}
 	canonical := http.CanonicalHeaderKey(name)
