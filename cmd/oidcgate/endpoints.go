@@ -28,7 +28,10 @@ func newAuthHandler(next http.Handler) http.Handler {
 func newStartHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		r2 := cloneAndRewrite(req, sentinelPath)
-		if rd := req.URL.Query().Get("rd"); rd != "" && r2.Header.Get("X-Forwarded-Uri") == "" {
+		// Precedence: explicit ?rd= wins over an ambient upstream
+		// X-Forwarded-Uri so /oauth2/start?rd=/dashboard does not get
+		// silently overridden by the proxy's current-URL forwarding.
+		if rd := req.URL.Query().Get("rd"); rd != "" {
 			r2.Header.Set("X-Forwarded-Uri", rd)
 		}
 		next.ServeHTTP(rw, r2)
@@ -55,13 +58,12 @@ func newLogoutHandler(next http.Handler, logoutURL string) http.Handler {
 	})
 }
 
-// cloneAndRewrite returns a shallow clone of req with URL.Path set to newPath.
-// The query string is preserved verbatim — middleware logic for code/state
-// extraction reads URL.Query() which still works.
+// cloneAndRewrite returns a clone of req with URL.Path set to newPath.
+// req.Clone deep-copies URL via net/http's cloneURL, so mutating
+// r2.URL.Path does not affect the original req. RawQuery, Host,
+// Fragment, RawPath are preserved unchanged.
 func cloneAndRewrite(req *http.Request, newPath string) *http.Request {
 	r2 := req.Clone(req.Context())
-	u := *req.URL
-	u.Path = newPath
-	r2.URL = &u
+	r2.URL.Path = newPath
 	return r2
 }

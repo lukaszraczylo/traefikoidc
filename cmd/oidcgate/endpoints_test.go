@@ -49,6 +49,9 @@ func TestAuth_RewritesToSentinel_AndConverts302To401(t *testing.T) {
 	if rec.Header().Get("X-Auth-Redirect") == "" {
 		t.Error("X-Auth-Redirect should carry Location")
 	}
+	if got := stub.calls[0].header.Get("X-Forwarded-Uri"); got != "/protected/page" {
+		t.Errorf("X-Forwarded-Uri must pass through to middleware: want /protected/page, got %q", got)
+	}
 }
 
 func TestAuth_AuthenticatedReturnsHeadersAnd200(t *testing.T) {
@@ -104,6 +107,20 @@ func TestStart_ForwardsRdAsXForwardedURI(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if got := stub.calls[0].header.Get("X-Forwarded-Uri"); got != "/back/here" {
 		t.Fatalf("?rd should become X-Forwarded-Uri: want /back/here, got %q", got)
+	}
+}
+
+func TestStart_RdQueryWinsOverUpstreamHeader(t *testing.T) {
+	stub := &stubMiddleware{
+		fn: func(rw http.ResponseWriter, req *http.Request) { rw.WriteHeader(http.StatusFound) },
+	}
+	h := newStartHandler(stub)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/oauth2/start?rd=/explicit", nil)
+	req.Header.Set("X-Forwarded-Uri", "/ambient")
+	h.ServeHTTP(rec, req)
+	if got := stub.calls[0].header.Get("X-Forwarded-Uri"); got != "/explicit" {
+		t.Fatalf("?rd= must win over upstream X-Forwarded-Uri: want /explicit, got %q", got)
 	}
 }
 
