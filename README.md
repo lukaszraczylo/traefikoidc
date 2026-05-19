@@ -71,9 +71,20 @@ forward-auth daemon for nginx, Caddy, Traefik ForwardAuth, HAProxy, and
 Envoy. See [`docs/OIDCGATE.md`](docs/OIDCGATE.md).
 
 ```bash
+# From source
 go build -o oidcgate ./cmd/oidcgate
 ./oidcgate --config examples/oidcgate.yaml
+
+# Or pull the released image (multi-arch: linux/amd64, linux/arm64)
+docker run --rm \
+  -v /path/to/config.yaml:/etc/oidcgate/config.yaml:ro \
+  -p 8080:8080 \
+  ghcr.io/lukaszraczylo/oidcgate:latest
 ```
+
+Each tagged release publishes a Docker image at
+`ghcr.io/lukaszraczylo/oidcgate:vX.Y.Z` (matching the release tag), plus
+floating `:vX.Y`, `:vX`, and `:latest` aliases.
 
 ## Quickstart
 

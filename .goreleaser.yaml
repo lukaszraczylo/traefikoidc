@@ -1,13 +1,41 @@
 version: 2
 
-# Traefik plugins are source-only - no binary builds
-# Traefik loads plugins via Yaegi interpreter at runtime
-builds:
-  - skip: true
+# Two release artefacts:
+#
+# 1. The Traefik plugin: source-only — Traefik loads it via the Yaegi
+#    interpreter from the source tarball published on GitHub releases.
+# 2. oidcgate: a standalone forward-auth daemon built from cmd/oidcgate.
+#    Shipped as both per-OS/arch binary archives AND a multi-arch Docker
+#    image at ghcr.io/lukaszraczylo/oidcgate, tagged to match the release.
 
-# Create source archive for GitHub releases
+builds:
+  - id: oidcgate
+    main: ./cmd/oidcgate
+    binary: oidcgate
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
-  - formats: [tar.gz]
+  # Source archive for the Traefik plugin path. meta:true → no binary
+  # builds attached; everything comes from `files:` below.
+  - id: source-plugin
+    meta: true
+    formats: [tar.gz]
     name_template: "{{ .ProjectName }}_v{{ .Version }}_source"
     files:
       - "*.go"
@@ -25,6 +53,93 @@ archives:
       - "!regression/**"
       - "!examples/**"
       - "!docs/**"
+      - "!cmd/**"
+
+  # Per-OS/arch binary archives for the oidcgate daemon.
+  - id: oidcgate
+    ids: [oidcgate]
+    formats: [tar.gz]
+    name_template: "oidcgate_v{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - src: docs/OIDCGATE.md
+        dst: docs/
+      - src: examples/oidcgate.yaml
+        dst: examples/
+
+# Build a Docker image per (linux, arch) combo. Tag suffixes are
+# combined into a single multi-arch manifest list below via
+# docker_manifests, so end users pull a single tag.
+dockers:
+  - id: oidcgate-amd64
+    ids: [oidcgate]
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-amd64"
+    use: buildx
+    dockerfile: cmd/oidcgate/Dockerfile
+    build_flag_templates:
+      - "--pull"
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=oidcgate"
+      - "--label=org.opencontainers.image.description=Standalone OIDC forward-auth daemon for nginx/Caddy/Traefik/HAProxy/Envoy"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/lukaszraczylo/traefikoidc"
+      - "--label=org.opencontainers.image.url=https://github.com/lukaszraczylo/traefikoidc"
+      - "--label=org.opencontainers.image.documentation=https://github.com/lukaszraczylo/traefikoidc/blob/main/docs/OIDCGATE.md"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+  - id: oidcgate-arm64
+    ids: [oidcgate]
+    goos: linux
+    goarch: arm64
+    image_templates:
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-arm64"
+    use: buildx
+    dockerfile: cmd/oidcgate/Dockerfile
+    build_flag_templates:
+      - "--pull"
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=oidcgate"
+      - "--label=org.opencontainers.image.description=Standalone OIDC forward-auth daemon for nginx/Caddy/Traefik/HAProxy/Envoy"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.source=https://github.com/lukaszraczylo/traefikoidc"
+      - "--label=org.opencontainers.image.url=https://github.com/lukaszraczylo/traefikoidc"
+      - "--label=org.opencontainers.image.documentation=https://github.com/lukaszraczylo/traefikoidc/blob/main/docs/OIDCGATE.md"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+# Multi-arch manifests — these are what users actually pull.
+# Tags match the release tag (vX.Y.Z) exactly, plus a few convenience tags.
+docker_manifests:
+  - name_template: "ghcr.io/lukaszraczylo/oidcgate:v{{ .Version }}"
+    image_templates:
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-amd64"
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-amd64"
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/lukaszraczylo/oidcgate:v{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-amd64"
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-arm64"
+    skip_push: auto
+  - name_template: "ghcr.io/lukaszraczylo/oidcgate:v{{ .Major }}"
+    image_templates:
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-amd64"
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-arm64"
+    skip_push: auto
+  - name_template: "ghcr.io/lukaszraczylo/oidcgate:latest"
+    image_templates:
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-amd64"
+      - "ghcr.io/lukaszraczylo/oidcgate:{{ .Version }}-arm64"
+    skip_push: auto
 
 checksum:
   name_template: "{{ .ProjectName }}_v{{ .Version }}_checksums.txt"
@@ -57,4 +172,14 @@ signs:
       - "${artifact}"
       - "--yes"
     artifacts: checksum
+    output: true
+
+# Sign the Docker images and manifests with cosign keyless.
+docker_signs:
+  - cmd: cosign
+    artifacts: all
+    args:
+      - sign
+      - "${artifact}@${digest}"
+      - "--yes"
     output: true
