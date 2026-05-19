@@ -149,4 +149,5 @@ type TraefikOidc struct {
 	enablePKCE                 bool
 	forceHTTPS                 bool
 	suppressDiagnosticLogs     bool
+	trustForwardedURI          bool
 }

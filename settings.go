@@ -125,6 +125,13 @@ type Config struct {
 	// ClientAssertionAlg is the JWS signing algorithm. Defaults to RS256.
 	// Supported: RS256/384/512, PS256/384/512, ES256/384/512.
 	ClientAssertionAlg string `json:"clientAssertionAlg,omitempty"`
+
+	// TrustForwardedURI, when true, makes the middleware prefer the
+	// X-Forwarded-Uri request header (set by an upstream reverse proxy)
+	// over req.URL when capturing the "where was the user going" target
+	// stored for post-login redirect. Used by the oidcgate standalone
+	// daemon. Default false preserves the Traefik plugin behavior exactly.
+	TrustForwardedURI bool `json:"trustForwardedURI,omitempty"`
 }
 
 // loadCACertPool assembles an x509.CertPool from CACertPath and CACertPEM.
