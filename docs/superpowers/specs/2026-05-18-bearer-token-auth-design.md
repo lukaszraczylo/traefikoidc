@@ -43,7 +43,7 @@ Rather than patch a synthetic-session approach that will keep generating bugs as
 | Audience | Mandatory when feature enabled; startup fails if `Audience == ""` |
 | Token type | Access tokens only; ID tokens explicitly rejected |
 | Revocation | JWT-only verification by default; introspection (RFC 7662) opt-in via existing `RequireTokenIntrospection` |
-| Identity claim | Resolved via existing `UserIdentifierClaim` config (must resolve to a non-empty string claim). `sub` is the default and is mandatory per `jwt.go:416` — the bearer path does NOT introduce a fallback chain because the existing JWT verifier rejects empty `sub`. If `UserIdentifierClaim` resolves to a different claim, the identifier becomes that value; `sub` must still be present and non-empty to pass verification. |
+| Identity claim | New `BearerIdentifierClaim` config (string, default `"sub"`). Bearer path reads this claim exclusively; does NOT use `UserIdentifierClaim` (which defaults to `"email"` and drives the cookie path). Resolved value must be a non-empty string. `sub` is mandatory per `jwt.go:416` regardless, so even with a different `BearerIdentifierClaim` the token must still carry a valid `sub`. Decoupling avoids the M2M-vs-human-user identity-claim conflict and the email-spoofing footgun. |
 | Identifier sanitisation | Reject value containing any `unicode.IsControl` char, any Unicode bidi-override (U+202A–U+202E, U+2066–U+2069), leading/trailing whitespace, commas, semicolons, equals signs. Max length 256 bytes. |
 | Token classifier | **Reuse existing `detectTokenType(jwt, token)` at `token_manager.go:187-303`** which already handles `nonce`, `typ: at+jwt`, `token_use`, `scope`, and aud-vs-clientID priority. Bearer path rejects any token where `detectTokenType == true` (ID token). Do not invent a parallel classifier. |
 | Algorithm pinning | Hard-pin `alg ∈ {RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512}`, enforced **before** JWKS lookup on the bearer path. Prevents wasted JWKS fetches for `alg=none`/HS attacker probes. |
@@ -137,7 +137,7 @@ Read-only adapter over existing `SessionData` getters: `GetUserIdentifier`, `Get
 7. **Multi-audience hardening**: if `claims["aud"]` is a `[]interface{}` with length > 1, require `claims["azp"]` to be a non-empty string equal to `t.clientID`; reject otherwise.
 8. **`iat` upper-age bound**: reject when `time.Now().Unix() - int64(claims["iat"].(float64)) > MaxTokenAgeSeconds` (default 86400).
 9. **Optional introspection**: if `requireTokenIntrospection` is set, call `introspectToken`; reject if `active == false` (401); surface 503 on transport failure. Bearer-path introspection cache TTL is capped at 60s (not 5min) to keep the "real-time revocation" promise close to true.
-10. **Identifier resolution**: if `t.userIdentifierClaim` is configured, read that claim; otherwise read `sub`. The bearer path does NOT fall back to `client_id`/`azp` because `jwt.Verify` already enforces non-empty `sub` (`jwt.go:416-419`). Empty/missing identifier → 401.
+10. **Identifier resolution**: read `t.bearerIdentifierClaim` (defaults to `"sub"`); do NOT use `t.userIdentifierClaim` (cookie path's setting, default `email`). The bearer path does NOT fall back to other claims because `jwt.Verify` already enforces non-empty `sub` (`jwt.go:416-419`). Empty/missing identifier → 401.
 11. **Identifier sanitisation**: trim, then reject if length > 256 OR contains any of: `unicode.IsControl`, bidi-override (U+202A–U+202E, U+2066–U+2069), `,`, `;`, `=`.
 12. Return `&principal{ Source: sourceBearer, … }`.
 
@@ -200,6 +200,7 @@ A targeted regression test exercises: bearer token verified once → admin calls
 
 ```go
 EnableBearerAuth              bool   `json:"enableBearerAuth,omitempty"`
+BearerIdentifierClaim         string `json:"bearerIdentifierClaim,omitempty"`
 StripAuthorizationHeader      bool   `json:"stripAuthorizationHeader,omitempty"`
 BearerEmitWWWAuthenticate     bool   `json:"bearerEmitWWWAuthenticate,omitempty"`
 BearerOverridesCookie         bool   `json:"bearerOverridesCookie,omitempty"`
@@ -212,6 +213,7 @@ BearerFailurePenaltySeconds   int    `json:"bearerFailurePenaltySeconds,omitempt
 
 Defaults (applied in `CreateConfig` for the bearer-related fields; values >0 only honoured when `EnableBearerAuth=true`):
 - `EnableBearerAuth`: `false`.
+- `BearerIdentifierClaim`: `"sub"`.
 - `StripAuthorizationHeader`: `true`.
 - `BearerEmitWWWAuthenticate`: `true` (RFC 6750 hint enabled by default; flip to false if recon-exposure is a concern).
 - `BearerOverridesCookie`: `false` (cookie wins when both present; flip to `true` for the legacy/industry-default behaviour).
@@ -225,7 +227,7 @@ Defaults (applied in `CreateConfig` for the bearer-related fields; values >0 onl
 
 - `EnableBearerAuth && Audience == ""` → fatal error.
 - `EnableBearerAuth && !StrictAudienceValidation` → warning log (recommended hardening).
-- `EnableBearerAuth && UserIdentifierClaim == "email"` → fatal error (the bearer path is M2M and an `email` identifier without `email_verified` enforcement is a spoofing vector; M2M tokens should identify by `sub` or `client_id`-style claims).
+- `EnableBearerAuth && BearerIdentifierClaim == "email"` → fatal error (the bearer path is M2M and an `email` identifier without `email_verified` enforcement is a spoofing vector; default `BearerIdentifierClaim=sub` avoids this; explicit override to `email` is rejected).
 - `EnableBearerAuth && MaxTokenAgeSeconds <= 0` → reset to default 86400 with info log.
 - `EnableBearerAuth && BearerFailureThreshold <= 0` → reset to default 20 with info log.
 

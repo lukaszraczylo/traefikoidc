@@ -63,23 +63,23 @@ type Config struct {
 	// IdPs do not expose RT TTL on the wire, so this is intentionally a
 	// conservative heuristic; tune to match your provider configuration.
 	// Default 21600 (6h). Set to 0 to disable the check.
-	MaxRefreshTokenAgeSeconds int                              `json:"maxRefreshTokenAgeSeconds"`
-	SessionMaxAge             int                              `json:"sessionMaxAge"`
-	RateLimit                 int                              `json:"rateLimit"`
-	OverrideScopes            bool                             `json:"overrideScopes"`
-	DisableReplayDetection    bool                             `json:"disableReplayDetection,omitempty"`
-	RequireTokenIntrospection bool                             `json:"requireTokenIntrospection,omitempty"`
-	AllowOpaqueTokens         bool                             `json:"allowOpaqueTokens,omitempty"`
-	StrictAudienceValidation  bool                             `json:"strictAudienceValidation,omitempty"`
-	EnablePKCE                bool                             `json:"enablePKCE"`
-	ForceHTTPS                bool                             `json:"forceHTTPS"`
-	AllowPrivateIPAddresses   bool                             `json:"allowPrivateIPAddresses,omitempty"`
-	MinimalHeaders            bool                             `json:"minimalHeaders,omitempty"`
-	StripAuthCookies          bool                             `json:"stripAuthCookies,omitempty"`
-	EnableBackchannelLogout   bool                             `json:"enableBackchannelLogout,omitempty"`
-	EnableFrontchannelLogout  bool                             `json:"enableFrontchannelLogout,omitempty"`
-	BackchannelLogoutURL      string                           `json:"backchannelLogoutURL,omitempty"`
-	FrontchannelLogoutURL     string                           `json:"frontchannelLogoutURL,omitempty"`
+	MaxRefreshTokenAgeSeconds int    `json:"maxRefreshTokenAgeSeconds"`
+	SessionMaxAge             int    `json:"sessionMaxAge"`
+	RateLimit                 int    `json:"rateLimit"`
+	OverrideScopes            bool   `json:"overrideScopes"`
+	DisableReplayDetection    bool   `json:"disableReplayDetection,omitempty"`
+	RequireTokenIntrospection bool   `json:"requireTokenIntrospection,omitempty"`
+	AllowOpaqueTokens         bool   `json:"allowOpaqueTokens,omitempty"`
+	StrictAudienceValidation  bool   `json:"strictAudienceValidation,omitempty"`
+	EnablePKCE                bool   `json:"enablePKCE"`
+	ForceHTTPS                bool   `json:"forceHTTPS"`
+	AllowPrivateIPAddresses   bool   `json:"allowPrivateIPAddresses,omitempty"`
+	MinimalHeaders            bool   `json:"minimalHeaders,omitempty"`
+	StripAuthCookies          bool   `json:"stripAuthCookies,omitempty"`
+	EnableBackchannelLogout   bool   `json:"enableBackchannelLogout,omitempty"`
+	EnableFrontchannelLogout  bool   `json:"enableFrontchannelLogout,omitempty"`
+	BackchannelLogoutURL      string `json:"backchannelLogoutURL,omitempty"`
+	FrontchannelLogoutURL     string `json:"frontchannelLogoutURL,omitempty"`
 	// CACertPath is an optional filesystem path to a PEM-encoded CA bundle used
 	// to verify the OIDC provider's TLS certificate. Use this when the provider
 	// is signed by an internal/private CA that is not in the system trust store.
@@ -132,6 +132,52 @@ type Config struct {
 	// stored for post-login redirect. Used by the oidcgate standalone
 	// daemon. Default false preserves the Traefik plugin behavior exactly.
 	TrustForwardedURI bool `json:"trustForwardedURI,omitempty"`
+
+	// --- Bearer-token auth (opt-in M2M path) ---
+
+	// EnableBearerAuth turns on the Authorization: Bearer <jwt> auth path.
+	// Default false. When true, Audience MUST be set or startup fails. The
+	// bearer path is M2M-only: it accepts validated access-token JWTs, rejects
+	// ID tokens, and forwards principal headers downstream without creating a
+	// cookie session. See docs/BEARER_AUTH.md for the threat model.
+	EnableBearerAuth bool `json:"enableBearerAuth,omitempty"`
+	// BearerIdentifierClaim names the JWT claim used as the principal identifier
+	// on the bearer-token auth path. Default "sub". Decoupled from
+	// UserIdentifierClaim (which defaults to "email" and drives the cookie path)
+	// so M2M bearer flow never accidentally relies on an unverified email.
+	BearerIdentifierClaim string `json:"bearerIdentifierClaim,omitempty"`
+	// StripAuthorizationHeader removes the Authorization header from the
+	// forwarded request after successful bearer auth, so downstream services
+	// never see the raw token. Default true. Disable only when a downstream
+	// explicitly needs to re-validate the bearer.
+	StripAuthorizationHeader bool `json:"stripAuthorizationHeader,omitempty"`
+	// BearerEmitWWWAuthenticate controls whether 401 responses on the bearer
+	// path include a WWW-Authenticate: Bearer error="invalid_token" hint per
+	// RFC 6750 §3. Default true. Disable to reduce reconnaissance signal.
+	BearerEmitWWWAuthenticate bool `json:"bearerEmitWWWAuthenticate,omitempty"`
+	// BearerOverridesCookie controls precedence when both Authorization:
+	// Bearer and a session cookie are present. Default false: cookie wins
+	// (safer against browser/extension/proxy bearer injection). Set true for
+	// the bearer-wins convention used by AWS/GCP/Kubernetes API gateways.
+	BearerOverridesCookie bool `json:"bearerOverridesCookie,omitempty"`
+	// MaxTokenAgeSeconds caps how old (iat-based) a bearer token may be.
+	// Default 86400 (24h). Bounds clock-manipulation tokens with implausibly
+	// distant iat values.
+	MaxTokenAgeSeconds int64 `json:"maxTokenAgeSeconds,omitempty"`
+	// MaxIdentifierLength bounds the post-sanitisation length of the bearer
+	// principal identifier (the value injected as X-Forwarded-User). Default
+	// 256.
+	MaxIdentifierLength int `json:"maxIdentifierLength,omitempty"`
+	// BearerFailureThreshold is the number of consecutive 401s from one
+	// source IP within BearerFailureWindowSeconds that trips the throttle.
+	// Default 20.
+	BearerFailureThreshold int `json:"bearerFailureThreshold,omitempty"`
+	// BearerFailureWindowSeconds is the rolling window (seconds) over which
+	// 401s are counted for throttling. Default 60.
+	BearerFailureWindowSeconds int `json:"bearerFailureWindowSeconds,omitempty"`
+	// BearerFailurePenaltySeconds is how long an IP is parked in the 429
+	// penalty box after BearerFailureThreshold is exceeded. Default 60.
+	BearerFailurePenaltySeconds int `json:"bearerFailurePenaltySeconds,omitempty"`
 }
 
 // loadCACertPool assembles an x509.CertPool from CACertPath and CACertPEM.
@@ -298,6 +344,19 @@ func CreateConfig() *Config {
 		MaxRefreshTokenAgeSeconds: 21600, // 6h - conservative heuristic, see field doc
 		SecurityHeaders:           createDefaultSecurityConfig(),
 		Redis:                     nil, // Redis is disabled by default, configure via Traefik or env vars
+
+		// Bearer-auth defaults. EnableBearerAuth=false leaves the feature
+		// dormant; the rest are values that apply only when bearer is enabled.
+		EnableBearerAuth:            false,
+		BearerIdentifierClaim:       "sub",
+		StripAuthorizationHeader:    true,
+		BearerEmitWWWAuthenticate:   true,
+		BearerOverridesCookie:       false,
+		MaxTokenAgeSeconds:          86400,
+		MaxIdentifierLength:         256,
+		BearerFailureThreshold:      20,
+		BearerFailureWindowSeconds:  60,
+		BearerFailurePenaltySeconds: 60,
 	}
 
 	return c
