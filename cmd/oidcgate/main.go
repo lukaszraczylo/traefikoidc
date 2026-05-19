@@ -51,4 +51,3 @@ func main() {
 	}
 	log.Println("oidcgate: stopped")
 }
-
