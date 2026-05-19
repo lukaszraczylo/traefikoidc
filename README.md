@@ -63,6 +63,17 @@ cosign verify-blob \
   traefikoidc_v<version>_checksums.txt
 ```
 
+## Standalone binary (oidcgate)
+
+If you don't run Traefik, `oidcgate` exposes the same middleware as a
+forward-auth daemon for nginx, Caddy, Traefik ForwardAuth, HAProxy, and
+Envoy. See [`docs/OIDCGATE.md`](docs/OIDCGATE.md).
+
+```bash
+go build -o oidcgate ./cmd/oidcgate
+./oidcgate --config examples/oidcgate.yaml
+```
+
 ## Quickstart
 
 ```yaml
