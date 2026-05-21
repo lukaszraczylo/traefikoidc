@@ -89,6 +89,7 @@ var defaultExcludedURLs = map[string]struct{}{
 //   - The configured TraefikOidc handler ready to process requests.
 //   - An error if essential configuration is missing or invalid (e.g., short encryption key).
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+	sendTelemetry(pluginVersion)
 	return NewWithContext(ctx, config, next, name)
 }
 
