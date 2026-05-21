@@ -411,6 +411,19 @@ namespaced claims, Cognito regions, GitLab self-hosted) live in
 
 Set `logLevel: debug` to surface detail.
 
+## Telemetry
+
+On first plugin instantiation this middleware sends a single anonymous
+adoption ping — project name, version, timestamp; no identifiers, no
+request data, no token contents. Fire-and-forget with a 2-second timeout;
+cannot block plugin load or panic.
+
+Local source: [`telemetry.go`](./telemetry.go). Disclosure mirrors
+**[oss-telemetry — Disabling telemetry](https://github.com/lukaszraczylo/oss-telemetry#disabling-telemetry)**.
+
+Quick opt-out: set any of `DO_NOT_TRACK=1`, `OSS_TELEMETRY_DISABLED=1`,
+or `TRAEFIKOIDC_DISABLE_TELEMETRY=1`.
+
 ## License
 
 See [LICENSE](LICENSE).
