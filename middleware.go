@@ -311,6 +311,19 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	host := utils.DetermineHost(req)
 	redirectURL := buildFullURL(scheme, host, t.redirURLPath)
 
+	// Capture per-request state: one RLock on sd.sessionMutex covers all the
+	// getter values the handler chain needs (instead of 5-7 separate
+	// session.GetX() calls each acquiring their own RLock under Yaegi).
+	// metadataSnap is also stored once so downstream handlers don't repeat
+	// the atomic.Value.Load.
+	rs := (&requestState{
+		scheme:      scheme,
+		host:        host,
+		redirectURL: redirectURL,
+		next:        t.next,
+		metadata:    t.metadataSnap(),
+	}).captureSession(session)
+
 	// Check if the current request is the OIDC callback
 	t.logger.Debugf("Checking callback URL match: request_path=%q, configured_callback=%q", req.URL.Path, t.redirURLPath)
 	if req.URL.Path == t.redirURLPath {
@@ -328,7 +341,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	userIdentifier := session.GetUserIdentifier()
+	userIdentifier := rs.userIdentifier
 	// User authorization check
 	if authenticated && userIdentifier != "" {
 		if !t.isAllowedUser(userIdentifier) {
@@ -345,11 +358,11 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		// methods (validateAzureTokens/validateStandardTokens) before reaching this point.
 		// Redundant validation here was causing issues with Azure AD tokens that have
 		// JWT format but unverifiable signatures. See issue #89.
-		t.processAuthorizedRequest(rw, req, session, redirectURL)
+		t.processAuthorizedRequestRS(rw, req, rs)
 		return
 	}
 
-	refreshTokenPresent := session.GetRefreshToken() != ""
+	refreshTokenPresent := rs.refreshToken != ""
 
 	// Decide whether to answer with 401 instead of a redirect. AJAX requests
 	// cannot follow a 302 into an IdP, and sub-resource loads (script/image/
@@ -456,6 +469,95 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 //   - req: The HTTP request to process.
 //   - session: The user's session data containing tokens and claims.
 //   - redirectURL: The callback URL for re-authentication if needed.
+// processAuthorizedRequestRS is the requestState-aware variant of
+// processAuthorizedRequest. It reads SessionData fields from the captured
+// snapshot in rs instead of calling session.GetX() (each of which acquires
+// sd.sessionMutex.RLock — under Yaegi every RLock pays ~1-5ms of interpreter
+// dispatch). Only session-mutating operations (Save, ResetRedirectCount,
+// Clear, IsDirty) still go through the session pointer because those write
+// state and have no snapshot.
+func (t *TraefikOidc) processAuthorizedRequestRS(rw http.ResponseWriter, req *http.Request, rs *requestState) {
+	session := rs.session
+	redirectURL := rs.redirectURL
+	userIdentifier := rs.userIdentifier
+	if userIdentifier == "" {
+		t.logger.Info("No user identifier found in session during final processing, initiating re-auth")
+		session.ResetRedirectCount()
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+		return
+	}
+
+	// Check if session has been invalidated via backchannel or front-channel logout
+	idToken := rs.idToken
+	if t.enableBackchannelLogout || t.enableFrontchannelLogout {
+		if idToken != "" {
+			sid, sub, createdAt := t.extractSessionInfo(idToken)
+			if t.isSessionInvalidated(sid, sub, createdAt) {
+				t.logger.Infof("Session for user %s has been invalidated via IdP-initiated logout", userIdentifier)
+				if err := session.Clear(req, rw); err != nil {
+					t.logger.Errorf("Error clearing invalidated session: %v", err)
+				}
+				session.ResetRedirectCount()
+				t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+				return
+			}
+		}
+	}
+
+	// Resolve ID-token claims at most once per request. SessionData caches
+	// the parsed claims keyed on the raw ID token.
+	var (
+		idClaims    map[string]interface{}
+		idClaimsErr error
+	)
+	if idToken != "" {
+		idClaims, idClaimsErr = session.GetIDTokenClaims(t.extractClaimsFunc)
+	}
+
+	var (
+		groupClaims    map[string]interface{}
+		groupClaimsErr error
+	)
+	if idToken != "" {
+		groupClaims, groupClaimsErr = idClaims, idClaimsErr
+	} else if rs.accessToken != "" {
+		groupClaims, groupClaimsErr = t.extractClaimsFunc(rs.accessToken)
+	} else if len(t.allowedRolesAndGroups) > 0 {
+		t.logger.Error("No token available but roles/groups checks are required")
+		session.ResetRedirectCount()
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+		return
+	}
+
+	if groupClaimsErr != nil && len(t.allowedRolesAndGroups) > 0 {
+		t.logger.Errorf("Failed to extract claims for roles/groups check: %v", groupClaimsErr)
+		session.ResetRedirectCount()
+		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+		return
+	}
+
+	// Persist any dirty session state BEFORE forwardAuthorized writes the
+	// response.
+	if session.IsDirty() {
+		if err := session.Save(req, rw); err != nil {
+			t.logger.Errorf("Failed to save session after processing headers: %v", err)
+		}
+	} else {
+		t.logger.Debug("Session not dirty, skipping save in processAuthorizedRequest")
+	}
+
+	p := &principal{
+		Source:       sourceSession,
+		Identifier:   userIdentifier,
+		AccessToken:  rs.accessToken,
+		IDToken:      idToken,
+		RefreshToken: rs.refreshToken,
+		Claims:       groupClaims,
+	}
+
+	t.forwardAuthorized(rw, req, p)
+}
+
 func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 	userIdentifier := session.GetUserIdentifier()
 	if userIdentifier == "" {
