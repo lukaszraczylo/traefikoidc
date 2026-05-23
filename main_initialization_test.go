@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -484,9 +485,8 @@ func TestFirstRequestHandling(t *testing.T) {
 		defer server.Close()
 
 		oidc := &TraefikOidc{
-			providerURL:          server.URL,
-			firstRequestReceived: false,
-			firstRequestMutex:    sync.Mutex{},
+			providerURL:         server.URL,
+			firstRequestStarted: 0,
 			httpClient: &http.Client{
 				Timeout: 5 * time.Second,
 			},
@@ -508,19 +508,13 @@ func TestFirstRequestHandling(t *testing.T) {
 			},
 		}
 
-		// Simulate first request processing
-		oidc.firstRequestMutex.Lock()
-		if !oidc.firstRequestReceived {
-			oidc.firstRequestReceived = true
-			oidc.firstRequestMutex.Unlock()
-
+		// Simulate first request processing — single-firing via CAS.
+		if atomic.CompareAndSwapInt32(&oidc.firstRequestStarted, 0, 1) {
 			// This would normally be called asynchronously
 			go func() {
 				oidc.initializeMetadata(server.URL)
 				// initComplete is closed internally by initializeMetadata
 			}()
-		} else {
-			oidc.firstRequestMutex.Unlock()
 		}
 
 		// Wait for initialization
@@ -556,9 +550,8 @@ func TestFirstRequestHandling(t *testing.T) {
 		defer server.Close()
 
 		oidc := &TraefikOidc{
-			providerURL:          server.URL,
-			firstRequestReceived: false,
-			firstRequestMutex:    sync.Mutex{},
+			providerURL:         server.URL,
+			firstRequestStarted: 0,
 			httpClient: &http.Client{
 				Timeout: 5 * time.Second,
 			},
@@ -580,31 +573,22 @@ func TestFirstRequestHandling(t *testing.T) {
 			},
 		}
 
-		// Simulate multiple concurrent "first" requests
+		// Simulate multiple concurrent "first" requests — only one CAS winner
+		// fires the bootstrap path.
 		const numRequests = 10
 		var wg sync.WaitGroup
 		wg.Add(numRequests)
 
-		initStarted := 0
-		var initMu sync.Mutex
+		var initStarted int32
 
 		for i := 0; i < numRequests; i++ {
 			go func() {
 				defer wg.Done()
 
-				oidc.firstRequestMutex.Lock()
-				if !oidc.firstRequestReceived {
-					oidc.firstRequestReceived = true
-					oidc.firstRequestMutex.Unlock()
-
-					initMu.Lock()
-					initStarted++
-					initMu.Unlock()
-
+				if atomic.CompareAndSwapInt32(&oidc.firstRequestStarted, 0, 1) {
+					atomic.AddInt32(&initStarted, 1)
 					// Only one should actually start initialization
 					oidc.initializeMetadata(server.URL)
-				} else {
-					oidc.firstRequestMutex.Unlock()
 				}
 			}()
 		}
@@ -612,8 +596,8 @@ func TestFirstRequestHandling(t *testing.T) {
 		wg.Wait()
 
 		// Verify only one initialization was started
-		if initStarted != 1 {
-			t.Errorf("expected exactly 1 initialization, got %d", initStarted)
+		if atomic.LoadInt32(&initStarted) != 1 {
+			t.Errorf("expected exactly 1 initialization, got %d", atomic.LoadInt32(&initStarted))
 		}
 
 		// The metadata endpoint might be called once or not at all depending on timing

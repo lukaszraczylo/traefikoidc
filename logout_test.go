@@ -415,8 +415,8 @@ func TestMiddlewareBackchannelLogoutRouting(t *testing.T) {
 		clientID:                 "test-client",
 		issuerURL:                "https://provider.example.com",
 		initComplete:             make(chan struct{}),
-		firstRequestReceived:     true,
-		metadataRefreshStarted:   true,
+		firstRequestStarted: 1,
+		metadataRefreshStartedAtomic: 1,
 		logoutURLPath:            "/logout",
 	}
 	close(oidc.initComplete)
@@ -457,8 +457,8 @@ func TestMiddlewareFrontchannelLogoutRouting(t *testing.T) {
 		clientID:                 "test-client",
 		issuerURL:                "https://provider.example.com",
 		initComplete:             make(chan struct{}),
-		firstRequestReceived:     true,
-		metadataRefreshStarted:   true,
+		firstRequestStarted: 1,
+		metadataRefreshStartedAtomic: 1,
 		logoutURLPath:            "/logout",
 	}
 	close(oidc.initComplete)

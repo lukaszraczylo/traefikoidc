@@ -365,10 +365,12 @@ func TestMemoryLeakPrevention(t *testing.T) {
 		}
 	}
 
-	// Verify cleanup is working
-	coordinator.attemptsMutex.RLock()
-	sessionCount := len(coordinator.sessionRefreshAttempts)
-	coordinator.attemptsMutex.RUnlock()
+	// Verify cleanup is working. sync.Map has no Len(); count via Range.
+	sessionCount := 0
+	coordinator.sessionRefreshAttempts.Range(func(_, _ interface{}) bool {
+		sessionCount++
+		return true
+	})
 
 	// Should have cleaned up old sessions (only recent ones remain)
 	if sessionCount > numWorkers*2 {
@@ -650,24 +652,23 @@ func TestCleanupRoutine(t *testing.T) {
 		coordinator.recordRefreshAttempt(fmt.Sprintf("session_%d", i))
 	}
 
-	// Verify sessions exist
-	coordinator.attemptsMutex.RLock()
-	initialCount := len(coordinator.sessionRefreshAttempts)
-	coordinator.attemptsMutex.RUnlock()
+	countSessions := func() int {
+		n := 0
+		coordinator.sessionRefreshAttempts.Range(func(_, _ interface{}) bool {
+			n++
+			return true
+		})
+		return n
+	}
 
-	if initialCount != 5 {
+	if initialCount := countSessions(); initialCount != 5 {
 		t.Errorf("Expected 5 sessions, got %d", initialCount)
 	}
 
 	// Wait for cleanup to run (2x window + cleanup interval)
 	time.Sleep(2*config.RefreshAttemptWindow + 2*config.CleanupInterval)
 
-	// Verify sessions were cleaned up
-	coordinator.attemptsMutex.RLock()
-	finalCount := len(coordinator.sessionRefreshAttempts)
-	coordinator.attemptsMutex.RUnlock()
-
-	if finalCount != 0 {
+	if finalCount := countSessions(); finalCount != 0 {
 		t.Errorf("Expected 0 sessions after cleanup, got %d", finalCount)
 	}
 }

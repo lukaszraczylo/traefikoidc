@@ -478,11 +478,10 @@ func TestRefreshCoordinatorIntegration(t *testing.T) {
 
 	// Test 3: Rate limiting
 	t.Run("RateLimiting", func(t *testing.T) {
-		// Reset circuit breaker to closed state for this test
-		coordinator.circuitBreaker.mutex.Lock()
+		// Reset circuit breaker to closed state for this test. All fields are
+		// atomic so we don't need any mutex.
 		atomic.StoreInt32(&coordinator.circuitBreaker.state, 0) // closed
 		atomic.StoreInt32(&coordinator.circuitBreaker.failures, 0)
-		coordinator.circuitBreaker.mutex.Unlock()
 
 		// Temporarily increase circuit breaker threshold to not interfere
 		oldMaxFailures := coordinator.circuitBreaker.config.MaxFailures
@@ -525,9 +524,11 @@ func TestRefreshCoordinatorIntegration(t *testing.T) {
 		time.Sleep(config.CleanupInterval * 3)
 
 		// Old sessions should be cleaned up
-		coordinator.attemptsMutex.RLock()
-		count := len(coordinator.sessionRefreshAttempts)
-		coordinator.attemptsMutex.RUnlock()
+		count := 0
+		coordinator.sessionRefreshAttempts.Range(func(_, _ interface{}) bool {
+			count++
+			return true
+		})
 
 		// Should have fewer sessions after cleanup
 		if count > 10 {

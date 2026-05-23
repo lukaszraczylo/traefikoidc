@@ -21,16 +21,23 @@ type RefreshCoordinator struct {
 	// refreshMutex.Lock() was held for tens of milliseconds per request due
 	// to interpreter overhead on the work inside the critical section,
 	// causing dozens of goroutines to stack up on it and pin one CPU core.
-	inFlightRefreshes      sync.Map
+	inFlightRefreshes sync.Map
+	// sessionRefreshAttempts maps sessionID -> *refreshAttemptTracker.
+	// sync.Map + atomic tracker fields means isInCooldown/recordRefreshAttempt/
+	// recordRefreshSuccess/recordRefreshFailure are lock-free. Previously
+	// these used attemptsMutex sync.RWMutex; under Yaegi every Lock() acquisition
+	// adds 10-50ms of dispatch overhead, and they were called twice per leader
+	// request (once for recordRefreshAttempt, once for isInCooldown). That
+	// serializing pattern caused the v1.0.15 death spiral after v1.0.14
+	// removed the refreshMutex (same architectural shape, different mutex).
+	sessionRefreshAttempts sync.Map
 	cleanupTimers          map[string]*time.Timer
-	sessionRefreshAttempts map[string]*refreshAttemptTracker
 	circuitBreaker         *RefreshCircuitBreaker
 	metrics                *RefreshMetrics
 	logger                 *Logger
 	stopChan               chan struct{}
 	config                 RefreshCoordinatorConfig
 	wg                     sync.WaitGroup
-	attemptsMutex          sync.RWMutex
 	cleanupTimerMu         sync.Mutex
 }
 
@@ -89,14 +96,22 @@ type refreshResult struct {
 	fromCache     bool
 }
 
-// refreshAttemptTracker tracks refresh attempts for a session
+// refreshAttemptTracker tracks refresh attempts for a session. All fields are
+// accessed via sync/atomic so isInCooldown/recordRefreshAttempt/Success/Failure
+// can run without holding any per-coordinator lock. Times are UnixNano so they
+// fit in an int64 and can be read with a single atomic.LoadInt64.
+//
+// cooldownEndNano == 0 means "not in cooldown". This sentinel replaces the
+// inCooldown bool that the previous implementation kept under attemptsMutex —
+// under Yaegi any per-request global mutex turns into a serializing bottleneck
+// (the v1.0.14 refreshMutex -> sync.Map fix removed only one such bottleneck;
+// attemptsMutex was the next one in the queue).
 type refreshAttemptTracker struct {
-	lastAttemptTime     time.Time
-	windowStartTime     time.Time
-	cooldownEndTime     time.Time
-	attempts            int32
-	consecutiveFailures int32
-	inCooldown          bool
+	lastAttemptNano     int64 // atomic, UnixNano of last attempt
+	windowStartNano     int64 // atomic, UnixNano of attempt-window start
+	cooldownEndNano     int64 // atomic, UnixNano; 0 = not in cooldown
+	attempts            int32 // atomic
+	consecutiveFailures int32 // atomic
 }
 
 // RefreshMetrics tracks coordinator performance metrics
@@ -111,14 +126,18 @@ type RefreshMetrics struct {
 	currentInFlightRefreshes int32
 }
 
-// RefreshCircuitBreaker implements a circuit breaker specifically for refresh operations
+// RefreshCircuitBreaker implements a circuit breaker specifically for refresh
+// operations. All mutable fields are atomic so AllowRequest/RecordSuccess/
+// RecordFailure run without any mutex. The previous sync.RWMutex.RLock() was
+// taken on every CoordinateRefresh — under Yaegi this added 10-50ms of
+// interpreter dispatch per call, which compounded with attemptsMutex to keep
+// the pod's single CPU core saturated.
 type RefreshCircuitBreaker struct {
-	lastFailureTime time.Time
-	lastSuccessTime time.Time
+	lastFailureNano int64 // atomic, UnixNano of most recent failure
+	lastSuccessNano int64 // atomic, UnixNano of most recent success
 	config          RefreshCircuitBreakerConfig
-	mutex           sync.RWMutex
-	state           int32
-	failures        int32
+	state           int32 // atomic: 0=closed, 1=open, 2=half-open
+	failures        int32 // atomic
 }
 
 // RefreshCircuitBreakerConfig configures the refresh circuit breaker
@@ -135,13 +154,13 @@ func NewRefreshCoordinator(config RefreshCoordinatorConfig, logger *Logger) *Ref
 	}
 
 	rc := &RefreshCoordinator{
-		// inFlightRefreshes is a sync.Map; zero value is ready to use.
-		sessionRefreshAttempts: make(map[string]*refreshAttemptTracker),
-		config:                 config,
-		metrics:                &RefreshMetrics{},
-		logger:                 logger,
-		stopChan:               make(chan struct{}),
-		cleanupTimers:          make(map[string]*time.Timer),
+		// inFlightRefreshes and sessionRefreshAttempts are both sync.Map;
+		// their zero values are ready to use.
+		config:        config,
+		metrics:       &RefreshMetrics{},
+		logger:        logger,
+		stopChan:      make(chan struct{}),
+		cleanupTimers: make(map[string]*time.Timer),
 		circuitBreaker: &RefreshCircuitBreaker{
 			config: RefreshCircuitBreakerConfig{
 				MaxFailures:      3,
@@ -415,86 +434,99 @@ func (rc *RefreshCoordinator) performCleanup(tokenHash string) {
 	}
 }
 
-// isInCooldown checks if a session is in cooldown after recording an attempt
-func (rc *RefreshCoordinator) isInCooldown(sessionID string) bool {
-	rc.attemptsMutex.Lock()
-	defer rc.attemptsMutex.Unlock()
+// getOrCreateTracker fetches the tracker for sessionID or atomically creates a
+// fresh one. The sync.Map.LoadOrStore semantics make this lock-free even under
+// concurrent first-touch races: at most one tracker per sessionID survives.
+//
+// trackerFromMapValue centralizes the type assertion so the lint-mandated
+// two-value form lives in one place; the stored type is always
+// *refreshAttemptTracker by construction.
+func trackerFromMapValue(v interface{}) *refreshAttemptTracker {
+	t, _ := v.(*refreshAttemptTracker)
+	return t
+}
 
-	tracker, exists := rc.sessionRefreshAttempts[sessionID]
-	if !exists {
+func (rc *RefreshCoordinator) getOrCreateTracker(sessionID string) *refreshAttemptTracker {
+	if v, ok := rc.sessionRefreshAttempts.Load(sessionID); ok {
+		return trackerFromMapValue(v)
+	}
+	fresh := &refreshAttemptTracker{
+		windowStartNano: time.Now().UnixNano(),
+	}
+	actual, _ := rc.sessionRefreshAttempts.LoadOrStore(sessionID, fresh)
+	return trackerFromMapValue(actual)
+}
+
+// isInCooldown checks if a session is in cooldown. Lock-free read with a
+// best-effort cooldown-reset CAS on the cooldownEndNano sentinel. If the
+// reset races with another goroutine we accept the loser's view (the winner's
+// reset still happens). The attempt-window expiry and limit-exceeded paths
+// are write-mostly but use atomic.StoreInt64/AddInt32 — never a held lock.
+func (rc *RefreshCoordinator) isInCooldown(sessionID string) bool {
+	v, ok := rc.sessionRefreshAttempts.Load(sessionID)
+	if !ok {
 		return false // No tracker means first attempt, not in cooldown
 	}
-
+	tracker := trackerFromMapValue(v)
 	now := time.Now()
+	nowNano := now.UnixNano()
 
-	// Check if already in cooldown
-	if tracker.inCooldown {
-		if now.After(tracker.cooldownEndTime) {
-			// Cooldown expired, reset tracker
-			tracker.inCooldown = false
-			tracker.attempts = 1 // Already recorded one attempt
-			tracker.consecutiveFailures = 0
-			tracker.windowStartTime = now
-			return false
+	// Already in cooldown?
+	if cooldownEnd := atomic.LoadInt64(&tracker.cooldownEndNano); cooldownEnd != 0 {
+		if nowNano <= cooldownEnd {
+			return true // still in cooldown
 		}
-		return true // Still in cooldown
-	}
-
-	// Check if window expired
-	if now.Sub(tracker.windowStartTime) > rc.config.RefreshAttemptWindow {
-		// Reset window
-		tracker.attempts = 1 // Already recorded one attempt
-		tracker.windowStartTime = now
+		// Cooldown expired. Best-effort reset (a concurrent caller may also
+		// reset; the result is equivalent — fresh window + one recorded
+		// attempt — so the CAS race is benign).
+		if atomic.CompareAndSwapInt64(&tracker.cooldownEndNano, cooldownEnd, 0) {
+			atomic.StoreInt32(&tracker.attempts, 1)
+			atomic.StoreInt32(&tracker.consecutiveFailures, 0)
+			atomic.StoreInt64(&tracker.windowStartNano, nowNano)
+		}
 		return false
 	}
 
-	// Check if just exceeded attempt limit
-	if int(tracker.attempts) >= rc.config.MaxRefreshAttempts {
-		// Enter cooldown now
-		tracker.inCooldown = true
-		tracker.cooldownEndTime = now.Add(rc.config.RefreshCooldownPeriod)
-		rc.logger.Infof("Session %s entering refresh cooldown after %d attempts",
-			sessionID, tracker.attempts)
+	// Window expired?
+	if windowStart := atomic.LoadInt64(&tracker.windowStartNano); time.Duration(nowNano-windowStart) > rc.config.RefreshAttemptWindow {
+		atomic.StoreInt32(&tracker.attempts, 1)
+		atomic.StoreInt64(&tracker.windowStartNano, nowNano)
+		return false
+	}
+
+	// Just exceeded attempt limit?
+	if int(atomic.LoadInt32(&tracker.attempts)) >= rc.config.MaxRefreshAttempts {
+		end := now.Add(rc.config.RefreshCooldownPeriod).UnixNano()
+		// Only one CAS winner publishes the cooldown end + logs.
+		if atomic.CompareAndSwapInt64(&tracker.cooldownEndNano, 0, end) {
+			rc.logger.Infof("Session %s entering refresh cooldown after %d attempts",
+				sessionID, atomic.LoadInt32(&tracker.attempts))
+		}
 		return true
 	}
 
 	return false
 }
 
-// recordRefreshAttempt records a refresh attempt for rate limiting
+// recordRefreshAttempt records a refresh attempt for rate limiting. Lock-free:
+// LoadOrStore for the tracker, atomic counters/timestamps for fields.
 func (rc *RefreshCoordinator) recordRefreshAttempt(sessionID string) {
-	rc.attemptsMutex.Lock()
-	defer rc.attemptsMutex.Unlock()
-
-	tracker, exists := rc.sessionRefreshAttempts[sessionID]
-	if !exists {
-		tracker = &refreshAttemptTracker{
-			windowStartTime: time.Now(),
-		}
-		rc.sessionRefreshAttempts[sessionID] = tracker
-	}
-
+	tracker := rc.getOrCreateTracker(sessionID)
 	atomic.AddInt32(&tracker.attempts, 1)
-	tracker.lastAttemptTime = time.Now()
+	atomic.StoreInt64(&tracker.lastAttemptNano, time.Now().UnixNano())
 }
 
-// recordRefreshSuccess records a successful refresh
+// recordRefreshSuccess records a successful refresh. Lock-free.
 func (rc *RefreshCoordinator) recordRefreshSuccess(sessionID string) {
-	rc.attemptsMutex.Lock()
-	defer rc.attemptsMutex.Unlock()
-
-	if tracker, exists := rc.sessionRefreshAttempts[sessionID]; exists {
-		tracker.consecutiveFailures = 0
+	if v, ok := rc.sessionRefreshAttempts.Load(sessionID); ok {
+		atomic.StoreInt32(&trackerFromMapValue(v).consecutiveFailures, 0)
 	}
 }
 
-// recordRefreshFailure records a failed refresh
+// recordRefreshFailure records a failed refresh. Lock-free.
 func (rc *RefreshCoordinator) recordRefreshFailure(sessionID string) {
-	rc.attemptsMutex.Lock()
-	defer rc.attemptsMutex.Unlock()
-
-	if tracker, exists := rc.sessionRefreshAttempts[sessionID]; exists {
-		atomic.AddInt32(&tracker.consecutiveFailures, 1)
+	if v, ok := rc.sessionRefreshAttempts.Load(sessionID); ok {
+		atomic.AddInt32(&trackerFromMapValue(v).consecutiveFailures, 1)
 	}
 }
 
@@ -546,20 +578,22 @@ func (rc *RefreshCoordinator) cleanupRoutine() {
 	}
 }
 
-// cleanupStaleEntries removes outdated tracking entries
+// cleanupStaleEntries removes outdated tracking entries. Lock-free iteration
+// via sync.Map.Range; safe to race with concurrent reads/writes.
 func (rc *RefreshCoordinator) cleanupStaleEntries() {
-	now := time.Now()
-
-	rc.attemptsMutex.Lock()
-	defer rc.attemptsMutex.Unlock()
-
-	// Clean up old session trackers
-	for sessionID, tracker := range rc.sessionRefreshAttempts {
-		// Remove trackers that haven't been used recently
-		if now.Sub(tracker.lastAttemptTime) > 2*rc.config.RefreshAttemptWindow {
-			delete(rc.sessionRefreshAttempts, sessionID)
+	cutoff := time.Now().Add(-2 * rc.config.RefreshAttemptWindow).UnixNano()
+	rc.sessionRefreshAttempts.Range(func(key, value interface{}) bool {
+		tracker := trackerFromMapValue(value)
+		if tracker == nil {
+			return true
 		}
-	}
+		if atomic.LoadInt64(&tracker.lastAttemptNano) < cutoff {
+			// Compare-and-delete to avoid evicting a tracker that was just
+			// re-used by a concurrent caller. We compare by pointer identity.
+			rc.sessionRefreshAttempts.CompareAndDelete(key, value)
+		}
+		return true
+	})
 }
 
 // GetMetrics returns current coordinator metrics
@@ -592,63 +626,51 @@ func (rc *RefreshCoordinator) Shutdown() {
 	rc.wg.Wait()
 }
 
-// AllowRequest checks if the circuit breaker allows a request
+// AllowRequest reports whether the circuit breaker allows a request. Lock-free.
 func (cb *RefreshCircuitBreaker) AllowRequest() bool {
-	cb.mutex.RLock()
-	defer cb.mutex.RUnlock()
-
-	state := atomic.LoadInt32(&cb.state)
-
-	switch state {
-	case 0: // Closed
+	switch atomic.LoadInt32(&cb.state) {
+	case 0: // closed
 		return true
-	case 1: // Open
-		if time.Since(cb.lastFailureTime) > cb.config.OpenDuration {
-			// Try to transition to half-open
+	case 1: // open
+		lastFail := atomic.LoadInt64(&cb.lastFailureNano)
+		if time.Duration(time.Now().UnixNano()-lastFail) > cb.config.OpenDuration {
+			// Transition to half-open; first CAS winner gets the probe.
 			if atomic.CompareAndSwapInt32(&cb.state, 1, 2) {
 				return true
 			}
 		}
 		return false
-	case 2: // Half-open
+	case 2: // half-open
 		return true
 	default:
 		return false
 	}
 }
 
-// RecordSuccess records a successful operation
+// RecordSuccess records a successful operation. Lock-free.
 func (cb *RefreshCircuitBreaker) RecordSuccess() {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
-	state := atomic.LoadInt32(&cb.state)
-	if state == 2 { // Half-open
-		// Close the circuit
+	switch atomic.LoadInt32(&cb.state) {
+	case 2: // half-open -> close
 		atomic.StoreInt32(&cb.state, 0)
 		atomic.StoreInt32(&cb.failures, 0)
-	} else if state == 0 { // Closed
-		// Reset failure count on success
+	case 0: // closed
 		atomic.StoreInt32(&cb.failures, 0)
 	}
-	cb.lastSuccessTime = time.Now()
+	atomic.StoreInt64(&cb.lastSuccessNano, time.Now().UnixNano())
 }
 
-// RecordFailure records a failed operation
+// RecordFailure records a failed operation. Lock-free.
 func (cb *RefreshCircuitBreaker) RecordFailure() {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
-
 	failures := atomic.AddInt32(&cb.failures, 1)
-	cb.lastFailureTime = time.Now()
+	atomic.StoreInt64(&cb.lastFailureNano, time.Now().UnixNano())
 
-	state := atomic.LoadInt32(&cb.state)
-
-	if state == 0 && int(failures) >= cb.config.MaxFailures {
-		// Open the circuit
-		atomic.StoreInt32(&cb.state, 1)
-	} else if state == 2 {
-		// Half-open failed, return to open
+	switch atomic.LoadInt32(&cb.state) {
+	case 0:
+		if int(failures) >= cb.config.MaxFailures {
+			atomic.StoreInt32(&cb.state, 1)
+		}
+	case 2:
+		// Half-open probe failed -> back to open.
 		atomic.StoreInt32(&cb.state, 1)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2685,10 +2686,9 @@ func TestMetadataRecoveryOnProviderFailure(t *testing.T) {
 	providerAvailable = true
 	mu.Unlock()
 
-	// Reset the retry timer to allow immediate retry
-	m.metadataRetryMutex.Lock()
-	m.lastMetadataRetryTime = time.Time{} // Reset to zero time
-	m.metadataRetryMutex.Unlock()
+	// Reset the retry timer to allow immediate retry. The field is atomic
+	// now, so no lock is needed.
+	atomic.StoreInt64(&m.lastMetadataRetryNano, 0)
 
 	// Second request should trigger recovery attempt
 	req2 := httptest.NewRequest("GET", "/protected", nil)

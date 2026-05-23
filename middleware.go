@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/lukaszraczylo/traefikoidc/internal/utils"
@@ -145,19 +146,20 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if !strings.HasPrefix(req.URL.Path, "/health") {
-		t.firstRequestMutex.Lock()
-		if !t.firstRequestReceived {
-			t.firstRequestReceived = true
+		// Lock-free one-shot bootstrap. The previous firstRequestMutex.Lock()
+		// fired on EVERY non-health request forever (even after the boolean
+		// flipped true), which under Yaegi added a per-request serialization
+		// point. CAS gives single-firing semantics with zero steady-state cost.
+		if atomic.CompareAndSwapInt32(&t.firstRequestStarted, 0, 1) {
 			t.logger.Debug("Starting background tasks on first request")
 			t.startTokenCleanup()
 
-			if !t.metadataRefreshStarted && t.providerURL != "" {
-				t.metadataRefreshStarted = true
+			if t.providerURL != "" &&
+				atomic.CompareAndSwapInt32(&t.metadataRefreshStartedAtomic, 0, 1) {
 				// Metadata refresh is handled by singleton resource manager
 				t.startMetadataRefresh(t.providerURL)
 			}
 		}
-		t.firstRequestMutex.Unlock()
 	}
 
 	// Evaluate auth-bypass once, before waiting for initialization. Excluded
@@ -213,14 +215,14 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		t.metadataMu.RUnlock()
 
 		if issuerURL == "" {
-			// Provider metadata initialization failed - try to recover
-			// Retry every 30 seconds to allow automatic recovery when provider comes back online
-			t.metadataRetryMutex.Lock()
-			shouldRetry := time.Since(t.lastMetadataRetryTime) >= 30*time.Second
-			if shouldRetry {
-				t.lastMetadataRetryTime = time.Now()
-			}
-			t.metadataRetryMutex.Unlock()
+			// Provider metadata initialization failed - try to recover.
+			// Retry every 30 seconds to allow automatic recovery. Lock-free
+			// throttle via CAS on lastMetadataRetryNano: one goroutine wins
+			// the window, others see shouldRetry=false.
+			nowNano := time.Now().UnixNano()
+			last := atomic.LoadInt64(&t.lastMetadataRetryNano)
+			shouldRetry := time.Duration(nowNano-last) >= 30*time.Second &&
+				atomic.CompareAndSwapInt64(&t.lastMetadataRetryNano, last, nowNano)
 
 			if shouldRetry && t.providerURL != "" {
 				t.logger.Info("Attempting to recover OIDC provider metadata...")

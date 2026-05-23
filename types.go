@@ -65,7 +65,19 @@ type ProviderMetadata struct {
 // the complete authentication flow. It's designed to work seamlessly with Traefik's
 // plugin system and provides flexible configuration options.
 type TraefikOidc struct {
-	lastMetadataRetryTime      time.Time
+	// lastMetadataRetryNano is the UnixNano timestamp of the last metadata
+	// recovery attempt. Stored atomically so the hot ServeHTTP path can
+	// throttle retries without acquiring metadataRetryMutex on every request.
+	lastMetadataRetryNano      int64
+	// firstRequestStarted is 0 until the very first non-health request fires
+	// the background-task bootstrap; then it flips to 1 via CAS. Replaces the
+	// firstRequestMutex + firstRequestReceived combo which previously took
+	// a write lock on every non-health request forever.
+	firstRequestStarted        int32
+	// metadataRefreshStartedAtomic is the CAS-only variant of the old
+	// metadataRefreshStarted bool. Both flags live under the same atomic so
+	// concurrent first-request goroutines race exactly once.
+	metadataRefreshStartedAtomic int32
 	jwkCache                   JWKCacheInterface
 	jwtVerifier                JWTVerifier
 	ctx                        context.Context
@@ -130,17 +142,13 @@ type TraefikOidc struct {
 	maxRefreshTokenAge         time.Duration
 	metadataMu                 sync.RWMutex
 	shutdownOnce               sync.Once
-	metadataRetryMutex         sync.Mutex
-	firstRequestMutex          sync.Mutex
 	sessionInvalidationCache   CacheInterface
 	refreshResultCache         CacheInterface
 	minimalHeaders             bool
 	stripAuthCookies           bool
 	enableBackchannelLogout    bool
 	enableFrontchannelLogout   bool
-	firstRequestReceived       bool
 	requireTokenIntrospection  bool
-	metadataRefreshStarted     bool
 	allowPrivateIPAddresses    bool
 	disableReplayDetection     bool
 	allowOpaqueTokens          bool

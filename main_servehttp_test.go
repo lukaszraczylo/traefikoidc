@@ -61,8 +61,8 @@ func TestServeHTTP_ExcludedURLs(t *testing.T) {
 				logger:                 NewLogger("debug"),
 				initComplete:           make(chan struct{}),
 				sessionManager:         createTestSessionManager(t),
-				firstRequestReceived:   true,
-				metadataRefreshStarted: true,
+				firstRequestStarted: 1,
+				metadataRefreshStartedAtomic: 1,
 				issuerURL:              "https://provider.example.com", // Required for initialization check
 			}
 			close(oidc.initComplete)
@@ -92,8 +92,8 @@ func TestServeHTTP_EventStream(t *testing.T) {
 			logger:                 NewLogger("debug"),
 			initComplete:           make(chan struct{}),
 			sessionManager:         sessionManager,
-			firstRequestReceived:   true,
-			metadataRefreshStarted: true,
+			firstRequestStarted: 1,
+			metadataRefreshStartedAtomic: 1,
 			issuerURL:              "https://provider.example.com",
 		}
 		close(oidc.initComplete)
@@ -175,8 +175,8 @@ func TestServeHTTP_WebSocketUpgrade(t *testing.T) {
 			logger:                 NewLogger("debug"),
 			initComplete:           make(chan struct{}),
 			sessionManager:         sessionManager,
-			firstRequestReceived:   true,
-			metadataRefreshStarted: true,
+			firstRequestStarted: 1,
+			metadataRefreshStartedAtomic: 1,
 			issuerURL:              "https://provider.example.com",
 		}
 		close(oidc.initComplete)
@@ -272,8 +272,8 @@ func TestServeHTTP_InitializationTimeout(t *testing.T) {
 			logger:                 NewLogger("debug"),
 			initComplete:           make(chan struct{}), // Never close this to simulate timeout
 			sessionManager:         createTestSessionManager(t),
-			firstRequestReceived:   true,
-			metadataRefreshStarted: true,
+			firstRequestStarted: 1,
+			metadataRefreshStartedAtomic: 1,
 		}
 
 		req := httptest.NewRequest("GET", "/protected", nil)
@@ -307,8 +307,8 @@ func TestServeHTTP_InitializationTimeout(t *testing.T) {
 			logger:                 NewLogger("debug"),
 			initComplete:           make(chan struct{}),
 			sessionManager:         createTestSessionManager(t),
-			firstRequestReceived:   true,
-			metadataRefreshStarted: true,
+			firstRequestStarted: 1,
+			metadataRefreshStartedAtomic: 1,
 			issuerURL:              "https://provider.example.com",
 			redirURLPath:           "/callback",
 			logoutURLPath:          "/logout",
@@ -337,8 +337,8 @@ func TestServeHTTP_CallbackAndLogout(t *testing.T) {
 			logger:                 NewLogger("debug"),
 			initComplete:           make(chan struct{}),
 			sessionManager:         createTestSessionManager(t),
-			firstRequestReceived:   true,
-			metadataRefreshStarted: true,
+			firstRequestStarted: 1,
+			metadataRefreshStartedAtomic: 1,
 			issuerURL:              "https://provider.example.com",
 			redirURLPath:           "/callback",
 			logoutURLPath:          "/logout",
@@ -367,8 +367,8 @@ func TestServeHTTP_CallbackAndLogout(t *testing.T) {
 			logger:                 NewLogger("debug"),
 			initComplete:           make(chan struct{}),
 			sessionManager:         createTestSessionManager(t),
-			firstRequestReceived:   true,
-			metadataRefreshStarted: true,
+			firstRequestStarted: 1,
+			metadataRefreshStartedAtomic: 1,
 			issuerURL:              "https://provider.example.com",
 			redirURLPath:           "/callback",
 			logoutURLPath:          "/logout",
@@ -740,8 +740,8 @@ func TestMinimalHeaders(t *testing.T) {
 				logger:                 NewLogger("debug"),
 				initComplete:           make(chan struct{}),
 				sessionManager:         sessionManager,
-				firstRequestReceived:   true,
-				metadataRefreshStarted: true,
+				firstRequestStarted: 1,
+				metadataRefreshStartedAtomic: 1,
 				issuerURL:              "https://provider.example.com",
 				minimalHeaders:         tt.minimalHeaders,
 				extractClaimsFunc: func(token string) (map[string]interface{}, error) {
@@ -817,8 +817,8 @@ func TestMinimalHeaders_TokenHeaderNotSet(t *testing.T) {
 		logger:                 NewLogger("debug"),
 		initComplete:           make(chan struct{}),
 		sessionManager:         sessionManager,
-		firstRequestReceived:   true,
-		metadataRefreshStarted: true,
+		firstRequestStarted: 1,
+		metadataRefreshStartedAtomic: 1,
 		issuerURL:              "https://provider.example.com",
 		minimalHeaders:         true, // Enable minimal headers
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
@@ -903,8 +903,8 @@ func TestStripAuthCookies(t *testing.T) {
 				logger:                 NewLogger("debug"),
 				initComplete:           make(chan struct{}),
 				sessionManager:         sessionManager,
-				firstRequestReceived:   true,
-				metadataRefreshStarted: true,
+				firstRequestStarted: 1,
+				metadataRefreshStartedAtomic: 1,
 				issuerURL:              "https://provider.example.com",
 				stripAuthCookies:       tt.stripAuthCookies,
 				extractClaimsFunc: func(token string) (map[string]interface{}, error) {
@@ -987,8 +987,8 @@ func TestStripAuthCookies_NoCookies(t *testing.T) {
 		logger:                 NewLogger("debug"),
 		initComplete:           make(chan struct{}),
 		sessionManager:         sessionManager,
-		firstRequestReceived:   true,
-		metadataRefreshStarted: true,
+		firstRequestStarted: 1,
+		metadataRefreshStartedAtomic: 1,
 		issuerURL:              "https://provider.example.com",
 		stripAuthCookies:       true,
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
@@ -1034,8 +1034,8 @@ func TestStripAuthCookies_OnlyOIDCCookies(t *testing.T) {
 		logger:                 NewLogger("debug"),
 		initComplete:           make(chan struct{}),
 		sessionManager:         sessionManager,
-		firstRequestReceived:   true,
-		metadataRefreshStarted: true,
+		firstRequestStarted: 1,
+		metadataRefreshStartedAtomic: 1,
 		issuerURL:              "https://provider.example.com",
 		stripAuthCookies:       true,
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
@@ -1085,8 +1085,8 @@ func TestStripAuthCookies_OnlyAppCookies(t *testing.T) {
 		logger:                 NewLogger("debug"),
 		initComplete:           make(chan struct{}),
 		sessionManager:         sessionManager,
-		firstRequestReceived:   true,
-		metadataRefreshStarted: true,
+		firstRequestStarted: 1,
+		metadataRefreshStartedAtomic: 1,
 		issuerURL:              "https://provider.example.com",
 		stripAuthCookies:       true,
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
@@ -1148,8 +1148,8 @@ func TestStripAuthCookies_CustomPrefix(t *testing.T) {
 		logger:                 NewLogger("debug"),
 		initComplete:           make(chan struct{}),
 		sessionManager:         sm,
-		firstRequestReceived:   true,
-		metadataRefreshStarted: true,
+		firstRequestStarted: 1,
+		metadataRefreshStartedAtomic: 1,
 		issuerURL:              "https://provider.example.com",
 		stripAuthCookies:       true,
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
