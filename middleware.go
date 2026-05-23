@@ -333,7 +333,10 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 	t.logger.Debugf("Callback URL did not match (request_path=%q != configured=%q), continuing auth flow", req.URL.Path, t.redirURLPath)
 
-	authenticated, needsRefresh, expired := t.isUserAuthenticated(session)
+	// Token validation reads session via the captured snapshot — saves ~21
+	// sd.sessionMutex.RLock acquisitions (Yaegi-dispatched, ~1-5ms each)
+	// across the validation path.
+	authenticated, needsRefresh, expired := t.isUserAuthenticatedRS(rs)
 
 	if expired {
 		t.logger.Debug("Session token is definitively expired or invalid, initiating re-auth")
