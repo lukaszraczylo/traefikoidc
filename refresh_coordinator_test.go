@@ -165,9 +165,14 @@ func TestRefreshRateLimiting(t *testing.T) {
 		time.Sleep(150 * time.Millisecond)
 	}
 
-	// Verify that cooldown was triggered after max attempts
-	// With the new logic, the Nth attempt triggers cooldown, so we get N-1 successful attempts
-	expectedSuccessfulAttempts := config.MaxRefreshAttempts - 1
+	// Verify that cooldown was triggered after max attempts.
+	// With applyLeaderGates checking cooldown BEFORE recording the attempt
+	// (the v1.0.16 reorder fixing the thundering-herd off-by-one), N attempts
+	// run to completion and the (N+1)th is denied. Previously the Nth was
+	// denied as it tried to record, which under burst load let multiple
+	// concurrent leaders increment past the limit before any one of them
+	// observed the gate.
+	expectedSuccessfulAttempts := config.MaxRefreshAttempts
 	if attempts != expectedSuccessfulAttempts {
 		t.Errorf("Expected %d successful attempts before cooldown, got %d", expectedSuccessfulAttempts, attempts)
 	}
@@ -721,11 +726,9 @@ func TestNoGoroutineExplosionWithTimers(t *testing.T) {
 	currentGoroutines := runtime.NumGoroutine()
 	t.Logf("Goroutines after %d refresh operations: %d", numRefreshes, currentGoroutines)
 
-	// Check timer count
-	coordinator.cleanupTimerMu.Lock()
-	timerCount := len(coordinator.cleanupTimers)
-	coordinator.cleanupTimerMu.Unlock()
-	t.Logf("Active cleanup timers: %d", timerCount)
+	// (Coordinator no longer tracks pending timers; time.AfterFunc closures
+	// fire performCleanup directly. This test now only checks the goroutine
+	// budget, which was always the real invariant.)
 
 	// With timer-based cleanup, goroutine increase should be minimal
 	// Timers don't create goroutines - they use the runtime timer heap
@@ -741,18 +744,8 @@ func TestNoGoroutineExplosionWithTimers(t *testing.T) {
 			initialGoroutines, currentGoroutines, goroutineIncrease)
 	}
 
-	// Wait for timers to fire and cleanup
+	// Wait for timers to fire and cleanup.
 	time.Sleep(config.DeduplicationCleanupDelay + 50*time.Millisecond)
-
-	// Verify timers were cleaned up
-	coordinator.cleanupTimerMu.Lock()
-	remainingTimers := len(coordinator.cleanupTimers)
-	coordinator.cleanupTimerMu.Unlock()
-
-	// Most timers should have fired and been removed
-	if remainingTimers > 10 {
-		t.Errorf("Too many cleanup timers remaining: %d", remainingTimers)
-	}
 
 	// Verify goroutines returned to near initial
 	runtime.GC()
