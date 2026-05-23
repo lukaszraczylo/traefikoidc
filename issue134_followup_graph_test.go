@@ -234,7 +234,8 @@ func TestIssue134_Followup_ValidateAzureTokensSkipsGraphAccessToken(t *testing.T
 	oidc, errBuf := newAzureFollowupOIDC(t, jwks)
 	session := authedSessionWithTokens(t, graphAccessToken, idToken)
 
-	authenticated, needsRefresh, expired := oidc.validateAzureTokens(session)
+	rs := (&requestState{}).captureSession(session)
+	authenticated, needsRefresh, expired := oidc.validateAzureTokensRS(rs)
 
 	output := errBuf.String()
 	assert.NotContains(t, output, "crypto/rsa: verification error",
@@ -344,7 +345,8 @@ func TestIssue134_Followup_StandardAzureAccessTokenStillVerifies(t *testing.T) {
 	oidc, errBuf := newAzureFollowupOIDC(t, jwks)
 	session := authedSessionWithTokens(t, accessToken, idToken)
 
-	authenticated, needsRefresh, expired := oidc.validateAzureTokens(session)
+	rs := (&requestState{}).captureSession(session)
+	authenticated, needsRefresh, expired := oidc.validateAzureTokensRS(rs)
 
 	assert.True(t, authenticated, "standard Azure access token must verify and authenticate")
 	assert.False(t, needsRefresh)
@@ -381,7 +383,8 @@ func TestIssue134_Followup_GraphAccessTokenWithoutIDToken(t *testing.T) {
 	oidc, errBuf := newAzureFollowupOIDC(t, jwks)
 	session := authedSessionWithTokens(t, graphAccessToken, "")
 
-	authenticated, needsRefresh, expired := oidc.validateAzureTokens(session)
+	rs := (&requestState{}).captureSession(session)
+	authenticated, needsRefresh, expired := oidc.validateAzureTokensRS(rs)
 
 	assert.True(t, authenticated, "Graph token without ID token must remain authenticated (matches existing opaque-token semantics)")
 	assert.False(t, needsRefresh)
@@ -443,7 +446,8 @@ func TestIssue134_Followup_ConfusedDeputyAttackDoesNotBypassVerification(t *test
 	oidc, _ := newAzureFollowupOIDC(t, jwks)
 	session := authedSessionWithTokens(t, forgedAccessToken, forgedIDToken)
 
-	authenticated, _, _ := oidc.validateAzureTokens(session)
+	rs := (&requestState{}).captureSession(session)
+	authenticated, _, _ := oidc.validateAzureTokensRS(rs)
 	assert.False(t, authenticated,
 		"attacker's forged tokens must not authenticate even when the access token has a nonce header — ID token verification rejects the wrong-key signature")
 }

@@ -262,7 +262,8 @@ func TestAzureOIDCRegression(t *testing.T) {
 		defer func() { tOidc.tokenVerifier = originalTokenVerifier }()
 
 		// Test that CSRF is preserved during Azure validation failures
-		authenticated, needsRefresh, expired := tOidc.validateAzureTokens(session)
+		rs := (&requestState{}).captureSession(session)
+		authenticated, needsRefresh, expired := tOidc.validateAzureTokensRS(rs)
 
 		// Should not be authenticated due to validation failure
 		if authenticated {
@@ -453,7 +454,8 @@ func TestValidateGoogleTokens(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			session := tt.setupSession()
 
-			auth, refresh, expired := ts.tOidc.validateGoogleTokens(session)
+			rs := (&requestState{}).captureSession(session)
+			auth, refresh, expired := ts.tOidc.validateGoogleTokensRS(rs)
 
 			if auth != tt.expectedAuth {
 				t.Errorf("Expected authenticated=%v, got %v. %s", tt.expectedAuth, auth, tt.description)
@@ -637,7 +639,8 @@ func TestIsUserAuthenticated(t *testing.T) {
 			defer func() { ts.tOidc.issuerURL = originalIssuer }()
 
 			session := tt.setupSession()
-			auth, refresh, expired := ts.tOidc.isUserAuthenticated(session)
+			rs := (&requestState{}).captureSession(session)
+			auth, refresh, expired := ts.tOidc.isUserAuthenticatedRS(rs)
 
 			if auth != tt.expectedAuth {
 				t.Errorf("Expected authenticated=%v, got %v. %s", tt.expectedAuth, auth, tt.description)
@@ -762,7 +765,8 @@ func TestValidateAzureTokensEdgeCases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			session := tt.setupSession()
 
-			auth, refresh, expired := ts.tOidc.validateAzureTokens(session)
+			rs := (&requestState{}).captureSession(session)
+			auth, refresh, expired := ts.tOidc.validateAzureTokensRS(rs)
 
 			if auth != tt.expectedAuth {
 				t.Errorf("Expected authenticated=%v, got %v. %s", tt.expectedAuth, auth, tt.description)

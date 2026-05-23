@@ -305,28 +305,6 @@ func (t *TraefikOidc) handleExpiredToken(rw http.ResponseWriter, req *http.Reque
 	t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 }
 
-// isUserAuthenticated determines the authentication status and refresh requirements.
-// It delegates to provider-specific validation methods that handle different token types
-// and expiration behaviors.
-// Parameters:
-//   - session: The session data containing authentication tokens.
-//
-// Returns:
-//   - authenticated (bool): True if the user has valid tokens.
-//   - needsRefresh (bool): True if tokens are valid but nearing expiration.
-//   - expired (bool): True if the session is unauthenticated, the token is missing,
-//     or the token verification failed for reasons other than nearing/actual expiration.
-func (t *TraefikOidc) isUserAuthenticated(session *SessionData) (bool, bool, bool) {
-	if t.isAzureProvider() {
-		return t.validateAzureTokens(session)
-	} else if t.isGoogleProvider() {
-		return t.validateGoogleTokens(session)
-	}
-	// Auth0 and other providers can now use standard validation
-	// which handles opaque tokens generically
-	return t.validateStandardTokens(session)
-}
-
 // isAjaxRequest determines if this is an AJAX request that should receive 401 instead of redirect
 func (t *TraefikOidc) isAjaxRequest(req *http.Request) bool {
 	xhr := req.Header.Get("X-Requested-With")

@@ -26,8 +26,15 @@ func (t *TraefikOidc) isUserAuthenticatedRS(rs *requestState) (bool, bool, bool)
 	if t.isAzureProvider() {
 		return t.validateAzureTokensRS(rs)
 	} else if t.isGoogleProvider() {
-		return t.validateStandardTokensRS(rs)
+		return t.validateGoogleTokensRS(rs)
 	}
+	return t.validateStandardTokensRS(rs)
+}
+
+// validateGoogleTokensRS handles Google-specific token validation. Currently
+// delegates to standard token validation; retained as a hook for any future
+// Google-specific behavior (matches the v1.0.20 layout of the non-RS variant).
+func (t *TraefikOidc) validateGoogleTokensRS(rs *requestState) (bool, bool, bool) {
 	return t.validateStandardTokensRS(rs)
 }
 

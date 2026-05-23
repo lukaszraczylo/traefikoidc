@@ -484,7 +484,8 @@ func TestAuth0Scenario3OpaqueAccessToken(t *testing.T) {
 	session.SetAccessToken(opaqueAccessToken)
 	session.SetIDToken(idToken)
 
-	authenticated, needsRefresh, expired := ts.tOidc.validateStandardTokens(session)
+	rs := (&requestState{}).captureSession(session)
+	authenticated, needsRefresh, expired := ts.tOidc.validateStandardTokensRS(rs)
 	if !authenticated || needsRefresh || expired {
 		t.Errorf("Session with opaque access token and valid ID token should be authenticated. Got: auth=%v, refresh=%v, expired=%v",
 			authenticated, needsRefresh, expired)
@@ -623,7 +624,8 @@ func TestAuth0Scenario2StrictMode(t *testing.T) {
 	session.SetRefreshToken("test-refresh-token") // Add refresh token so it can attempt refresh
 
 	// In strict mode, this should FAIL (no fallback to ID token)
-	authenticated, needsRefresh, expired := ts.tOidc.validateStandardTokens(session)
+	rs := (&requestState{}).captureSession(session)
+	authenticated, needsRefresh, expired := ts.tOidc.validateStandardTokensRS(rs)
 	if authenticated {
 		t.Errorf("Strict mode: Session with wrong access token audience should be rejected, but got authenticated=true")
 	}
