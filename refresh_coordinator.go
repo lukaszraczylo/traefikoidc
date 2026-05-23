@@ -94,22 +94,46 @@ type refreshResult struct {
 	fromCache     bool
 }
 
-// refreshAttemptTracker tracks refresh attempts for a session. All fields are
-// accessed via sync/atomic so isInCooldown/recordRefreshAttempt/Success/Failure
-// can run without holding any per-coordinator lock. Times are UnixNano so they
-// fit in an int64 and can be read with a single atomic.LoadInt64.
+// attemptState is the immutable snapshot of a session's refresh-attempt
+// state. Lives behind refreshAttemptTracker.state (atomic.Value). Every
+// transition (record, success, failure, window-reset, cooldown-enter,
+// cooldown-exit) constructs a fresh attemptState and publishes it via
+// CompareAndSwap so the entire field set is updated together.
 //
-// cooldownEndNano == 0 means "not in cooldown". This sentinel replaces the
-// inCooldown bool that the previous implementation kept under attemptsMutex —
-// under Yaegi any per-request global mutex turns into a serializing bottleneck
-// (the v1.0.14 refreshMutex -> sync.Map fix removed only one such bottleneck;
-// attemptsMutex was the next one in the queue).
+// Per-field atomic.Load/Store (the previous v1.0.15 design) had a benign
+// but observable hazard: the cooldown-exit reset wrote cooldownEndNano = 0
+// first, then separately stored attempts = 1 and windowStartNano = now.
+// A concurrent isInCooldown call could see cooldownEndNano = 0 (reset
+// just completed) with attempts still at MaxRefreshAttempts, triggering
+// a fresh cooldown immediately. The snapshot approach eliminates the
+// intermediate state entirely.
+type attemptState struct {
+	lastAttemptNano     int64 // UnixNano of last attempt
+	windowStartNano     int64 // UnixNano of attempt-window start
+	cooldownEndNano     int64 // UnixNano; 0 = not in cooldown
+	attempts            int32
+	consecutiveFailures int32
+}
+
+// refreshAttemptTracker tracks refresh attempts for a session via a single
+// atomic.Value holding a *attemptState pointer. Readers do exactly one Load.
+// Writers do Load → construct new → CompareAndSwap (retry on conflict).
+// Under Yaegi this collapses 3-4 per-field atomic dispatches into one Load,
+// and eliminates the cross-field race in the window-reset path.
 type refreshAttemptTracker struct {
-	lastAttemptNano     int64 // atomic, UnixNano of last attempt
-	windowStartNano     int64 // atomic, UnixNano of attempt-window start
-	cooldownEndNano     int64 // atomic, UnixNano; 0 = not in cooldown
-	attempts            int32 // atomic
-	consecutiveFailures int32 // atomic
+	state atomic.Value // *attemptState
+}
+
+// stateOf returns the current attemptState, or a zero-value snapshot if none
+// has been published yet. The empty snapshot represents "no attempts recorded".
+func (t *refreshAttemptTracker) stateOf() *attemptState {
+	if v := t.state.Load(); v != nil {
+		s, _ := v.(*attemptState)
+		if s != nil {
+			return s
+		}
+	}
+	return &attemptState{}
 }
 
 // RefreshMetrics tracks coordinator performance metrics
@@ -452,18 +476,39 @@ func (rc *RefreshCoordinator) getOrCreateTracker(sessionID string) *refreshAttem
 	if v, ok := rc.sessionRefreshAttempts.Load(sessionID); ok {
 		return trackerFromMapValue(v)
 	}
-	fresh := &refreshAttemptTracker{
-		windowStartNano: time.Now().UnixNano(),
-	}
+	fresh := &refreshAttemptTracker{}
+	fresh.state.Store(&attemptState{windowStartNano: time.Now().UnixNano()})
 	actual, _ := rc.sessionRefreshAttempts.LoadOrStore(sessionID, fresh)
 	return trackerFromMapValue(actual)
 }
 
-// isInCooldown checks if a session is in cooldown. Lock-free read with a
-// best-effort cooldown-reset CAS on the cooldownEndNano sentinel. If the
-// reset races with another goroutine we accept the loser's view (the winner's
-// reset still happens). The attempt-window expiry and limit-exceeded paths
-// are write-mostly but use atomic.StoreInt64/AddInt32 — never a held lock.
+// mutateState performs a CompareAndSwap loop that applies mutate to the
+// current snapshot. mutate must be PURE: it receives an immutable view of
+// the current state and returns a fresh *attemptState. If mutate returns nil
+// the update is skipped (used by isInCooldown for "no change needed" paths).
+//
+// Retries on CAS conflict are bounded by the number of concurrent writers —
+// in practice 1-3. Under Yaegi each retry pays the dispatch cost of one Load
+// + one CompareAndSwap; still cheaper than the previous per-field atomic
+// sequence and immune to the cross-field race the v1.0.15 design had.
+func (t *refreshAttemptTracker) mutateState(mutate func(cur *attemptState) *attemptState) *attemptState {
+	for {
+		cur := t.stateOf()
+		next := mutate(cur)
+		if next == nil {
+			return cur
+		}
+		if t.state.CompareAndSwap(t.state.Load(), next) {
+			return next
+		}
+	}
+}
+
+// isInCooldown checks if a session is in cooldown. Snapshot-based: every
+// transition publishes a fresh *attemptState atomically so readers never see
+// a partially-updated state. The previous per-field atomic design had a
+// benign race in the cooldown-exit path (cooldownEndNano reset before
+// attempts reset) that could double-trigger cooldown.
 func (rc *RefreshCoordinator) isInCooldown(sessionID string) bool {
 	v, ok := rc.sessionRefreshAttempts.Load(sessionID)
 	if !ok {
@@ -472,37 +517,60 @@ func (rc *RefreshCoordinator) isInCooldown(sessionID string) bool {
 	tracker := trackerFromMapValue(v)
 	now := time.Now()
 	nowNano := now.UnixNano()
+	maxAttempts := rc.config.MaxRefreshAttempts
+	window := rc.config.RefreshAttemptWindow
+	cooldownPeriod := rc.config.RefreshCooldownPeriod
+
+	cur := tracker.stateOf()
 
 	// Already in cooldown?
-	if cooldownEnd := atomic.LoadInt64(&tracker.cooldownEndNano); cooldownEnd != 0 {
-		if nowNano <= cooldownEnd {
+	if cur.cooldownEndNano != 0 {
+		if nowNano <= cur.cooldownEndNano {
 			return true // still in cooldown
 		}
-		// Cooldown expired. Best-effort reset (a concurrent caller may also
-		// reset; the result is equivalent — fresh window + one recorded
-		// attempt — so the CAS race is benign).
-		if atomic.CompareAndSwapInt64(&tracker.cooldownEndNano, cooldownEnd, 0) {
-			atomic.StoreInt32(&tracker.attempts, 1)
-			atomic.StoreInt32(&tracker.consecutiveFailures, 0)
-			atomic.StoreInt64(&tracker.windowStartNano, nowNano)
-		}
+		// Cooldown expired: atomically publish a fresh state with the window
+		// restarted from one attempt. Whichever goroutine wins the CAS sets
+		// the new snapshot; losers see it via the next stateOf load.
+		tracker.mutateState(func(s *attemptState) *attemptState {
+			if s.cooldownEndNano == 0 || nowNano <= s.cooldownEndNano {
+				return nil // someone else already reset, or back in cooldown
+			}
+			return &attemptState{
+				windowStartNano: nowNano,
+				attempts:        1,
+			}
+		})
 		return false
 	}
 
 	// Window expired?
-	if windowStart := atomic.LoadInt64(&tracker.windowStartNano); time.Duration(nowNano-windowStart) > rc.config.RefreshAttemptWindow {
-		atomic.StoreInt32(&tracker.attempts, 1)
-		atomic.StoreInt64(&tracker.windowStartNano, nowNano)
+	if time.Duration(nowNano-cur.windowStartNano) > window {
+		tracker.mutateState(func(s *attemptState) *attemptState {
+			if time.Duration(nowNano-s.windowStartNano) <= window {
+				return nil
+			}
+			next := *s
+			next.windowStartNano = nowNano
+			next.attempts = 1
+			return &next
+		})
 		return false
 	}
 
 	// Just exceeded attempt limit?
-	if int(atomic.LoadInt32(&tracker.attempts)) >= rc.config.MaxRefreshAttempts {
-		end := now.Add(rc.config.RefreshCooldownPeriod).UnixNano()
-		// Only one CAS winner publishes the cooldown end + logs.
-		if atomic.CompareAndSwapInt64(&tracker.cooldownEndNano, 0, end) {
+	if int(cur.attempts) >= maxAttempts {
+		end := now.Add(cooldownPeriod).UnixNano()
+		published := tracker.mutateState(func(s *attemptState) *attemptState {
+			if s.cooldownEndNano != 0 {
+				return nil
+			}
+			next := *s
+			next.cooldownEndNano = end
+			return &next
+		})
+		if published.cooldownEndNano == end {
 			rc.logger.Infof("Session %s entering refresh cooldown after %d attempts",
-				sessionID, atomic.LoadInt32(&tracker.attempts))
+				sessionID, published.attempts)
 		}
 		return true
 	}
@@ -510,26 +578,46 @@ func (rc *RefreshCoordinator) isInCooldown(sessionID string) bool {
 	return false
 }
 
-// recordRefreshAttempt records a refresh attempt for rate limiting. Lock-free:
-// LoadOrStore for the tracker, atomic counters/timestamps for fields.
+// recordRefreshAttempt records a refresh attempt for rate limiting. Lock-free
+// snapshot mutation; attempts and lastAttemptNano are advanced atomically.
 func (rc *RefreshCoordinator) recordRefreshAttempt(sessionID string) {
 	tracker := rc.getOrCreateTracker(sessionID)
-	atomic.AddInt32(&tracker.attempts, 1)
-	atomic.StoreInt64(&tracker.lastAttemptNano, time.Now().UnixNano())
+	nowNano := time.Now().UnixNano()
+	tracker.mutateState(func(s *attemptState) *attemptState {
+		next := *s
+		next.attempts++
+		next.lastAttemptNano = nowNano
+		return &next
+	})
 }
 
-// recordRefreshSuccess records a successful refresh. Lock-free.
+// recordRefreshSuccess records a successful refresh: zero consecutiveFailures.
 func (rc *RefreshCoordinator) recordRefreshSuccess(sessionID string) {
-	if v, ok := rc.sessionRefreshAttempts.Load(sessionID); ok {
-		atomic.StoreInt32(&trackerFromMapValue(v).consecutiveFailures, 0)
+	v, ok := rc.sessionRefreshAttempts.Load(sessionID)
+	if !ok {
+		return
 	}
+	trackerFromMapValue(v).mutateState(func(s *attemptState) *attemptState {
+		if s.consecutiveFailures == 0 {
+			return nil
+		}
+		next := *s
+		next.consecutiveFailures = 0
+		return &next
+	})
 }
 
-// recordRefreshFailure records a failed refresh. Lock-free.
+// recordRefreshFailure records a failed refresh: increments consecutiveFailures.
 func (rc *RefreshCoordinator) recordRefreshFailure(sessionID string) {
-	if v, ok := rc.sessionRefreshAttempts.Load(sessionID); ok {
-		atomic.AddInt32(&trackerFromMapValue(v).consecutiveFailures, 1)
+	v, ok := rc.sessionRefreshAttempts.Load(sessionID)
+	if !ok {
+		return
 	}
+	trackerFromMapValue(v).mutateState(func(s *attemptState) *attemptState {
+		next := *s
+		next.consecutiveFailures++
+		return &next
+	})
 }
 
 // hashRefreshToken creates a hash of the refresh token for deduplication
@@ -589,7 +677,7 @@ func (rc *RefreshCoordinator) cleanupStaleEntries() {
 		if tracker == nil {
 			return true
 		}
-		if atomic.LoadInt64(&tracker.lastAttemptNano) < cutoff {
+		if tracker.stateOf().lastAttemptNano < cutoff {
 			// Compare-and-delete to avoid evicting a tracker that was just
 			// re-used by a concurrent caller. We compare by pointer identity.
 			rc.sessionRefreshAttempts.CompareAndDelete(key, value)

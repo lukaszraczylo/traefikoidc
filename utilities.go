@@ -14,6 +14,19 @@ import (
 	"time"
 )
 
+// metadataSnap returns the most recently published *MetadataSnapshot, or nil
+// if metadata has not yet been resolved. Single atomic.Value.Load — the hot
+// ServeHTTP path uses this instead of acquiring metadataMu.RLock, which under
+// Yaegi pays 1-5ms of interpreter-dispatch overhead per acquisition.
+func (t *TraefikOidc) metadataSnap() *MetadataSnapshot {
+	v := t.metadataSnapshot.Load()
+	if v == nil {
+		return nil
+	}
+	s, _ := v.(*MetadataSnapshot)
+	return s
+}
+
 // safeLogDebug provides nil-safe logging for debug messages
 func (t *TraefikOidc) safeLogDebug(msg string) {
 	if t.logger != nil {

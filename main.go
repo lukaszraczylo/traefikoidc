@@ -517,6 +517,19 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	introspectionURL := t.introspectionURL
 	registrationURL := t.registrationURL
 
+	// Publish the read-mostly URL bundle atomically. Hot-path readers Load
+	// this directly instead of acquiring metadataMu.RLock per request.
+	t.metadataSnapshot.Store(&MetadataSnapshot{
+		IssuerURL:        metadata.Issuer,
+		JWKSURL:          metadata.JWKSURL,
+		TokenURL:         metadata.TokenURL,
+		AuthURL:          metadata.AuthURL,
+		RevocationURL:    metadata.RevokeURL,
+		EndSessionURL:    metadata.EndSessionURL,
+		IntrospectionURL: metadata.IntrospectionURL,
+		RegistrationURL:  metadata.RegistrationURL,
+	})
+
 	t.metadataMu.Unlock()
 
 	// Log introspection endpoint availability for opaque token support

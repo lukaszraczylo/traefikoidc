@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"text/template"
 	"time"
 
@@ -64,7 +65,33 @@ type ProviderMetadata struct {
 // It integrates with various OIDC providers, manages sessions, caches tokens, and handles
 // the complete authentication flow. It's designed to work seamlessly with Traefik's
 // plugin system and provides flexible configuration options.
+// MetadataSnapshot is an immutable bundle of provider-metadata URLs that the
+// plugin needs on the hot request path. Published atomically via
+// TraefikOidc.metadataSnapshot; readers do exactly one atomic.Value.Load to
+// access all fields. Replaces 3 per-request metadataMu.RLock acquisitions
+// in middleware.ServeHTTP + token_manager paths, each of which paid
+// 1-5ms of Yaegi-dispatch overhead.
+//
+// The fields are a strict subset of the metadataMu-guarded TraefikOidc
+// fields; the legacy fields are still written under metadataMu for
+// less-frequent code paths that have not been migrated.
+type MetadataSnapshot struct {
+	IssuerURL        string
+	JWKSURL          string
+	TokenURL         string
+	AuthURL          string
+	RevocationURL    string
+	EndSessionURL    string
+	IntrospectionURL string
+	RegistrationURL  string
+}
+
 type TraefikOidc struct {
+	// metadataSnapshot atomically publishes the read-mostly URL bundle.
+	// Hot-path readers (middleware.ServeHTTP, token verification) load it
+	// directly; less-frequent paths still acquire metadataMu.RLock and
+	// read the individual fields below.
+	metadataSnapshot           atomic.Value
 	// lastMetadataRetryNano is the UnixNano timestamp of the last metadata
 	// recovery attempt. Stored atomically so the hot ServeHTTP path can
 	// throttle retries without acquiring metadataRetryMutex on every request.

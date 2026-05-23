@@ -209,10 +209,21 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	select {
 	case <-t.initComplete:
-		// Read issuerURL with RLock
-		t.metadataMu.RLock()
-		issuerURL := t.issuerURL
-		t.metadataMu.RUnlock()
+		// Read issuerURL via atomic snapshot when available — replaces the
+		// metadataMu.RLock that previously fired on every non-bypass request.
+		// Under Yaegi each RLock acquisition costs 1-5ms of interpreter
+		// dispatch; the snapshot is a single atomic.Value.Load. Falls back
+		// to the legacy field+RLock for paths that haven't published a
+		// snapshot yet (notably some test setups that initialize the struct
+		// fields directly).
+		var issuerURL string
+		if snap := t.metadataSnap(); snap != nil {
+			issuerURL = snap.IssuerURL
+		} else {
+			t.metadataMu.RLock()
+			issuerURL = t.issuerURL
+			t.metadataMu.RUnlock()
+		}
 
 		if issuerURL == "" {
 			// Provider metadata initialization failed - try to recover.
