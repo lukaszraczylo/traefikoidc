@@ -498,7 +498,7 @@ func (t *refreshAttemptTracker) mutateState(mutate func(cur *attemptState) *atte
 		if next == nil {
 			return cur
 		}
-		if t.state.CompareAndSwap(t.state.Load(), next) {
+		if t.state.CompareAndSwap(cur, next) {
 			return next
 		}
 	}

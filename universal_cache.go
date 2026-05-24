@@ -396,8 +396,16 @@ func (c *UniversalCache) getLocal(key string) (interface{}, bool) {
 			return value, true
 		}
 		c.mu.RUnlock()
-		// Expired — fall through to the write-locked slow path below to
-		// remove the entry under exclusive access.
+		// Expired — return miss immediately. The periodic cleanup goroutine
+		// will evict the stale entry. NEVER fall through to the write-locked
+		// slow path for Token/JWK/Session caches: under Yaegi the write Lock
+		// at line 403 costs 10-100ms per acquisition, and Go's RWMutex
+		// writer-priority semantics block ALL new RLock callers while a Lock
+		// is pending. A single expired-token event turns every concurrent
+		// request from read-parallel into write-serialized — the exact
+		// convoy that produced the 737-goroutine pileup at 0x400275a608.
+		atomic.AddInt64(&c.misses, 1)
+		return nil, false
 	}
 
 	c.mu.Lock()
