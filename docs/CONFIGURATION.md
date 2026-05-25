@@ -14,6 +14,7 @@ Complete reference for all Traefik OIDC middleware configuration options.
 - [Security Headers](#security-headers)
 - [Scope Configuration](#scope-configuration)
 - [Advanced Options](#advanced-options)
+- [Standalone binary (oidcgate)](#standalone-binary-oidcgate)
 
 ---
 
@@ -664,3 +665,19 @@ sessionEncryptionKey: ${OIDC_SECRET_API}
 # Good
 sessionEncryptionKey: ${OIDC_SECRET_SVC}
 ```
+
+---
+
+## Standalone binary (oidcgate)
+
+If you don't run Traefik, the same configuration shape documented above
+works for the [`oidcgate`](OIDCGATE.md) standalone forward-auth daemon
+under `cmd/oidcgate`. Three extra top-level keys (`listen`, `authPath`,
+`startPath`) configure the daemon itself; everything else maps 1:1 onto
+the `traefikoidc.Config` fields documented in this reference.
+
+See [`docs/OIDCGATE.md`](OIDCGATE.md) for the full daemon guide including
+nginx, Caddy, Traefik ForwardAuth, HAProxy and Envoy wiring snippets,
+the `OIDCGATE_*` environment-variable inventory, the security posture
+(X-Forwarded-Uri sanitisation, excludedURLs guardrail), and how to layer
+M2M [bearer-token auth](BEARER_AUTH.md) on the same daemon.

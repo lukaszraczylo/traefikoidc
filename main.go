@@ -202,6 +202,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		}(),
 		forceHTTPS:                config.ForceHTTPS,
 		enablePKCE:                config.EnablePKCE,
+		trustForwardedURI:         config.TrustForwardedURI,
 		overrideScopes:            config.OverrideScopes,
 		strictAudienceValidation:  config.StrictAudienceValidation,
 		allowOpaqueTokens:         config.AllowOpaqueTokens,

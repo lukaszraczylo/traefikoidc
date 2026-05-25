@@ -721,7 +721,7 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 
 	// When minimalHeaders is enabled, skip extra headers to prevent 431 errors
 	if !t.minimalHeaders {
-		req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
+		req.Header.Set("X-Auth-Request-Redirect", t.originalRequestURI(req))
 		req.Header.Set("X-Auth-Request-User", p.Identifier)
 		if p.IDToken != "" {
 			req.Header.Set("X-Auth-Request-Token", p.IDToken)

@@ -69,7 +69,7 @@ func (t *TraefikOidc) prepareSessionForAuthentication(session *SessionData, csrf
 //   - session: The session data to prepare for authentication.
 //   - redirectURL: The pre-calculated callback URL (redirect_uri) for this middleware instance.
 func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
-	t.logger.Debugf("Initiating new OIDC authentication flow for request: %s", req.URL.RequestURI())
+	t.logger.Debugf("Initiating new OIDC authentication flow for request: %s", t.originalRequestURI(req))
 
 	// Check and handle redirect limits
 	if err := t.validateRedirectCount(session, rw, req); err != nil {
@@ -98,7 +98,7 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	}
 
 	// Clear existing session data and set new authentication state
-	t.prepareSessionForAuthentication(session, csrfToken, nonce, codeVerifier, req.URL.RequestURI())
+	t.prepareSessionForAuthentication(session, csrfToken, nonce, codeVerifier, t.originalRequestURI(req))
 
 	session.MarkDirty()
 

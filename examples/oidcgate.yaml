@@ -1,0 +1,15 @@
+# Minimal oidcgate config. See docs/OIDCGATE.md for full reference.
+listen: ":8080"
+authPath: "/oauth2/auth"
+startPath: "/oauth2/start"
+
+providerURL: "https://accounts.google.com"
+clientID: "REPLACE_ME.apps.googleusercontent.com"
+clientSecret: "REPLACE_ME"            # OR set OIDCGATE_CLIENT_SECRET
+sessionEncryptionKey: "REPLACE_WITH_64_HEX_BYTES" # OR OIDCGATE_SESSION_ENCRYPTION_KEY
+callbackURL: "/oauth2/callback"
+logoutURL: "/oauth2/logout"
+postLogoutRedirectURI: "/"
+
+# allowedUserDomains: [company.com]
+# excludedURLs: [/health, /metrics]

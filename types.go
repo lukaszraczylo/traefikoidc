@@ -184,6 +184,7 @@ type TraefikOidc struct {
 	enablePKCE                 bool
 	forceHTTPS                 bool
 	suppressDiagnosticLogs     bool
+	trustForwardedURI          bool
 
 	// Bearer-auth runtime state (populated only when EnableBearerAuth=true).
 	bearerIdentifierClaim     string
