@@ -54,6 +54,7 @@ type Config struct {
 	AllowedUserDomains        []string                         `json:"allowedUserDomains"`
 	AllowedUsers              []string                         `json:"allowedUsers"`
 	Headers                   []TemplatedHeader                `json:"headers"`
+	ExtraAuthParams           map[string]string                `json:"extraAuthParams,omitempty"`
 	RefreshGracePeriodSeconds int                              `json:"refreshGracePeriodSeconds"`
 	// MaxRefreshTokenAgeSeconds is a heuristic upper bound on the lifetime of
 	// a stored refresh token. Once the token has been in the session longer

@@ -146,6 +146,21 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 		t.logger.Debugf("TraefikOidc.buildAuthURL: Final scope string being sent to OIDC provider: %s", finalScopeString)
 	}
 
+	// Apply operator-configured extra authorization parameters (e.g.
+	// screen_hint, login_hint, ui_locales, prompt). These are added last but
+	// can never override parameters the plugin itself manages (client_id,
+	// state, nonce, redirect_uri, code_challenge, scope, response_type, ...):
+	// a key already present in params is left untouched, so this cannot
+	// weaken security-critical parameters.
+	for key, value := range t.extraAuthParams {
+		if params.Get(key) == "" {
+			params.Set(key, value)
+			t.logger.Debugf("TraefikOidc.buildAuthURL: Added extra auth param %s", key)
+		} else {
+			t.logger.Debugf("TraefikOidc.buildAuthURL: Skipped extra auth param %s (already set by plugin)", key)
+		}
+	}
+
 	// Read authURL with RLock
 	t.metadataMu.RLock()
 	authURL := t.authURL
