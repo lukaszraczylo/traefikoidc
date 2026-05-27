@@ -335,6 +335,10 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	// Convert sessionMaxAge from seconds to duration (0 will use default 24 hours)
 	sessionMaxAge := time.Duration(config.SessionMaxAge) * time.Second
 	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, config.CookiePrefix, sessionMaxAge, t.logger) // Safe to ignore: session manager creation with fallback to defaults
+	if config.CookiePath != "" {
+		t.sessionManager.cookiePath = config.CookiePath
+		t.logger.Debugf("Using configured cookie path: %s", config.CookiePath)
+	}
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 
 	// Initialize token resilience manager with default configuration
