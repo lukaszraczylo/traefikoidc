@@ -472,6 +472,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 //   - req: The HTTP request to process.
 //   - session: The user's session data containing tokens and claims.
 //   - redirectURL: The callback URL for re-authentication if needed.
+//
 // processAuthorizedRequestRS is the requestState-aware variant of
 // processAuthorizedRequest. It reads SessionData fields from the captured
 // snapshot in rs instead of calling session.GetX() (each of which acquires
@@ -748,7 +749,10 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 			}
 			headerValue := buf.String()
 			req.Header.Set(headerName, headerValue)
-			t.logger.Debugf("Set templated header %s = %s", headerName, headerValue)
+			// Do not log the value: templated headers commonly carry the access
+			// token (e.g. "Authorization: Bearer {{.AccessToken}}"), and logging
+			// it — even at debug — leaks credentials into logs.
+			t.logger.Debugf("Set templated header %s (%d bytes)", headerName, len(headerValue))
 		}
 	}
 
