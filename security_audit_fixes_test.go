@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gorilla/sessions"
 	"github.com/lukaszraczylo/traefikoidc/internal/utils"
@@ -346,5 +347,26 @@ func TestRank12_LiveInstanceCounter(t *testing.T) {
 	}
 	if rem := unregisterLiveInstance(); rem != start {
 		t.Errorf("expected %d remaining, got %d", start, rem)
+	}
+}
+
+// TestRank13_CookieMaxAgeMatchesSessionLifetime verifies the cookie store's
+// MaxAge (which bounds both the cookie Max-Age and the codec's cryptographic
+// timestamp validity) is bound to the configured session lifetime rather than
+// gorilla's 30-day default.
+func TestRank13_CookieMaxAgeMatchesSessionLifetime(t *testing.T) {
+	maxAge := 2 * time.Hour
+	sm, err := NewSessionManager(strings.Repeat("k", 40), false, "", "", maxAge, NewLogger("error"))
+	if err != nil {
+		t.Fatalf("NewSessionManager failed: %v", err)
+	}
+	defer sm.cancel()
+
+	cs, ok := sm.store.(*sessions.CookieStore)
+	if !ok {
+		t.Fatal("session store is not a *sessions.CookieStore")
+	}
+	if got := cs.Options.MaxAge; got != int(maxAge.Seconds()) {
+		t.Errorf("cookie store MaxAge = %d, want %d (bound to sessionMaxAge)", got, int(maxAge.Seconds()))
 	}
 }

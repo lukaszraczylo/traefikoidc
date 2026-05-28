@@ -481,6 +481,14 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 		cancel:        cancel,
 	}
 
+	// Bind the cookie codec's timestamp validity (and the cookie Max-Age) to the
+	// configured session lifetime instead of gorilla's 30-day default, so a
+	// stolen cookie is not cryptographically valid for up to 30 days regardless
+	// of the (possibly much shorter) configured sessionMaxAge (rank 13).
+	if cs, ok := sm.store.(*sessions.CookieStore); ok {
+		cs.MaxAge(int(sessionMaxAge.Seconds()))
+	}
+
 	// Initialize global memory monitoring (singleton)
 	sm.memoryMonitor = GetGlobalTaskMemoryMonitor(logger)
 

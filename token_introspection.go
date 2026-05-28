@@ -128,6 +128,12 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 	if t.introspectionCache != nil {
 		// Cache for a short duration or until token expiry (whichever is shorter)
 		cacheDuration := 5 * time.Minute
+		// When introspection is REQUIRED, operators expect near-real-time
+		// revocation; cap the positive-result cache so a token revoked at the
+		// provider cannot keep passing for the full 5 minutes (rank 8).
+		if t.requireTokenIntrospection && cacheDuration > 30*time.Second {
+			cacheDuration = 30 * time.Second
+		}
 		if introspectionResp.Exp > 0 {
 			expTime := time.Unix(introspectionResp.Exp, 0)
 			untilExp := time.Until(expTime)
