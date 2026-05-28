@@ -21,13 +21,16 @@ type IntrospectionResponse struct {
 	Username  string `json:"username,omitempty"`
 	TokenType string `json:"token_type,omitempty"`
 	Sub       string `json:"sub,omitempty"`
-	Aud       string `json:"aud,omitempty"`
-	Iss       string `json:"iss,omitempty"`
-	Jti       string `json:"jti,omitempty"`
-	Exp       int64  `json:"exp,omitempty"`
-	Iat       int64  `json:"iat,omitempty"`
-	Nbf       int64  `json:"nbf,omitempty"`
-	Active    bool   `json:"active"`
+	// Aud holds the introspection audience. Per RFC 7662 it may be a single
+	// string or an array of strings, so it is decoded as interface{} and
+	// matched with verifyAudience (which handles both shapes).
+	Aud    interface{} `json:"aud,omitempty"`
+	Iss    string      `json:"iss,omitempty"`
+	Jti    string      `json:"jti,omitempty"`
+	Exp    int64       `json:"exp,omitempty"`
+	Iat    int64       `json:"iat,omitempty"`
+	Nbf    int64       `json:"nbf,omitempty"`
+	Active bool        `json:"active"`
 }
 
 // introspectToken performs OAuth 2.0 Token Introspection (RFC 7662) for an opaque token.
@@ -203,12 +206,18 @@ func (t *TraefikOidc) validateOpaqueToken(token string) error {
 		}
 	}
 
-	// Validate audience if configured
-	// Note: For opaque tokens, audience validation via introspection may be limited
-	// depending on what the introspection endpoint returns
-	if t.audience != "" && t.audience != t.clientID && resp.Aud != "" {
-		if resp.Aud != t.audience {
-			return fmt.Errorf("invalid audience: expected %s, got %s", t.audience, resp.Aud)
+	// Validate audience if configured. When a distinct API audience is
+	// configured (audience != clientID), the introspection response MUST carry
+	// a matching audience. Fail closed on a missing or mismatched aud: a token
+	// whose audience cannot be confirmed must not be accepted, otherwise a
+	// token minted for a different audience would pass. aud may be a single
+	// string or an array of strings (RFC 7662); verifyAudience handles both.
+	if t.audience != "" && t.audience != t.clientID {
+		if resp.Aud == nil {
+			return fmt.Errorf("invalid audience: expected %s, introspection response has no audience", t.audience)
+		}
+		if err := verifyAudience(resp.Aud, t.audience); err != nil {
+			return fmt.Errorf("invalid audience: expected %s: %w", t.audience, err)
 		}
 	}
 

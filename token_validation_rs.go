@@ -166,7 +166,12 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 			if rs.refreshToken != "" {
 				return false, true, false
 			}
-			return true, false, false
+			// Opaque access token, no ID token to corroborate it, and
+			// introspection was unavailable/disabled/errored (e.g.
+			// circuit-breaker open). There is nothing left to verify the token
+			// against, so fail closed and force re-authentication rather than
+			// trusting an unverified opaque token.
+			return false, false, true
 		}
 		if err := t.verifyToken(rs.idToken); err != nil {
 			if strings.Contains(err.Error(), "token has expired") {

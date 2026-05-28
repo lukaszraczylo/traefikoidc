@@ -125,10 +125,14 @@ func TestFrontchannelLogoutBasic(t *testing.T) {
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name:           "Valid front-channel logout without issuer",
+			// Front-channel logout MUST carry a matching issuer. A request
+			// omitting iss is rejected so an unauthenticated attacker cannot
+			// force-logout a session whose sid is known by simply leaving iss
+			// out (audit rank 30).
+			name:           "Missing issuer is rejected",
 			method:         http.MethodGet,
 			queryParams:    map[string]string{"sid": "session456"},
-			expectedStatus: http.StatusOK,
+			expectedStatus: http.StatusBadRequest,
 		},
 	}
 
@@ -407,17 +411,17 @@ func TestMiddlewareBackchannelLogoutRouting(t *testing.T) {
 	})
 
 	oidc := &TraefikOidc{
-		next:                     nextHandler,
-		logger:                   NewLogger("debug"),
-		enableBackchannelLogout:  true,
-		backchannelLogoutPath:    "/backchannel-logout",
-		sessionInvalidationCache: mockCache,
-		clientID:                 "test-client",
-		issuerURL:                "https://provider.example.com",
-		initComplete:             make(chan struct{}),
-		firstRequestStarted: 1,
+		next:                         nextHandler,
+		logger:                       NewLogger("debug"),
+		enableBackchannelLogout:      true,
+		backchannelLogoutPath:        "/backchannel-logout",
+		sessionInvalidationCache:     mockCache,
+		clientID:                     "test-client",
+		issuerURL:                    "https://provider.example.com",
+		initComplete:                 make(chan struct{}),
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		logoutURLPath:            "/logout",
+		logoutURLPath:                "/logout",
 	}
 	close(oidc.initComplete)
 
@@ -449,22 +453,23 @@ func TestMiddlewareFrontchannelLogoutRouting(t *testing.T) {
 	})
 
 	oidc := &TraefikOidc{
-		next:                     nextHandler,
-		logger:                   NewLogger("debug"),
-		enableFrontchannelLogout: true,
-		frontchannelLogoutPath:   "/frontchannel-logout",
-		sessionInvalidationCache: mockCache,
-		clientID:                 "test-client",
-		issuerURL:                "https://provider.example.com",
-		initComplete:             make(chan struct{}),
-		firstRequestStarted: 1,
+		next:                         nextHandler,
+		logger:                       NewLogger("debug"),
+		enableFrontchannelLogout:     true,
+		frontchannelLogoutPath:       "/frontchannel-logout",
+		sessionInvalidationCache:     mockCache,
+		clientID:                     "test-client",
+		issuerURL:                    "https://provider.example.com",
+		initComplete:                 make(chan struct{}),
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		logoutURLPath:            "/logout",
+		logoutURLPath:                "/logout",
 	}
 	close(oidc.initComplete)
 
-	// Request to front-channel logout path with valid sid should succeed
-	req := httptest.NewRequest(http.MethodGet, "/frontchannel-logout?sid=test-session", nil)
+	// Request to front-channel logout path with valid sid + matching issuer
+	// should succeed. The issuer is now required (audit rank 30), so supply it.
+	req := httptest.NewRequest(http.MethodGet, "/frontchannel-logout?sid=test-session&iss=https://provider.example.com", nil)
 	rw := httptest.NewRecorder()
 
 	oidc.ServeHTTP(rw, req)
@@ -1432,7 +1437,9 @@ func TestFrontchannelLogoutCacheControl(t *testing.T) {
 		issuerURL:                "https://provider.example.com",
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/frontchannel-logout?sid=session123", nil)
+	// Issuer is now required (audit rank 30); supply a matching one so the
+	// successful-logout cache headers can be asserted.
+	req := httptest.NewRequest(http.MethodGet, "/frontchannel-logout?sid=session123&iss=https://provider.example.com", nil)
 	rw := httptest.NewRecorder()
 
 	oidc.handleFrontchannelLogout(rw, req)

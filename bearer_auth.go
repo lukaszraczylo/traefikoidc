@@ -149,6 +149,94 @@ func parseBearerJOSEHeader(token string) *bearerError {
 	return nil
 }
 
+// headerClaimRuneReason reports why a rune is unsafe to inject into a request
+// header value, or "" if the rune is acceptable. Shared core of the bearer-path
+// identifier sanitizer and the cookie-path header claim sanitizer: rejects
+// control chars (CRLF/header injection), Unicode bidi-override runes (RTL
+// spoofing of admin UI / SIEM), and the delimiters , ; = (a comma in a group
+// name would inject extra entries into a comma-joined header).
+func headerClaimRuneReason(r rune) string {
+	if reason := headerInjectionRuneReason(r); reason != "" {
+		return reason
+	}
+	// The , ; = delimiters are only unsafe for values placed into delimited or
+	// list contexts (a comma-joined header, or an identifier downstreams may
+	// split). They are valid in arbitrary single header values, so this stricter
+	// check is used for the cookie-path identifier and the group/role list, NOT
+	// for free-form templated header output (see headerValueReason).
+	if r == ',' || r == ';' || r == '=' {
+		return "delimiter character"
+	}
+	return ""
+}
+
+// headerInjectionRuneReason reports why a rune is unsafe in ANY HTTP header
+// value, or "" if acceptable. Rejects control characters (CR/LF header
+// injection) and Unicode bidi-override runes (RTL spoofing of admin UIs/SIEMs).
+// Unlike headerClaimRuneReason it does NOT reject , ; = which are legitimate in
+// free-form header values (e.g. an opaque "Authorization: Bearer <token>").
+func headerInjectionRuneReason(r rune) string {
+	if unicode.IsControl(r) {
+		return "control character"
+	}
+	if (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) {
+		return "bidi-override character"
+	}
+	return ""
+}
+
+// headerValueReason reports why value is unsafe to forward as a free-form HTTP
+// header value, or "" if acceptable. It rejects values over maxLen (maxLen<=0
+// disables the check) and values containing control or bidi-override runes, but
+// permits , ; = (valid in header values). Empty is allowed. The reason string
+// never includes the value, so it is safe to log.
+func headerValueReason(value string, maxLen int) string {
+	if maxLen > 0 && len(value) > maxLen {
+		return "exceeds max length"
+	}
+	for _, r := range value {
+		if reason := headerInjectionRuneReason(r); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+// headerClaimValueReason reports why value is unsafe to inject into a
+// downstream request header, or "" if it is acceptable. It rejects empty
+// values, values exceeding maxLen (maxLen<=0 disables the length check), and
+// values containing any rune rejected by headerClaimRuneReason. The reason
+// string is safe to log (it never includes the value itself).
+func headerClaimValueReason(value string, maxLen int) string {
+	if value == "" {
+		return "empty value"
+	}
+	if maxLen > 0 && len(value) > maxLen {
+		return "exceeds max length"
+	}
+	for _, r := range value {
+		if reason := headerClaimRuneReason(r); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+// sanitizeHeaderClaimValue validates a claim-derived value before it is
+// injected into a downstream request header. It trims surrounding whitespace
+// and fails closed (ok=false) on empty values, values exceeding maxLen
+// (maxLen<=0 disables the length check), or values containing any rune rejected
+// by headerClaimRuneReason. Used by the cookie/session path, which — unlike the
+// bearer path — does not otherwise sanitize the principal identifier or the
+// group/role strings joined into X-User-Groups / X-User-Roles.
+func sanitizeHeaderClaimValue(raw string, maxLen int) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if headerClaimValueReason(value, maxLen) != "" {
+		return "", false
+	}
+	return value, true
+}
+
 // sanitizeBearerIdentifier validates and trims a principal identifier before
 // it is injected into request headers. Layered defense: net/http will reject
 // CRLF on the wire too, but rejecting early gives clearer error logs and
@@ -163,15 +251,8 @@ func sanitizeBearerIdentifier(raw string, maxLen int) (string, *bearerError) {
 		return "", newBearerError(bearerErrInvalidIdentifier, "identifier exceeds max length")
 	}
 	for _, r := range identifier {
-		if unicode.IsControl(r) {
-			return "", newBearerError(bearerErrInvalidIdentifier, "identifier contains control character")
-		}
-		// Unicode bidi-override range (RTL spoofing of admin UI / SIEM).
-		if (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) {
-			return "", newBearerError(bearerErrInvalidIdentifier, "identifier contains bidi-override character")
-		}
-		if r == ',' || r == ';' || r == '=' {
-			return "", newBearerError(bearerErrInvalidIdentifier, "identifier contains delimiter character")
+		if reason := headerClaimRuneReason(r); reason != "" {
+			return "", newBearerError(bearerErrInvalidIdentifier, "identifier contains "+reason)
 		}
 	}
 	return identifier, nil

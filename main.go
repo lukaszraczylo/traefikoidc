@@ -541,13 +541,26 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 		metadata.IntrospectionURL = ""
 	}
 
+	// Pin the discovered issuer to the operator-configured provider host. The
+	// issuer is the trust anchor for JWT issuer validation, so a poisoned
+	// discovery document advertising an attacker-chosen issuer must never be
+	// stored. Real providers (Google, Azure, Keycloak, Okta, Auth0) keep the
+	// issuer on the same host as the configured providerURL. On mismatch, leave
+	// issuerURL empty/unchanged so downstream issuer validation fails closed
+	// rather than trusting the attacker-chosen value.
+	discoveredIssuer := metadata.Issuer
+	if discoveredIssuer != "" && t.providerURL != "" && !sameHost(discoveredIssuer, t.providerURL) {
+		t.logger.Errorf("Ignoring discovered issuer %q: host does not match configured providerURL", discoveredIssuer)
+		discoveredIssuer = ""
+	}
+
 	t.metadataMu.Lock()
 
 	t.jwksURL = metadata.JWKSURL
 	t.scopesSupported = metadata.ScopesSupported // Store supported scopes from discovery
 	t.authURL = metadata.AuthURL
 	t.tokenURL = metadata.TokenURL
-	t.issuerURL = metadata.Issuer
+	t.issuerURL = discoveredIssuer
 	t.revocationURL = metadata.RevokeURL
 	t.endSessionURL = metadata.EndSessionURL
 	t.introspectionURL = metadata.IntrospectionURL // OAuth 2.0 Token Introspection endpoint (RFC 7662)
@@ -560,7 +573,7 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	// Publish the read-mostly URL bundle atomically. Hot-path readers Load
 	// this directly instead of acquiring metadataMu.RLock per request.
 	t.metadataSnapshot.Store(&MetadataSnapshot{
-		IssuerURL:        metadata.Issuer,
+		IssuerURL:        discoveredIssuer,
 		JWKSURL:          metadata.JWKSURL,
 		TokenURL:         metadata.TokenURL,
 		AuthURL:          metadata.AuthURL,

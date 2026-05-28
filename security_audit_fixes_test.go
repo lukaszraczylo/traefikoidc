@@ -370,3 +370,35 @@ func TestRank13_CookieMaxAgeMatchesSessionLifetime(t *testing.T) {
 		t.Errorf("cookie store MaxAge = %d, want %d (bound to sessionMaxAge)", got, int(maxAge.Seconds()))
 	}
 }
+
+// TestRank33And34_HeaderSanitizationDistinction verifies the two header sinks
+// use the right strictness: free-form templated header VALUES (rank 34) permit
+// , ; = (e.g. an opaque "Bearer <token>" or an LDAP-DN claim) but reject CR/LF,
+// bidi, and over-length; claim values joined into delimited/identifier headers
+// (rank 33) additionally reject , ; =.
+func TestRank33And34_HeaderSanitizationDistinction(t *testing.T) {
+	// Rank 34 — free-form header value.
+	if headerValueReason("Bearer abc=def==", 8192) != "" {
+		t.Error("'=' must be allowed in a free-form header value (opaque bearer token)")
+	}
+	if headerValueReason("cn=user,ou=eng;dc=x", 8192) != "" {
+		t.Error("',;=' must be allowed in a free-form header value (e.g. an LDAP DN claim)")
+	}
+	if headerValueReason("evil"+string(rune(13))+string(rune(10))+"Injected: 1", 8192) == "" {
+		t.Error("CR/LF must be rejected in a header value (injection)")
+	}
+	if headerValueReason("toolong", 3) == "" {
+		t.Error("over-length value must be rejected")
+	}
+
+	// Rank 33 — claim value bound for a delimited/identifier header.
+	if _, ok := sanitizeHeaderClaimValue("admins,superadmins", 256); ok {
+		t.Error("a comma must be rejected in a value joined into a comma-delimited header")
+	}
+	if _, ok := sanitizeHeaderClaimValue("normal-user@example.com", 256); !ok {
+		t.Error("a clean identifier must pass claim sanitization")
+	}
+	if _, ok := sanitizeHeaderClaimValue("evil"+string(rune(13))+string(rune(10))+"X: 1", 256); ok {
+		t.Error("CR/LF must be rejected in a claim value")
+	}
+}
