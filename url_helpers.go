@@ -19,12 +19,37 @@ import (
 //   - true if the URL should be excluded from authentication, false otherwise.
 func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 	for excludedURL := range t.excludedURLs {
-		if strings.HasPrefix(currentRequest, excludedURL) {
+		if pathExcluded(currentRequest, excludedURL) {
 			t.logger.Debugf("URL is excluded - got %s / excluded hit: %s", currentRequest, excludedURL)
 			return true
 		}
 	}
 	return false
+}
+
+// pathExcluded reports whether requestPath is covered by an excluded prefix at a
+// natural boundary: an exact match, a sub-path ("/public" → "/public/x"), or a
+// file extension ("/favicon" → "/favicon.ico"). It deliberately does NOT match
+// an unrelated sibling such as "/publicsecret", so a configured exclusion can no
+// longer be widened into an authentication bypass on a different resource.
+func pathExcluded(requestPath, excluded string) bool {
+	excluded = strings.TrimRight(excluded, "/")
+	if excluded == "" {
+		// A "/" (root) exclusion only matches the root path, not everything.
+		return requestPath == "" || requestPath == "/"
+	}
+	if requestPath == excluded {
+		return true
+	}
+	if !strings.HasPrefix(requestPath, excluded) {
+		return false
+	}
+	switch requestPath[len(excluded)] {
+	case '/', '.':
+		return true
+	default:
+		return false
+	}
 }
 
 // buildAuthURL constructs the OIDC provider authorization URL.

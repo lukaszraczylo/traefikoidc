@@ -1875,14 +1875,14 @@ func TestHandleLogout(t *testing.T) {
 			},
 			endSessionURL:  "",
 			expectedStatus: http.StatusFound,
-			expectedURL:    "http://example.com/",
+			expectedURL:    "/",
 			host:           "test-host",
 		},
 		{
 			name:           "Logout with empty session",
 			setupSession:   func(session *SessionData) {},
 			expectedStatus: http.StatusFound,
-			expectedURL:    "http://example.com/",
+			expectedURL:    "/",
 			host:           "test-host",
 		},
 		{

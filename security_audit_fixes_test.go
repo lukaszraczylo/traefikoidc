@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/sessions"
+	"github.com/lukaszraczylo/traefikoidc/internal/utils"
 )
 
 // TestRank1_SessionCookieIsEncrypted verifies that the session cookie payload is
@@ -180,5 +181,74 @@ func TestRank4_IntrospectionHostPin(t *testing.T) {
 	}
 	if sameHost("", "https://kc.example.com") || sameHost("https://kc.example.com", "") {
 		t.Error("empty URL must not be treated as a host match")
+	}
+}
+
+// TestRank5_OpenRedirectNeutralized verifies the helper the callback now applies
+// to the stored incoming path forces a host-relative redirect target.
+func TestRank5_OpenRedirectNeutralized(t *testing.T) {
+	cases := map[string]string{
+		"//evil.com/x": "/evil.com/x",
+		`/\evil.com`:   "/evil.com",
+		"/legit/path":  "/legit/path",
+	}
+	for in, want := range cases {
+		got := normalizeLogoutPath(in)
+		if got != want {
+			t.Errorf("normalizeLogoutPath(%q) = %q, want %q", in, got, want)
+		}
+		if strings.HasPrefix(got, "//") || strings.HasPrefix(got, `/\`) {
+			t.Errorf("normalizeLogoutPath(%q) = %q is still protocol-relative", in, got)
+		}
+	}
+}
+
+// TestRank14_ExcludedURLSegmentBoundary verifies excluded-URL matching is
+// anchored at path-segment boundaries and cannot be widened into a bypass.
+func TestRank14_ExcludedURLSegmentBoundary(t *testing.T) {
+	if !pathExcluded("/public", "/public") {
+		t.Error("exact match should be excluded")
+	}
+	if !pathExcluded("/public/page", "/public") {
+		t.Error("sub-path should be excluded")
+	}
+	if pathExcluded("/publicsecret", "/public") {
+		t.Error("/publicsecret must NOT be excluded by /public")
+	}
+	if pathExcluded("/public-admin", "/public") {
+		t.Error("/public-admin must NOT be excluded by /public")
+	}
+	if !pathExcluded("/health", "/health/") {
+		t.Error("trailing-slash config should still match the exact path")
+	}
+	if pathExcluded("/anything", "/") {
+		t.Error("root exclusion must not match arbitrary paths")
+	}
+	if !pathExcluded("/", "/") {
+		t.Error("root exclusion should match the root path")
+	}
+}
+
+// TestRank15_ForwardedHostSanitized verifies a crafted X-Forwarded-Host cannot
+// inject CRLF, smuggle a second host, or otherwise poison the derived host.
+func TestRank15_ForwardedHostSanitized(t *testing.T) {
+	mk := func(xfh string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "http://real.example.com/x", nil)
+		r.Host = "real.example.com"
+		if xfh != "" {
+			r.Header.Set("X-Forwarded-Host", xfh)
+		}
+		return r
+	}
+	if got := utils.DetermineHost(mk("ext.example.com")); got != "ext.example.com" {
+		t.Errorf("clean X-Forwarded-Host should be honored, got %q", got)
+	}
+	if got := utils.DetermineHost(mk("a.example.com, evil.com")); got != "a.example.com" {
+		t.Errorf("multi-value X-Forwarded-Host should use first host only, got %q", got)
+	}
+	for _, bad := range []string{"evil.com\r\nSet-Cookie: x=1", "evil.com /x", "   "} {
+		if got := utils.DetermineHost(mk(bad)); got != "real.example.com" {
+			t.Errorf("malformed X-Forwarded-Host %q should fall back to req.Host, got %q", bad, got)
+		}
 	}
 }

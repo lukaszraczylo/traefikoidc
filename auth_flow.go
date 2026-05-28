@@ -263,7 +263,10 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 
 	redirectPath := "/"
 	if incomingPath := session.GetIncomingPath(); incomingPath != "" && incomingPath != t.redirURLPath {
-		redirectPath = incomingPath
+		// Neutralize open-redirect payloads (e.g. //evil.com, /\evil.com) stored
+		// from the original request target before using it as the post-login
+		// redirect target. normalizeLogoutPath forces a host-relative path.
+		redirectPath = normalizeLogoutPath(incomingPath)
 	}
 	session.SetIncomingPath("")
 

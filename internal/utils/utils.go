@@ -155,10 +155,32 @@ func DetermineScheme(req *http.Request, forceHTTPS bool) string {
 // It checks X-Forwarded-Host header first (for proxy scenarios),
 // then falls back to req.Host.
 func DetermineHost(req *http.Request) string {
-	if host := req.Header.Get("X-Forwarded-Host"); host != "" {
+	if host := sanitizeForwardedHost(req.Header.Get("X-Forwarded-Host")); host != "" {
 		return host
 	}
 	return req.Host
+}
+
+// sanitizeForwardedHost returns a single, well-formed host from a (possibly
+// comma-separated) X-Forwarded-Host header, or "" if none is usable. It takes
+// only the first value and rejects whitespace and control characters, so a
+// crafted header cannot inject CRLF, smuggle a second host, or otherwise poison
+// the redirect URLs built from the result.
+func sanitizeForwardedHost(v string) string {
+	if v == "" {
+		return ""
+	}
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = v[:i]
+	}
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if strings.IndexFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f || r == ' ' }) >= 0 {
+		return ""
+	}
+	return v
 }
 
 // BuildFullURL constructs a URL from scheme, host, and path components.
