@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -502,6 +503,38 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 // Parameters:
 //   - metadata: A pointer to the ProviderMetadata struct containing the discovered endpoints.
 func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
+	// SSRF defense (audit ranks 3 & 4): a discovery document is attacker-
+	// influenced when the provider or its TLS is compromised. Reject any
+	// discovered endpoint pointed at a blocked address before the plugin issues
+	// outbound requests to it, so it can never be used to reach the cloud
+	// metadata service or an internal host.
+	allowLoopback := false
+	if pu, err := url.Parse(t.providerURL); err == nil {
+		allowLoopback = isLoopbackHost(pu.Hostname())
+	}
+	sanitize := func(name, raw string) string {
+		if err := t.validateDiscoveredEndpoint(raw, allowLoopback); err != nil {
+			t.logger.Errorf("Ignoring discovered %s endpoint %q: %v", name, raw, err)
+			return ""
+		}
+		return raw
+	}
+	metadata.JWKSURL = sanitize("jwks_uri", metadata.JWKSURL)
+	metadata.AuthURL = sanitize("authorization", metadata.AuthURL)
+	metadata.TokenURL = sanitize("token", metadata.TokenURL)
+	metadata.RevokeURL = sanitize("revocation", metadata.RevokeURL)
+	metadata.EndSessionURL = sanitize("end_session", metadata.EndSessionURL)
+	metadata.RegistrationURL = sanitize("registration", metadata.RegistrationURL)
+	metadata.IntrospectionURL = sanitize("introspection", metadata.IntrospectionURL)
+	// The introspection request authenticates with the client secret via HTTP
+	// Basic, so the endpoint must live on the same host as the operator-
+	// configured provider; otherwise a poisoned discovery document could
+	// exfiltrate the client secret to an attacker-controlled host.
+	if metadata.IntrospectionURL != "" && t.providerURL != "" && !sameHost(metadata.IntrospectionURL, t.providerURL) {
+		t.logger.Errorf("Ignoring introspection endpoint %q: host does not match configured providerURL", metadata.IntrospectionURL)
+		metadata.IntrospectionURL = ""
+	}
+
 	t.metadataMu.Lock()
 
 	t.jwksURL = metadata.JWKSURL

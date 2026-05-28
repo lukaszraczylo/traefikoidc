@@ -127,3 +127,58 @@ func TestRank2And6_InvalidConfigFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// TestRank3_DiscoveredEndpointSSRFGuard verifies that endpoints from the
+// provider discovery document are screened against SSRF targets before use.
+func TestRank3_DiscoveredEndpointSSRFGuard(t *testing.T) {
+	tr := &TraefikOidc{}
+
+	blocked := []string{
+		"http://169.254.169.254/latest/meta-data/", // cloud metadata (link-local)
+		"http://[fe80::1]/jwks",                    // IPv6 link-local
+		"http://10.0.0.5/jwks",                     // private
+		"http://192.168.1.10/jwks",                 // private
+		"http://127.0.0.1/jwks",                    // loopback (allowLoopback=false)
+		"ftp://example.com/jwks",                   // disallowed scheme
+	}
+	for _, u := range blocked {
+		if err := tr.validateDiscoveredEndpoint(u, false); err == nil {
+			t.Errorf("expected discovered endpoint %q to be rejected", u)
+		}
+	}
+
+	allowed := []string{
+		"https://accounts.google.com/o/oauth2/v3/certs",
+		"https://www.googleapis.com/oauth2/v3/certs", // cross-domain JWKS must stay allowed
+		"", // empty optional endpoint
+	}
+	for _, u := range allowed {
+		if err := tr.validateDiscoveredEndpoint(u, false); err != nil {
+			t.Errorf("expected discovered endpoint %q to be allowed, got %v", u, err)
+		}
+	}
+
+	// Loopback is allowed only when the provider itself is loopback (dev/test).
+	if err := tr.validateDiscoveredEndpoint("http://127.0.0.1:8080/jwks", true); err != nil {
+		t.Errorf("loopback endpoint should be allowed when allowLoopback=true: %v", err)
+	}
+	// Private addresses are allowed when explicitly opted in.
+	trPriv := &TraefikOidc{allowPrivateIPAddresses: true}
+	if err := trPriv.validateDiscoveredEndpoint("http://10.0.0.5/jwks", false); err != nil {
+		t.Errorf("private endpoint should be allowed when allowPrivateIPAddresses=true: %v", err)
+	}
+}
+
+// TestRank4_IntrospectionHostPin verifies the host-equality check used to pin
+// the credential-bearing introspection endpoint to the configured provider.
+func TestRank4_IntrospectionHostPin(t *testing.T) {
+	if !sameHost("https://kc.example.com/realms/x", "https://kc.example.com/realms/x/protocol/openid-connect/token/introspect") {
+		t.Error("introspection on the same host as the provider should be accepted")
+	}
+	if sameHost("https://kc.example.com", "https://evil.example.net/introspect") {
+		t.Error("introspection on a different host must be rejected")
+	}
+	if sameHost("", "https://kc.example.com") || sameHost("https://kc.example.com", "") {
+		t.Error("empty URL must not be treated as a host match")
+	}
+}

@@ -288,6 +288,63 @@ func (t *TraefikOidc) validateParsedURL(u *url.URL) error {
 	return nil
 }
 
+// validateDiscoveredEndpoint validates an endpoint URL obtained from the
+// provider's OIDC/OAuth2 discovery document before the plugin issues any
+// outbound request to it. A discovery document is attacker-influenced if the
+// provider is malicious or its TLS is broken, so an unvalidated endpoint is an
+// SSRF vector (e.g. jwks_uri or introspection_endpoint pointed at the cloud
+// metadata service 169.254.169.254 or an internal host).
+//
+// Empty endpoints are allowed (they are optional). Link-local (which covers the
+// 169.254.0.0/16 metadata range), multicast and unspecified addresses are
+// always rejected. Private addresses are rejected unless allowPrivateIPAddresses
+// is set. Loopback is rejected unless allowLoopback is true — which the caller
+// sets only when the operator-configured providerURL is itself loopback (local
+// development, in-cluster sidecars, tests), so production deployments pointed at
+// a real provider still block loopback SSRF.
+func (t *TraefikOidc) validateDiscoveredEndpoint(urlStr string, allowLoopback bool) error {
+	if urlStr == "" {
+		return nil
+	}
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("disallowed URL scheme: %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("missing host in URL")
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		switch {
+		case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified():
+			return fmt.Errorf("endpoint host is a blocked address: %s", ip)
+		case ip.IsLoopback() && !allowLoopback:
+			return fmt.Errorf("endpoint host is a loopback address: %s", ip)
+		case ip.IsPrivate() && !t.allowPrivateIPAddresses:
+			return fmt.Errorf("endpoint host is a private address: %s", ip)
+		}
+	}
+	if strings.Contains(u.Path, "..") {
+		return fmt.Errorf("path traversal detected in URL path")
+	}
+	return nil
+}
+
+// sameHost reports whether two URLs share the same host:port (case-insensitive).
+// Used to pin the credential-bearing introspection endpoint to the operator-
+// configured provider so a poisoned discovery document cannot redirect the
+// client secret to an attacker-controlled host.
+func sameHost(a, b string) bool {
+	ua, erra := url.Parse(a)
+	ub, errb := url.Parse(b)
+	if erra != nil || errb != nil || ua.Host == "" || ub.Host == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Host, ub.Host)
+}
+
 // validateHost validates a hostname or IP address for security.
 // It prevents access to localhost, private networks, and known metadata endpoints.
 // When allowPrivateIPAddresses is enabled, private IP checks are skipped.
