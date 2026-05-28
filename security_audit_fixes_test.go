@@ -289,3 +289,62 @@ func TestRank11_TransportPoolTLSIsolationAtLimit(t *testing.T) {
 		t.Error("at the limit a config with different TLS settings must not reuse the strict transport")
 	}
 }
+
+// TestRank9_RedisFingerprint verifies divergent explicit Redis backends produce
+// distinct fingerprints (used to warn about ignored cache config), while an
+// absent or disabled Redis yields the empty (no-warning) fingerprint.
+func TestRank9_RedisFingerprint(t *testing.T) {
+	if redisFingerprint(nil) != "" {
+		t.Error("nil config should yield an empty fingerprint")
+	}
+	if redisFingerprint(&Config{}) != "" {
+		t.Error("config without Redis should yield an empty fingerprint")
+	}
+	if redisFingerprint(&Config{Redis: &RedisConfig{Enabled: false, Address: "a:6379"}}) != "" {
+		t.Error("disabled Redis should yield an empty fingerprint")
+	}
+	a := redisFingerprint(&Config{Redis: &RedisConfig{Enabled: true, Address: "a:6379", KeyPrefix: "p"}})
+	b := redisFingerprint(&Config{Redis: &RedisConfig{Enabled: true, Address: "b:6379", KeyPrefix: "p"}})
+	if a == "" || a == b {
+		t.Errorf("distinct enabled backends must produce distinct non-empty fingerprints (%q vs %q)", a, b)
+	}
+}
+
+// TestRank10_TokenTypeCacheKeyNoCollision verifies that two different tokens
+// sharing the same 32-character JWT header prefix are classified independently.
+// The previous 32-char cache key would have collided and mis-classified them.
+func TestRank10_TokenTypeCacheKeyNoCollision(t *testing.T) {
+	tr := &TraefikOidc{
+		tokenTypeCache:         NewCache(),
+		suppressDiagnosticLogs: true,
+		clientID:               "client",
+	}
+	// A header prefix longer than 32 chars, shared by both tokens.
+	prefix := "eyJhbGciOiJSUzI1NiIsImtpZCI6IjEifQ"
+	idJWT := &JWT{Header: map[string]interface{}{}, Claims: map[string]interface{}{"nonce": "n"}}
+	accessJWT := &JWT{Header: map[string]interface{}{"typ": "at+jwt"}, Claims: map[string]interface{}{}}
+
+	if !tr.detectTokenType(idJWT, prefix+".id.sig") {
+		t.Error("token with a nonce claim should be detected as an ID token")
+	}
+	if tr.detectTokenType(accessJWT, prefix+".access.sig") {
+		t.Error("access token (typ=at+jwt) must not be mis-classified as ID despite the shared 32-char prefix")
+	}
+}
+
+// TestRank12_LiveInstanceCounter verifies the process-global instance counter
+// that gates teardown of shared singleton tasks.
+func TestRank12_LiveInstanceCounter(t *testing.T) {
+	start := atomic.LoadInt32(&liveInstanceCount)
+	registerLiveInstance()
+	registerLiveInstance()
+	if got := atomic.LoadInt32(&liveInstanceCount); got != start+2 {
+		t.Fatalf("expected %d live instances, got %d", start+2, got)
+	}
+	if rem := unregisterLiveInstance(); rem != start+1 {
+		t.Errorf("expected %d remaining, got %d", start+1, rem)
+	}
+	if rem := unregisterLiveInstance(); rem != start {
+		t.Errorf("expected %d remaining, got %d", start, rem)
+	}
+}

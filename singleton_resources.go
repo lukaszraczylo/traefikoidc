@@ -263,6 +263,19 @@ func (rm *ResourceManager) cleanupInstance(instanceID string) {
 	// This is a hook for future instance-specific cleanup needs
 }
 
+// liveInstanceCount tracks the number of fully-constructed TraefikOidc plugin
+// instances alive in this process. Process-global singleton tasks (such as the
+// shared token-cleanup) must only be stopped when the LAST instance shuts down,
+// otherwise one instance's teardown would disable them for all survivors.
+var liveInstanceCount int32
+
+// registerLiveInstance records a newly constructed plugin instance.
+func registerLiveInstance() { atomic.AddInt32(&liveInstanceCount, 1) }
+
+// unregisterLiveInstance records a plugin instance shutting down and returns the
+// number of instances still alive afterwards.
+func unregisterLiveInstance() int32 { return atomic.AddInt32(&liveInstanceCount, -1) }
+
 // Shutdown gracefully shuts down all managed resources
 func (rm *ResourceManager) Shutdown(ctx context.Context) error {
 	var err error

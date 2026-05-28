@@ -3,7 +3,9 @@ package traefikoidc
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -885,10 +887,9 @@ func TestDetectTokenTypeCaching(t *testing.T) {
 		},
 	}
 	token := "test-token-for-caching-with-enough-characters-for-key"
-	cacheKey := token
-	if len(token) > 32 {
-		cacheKey = token[:32]
-	}
+	// The cache key is a SHA-256 hash of the full token (collision-resistant).
+	sum := sha256.Sum256([]byte(token))
+	cacheKey := hex.EncodeToString(sum[:])
 
 	result := tr.detectTokenType(jwt, token)
 	if !result {

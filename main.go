@@ -426,6 +426,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	// Add reference for this instance
 	rm.AddReference(name)
+	registerLiveInstance()
 
 	// Initialize metadata in a goroutine with proper tracking
 	if t.goroutineWG != nil {
