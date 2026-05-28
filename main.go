@@ -100,18 +100,18 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		config = CreateConfig()
 	}
 
-	if config.SessionEncryptionKey == "" {
-		config.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	}
-
 	logger := NewLogger(config.LogLevel)
-	if len(config.SessionEncryptionKey) < minEncryptionKeyLength {
-		if runtime.Compiler == "yaegi" {
-			config.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-			logger.Infof("Session encryption key is too short; using default key for analyzer")
-		} else {
-			return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
-		}
+
+	// Fail closed on invalid configuration. Validate() enforces the security
+	// constraints (required fields, HTTPS-only URLs, key length, excludedURLs
+	// safety, rate-limit floor, audience format, ...) that were previously
+	// unenforced because this constructor never called it. Crucially it rejects
+	// an empty or too-short SessionEncryptionKey instead of silently
+	// substituting a public hardcoded key, which would let an attacker forge
+	// any session. Traefik's yaegi plugin analyzer supplies a valid key via
+	// .traefik.yml testData, so it passes; only misconfigured deployments fail.
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	// Setup HTTP client
 	caPool, err := config.loadCACertPool()

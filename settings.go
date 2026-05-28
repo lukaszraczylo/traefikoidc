@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -762,7 +763,32 @@ func validateTemplateSecure(templateStr string) error {
 // Returns true if the URL is valid and secure (HTTPS), false otherwise.
 func isValidSecureURL(s string) bool {
 	u, err := url.Parse(s)
-	return err == nil && u.Scheme == "https" && u.Host != ""
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	// Permit plaintext HTTP only for loopback hosts (local development,
+	// in-cluster sidecar providers, tests). Loopback traffic never leaves the
+	// host, so it is not exposed to network MITM; remote providers must use
+	// HTTPS. Mirrors the RFC 8252 loopback allowance.
+	if u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
+		return true
+	}
+	return false
+}
+
+// isLoopbackHost reports whether host is "localhost" or a loopback IP literal
+// (127.0.0.0/8 or ::1).
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // isValidLogLevel checks if the provided log level string is one of the supported values ("debug", "info", "error").

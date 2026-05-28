@@ -2374,6 +2374,7 @@ func TestMultipleMiddlewareInstances(t *testing.T) {
 		ClientSecret:         "test-secret",
 		CallbackURL:          "/callback",
 		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
+		RateLimit:            100,
 	}
 
 	// Create multiple middleware instances
@@ -2500,6 +2501,7 @@ func TestMultiRealmMetadataRefreshIsolation(t *testing.T) {
 		CallbackURL:          "/realm1/callback",
 		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
 		CookiePrefix:         "_oidc_realm1_",
+		RateLimit:            100,
 	}
 
 	// Config for realm2
@@ -2510,6 +2512,7 @@ func TestMultiRealmMetadataRefreshIsolation(t *testing.T) {
 		CallbackURL:          "/realm2/callback",
 		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
 		CookiePrefix:         "_oidc_realm2_",
+		RateLimit:            100,
 	}
 
 	// Create middleware instances for both realms
@@ -2640,6 +2643,7 @@ func TestMetadataRecoveryOnProviderFailure(t *testing.T) {
 		ClientSecret:         "test-secret",
 		CallbackURL:          "/callback",
 		SessionEncryptionKey: "test-encryption-key-thats-long-enough",
+		RateLimit:            100,
 	}
 
 	// Create middleware while provider is unavailable
@@ -4552,6 +4556,7 @@ func TestNewWithScopeAppending(t *testing.T) {
 				CallbackURL:          "/callback",
 				SessionEncryptionKey: "test-encryption-key-thats-long-enough",
 				Scopes:               tc.configScopes,
+				RateLimit:            100,
 			}
 
 			// Create middleware instance

@@ -296,9 +296,12 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 
 		// Create a TraefikOidc instance with context
 		config := &Config{
-			ProviderURL:  mockServer.URL,
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
+			ProviderURL:          mockServer.URL,
+			ClientID:             "test-client",
+			ClientSecret:         "test-secret",
+			CallbackURL:          "/callback",
+			SessionEncryptionKey: "test-encryption-key-32-bytes-long",
+			RateLimit:            100,
 		}
 
 		plugin, err := NewWithContext(ctx, config, nil, "test")
@@ -350,9 +353,9 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 		initialGoroutines := runtime.NumGoroutine()
 
 		configs := []Config{
-			{ProviderURL: mockServer1.URL, ClientID: "client1", ClientSecret: "secret1"},
-			{ProviderURL: mockServer2.URL, ClientID: "client2", ClientSecret: "secret2"},
-			{ProviderURL: mockServer3.URL, ClientID: "client3", ClientSecret: "secret3"},
+			{ProviderURL: mockServer1.URL, ClientID: "client1", ClientSecret: "secret1", CallbackURL: "/callback", SessionEncryptionKey: "test-encryption-key-32-bytes-long", RateLimit: 100},
+			{ProviderURL: mockServer2.URL, ClientID: "client2", ClientSecret: "secret2", CallbackURL: "/callback", SessionEncryptionKey: "test-encryption-key-32-bytes-long", RateLimit: 100},
+			{ProviderURL: mockServer3.URL, ClientID: "client3", ClientSecret: "secret3", CallbackURL: "/callback", SessionEncryptionKey: "test-encryption-key-32-bytes-long", RateLimit: 100},
 		}
 
 		var plugins []*TraefikOidc
@@ -432,9 +435,12 @@ func TestContextAwareGoroutineManagement(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			ctx := context.Background()
 			config := &Config{
-				ProviderURL:  mockServers[i].URL,
-				ClientID:     fmt.Sprintf("client%d", i),
-				ClientSecret: fmt.Sprintf("secret%d", i),
+				ProviderURL:          mockServers[i].URL,
+				ClientID:             fmt.Sprintf("client%d", i),
+				ClientSecret:         fmt.Sprintf("secret%d", i),
+				CallbackURL:          "/callback",
+				SessionEncryptionKey: "test-encryption-key-32-bytes-long",
+				RateLimit:            100,
 			}
 
 			plugin, err := NewWithContext(ctx, config, nil, fmt.Sprintf("test-%d", i))
@@ -595,9 +601,12 @@ func TestBackwardCompatibility(t *testing.T) {
 	t.Run("LegacyNewFunction", func(t *testing.T) {
 		// Test that the original New function still works
 		config := &Config{
-			ProviderURL:  "https://example.com",
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
+			ProviderURL:          "https://example.com",
+			ClientID:             "test-client",
+			ClientSecret:         "test-secret",
+			CallbackURL:          "/callback",
+			SessionEncryptionKey: "test-encryption-key-32-bytes-long",
+			RateLimit:            100,
 		}
 
 		handler, err := New(context.Background(), nil, config, "test")
@@ -617,9 +626,12 @@ func TestBackwardCompatibility(t *testing.T) {
 
 	t.Run("ExistingAPICompatibility", func(t *testing.T) {
 		config := &Config{
-			ProviderURL:  "https://example.com",
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
+			ProviderURL:          "https://example.com",
+			ClientID:             "test-client",
+			ClientSecret:         "test-secret",
+			CallbackURL:          "/callback",
+			SessionEncryptionKey: "test-encryption-key-32-bytes-long",
+			RateLimit:            100,
 		}
 
 		handler, _ := New(context.Background(), nil, config, "test")

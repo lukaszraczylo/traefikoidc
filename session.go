@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -29,6 +31,45 @@ func constantTimeStringCompare(a, b string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// deriveCookieKeys derives an independent 64-byte HMAC authentication key and a
+// 32-byte AES-256 encryption key from the operator-provided session encryption
+// key using HKDF-SHA256 (RFC 5869).
+//
+// gorilla/securecookie only ENCRYPTS the cookie payload when a block
+// (encryption) key is supplied; constructing the store with a single key leaves
+// sessions signed-but-plaintext, so the OIDC access/refresh/ID tokens stored in
+// the cookie are recoverable by anyone who can read the raw cookie bytes. Two
+// independent keys are derived here so the cookie is both encrypted and
+// authenticated. HKDF is implemented with stdlib hmac+sha256 so it runs under
+// Traefik's yaegi interpreter, which may not export crypto/hkdf.
+func deriveCookieKeys(secret string) (authKey, encKey []byte) {
+	okm := hkdfSHA256([]byte(secret), nil, []byte("traefikoidc session cookie keys v1"), 96)
+	return okm[:64], okm[64:96]
+}
+
+// hkdfSHA256 performs HKDF-Extract followed by HKDF-Expand (RFC 5869) using
+// HMAC-SHA256 and returns length bytes of output keying material.
+func hkdfSHA256(ikm, salt, info []byte, length int) []byte {
+	if len(salt) == 0 {
+		salt = make([]byte, sha256.Size)
+	}
+	// Extract: PRK = HMAC-SHA256(salt, IKM)
+	ext := hmac.New(sha256.New, salt)
+	ext.Write(ikm)
+	prk := ext.Sum(nil)
+	// Expand: T(i) = HMAC-SHA256(PRK, T(i-1) | info | i)
+	var out, t []byte
+	for i := byte(1); len(out) < length; i++ {
+		exp := hmac.New(sha256.New, prk)
+		exp.Write(t)
+		exp.Write(info)
+		exp.Write([]byte{i})
+		t = exp.Sum(nil)
+		out = append(out, t...)
+	}
+	return out[:length]
 }
 
 // min returns the minimum of two integers.
@@ -118,12 +159,12 @@ var knownSessionKeys = map[string]bool{
 	"id_token":        true,
 	"user_identifier": true,
 	"authenticated":   true,
-	"csrf":           true,
-	"nonce":          true,
-	"code_verifier":  true,
-	"incoming_path":  true,
-	"created_at":     true,
-	"redirect_count": true,
+	"csrf":            true,
+	"nonce":           true,
+	"code_verifier":   true,
+	"incoming_path":   true,
+	"created_at":      true,
+	"redirect_count":  true,
 }
 
 // compressCombinedPayload compresses the combined session payload using gzip.
@@ -423,8 +464,13 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Derive independent authentication + encryption keys so the session cookie
+	// is AES-256 encrypted and HMAC authenticated, not merely signed. See
+	// deriveCookieKeys: a single key would leave the stored tokens in plaintext.
+	authKey, encKey := deriveCookieKeys(encryptionKey)
+
 	sm := &SessionManager{
-		store:         sessions.NewCookieStore([]byte(encryptionKey)),
+		store:         sessions.NewCookieStore(authKey, encKey),
 		forceHTTPS:    forceHTTPS,
 		cookieDomain:  cookieDomain,
 		cookiePrefix:  cookiePrefix,
@@ -1566,7 +1612,7 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 
 	sd.sessionMutex.Lock()
 	sd.clearAllSessionData(r, true)
-	
+
 	// Release the lock before calling Save to prevent deadlock
 	sd.sessionMutex.Unlock()
 
