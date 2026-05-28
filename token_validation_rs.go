@@ -149,7 +149,15 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 				if rs.idToken != "" {
 					return t.validateTokenExpiryRS(rs, rs.idToken)
 				}
-				return true, false, false
+				// No ID token to corroborate an access token we cannot verify
+				// (Azure nonce-bearing Graph access tokens carry a proprietary,
+				// client-unverifiable signature). Do NOT authenticate on an
+				// unverified token: refresh if a refresh token is available,
+				// otherwise force re-authentication.
+				if rs.refreshToken != "" {
+					return false, true, false
+				}
+				return false, false, true
 			}
 		}
 

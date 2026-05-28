@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gorilla/sessions"
@@ -250,5 +251,41 @@ func TestRank15_ForwardedHostSanitized(t *testing.T) {
 		if got := utils.DetermineHost(mk(bad)); got != "real.example.com" {
 			t.Errorf("malformed X-Forwarded-Host %q should fall back to req.Host, got %q", bad, got)
 		}
+	}
+}
+
+// TestRank11_TransportPoolTLSIsolationAtLimit verifies that, once the client
+// limit is reached, the transport pool reuses an existing transport only when
+// its TLS settings match the caller's, and never hands back a transport built
+// with different TLS trust settings.
+func TestRank11_TransportPoolTLSIsolationAtLimit(t *testing.T) {
+	pool := &SharedTransportPool{
+		transports: make(map[string]*sharedTransport),
+		maxConns:   20,
+		maxClients: 5,
+	}
+
+	strict := DefaultHTTPClientConfig() // InsecureSkipVerify = false
+	t1 := pool.GetOrCreateTransport(strict)
+	if t1 == nil {
+		t.Fatal("expected a transport for the strict config")
+	}
+
+	// Saturate the client limit so subsequent calls hit the fallback path.
+	atomic.StoreInt32(&pool.clientCount, pool.maxClients)
+
+	// Same TLS settings, different (non-TLS) connection limit: safe to reuse.
+	sameTLS := DefaultHTTPClientConfig()
+	sameTLS.MaxConnsPerHost = 99
+	if got := pool.GetOrCreateTransport(sameTLS); got != t1 {
+		t.Error("at the limit a TLS-compatible config should reuse the existing transport")
+	}
+
+	// Different TLS settings (InsecureSkipVerify): must NOT reuse the strict
+	// transport — returning nil lets the caller fall back to a verifying default.
+	insecure := DefaultHTTPClientConfig()
+	insecure.InsecureSkipVerify = true
+	if got := pool.GetOrCreateTransport(insecure); got == t1 {
+		t.Error("at the limit a config with different TLS settings must not reuse the strict transport")
 	}
 }
