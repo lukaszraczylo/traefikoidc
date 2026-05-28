@@ -135,7 +135,7 @@ func (t *TraefikOidc) isAllowedDomain(email string) bool {
 			return false
 		}
 
-		domain := parts[1]
+		domain := strings.ToLower(parts[1])
 		_, domainAllowed := t.allowedUserDomains[domain]
 
 		if domainAllowed {

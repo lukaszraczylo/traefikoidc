@@ -944,6 +944,24 @@ func (c *UniversalCache) updateLocalCache(key string, value interface{}, ttl tim
 	}
 
 	now := time.Now()
+	// Update existing item in place to avoid orphaning its list element and
+	// double-counting currentMemory/currentSize.
+	if existing, exists := c.items[key]; exists {
+		c.currentMemory -= existing.Size
+		c.lruList.Remove(existing.element)
+
+		existing.Value = value
+		existing.Size = size
+		existing.ExpiresAt = now.Add(ttl)
+		existing.LastAccessed = now
+		existing.AccessCount++
+
+		existing.element = c.lruList.PushFront(key)
+		c.currentMemory += size
+
+		return nil
+	}
+
 	item := &CacheItem{
 		Key:          key,
 		Value:        value,

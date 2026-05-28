@@ -120,7 +120,7 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 
 	// Parse response per RFC 7662 Section 2.2
 	var introspectionResp IntrospectionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&introspectionResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&introspectionResp); err != nil {
 		return nil, fmt.Errorf("failed to decode introspection response: %w", err)
 	}
 

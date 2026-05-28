@@ -342,7 +342,17 @@ func (b *bearerFailureTracker) recordSuccess(ip string) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	delete(b.entries, ip)
+	e, ok := b.entries[ip]
+	if !ok {
+		return
+	}
+	// Preserve an active penalty so a single success cannot wipe an in-effect
+	// lockout; only reset the counter when no penalty is active or it has expired.
+	now := time.Now()
+	if e.penaltyUntil.IsZero() || now.After(e.penaltyUntil) {
+		e.count = 0
+		e.firstFailureAt = now
+	}
 }
 
 // clientIPForBearer returns the source IP used to key the failure tracker.

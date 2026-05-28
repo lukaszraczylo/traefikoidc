@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -141,7 +142,7 @@ func (mc *MetadataCache) GetProviderMetadata(ctx context.Context, providerURL st
 	}
 
 	var metadata ProviderMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&metadata); err != nil {
 		return nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}
 

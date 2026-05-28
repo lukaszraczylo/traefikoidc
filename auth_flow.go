@@ -182,6 +182,11 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	}
 
 	codeVerifier := session.GetCodeVerifier()
+	if t.enablePKCE && codeVerifier == "" {
+		t.logger.Error("PKCE is enabled but code verifier is missing from session during callback")
+		t.sendErrorResponse(rw, req, "Authentication failed: PKCE verifier missing", http.StatusBadRequest)
+		return
+	}
 
 	tokenResponse, err := t.tokenExchanger.ExchangeCodeForToken(req.Context(), "authorization_code", code, redirectURL, codeVerifier)
 	if err != nil {
