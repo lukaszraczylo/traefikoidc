@@ -3,7 +3,10 @@
 
 GO            ?= go
 GOPATH        := $(shell $(GO) env GOPATH)
-YAEGI_VERSION ?= latest
+# Pin to the yaegi version bundled by the deployed Traefik so yaegi-validate
+# tests the real interpreter, not a newer one that may support more. Traefik
+# v3.7.1 vendors yaegi v0.16.1 (Go ~1.22 stdlib surface). Bump when Traefik is.
+YAEGI_VERSION ?= v0.16.1
 TEST_TIMEOUT  ?= 480s
 
 .DEFAULT_GOAL := help
