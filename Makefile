@@ -31,6 +31,11 @@ vet: ## Run go vet
 lint: ## Run golangci-lint if available
 	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || echo "golangci-lint not installed; skipping"
 
+.PHONY: staticcheck
+staticcheck: ## Run staticcheck (matches the CI "Static Analysis" job; catches U1000 unused, etc.)
+	@command -v staticcheck >/dev/null 2>&1 || { echo ">> installing staticcheck"; $(GO) install honnef.co/go/tools/cmd/staticcheck@latest; }
+	@GOFLAGS=-buildvcs=false $$(command -v staticcheck || echo "$(GOPATH)/bin/staticcheck") ./...
+
 .PHONY: test
 test: ## Run the test suite
 	$(GO) test ./... -count=1 -timeout $(TEST_TIMEOUT)
@@ -53,4 +58,4 @@ yaegi-validate: ## Verify the plugin loads under Traefik's yaegi interpreter
 	@DO_NOT_TRACK=1 GOFLAGS=-mod=vendor $$(command -v yaegi || echo "$(GOPATH)/bin/yaegi") run ./cmd/yaegicheck/main.go
 
 .PHONY: check
-check: vet test yaegi-validate ## vet + tests + yaegi load validation
+check: vet staticcheck test yaegi-validate ## vet + staticcheck + tests + yaegi load validation

@@ -370,21 +370,6 @@ func (r *DynamicClientRegistrar) saveCredentialsToStore(ctx context.Context, res
 	return r.saveCredentials(resp)
 }
 
-// deleteCredentialsFromStore removes credentials from the configured storage backend
-// Falls back to legacy file-based deletion if no store is configured
-func (r *DynamicClientRegistrar) deleteCredentialsFromStore(ctx context.Context) error {
-	// Use store if available
-	if r.store != nil {
-		return r.store.Delete(ctx, r.providerURL)
-	}
-	// Fallback to legacy file-based deletion
-	filePath := r.credentialsFilePath()
-	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
 // saveCredentials persists client credentials to a file (legacy method)
 func (r *DynamicClientRegistrar) saveCredentials(resp *ClientRegistrationResponse) error {
 	filePath := r.credentialsFilePath()

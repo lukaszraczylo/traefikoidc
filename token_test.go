@@ -1584,19 +1584,3 @@ func createTokenOfSize(baseToken string, targetSize int) string {
 
 	return baseToken
 }
-
-func createTestJWTSimple(claims map[string]interface{}) string {
-	header := map[string]interface{}{
-		"alg": "HS256",
-		"typ": "JWT",
-	}
-
-	headerJSON, _ := json.Marshal(header)
-	claimsJSON, _ := json.Marshal(claims)
-
-	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
-	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
-	signature := base64.RawURLEncoding.EncodeToString([]byte("fake_signature"))
-
-	return headerB64 + "." + claimsB64 + "." + signature
-}
