@@ -178,7 +178,7 @@ clientSecret: your-client-secret
 | `logLevel` | string | `info` | Logging verbosity (`debug`, `info`, `error`) |
 | `forceHTTPS` | bool | `true` | Force HTTPS for redirect URIs (set `false` only for plaintext HTTP local dev) |
 | `rateLimit` | int | `100` | Maximum requests per second |
-| `excludedURLs` | []string | none | Paths that bypass authentication |
+| `excludedURLs` | []string | none | Paths that bypass authentication, matched at a path-segment or file-extension boundary |
 | `revocationURL` | string | auto-discovered | Token revocation endpoint |
 | `oidcEndSessionURL` | string | auto-discovered | Provider's end session endpoint |
 | `enablePKCE` | bool | `false` | Enable PKCE for authorization code flow |
