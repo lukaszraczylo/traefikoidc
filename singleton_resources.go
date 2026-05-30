@@ -106,8 +106,9 @@ func (rm *ResourceManager) GetCache(key string) interface{} {
 	case "jwk-cache":
 		cache = cacheManager.GetSharedJWKCache()
 	default:
-		// Generic cache implementation
-		cache = NewGenericCache(1*time.Hour, rm.logger)
+		// Generic cache implementation; bind cleanup goroutine to the manager's
+		// shutdown channel so it exits when the ResourceManager shuts down.
+		cache = newGenericCacheWithOwner(1*time.Hour, rm.logger, rm.shutdownChan)
 	}
 
 	rm.caches[key] = cache
@@ -262,6 +263,19 @@ func (rm *ResourceManager) cleanupInstance(instanceID string) {
 	// Clean up any instance-specific resources
 	// This is a hook for future instance-specific cleanup needs
 }
+
+// liveInstanceCount tracks the number of fully-constructed TraefikOidc plugin
+// instances alive in this process. Process-global singleton tasks (such as the
+// shared token-cleanup) must only be stopped when the LAST instance shuts down,
+// otherwise one instance's teardown would disable them for all survivors.
+var liveInstanceCount int32
+
+// registerLiveInstance records a newly constructed plugin instance.
+func registerLiveInstance() { atomic.AddInt32(&liveInstanceCount, 1) }
+
+// unregisterLiveInstance records a plugin instance shutting down and returns the
+// number of instances still alive afterwards.
+func unregisterLiveInstance() int32 { return atomic.AddInt32(&liveInstanceCount, -1) }
 
 // Shutdown gracefully shuts down all managed resources
 func (rm *ResourceManager) Shutdown(ctx context.Context) error {
@@ -501,20 +515,31 @@ func (p *GoroutinePool) Shutdown(ctx context.Context) error {
 
 // GenericCache provides a simple cache implementation for testing
 type GenericCache struct {
-	data     map[string]interface{}
-	logger   *Logger
-	stopChan chan struct{}
-	ttl      time.Duration
-	mu       sync.RWMutex
+	data map[string]interface{}
+	// ownerStopChan, when non-nil, signals the cleanup goroutine to exit when
+	// the owning ResourceManager shuts down, so the goroutine cannot outlive it.
+	ownerStopChan <-chan struct{}
+	logger        *Logger
+	stopChan      chan struct{}
+	ttl           time.Duration
+	mu            sync.RWMutex
 }
 
 // NewGenericCache creates a new generic cache
 func NewGenericCache(ttl time.Duration, logger *Logger) *GenericCache {
+	return newGenericCacheWithOwner(ttl, logger, nil)
+}
+
+// newGenericCacheWithOwner creates a generic cache whose cleanup goroutine also
+// exits when ownerStopChan is closed (typically the ResourceManager shutdown
+// channel), guaranteeing the goroutine is stoppable on shutdown.
+func newGenericCacheWithOwner(ttl time.Duration, logger *Logger, ownerStopChan <-chan struct{}) *GenericCache {
 	cache := &GenericCache{
-		data:     make(map[string]interface{}),
-		ttl:      ttl,
-		logger:   logger,
-		stopChan: make(chan struct{}),
+		data:          make(map[string]interface{}),
+		ttl:           ttl,
+		logger:        logger,
+		stopChan:      make(chan struct{}),
+		ownerStopChan: ownerStopChan,
 	}
 
 	// Start cleanup routine
@@ -569,6 +594,11 @@ func (gc *GenericCache) cleanupRoutine() {
 			gc.data = make(map[string]interface{})
 			gc.mu.Unlock()
 		case <-gc.stopChan:
+			return
+		case <-gc.ownerStopChan:
+			// Owning ResourceManager is shutting down; exit so the goroutine
+			// does not outlive its owner. A nil channel blocks forever, so this
+			// case is inert when no owner is set.
 			return
 		}
 	}

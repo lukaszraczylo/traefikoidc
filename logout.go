@@ -134,8 +134,11 @@ func (t *TraefikOidc) handleFrontchannelLogout(rw http.ResponseWriter, req *http
 	expectedIssuer := t.issuerURL
 	t.metadataMu.RUnlock()
 
-	if iss != "" && iss != expectedIssuer {
-		t.logger.Errorf("Front-channel logout: issuer mismatch: got %s, expected %s", iss, expectedIssuer)
+	// Require a matching issuer. An empty iss must be rejected too: accepting a
+	// missing issuer would let an unauthenticated attacker force-logout any
+	// session whose sid is known by simply omitting iss.
+	if iss == "" || iss != expectedIssuer {
+		t.logger.Errorf("Front-channel logout: issuer validation failed: got %q, expected %q", iss, expectedIssuer)
 		http.Error(rw, "Invalid issuer", http.StatusBadRequest)
 		return
 	}

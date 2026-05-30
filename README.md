@@ -112,7 +112,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `postLogoutRedirectURI` | `/` | Where to send users after logout. |
 | `scopes` | appended to `openid profile email` | Extra OAuth scopes. Set `overrideScopes: true` to replace defaults. |
 | `extraAuthParams` | none | Map of extra query parameters appended to the authorization request (e.g. `screen_hint: signup`, `login_hint`, `ui_locales`, `prompt`). Plugin-managed params (`client_id`, `state`, `nonce`, `redirect_uri`, `code_challenge`, `scope`, `response_type`, …) cannot be overridden. |
-| `excludedURLs` | none | Prefix-matched paths that bypass auth. |
+| `excludedURLs` | none | Paths that bypass auth, matched at a path-segment or file-extension boundary (e.g. `/public` matches `/public`, `/public/sub` and `/public.json`, but **not** `/publicsecret`). |
 | `allowedUserDomains` | none | Restrict to email domains. |
 | `allowedUsers` | none | Restrict to specific addresses (or claim values when `userIdentifierClaim != email`). |
 | `allowedRolesAndGroups` | none | Require any of these roles/groups from ID-token claims. |
@@ -147,6 +147,18 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Production gotchas
 
+### Upgrading from an earlier release
+
+- **Sessions are re-issued once.** Session cookies are now AES-256 encrypted
+  (previously signed only) and their cryptographic lifetime tracks
+  `sessionMaxAge` (previously a fixed 30 days). Existing cookies become invalid
+  on upgrade, so users re-authenticate one time.
+- **Invalid configuration now fails closed at startup** instead of being
+  silently accepted: a `sessionEncryptionKey` shorter than 32 bytes, a
+  `rateLimit` below 10, a missing `callbackURL`, or a non-HTTPS remote
+  `providerURL` are rejected. Plaintext HTTP is permitted only for loopback
+  hosts (local development).
+
 ### TLS termination at a load balancer
 
 `forceHTTPS` defaults to `true`, so redirect URIs always use `https://`. This is
@@ -166,6 +178,8 @@ detected" when the same token hits different replicas. Two options:
 
 For IdP-initiated logout (back/front-channel) in multi-replica setups, Redis is
 **required** so a logout on one instance invalidates sessions on the others.
+Front-channel logout requests must include a matching `iss` query parameter;
+requests that omit it are rejected with `400`.
 
 ### Multiple middleware instances on the same host
 

@@ -26,6 +26,10 @@ type sharedTransport struct {
 	lastUsed  time.Time
 	transport *http.Transport
 	refCount  int
+	// tlsKey identifies the TLS trust settings (CA pool + InsecureSkipVerify)
+	// this transport was built with, so the at-limit fallback only reuses a
+	// transport whose TLS configuration matches the caller's.
+	tlsKey string
 }
 
 var (
@@ -53,19 +57,26 @@ func GetGlobalTransportPool() *SharedTransportPool {
 
 // GetOrCreateTransport gets or creates a shared transport with the given config
 func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *http.Transport {
-	// SECURITY FIX: Check client limit before creating new transport
+	// SECURITY FIX: Check client limit before creating new transport.
 	if atomic.LoadInt32(&p.clientCount) >= p.maxClients {
-		// Return existing transport if limit reached
-		p.mu.RLock()
-		defer p.mu.RUnlock()
+		// At the client limit: only reuse a transport that was built for the
+		// SAME config (same TLS trust store). refCount is mutated under the
+		// write lock to avoid a data race, and a transport created for a
+		// different configuration is never handed back — doing so could apply
+		// the wrong (possibly verification-disabled) TLS settings to a request.
+		want := tlsConfigKey(config)
+		p.mu.Lock()
+		defer p.mu.Unlock()
 		for _, shared := range p.transports {
-			if shared != nil && shared.transport != nil {
+			if shared != nil && shared.transport != nil && shared.tlsKey == want {
 				shared.refCount++
 				shared.lastUsed = time.Now()
 				return shared.transport
 			}
 		}
-		// If no transport available, return nil (caller should handle)
+		// No TLS-compatible transport available; return nil so the caller falls
+		// back to a default, certificate-verifying transport rather than one
+		// with a different (possibly verification-disabled) trust store.
 		return nil
 	}
 
@@ -125,6 +136,7 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 		transport: transport,
 		refCount:  1,
 		lastUsed:  time.Now(),
+		tlsKey:    tlsConfigKey(config),
 	}
 
 	return transport
@@ -222,6 +234,18 @@ func (p *SharedTransportPool) configKey(config HTTPClientConfig) string {
 		config.RootCAs,
 		skip,
 	)
+}
+
+// tlsConfigKey identifies only the TLS trust settings of a config — the CA pool
+// and the InsecureSkipVerify flag. Two configs with the same tlsConfigKey are
+// safe to serve from the same transport even if other (non-TLS) parameters such
+// as connection limits differ; configs with different TLS settings are not.
+func tlsConfigKey(config HTTPClientConfig) string {
+	skip := "0"
+	if config.InsecureSkipVerify {
+		skip = "1"
+	}
+	return fmt.Sprintf("%p|%s", config.RootCAs, skip)
 }
 
 // Cleanup closes all transports and stops the cleanup goroutine

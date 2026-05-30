@@ -842,10 +842,18 @@ func TestWorkerPool_TaskPanic(t *testing.T) {
 		t.Error("Timeout waiting for tasks")
 	}
 
-	// Pool should still be functional
-	metrics := pool.GetMetrics()
-	if metrics["tasksFailed"].(int64) < 1 {
-		t.Error("Expected at least one failed task")
+	// tasksFailed is incremented in the worker's deferred recover(), which runs
+	// AFTER the panicking task's own `defer wg.Done()`. wg.Wait() above can
+	// therefore return before the failure is recorded — reading the counter
+	// immediately is a race that flakes on slow/contended CI runners. Poll until
+	// the failure lands (or time out).
+	deadline := time.Now().Add(2 * time.Second)
+	for pool.GetMetrics()["tasksFailed"].(int64) < 1 {
+		if time.Now().After(deadline) {
+			t.Error("Expected at least one failed task")
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

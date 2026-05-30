@@ -539,10 +539,10 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		return true
 	}
 
-	errStr := err.Error()
+	errStr := strings.ToLower(err.Error())
 
 	for _, retryableErr := range re.config.RetryableErrors {
-		if contains(errStr, retryableErr) {
+		if contains(errStr, strings.ToLower(retryableErr)) {
 			return true
 		}
 	}
@@ -551,7 +551,7 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		if netErr.Timeout() {
 			return true
 		}
-		errStr := netErr.Error()
+		errStr := strings.ToLower(netErr.Error())
 		temporaryPatterns := []string{
 			"connection refused",
 			"connection reset",
@@ -859,8 +859,9 @@ func (gd *GracefulDegradation) ExecuteWithFallback(serviceName string, primary f
 
 // isServiceDegraded checks if a service is currently degraded
 func (gd *GracefulDegradation) isServiceDegraded(serviceName string) bool {
-	gd.mutex.RLock()
-	defer gd.mutex.RUnlock()
+	// Uses a write lock because the recovery-timeout branch deletes from the map.
+	gd.mutex.Lock()
+	defer gd.mutex.Unlock()
 
 	degradedTime, exists := gd.degradedServices[serviceName]
 	if !exists {

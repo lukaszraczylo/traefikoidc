@@ -135,7 +135,7 @@ func (t *TraefikOidc) isAllowedDomain(email string) bool {
 			return false
 		}
 
-		domain := parts[1]
+		domain := strings.ToLower(parts[1])
 		_, domainAllowed := t.allowedUserDomains[domain]
 
 		if domainAllowed {
@@ -236,8 +236,13 @@ func (t *TraefikOidc) Close() error {
 		// Get resource manager for cleanup
 		rm := GetResourceManager()
 
-		// Stop singleton tasks related to this instance
-		_ = rm.StopBackgroundTask("singleton-token-cleanup") // Safe to ignore: best effort cleanup
+		// singleton-token-cleanup is a process-global task shared by every plugin
+		// instance. Only stop it when the LAST instance is shutting down;
+		// otherwise one instance's teardown (e.g. a single config reload) would
+		// kill chunked-session/token cleanup for all surviving instances (rank 12).
+		if unregisterLiveInstance() <= 0 {
+			_ = rm.StopBackgroundTask("singleton-token-cleanup") // best effort, last instance only
+		}
 		// Stop metadata refresh task using same hash-based name as startMetadataRefresh
 		if t.providerURL != "" {
 			hash := sha256.Sum256([]byte(t.providerURL))

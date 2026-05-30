@@ -392,10 +392,19 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	baseURL := fmt.Sprintf("%s://%s", scheme, host)
 
 	postLogoutRedirectURI := t.postLogoutRedirectURI
+	// localRedirect is used when there is no provider end-session endpoint and
+	// the plugin redirects the browser itself. It must never be an absolute URL
+	// derived from the request host (X-Forwarded-Host is client-controllable and
+	// would be an open redirect); use a host-relative path, or the operator's
+	// own configured absolute URL, instead.
+	localRedirect := "/"
 	if postLogoutRedirectURI == "" {
 		postLogoutRedirectURI = fmt.Sprintf("%s/", baseURL)
 	} else if !strings.HasPrefix(postLogoutRedirectURI, "http") {
+		localRedirect = normalizeLogoutPath(postLogoutRedirectURI)
 		postLogoutRedirectURI = fmt.Sprintf("%s%s", baseURL, postLogoutRedirectURI)
+	} else {
+		localRedirect = postLogoutRedirectURI
 	}
 
 	// Read endSessionURL with RLock
@@ -414,7 +423,7 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	http.Redirect(rw, req, postLogoutRedirectURI, http.StatusFound)
+	http.Redirect(rw, req, localRedirect, http.StatusFound)
 }
 
 // BuildLogoutURL constructs a logout URL for the OIDC provider's end session endpoint.

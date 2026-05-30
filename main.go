@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -112,18 +113,18 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		config = CreateConfig()
 	}
 
-	if config.SessionEncryptionKey == "" {
-		config.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	}
-
 	logger := NewLogger(config.LogLevel)
-	if len(config.SessionEncryptionKey) < minEncryptionKeyLength {
-		if runtime.Compiler == "yaegi" {
-			config.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-			logger.Infof("Session encryption key is too short; using default key for analyzer")
-		} else {
-			return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
-		}
+
+	// Fail closed on invalid configuration. Validate() enforces the security
+	// constraints (required fields, HTTPS-only URLs, key length, excludedURLs
+	// safety, rate-limit floor, audience format, ...) that were previously
+	// unenforced because this constructor never called it. Crucially it rejects
+	// an empty or too-short SessionEncryptionKey instead of silently
+	// substituting a public hardcoded key, which would let an attacker forge
+	// any session. Traefik's yaegi plugin analyzer supplies a valid key via
+	// .traefik.yml testData, so it passes; only misconfigured deployments fail.
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	// Setup HTTP client
 	caPool, err := config.loadCACertPool()
@@ -235,7 +236,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		httpClient:            httpClient,
 		tokenHTTPClient:       tokenHTTPClient,
 		excludedURLs:          createStringMap(config.ExcludedURLs),
-		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
+		allowedUserDomains:    createCaseInsensitiveStringMap(config.AllowedUserDomains),
 		allowedUsers:          createCaseInsensitiveStringMap(config.AllowedUsers),
 		allowedRolesAndGroups: createStringMap(config.AllowedRolesAndGroups),
 		initComplete:          make(chan struct{}),
@@ -346,7 +347,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	// Convert sessionMaxAge from seconds to duration (0 will use default 24 hours)
 	sessionMaxAge := time.Duration(config.SessionMaxAge) * time.Second
-	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, config.CookiePrefix, sessionMaxAge, t.logger) // Safe to ignore: session manager creation with fallback to defaults
+	sessionManager, err := NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, config.CookiePrefix, sessionMaxAge, t.logger)
+	if err != nil {
+		cancelFunc()
+		return nil, fmt.Errorf("failed to create session manager: %w", err)
+	}
+	t.sessionManager = sessionManager
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 
 	// Initialize token resilience manager with default configuration
@@ -437,6 +443,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	// Add reference for this instance
 	rm.AddReference(name)
+	registerLiveInstance()
 
 	// Initialize metadata in a goroutine with proper tracking
 	if t.goroutineWG != nil {
@@ -514,13 +521,58 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 // Parameters:
 //   - metadata: A pointer to the ProviderMetadata struct containing the discovered endpoints.
 func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
+	// SSRF defense (audit ranks 3 & 4): a discovery document is attacker-
+	// influenced when the provider or its TLS is compromised. Reject any
+	// discovered endpoint pointed at a blocked address before the plugin issues
+	// outbound requests to it, so it can never be used to reach the cloud
+	// metadata service or an internal host.
+	allowLoopback := false
+	if pu, err := url.Parse(t.providerURL); err == nil {
+		allowLoopback = isLoopbackHost(pu.Hostname())
+	}
+	sanitize := func(name, raw string) string {
+		if err := t.validateDiscoveredEndpoint(raw, allowLoopback); err != nil {
+			t.logger.Errorf("Ignoring discovered %s endpoint %q: %v", name, raw, err)
+			return ""
+		}
+		return raw
+	}
+	metadata.JWKSURL = sanitize("jwks_uri", metadata.JWKSURL)
+	metadata.AuthURL = sanitize("authorization", metadata.AuthURL)
+	metadata.TokenURL = sanitize("token", metadata.TokenURL)
+	metadata.RevokeURL = sanitize("revocation", metadata.RevokeURL)
+	metadata.EndSessionURL = sanitize("end_session", metadata.EndSessionURL)
+	metadata.RegistrationURL = sanitize("registration", metadata.RegistrationURL)
+	metadata.IntrospectionURL = sanitize("introspection", metadata.IntrospectionURL)
+	// The introspection request authenticates with the client secret via HTTP
+	// Basic, so the endpoint must live on the same host as the operator-
+	// configured provider; otherwise a poisoned discovery document could
+	// exfiltrate the client secret to an attacker-controlled host.
+	if metadata.IntrospectionURL != "" && t.providerURL != "" && !sameHost(metadata.IntrospectionURL, t.providerURL) {
+		t.logger.Errorf("Ignoring introspection endpoint %q: host does not match configured providerURL", metadata.IntrospectionURL)
+		metadata.IntrospectionURL = ""
+	}
+
+	// Pin the discovered issuer to the operator-configured provider host. The
+	// issuer is the trust anchor for JWT issuer validation, so a poisoned
+	// discovery document advertising an attacker-chosen issuer must never be
+	// stored. Real providers (Google, Azure, Keycloak, Okta, Auth0) keep the
+	// issuer on the same host as the configured providerURL. On mismatch, leave
+	// issuerURL empty/unchanged so downstream issuer validation fails closed
+	// rather than trusting the attacker-chosen value.
+	discoveredIssuer := metadata.Issuer
+	if discoveredIssuer != "" && t.providerURL != "" && !sameHost(discoveredIssuer, t.providerURL) {
+		t.logger.Errorf("Ignoring discovered issuer %q: host does not match configured providerURL", discoveredIssuer)
+		discoveredIssuer = ""
+	}
+
 	t.metadataMu.Lock()
 
 	t.jwksURL = metadata.JWKSURL
 	t.scopesSupported = metadata.ScopesSupported // Store supported scopes from discovery
 	t.authURL = metadata.AuthURL
 	t.tokenURL = metadata.TokenURL
-	t.issuerURL = metadata.Issuer
+	t.issuerURL = discoveredIssuer
 	t.revocationURL = metadata.RevokeURL
 	t.endSessionURL = metadata.EndSessionURL
 	t.introspectionURL = metadata.IntrospectionURL // OAuth 2.0 Token Introspection endpoint (RFC 7662)
@@ -533,7 +585,7 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	// Publish the read-mostly URL bundle atomically. Hot-path readers Load
 	// this directly instead of acquiring metadataMu.RLock per request.
 	t.metadataSnapshot.Store(&MetadataSnapshot{
-		IssuerURL:        metadata.Issuer,
+		IssuerURL:        discoveredIssuer,
 		JWKSURL:          metadata.JWKSURL,
 		TokenURL:         metadata.TokenURL,
 		AuthURL:          metadata.AuthURL,

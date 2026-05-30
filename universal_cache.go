@@ -957,17 +957,28 @@ func (c *UniversalCache) updateLocalCache(key string, value interface{}, ttl tim
 	}
 
 	now := time.Now()
+	// Replace an existing entry in place: update the item and move its single
+	// list node to the front. Without this, a repeat populate of the same key
+	// (the per-request Get->backend-hit path) would PushFront a duplicate node
+	// and overwrite c.items[key], orphaning the previous node. Orphans inflate
+	// currentMemory/currentSize and, once eviction deletes the key, leave a
+	// Back() node whose key is absent from c.items — so evictOldest() spins
+	// while holding c.mu.Lock(): the 100%-CPU write-lock convoy seen in pprof.
+	// setLocal dedups the same way; evictOldest also guards any dangling node.
+	if existing, exists := c.items[key]; exists {
+		c.currentMemory -= existing.Size
+		c.lruList.Remove(existing.element)
 
-	// Replace any existing entry in place. Without this, a repeat populate of
-	// the same key (the per-request Get->backend-hit path at line ~359)
-	// PushFronts a second list node and overwrites c.items[key], orphaning the
-	// previous node. Orphans inflate currentMemory/currentSize and — once the
-	// eviction loop deletes the key — leave Back() nodes whose key is absent
-	// from c.items, so evictOldest() no-ops while lruList.Len()>0 stays true:
-	// an infinite loop while holding c.mu.Lock(), i.e. the 100%-CPU holder and
-	// write-lock convoy. setLocal already dedups on this path; this mirrors it.
-	if existing, ok := c.items[key]; ok {
-		c.removeItem(key, existing)
+		existing.Value = value
+		existing.Size = size
+		existing.ExpiresAt = now.Add(ttl)
+		existing.LastAccessed = now
+		existing.AccessCount++
+
+		existing.element = c.lruList.PushFront(key)
+		c.currentMemory += size
+
+		return nil
 	}
 
 	item := &CacheItem{

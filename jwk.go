@@ -200,6 +200,22 @@ func buildParsedJWKS(jwks *JWKSet) *parsedJWKS {
 		if k.Kid == "" {
 			continue
 		}
+		// Skip keys that are not intended for signature verification.
+		if k.Use != "" && k.Use != "sig" {
+			continue
+		}
+		if len(k.KeyOps) > 0 {
+			hasVerify := false
+			for _, op := range k.KeyOps {
+				if op == "verify" {
+					hasVerify = true
+					break
+				}
+			}
+			if !hasVerify {
+				continue
+			}
+		}
 		var pub crypto.PublicKey
 		var err error
 		switch k.Kty {
@@ -242,11 +258,11 @@ func fetchJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*J
 	defer func() { _ = resp.Body.Close() }() // Safe to ignore: closing body on defer
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body) // Safe to ignore: reading error body for diagnostics
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024)) // Safe to ignore: reading error body for diagnostics
 		return nil, fmt.Errorf("JWKS fetch failed with status %d: %s", resp.StatusCode, body)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("error reading JWKS response: %w", err)
 	}
