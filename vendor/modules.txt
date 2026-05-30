@@ -24,6 +24,9 @@ github.com/gorilla/securecookie
 # github.com/gorilla/sessions v1.3.0
 ## explicit; go 1.20
 github.com/gorilla/sessions
+# github.com/lukaszraczylo/oss-telemetry v0.2.3
+## explicit; go 1.22
+github.com/lukaszraczylo/oss-telemetry
 # github.com/pmezard/go-difflib v1.0.0
 ## explicit
 github.com/pmezard/go-difflib/difflib

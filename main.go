@@ -16,12 +16,18 @@ import (
 	"text/template"
 	"time"
 
+	telemetry "github.com/lukaszraczylo/oss-telemetry"
 	"golang.org/x/time/rate"
 )
 
 const (
 	ConstSessionTimeout = 86400
 )
+
+// telemetryStartupOnce keeps the anonymous "plugin loaded" ping to one per
+// process. Traefik calls New once per route that uses the plugin; oss-telemetry
+// does not deduplicate client-side (the server does), so the gate stays here.
+var telemetryStartupOnce sync.Once
 
 // isTestMode detects if the code is running in a test environment.
 func isTestMode() bool {
@@ -89,7 +95,13 @@ var defaultExcludedURLs = map[string]struct{}{
 //   - The configured TraefikOidc handler ready to process requests.
 //   - An error if essential configuration is missing or invalid (e.g., short encryption key).
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	sendTelemetry(pluginVersion)
+	telemetryStartupOnce.Do(func() {
+		// Only stamped release builds phone home; dev/local/test builds keep the
+		// devPluginVersion sentinel (see version.go) and stay silent.
+		if traefikoidcPluginVersion != devPluginVersion {
+			telemetry.Send("traefikoidc", traefikoidcPluginVersion)
+		}
+	})
 	return NewWithContext(ctx, config, next, name)
 }
 

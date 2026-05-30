@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/gorilla/sessions v1.3.0
+	github.com/lukaszraczylo/oss-telemetry v0.2.3
 	github.com/redis/go-redis/v9 v9.17.2
 	github.com/stretchr/testify v1.10.0
 	golang.org/x/time v0.14.0

@@ -603,15 +603,28 @@ func (c *UniversalCache) removeItem(key string, item *CacheItem) {
 
 // evictOldest evicts the oldest item from the cache (must be called with lock held)
 func (c *UniversalCache) evictOldest() {
-	if elem := c.lruList.Back(); elem != nil {
-		key, _ := elem.Value.(string) // Safe to ignore: cache internal type assertion
-		if item, exists := c.items[key]; exists {
-			c.removeItem(key, item)
-			atomic.AddInt64(&c.evictions, 1)
-			if c.logger.IsDebug() {
-				c.logger.Debugf("UniversalCache[%s]: Evicted key=%s", c.config.Type, key)
-			}
+	elem := c.lruList.Back()
+	if elem == nil {
+		return
+	}
+	key, _ := elem.Value.(string) // Safe to ignore: cache internal type assertion
+	if item, exists := c.items[key]; exists && item.element == elem {
+		c.removeItem(key, item)
+		atomic.AddInt64(&c.evictions, 1)
+		if c.logger.IsDebug() {
+			c.logger.Debugf("UniversalCache[%s]: Evicted key=%s", c.config.Type, key)
 		}
+		return
+	}
+	// Defensive forward-progress guard: the back node is dangling — its key is
+	// absent from c.items, or c.items[key] points at a newer node (a stale
+	// duplicate). Drop the node directly so an eviction loop
+	// (`for ... && c.lruList.Len() > 0`) is guaranteed to terminate and can
+	// never spin holding c.mu.Lock(). With the updateLocalCache replace-in-place
+	// fix this branch should be unreachable, but it makes the spin impossible.
+	c.lruList.Remove(elem)
+	if c.currentSize > 0 {
+		c.currentSize--
 	}
 }
 
@@ -944,6 +957,19 @@ func (c *UniversalCache) updateLocalCache(key string, value interface{}, ttl tim
 	}
 
 	now := time.Now()
+
+	// Replace any existing entry in place. Without this, a repeat populate of
+	// the same key (the per-request Get->backend-hit path at line ~359)
+	// PushFronts a second list node and overwrites c.items[key], orphaning the
+	// previous node. Orphans inflate currentMemory/currentSize and — once the
+	// eviction loop deletes the key — leave Back() nodes whose key is absent
+	// from c.items, so evictOldest() no-ops while lruList.Len()>0 stays true:
+	// an infinite loop while holding c.mu.Lock(), i.e. the 100%-CPU holder and
+	// write-lock convoy. setLocal already dedups on this path; this mirrors it.
+	if existing, ok := c.items[key]; ok {
+		c.removeItem(key, existing)
+	}
+
 	item := &CacheItem{
 		Key:          key,
 		Value:        value,

@@ -1,0 +1,42 @@
+# Configuration for lukaszraczylo/semver-generator.
+# Reference: https://github.com/lukaszraczylo/semver-generator
+#
+# Word matching is fuzzy + case-insensitive. The keywords below mirror the
+# Conventional Commits prefixes used in this repo's git history. Same pattern
+# as github.com/lukaszraczylo/go-telegram/.semver.yaml.
+
+version: 1
+
+# Respect existing v* tags as the version baseline. semver-generator finds
+# the highest existing tag and bumps from there. With no tags yet, the first
+# release computes from the empty base.
+force:
+  existing: true
+
+# Skip merge commits and machine-generated traffic that would otherwise
+# spuriously bump the version.
+blacklist:
+  - "Merge branch"
+  - "Merge pull request"
+  - "Merge remote-tracking branch"
+  - "go mod tidy"
+
+wording:
+  patch:
+    - "fix"
+    - "chore"
+    - "docs"
+    - "test"
+    - "style"
+    - "refactor"
+    - "build"
+    - "ci"
+    - "perf"
+  minor:
+    - "feat"
+  major:
+    # Match only the canonical Conventional Commits trailer. The bare word
+    # "breaking" is too greedy under semver-generator's fuzzy match — it
+    # triggers on substrings inside a commit body and wrongly produces a
+    # major bump.
+    - "BREAKING CHANGE"
