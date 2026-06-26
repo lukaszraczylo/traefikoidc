@@ -18,6 +18,50 @@ func TestIssueRegressions(t *testing.T) {
 	t.Run("Issue60_Missing_Claim_Fields", testIssue60MissingClaimFields)
 	t.Run("Issue60_Safe_Template_Functions", testIssue60SafeTemplateFunctions)
 	t.Run("Issue60_Double_Processing_Concern", testIssue60DoubleProcessing)
+	t.Run("Issue148_Template_Whitespace_Tolerance", testIssue148TemplateWhitespace)
+}
+
+// testIssue148TemplateWhitespace tests that header template validation tolerates
+// whitespace inside Go template delimiters (e.g. "{{ get" with a leading space),
+// which Go's text/template treats identically to "{{get". v1.0.26 rejected the
+// spaced form, causing "invalid handler type: <nil>" at startup. See issue #148.
+func testIssue148TemplateWhitespace(t *testing.T) {
+	baseConfig := func() *traefikoidc.Config {
+		c := traefikoidc.CreateConfig()
+		c.ProviderURL = "https://example.com"
+		c.ClientID = "test-client"
+		c.ClientSecret = "test-secret"
+		c.CallbackURL = "/callback"
+		c.SessionEncryptionKey = "test-encryption-key-32-characters"
+		return c
+	}
+
+	// Spaced delimiters must validate identically to the compact form.
+	validSpaced := []traefikoidc.TemplatedHeader{
+		{Name: "X-Get-Spaced", Value: "{{ get .Claims \"email\" }}"},
+		{Name: "X-Get-MultiSpace", Value: "{{  get .Claims \"email\"}}"},
+		{Name: "X-Default-Spaced", Value: "{{ default \"unknown\" .Claims.department }}"},
+		{Name: "X-Claims-Spaced", Value: "{{ .Claims.email }}"},
+		{Name: "X-AccessToken-Spaced", Value: "{{ .AccessToken }}"},
+	}
+	for _, header := range validSpaced {
+		config := baseConfig()
+		config.Headers = []traefikoidc.TemplatedHeader{header}
+		assert.NoError(t, config.Validate(),
+			"Spaced template should validate: %s", header.Value)
+	}
+
+	// A leading space must NOT smuggle a dangerous pattern past validation.
+	dangerousSpaced := []traefikoidc.TemplatedHeader{
+		{Name: "X-Bad-Range", Value: "{{ range .Items }}{{.}}{{end}}"},
+		{Name: "X-Bad-Call", Value: "{{ call .Func }}"},
+	}
+	for _, header := range dangerousSpaced {
+		config := baseConfig()
+		config.Headers = []traefikoidc.TemplatedHeader{header}
+		assert.Error(t, config.Validate(),
+			"Spaced dangerous template must still be rejected: %s", header.Value)
+	}
 }
 
 // testIssue53CSRFRegression tests the specific issue reported in GitHub issue #53

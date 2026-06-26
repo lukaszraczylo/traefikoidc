@@ -750,6 +750,48 @@ func TestValidateTemplateSecure_CoverageBoost(t *testing.T) {
 			template:    "{{.Unknown}}",
 			shouldError: true,
 		},
+		// Issue #148: whitespace after {{ and before }} must be tolerated
+		{
+			name:        "get with leading space (issue #148)",
+			template:    "{{ get .Claims \"email\" }}",
+			shouldError: false,
+		},
+		{
+			name:        "get with multiple leading spaces",
+			template:    "{{  get .Claims \"email\"}}",
+			shouldError: false,
+		},
+		{
+			name:        "default with spaces",
+			template:    "{{ default \"unknown\" .Claims.email }}",
+			shouldError: false,
+		},
+		{
+			name:        "claims with spaces",
+			template:    "{{ .Claims.email }}",
+			shouldError: false,
+		},
+		{
+			name:        "access token with spaces",
+			template:    "{{ .AccessToken }}",
+			shouldError: false,
+		},
+		// Issue #148: space must NOT let dangerous patterns bypass detection
+		{
+			name:        "range with leading space stays blocked",
+			template:    "{{ range .Items }}{{.}}{{end}}",
+			shouldError: true,
+		},
+		{
+			name:        "call with leading space stays blocked",
+			template:    "{{ call .Func }}",
+			shouldError: true,
+		},
+		{
+			name:        "disallowed claim with spaces stays blocked",
+			template:    "{{ .Claims.password }}",
+			shouldError: true,
+		},
 	}
 
 	for _, tt := range tests {

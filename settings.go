@@ -9,9 +9,31 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+// templateDelimWhitespace matches whitespace immediately inside Go template
+// delimiters: after "{{" or before "}}". Go's text/template treats "{{ get",
+// "{{  get" and "{{get" identically, so the security validator must collapse
+// this whitespace before pattern-matching — otherwise a leading space both
+// rejects valid templates (issue #148) and lets dangerous patterns such as
+// "{{ range" slip past detection.
+var templateDelimWhitespace = regexp.MustCompile(`\{\{[ \t]+|[ \t]+\}\}`)
+
+// normalizeTemplateDelimiters collapses inner-delimiter whitespace so that
+// "{{ get .Claims \"x\" }}" becomes "{{get .Claims \"x\"}}" for matching.
+// Trim markers ("{{-", "-}}") are left intact: the dash is not whitespace, so
+// they remain detectable as dangerous patterns.
+func normalizeTemplateDelimiters(templateStr string) string {
+	return templateDelimWhitespace.ReplaceAllStringFunc(templateStr, func(m string) string {
+		if strings.HasPrefix(m, "{{") {
+			return "{{"
+		}
+		return "}}"
+	})
+}
 
 // TemplatedHeader represents a custom HTTP header with a templated value.
 // The value can contain template expressions that will be evaluated for each
@@ -569,6 +591,12 @@ func (c *Config) Validate() error {
 // It checks for dangerous template patterns that could lead to code execution or data leaks
 // while allowing safe custom functions for field access and default values.
 func validateTemplateSecure(templateStr string) error {
+	// Normalize inner-delimiter whitespace up front so that "{{ get .Claims }}"
+	// is validated identically to "{{get .Claims}}" (issue #148). All matching
+	// below operates on the normalized form, which also prevents a stray space
+	// from smuggling a dangerous pattern (e.g. "{{ range") past detection.
+	templateStr = normalizeTemplateDelimiters(templateStr)
+
 	// Allow our specific safe custom functions
 	// These are added specifically to handle missing fields safely (issue #60)
 	safeCustomFunctions := []string{
