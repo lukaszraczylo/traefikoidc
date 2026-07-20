@@ -9,33 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 )
-
-// templateDelimWhitespace matches ANY whitespace immediately inside Go template
-// delimiters: after "{{" or before "}}". Go's text/template treats "{{ get",
-// "{{  get", "{{\nget" and "{{get" identically, so the security validator must
-// collapse this whitespace before pattern-matching — otherwise a leading space
-// both rejects valid templates (issue #148) and lets dangerous patterns such as
-// "{{ range" or a newline-obfuscated "{{\nindex" / "{{\nrange" slip past
-// detection (issue #149 security review). \s covers space, tab, newline, CR,
-// form-feed and vertical-tab.
-var templateDelimWhitespace = regexp.MustCompile(`\{\{\s+|\s+\}\}`)
-
-// normalizeTemplateDelimiters collapses inner-delimiter whitespace so that
-// "{{ get .Claims \"x\" }}" becomes "{{get .Claims \"x\"}}" for matching.
-// Trim markers ("{{-", "-}}") are left intact: the dash is not whitespace, so
-// they remain detectable as dangerous patterns.
-func normalizeTemplateDelimiters(templateStr string) string {
-	return templateDelimWhitespace.ReplaceAllStringFunc(templateStr, func(m string) string {
-		if strings.HasPrefix(m, "{{") {
-			return "{{"
-		}
-		return "}}"
-	})
-}
 
 // TemplatedHeader represents a custom HTTP header with a templated value.
 // The value can contain template expressions that will be evaluated for each
@@ -601,232 +577,50 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// safeClaimsFields is the single source of truth for which claim fields a header
+// template may emit. It gates both static validation (validateTemplateSecure)
+// and the runtime `get` function (main.go funcMap), so a claim can never be
+// forwarded via `get`/`index` that a direct {{.Claims.x}} reference would reject.
+// Includes standard OIDC claims and common provider-specific claims.
+var safeClaimsFields = map[string]bool{
+	// Standard OIDC claims
+	"email":              true,
+	"name":               true,
+	"given_name":         true,
+	"family_name":        true,
+	"preferred_username": true,
+	"sub":                true,
+	"iss":                true,
+	"aud":                true,
+	"exp":                true,
+	"iat":                true,
+	"groups":             true,
+	"roles":              true,
+	// Common custom claims
+	"internal_role": true, // Custom roles field (issue #60)
+	"role":          true, // Alternative role field
+	"department":    true, // Organization info
+	"organization":  true, // Organization info
+	// Provider-specific claims
+	"realm_access":    true, // Keycloak specific
+	"resource_access": true, // Keycloak specific
+	"oid":             true, // Azure AD object ID
+	"tid":             true, // Azure AD tenant ID
+	"upn":             true, // Azure AD User Principal Name
+	"hd":              true, // Google hosted domain
+	"picture":         true, // Profile picture
+	// Additional standard claims
+	"locale":         true, // User locale
+	"zoneinfo":       true, // Timezone
+	"phone_number":   true, // Contact info
+	"email_verified": true, // Email verification status
+	"updated_at":     true, // Last update time
+}
+
 // validateTemplateSecure validates template expressions for security vulnerabilities.
 // It checks for dangerous template patterns that could lead to code execution or data leaks
 // while allowing safe custom functions for field access and default values.
-func validateTemplateSecure(templateStr string) error {
-	// Normalize inner-delimiter whitespace up front so that "{{ get .Claims }}"
-	// is validated identically to "{{get .Claims}}" (issue #148). All matching
-	// below operates on the normalized form, which also prevents a stray space
-	// from smuggling a dangerous pattern (e.g. "{{ range") past detection.
-	templateStr = normalizeTemplateDelimiters(templateStr)
-
-	// Allow our specific safe custom functions
-	// These are added specifically to handle missing fields safely (issue #60)
-	safeCustomFunctions := []string{
-		"{{get ",     // Safe map access function
-		"{{default ", // Safe default value function
-	}
-
-	// Check if template uses safe custom functions
-	usesSafeFunctions := false
-	for _, safeFn := range safeCustomFunctions {
-		if strings.Contains(templateStr, safeFn) {
-			usesSafeFunctions = true
-			// These functions are explicitly allowed for safe field access
-		}
-	}
-
-	// Check for dangerous template functions and patterns
-	// Skip certain checks if using our safe functions
-	dangerousPatterns := []string{
-		"{{call",     // Function calls (except our safe ones)
-		"{{define",   // Template definitions
-		"{{template", // Template inclusions
-		"{{block",    // Block definitions
-		"{{/*",       // Comments that could hide malicious code
-		"{{-",        // Trim whitespace (could be used to obfuscate)
-		"-}}",        // Trim whitespace (could be used to obfuscate)
-		"{{printf",   // Printf functions
-		"{{print",    // Print functions (but not our safe ones)
-		"{{println",  // Println functions
-		"{{html",     // HTML functions
-		"{{js",       // JavaScript functions
-		"{{urlquery", // URL query functions
-		"{{index",    // Index access to arbitrary data
-		"{{slice",    // Slice operations
-		"{{len",      // Length operations on arbitrary data
-		"{{eq",       // Comparison operations
-		"{{ne",       // Comparison operations
-		"{{lt",       // Comparison operations
-		"{{le",       // Comparison operations
-		"{{gt",       // Comparison operations
-		"{{ge",       // Comparison operations
-		"{{and",      // Logical operations
-		"{{or",       // Logical operations
-		"{{not",      // Logical operations
-	}
-
-	// Allow 'with' for safe conditional access
-	if !strings.Contains(templateStr, "{{with .Claims") {
-		dangerousPatterns = append(dangerousPatterns, "{{with")
-	}
-
-	// Allow 'range' ONLY when every range action iterates a specific claims
-	// collection (e.g. joining .Claims.groups / .Claims.roles into one header —
-	// the documented pattern, see README/CONFIGURATION and issue #149). The range
-	// clause (everything up to its closing "}}") must reference ".Claims.<field>",
-	// and that field is checked against the whitelist below. A range over the bare
-	// .Claims map ({{range .Claims}} / {{range $k, $v := .Claims}}) would dump
-	// every unwhitelisted claim into the header — appending a decoy {{.Claims.x}}
-	// elsewhere must not launder it — and a range over any non-claims value is
-	// meaningless; both are rejected here. Companion {{if}}/{{else}}/{{end}} and
-	// $-scoped range vars are pure control flow and were never blocked.
-	for idx := strings.Index(templateStr, "{{range"); idx != -1; {
-		rel := strings.Index(templateStr[idx:], "}}")
-		if rel == -1 {
-			return fmt.Errorf("malformed range action (missing closing }})")
-		}
-		clause := templateStr[idx : idx+rel]
-		if !strings.Contains(clause, ".Claims.") {
-			return fmt.Errorf("range is only allowed to iterate a whitelisted claims collection, e.g. {{range $i, $e := .Claims.groups}}")
-		}
-		next := strings.Index(templateStr[idx+rel:], "{{range")
-		if next == -1 {
-			break
-		}
-		idx = idx + rel + next
-	}
-
-	templateLower := strings.ToLower(templateStr)
-	for _, pattern := range dangerousPatterns {
-		// Skip check if it's one of our safe functions
-		if usesSafeFunctions && (pattern == "{{call" || pattern == "{{print") {
-			// Allow these if we're using safe functions
-			continue
-		}
-
-		// Special handling for comparison operators to avoid false positives with "get" and "default"
-		if pattern == "{{ge" && (strings.Contains(templateStr, "{{get ") || strings.Contains(templateStr, "{{default ")) {
-			// Skip {{ge check if we're using the safe {{get or {{default functions
-			continue
-		}
-
-		// Skip {{de checks if using {{default
-		if pattern == "{{define" && strings.Contains(templateStr, "{{default ") {
-			continue
-		}
-
-		if strings.Contains(templateLower, strings.ToLower(pattern)) {
-			return fmt.Errorf("dangerous template pattern detected: %s", pattern)
-		}
-	}
-
-	// Validate template variables against whitelist
-	allowedPatterns := []string{
-		"{{.AccessToken}}",
-		"{{.IdToken}}",
-		"{{.RefreshToken}}",
-		".Claims.",   // any Claims access: {{.Claims.x}}, {{range .. := .Claims.x}}, {{with .Claims.x}}, {{default d .Claims.x}}
-		"{{get ",     // Safe custom function
-		"{{default ", // Safe custom function
-		"{{with ",    // Safe conditional (when used with Claims)
-	}
-
-	// Check if template contains only allowed patterns
-	hasAllowedPattern := false
-	for _, pattern := range allowedPatterns {
-		if strings.Contains(templateStr, pattern) {
-			hasAllowedPattern = true
-			break
-		}
-	}
-
-	if !hasAllowedPattern {
-		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, Claims.*, or safe functions (get, default, with)")
-	}
-
-	// Validate claims access patterns. Scan every ".Claims.<field>" reference
-	// regardless of the enclosing action — "{{.Claims.x}}", a join header
-	// "{{range $i,$e := .Claims.groups}}", "{{with .Claims.x}}" or
-	// "{{default d .Claims.x}}" — so a claim reached through range/with/default
-	// is whitelisted identically to a direct reference (issue #149).
-	if strings.Contains(templateStr, ".Claims.") {
-		// Simple validation - ensure claims access is to known safe fields
-		// This list includes standard OIDC claims and common provider-specific claims
-		safeClaimsFields := map[string]bool{
-			// Standard OIDC claims
-			"email":              true,
-			"name":               true,
-			"given_name":         true,
-			"family_name":        true,
-			"preferred_username": true,
-			"sub":                true,
-			"iss":                true,
-			"aud":                true,
-			"exp":                true,
-			"iat":                true,
-			"groups":             true,
-			"roles":              true,
-			// Common custom claims
-			"internal_role": true, // Custom roles field (issue #60)
-			"role":          true, // Alternative role field
-			"department":    true, // Organization info
-			"organization":  true, // Organization info
-			// Provider-specific claims
-			"realm_access":    true, // Keycloak specific
-			"resource_access": true, // Keycloak specific
-			"oid":             true, // Azure AD object ID
-			"tid":             true, // Azure AD tenant ID
-			"upn":             true, // Azure AD User Principal Name
-			"hd":              true, // Google hosted domain
-			"picture":         true, // Profile picture
-			// Additional standard claims
-			"locale":         true, // User locale
-			"zoneinfo":       true, // Timezone
-			"phone_number":   true, // Contact info
-			"email_verified": true, // Email verification status
-			"updated_at":     true, // Last update time
-		}
-
-		// Extract field names from every ".Claims.<field>" access.
-		const claimsAnchor = ".Claims."
-		isIdentRune := func(r byte) bool {
-			return r == '_' ||
-				(r >= 'a' && r <= 'z') ||
-				(r >= 'A' && r <= 'Z') ||
-				(r >= '0' && r <= '9')
-		}
-		start := strings.Index(templateStr, claimsAnchor)
-		for start != -1 {
-			rest := templateStr[start+len(claimsAnchor):]
-			// Read the identifier immediately after ".Claims." — the first
-			// non-identifier byte (".", "}", space, etc.) ends the field name.
-			end := len(rest)
-			for i := 0; i < len(rest); i++ {
-				if !isIdentRune(rest[i]) {
-					end = i
-					break
-				}
-			}
-			fieldName := rest[:end]
-
-			if fieldName == "" || !safeClaimsFields[fieldName] {
-				return fmt.Errorf("access to Claims.%s is not allowed for security reasons", fieldName)
-			}
-
-			// Search for the next occurrence.
-			nextStart := strings.Index(rest, claimsAnchor)
-			if nextStart != -1 {
-				start = start + len(claimsAnchor) + nextStart
-			} else {
-				start = -1
-			}
-		}
-	}
-
-	// Prevent code injection through template syntax
-	if strings.Contains(templateStr, "{{") && strings.Contains(templateStr, "}}") {
-		// Count opening and closing braces
-		openCount := strings.Count(templateStr, "{{")
-		closeCount := strings.Count(templateStr, "}}")
-		if openCount != closeCount {
-			return fmt.Errorf("unbalanced template braces")
-		}
-	}
-
-	return nil
-}
+// validateTemplateSecure lives in template_validation.go (AST-based validation).
 
 // isValidSecureURL checks if a given string represents a valid, absolute HTTPS URL.
 // It uses url.Parse and checks for a nil error, an "https" scheme, and a non-empty host.

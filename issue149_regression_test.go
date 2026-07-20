@@ -64,6 +64,12 @@ func TestIssue149_TemplateSecurityBoundary(t *testing.T) {
 		{"simple range over claims", `{{range .Claims.groups}}{{.}} {{end}}`, false},
 		{"default over claim", `{{default "none" .Claims.email}}`, false},
 		{"access token", `{{.AccessToken}}`, false},
+		{"with over claim field", `{{with .Claims.email}}{{.}}{{end}}`, false},
+		{"id token IdToken spelling", `{{.IdToken}}`, false}, // documented spelling (C6)
+		{"id token IDToken spelling", `{{.IDToken}}`, false}, // actual data key (C6)
+
+		// --- still blocked: with over the bare Claims map leaks arbitrary fields ---
+		{"with over bare claims map", `{{with .Claims}}{{.password}}{{end}}`, true},
 
 		// --- still blocked: dangerous control/functions ---
 		{"range over non-claims data", `{{range .Items}}{{.}}{{end}}`, true},
@@ -81,10 +87,21 @@ func TestIssue149_TemplateSecurityBoundary(t *testing.T) {
 		// A decoy {{.Claims.sub}} must NOT launder a bare-map range past the gate.
 		{"whole claims map dump via range", `{{range .Claims}}{{.}} {{end}}{{.Claims.sub}}`, true},
 		{"claims keys dump via range assign", `{{range $k, $v := .Claims}}{{$k}} {{end}}{{.Claims.sub}}`, true},
-		// --- still blocked: newline-obfuscated actions (C5) — normalize collapses
-		// ALL whitespace inside delimiters, so these resolve to {{range}}/{{index}}.
+		// --- still blocked: newline-obfuscated actions — the AST parser resolves
+		// whitespace, so these are just {{range}}/{{index}} and are rejected.
 		{"newline-obfuscated range over map", "{{\nrange .Claims}}{{.}}{{end}}{{.Claims.sub}}", true},
 		{"newline-obfuscated index exfil", "{{\nindex .Claims \"password\"}}{{.Claims.sub}}", true},
+
+		// --- still blocked: whole-root / whole-Claims-map render (AST review). A
+		// whitelisted decoy {{.Claims.email}} must NOT launder a bare-map/root dump.
+		{"whole claims map render", `{{.Claims}}`, true},
+		{"whole root render dot", `{{.}}`, true},
+		{"whole root render dollar", `{{$}}`, true},
+		{"root claims via dollar", `{{$.Claims}}`, true},
+		{"decoy plus root dump", `{{.Claims.email}}{{.}}`, true},
+		{"decoy plus map dump", `{{.Claims.email}}{{.Claims}}`, true},
+		{"var-laundered map dump", `{{$x := .Claims}}{{$x}}{{.Claims.sub}}`, true},
+		{"index builtin blocked", `{{index .Claims "password"}}`, true},
 	}
 
 	for _, tc := range cases {
@@ -129,6 +146,76 @@ func TestIssue149_GroupsTemplateRendersForwardableValue(t *testing.T) {
 	// are not control/bidi runes, so it forwards intact.
 	if reason := headerValueReason(buf.String(), headerTemplateMaxLen); reason != "" {
 		t.Fatalf("rendered groups header was dropped by sanitizer: %s", reason)
+	}
+}
+
+// TestIssue149_GetEnforcesClaimsWhitelist proves the runtime `get` helper cannot
+// exfiltrate a non-whitelisted claim, a raw token, or the whole data map — even
+// though validateTemplateSecure accepts {{get ...}} syntactically. This is the
+// defense-in-depth layer for C2/C3/C4 from the issue #149 security review.
+func TestIssue149_GetEnforcesClaimsWhitelist(t *testing.T) {
+	data := map[string]any{
+		"AccessToken":  "AT-SECRET",
+		"IDToken":      "IDT",
+		"IdToken":      "IDT",
+		"RefreshToken": "RT-SECRET",
+		"Claims": map[string]any{
+			"email":    "e@x.com",
+			"password": "PW-SECRET",
+			"ssn":      "123-45-6789",
+		},
+	}
+	fns := headerTemplateFuncMap()
+	render := func(tmplStr string) string {
+		tmpl := template.Must(template.New("h").Funcs(fns).Option("missingkey=zero").Parse(tmplStr))
+		var b bytes.Buffer
+		if err := tmpl.Execute(&b, data); err != nil {
+			t.Fatalf("execute %q: %v", tmplStr, err)
+		}
+		return b.String()
+	}
+
+	// Every exfil attempt must render empty (or the default fallback), never a secret.
+	leaky := map[string]string{
+		"get non-whitelisted claim": `{{get .Claims "password"}}`,
+		"get ssn":                   `{{get .Claims "ssn"}}`,
+		"get raw token off root":    `{{get . "AccessToken"}}`,
+		"get whole claims map":      `{{get . "Claims"}}`,
+		"default wrapping get(ssn)": `{{default "none" (get .Claims "ssn")}}`,
+	}
+	for name, tmplStr := range leaky {
+		t.Run(name, func(t *testing.T) {
+			got := render(tmplStr)
+			for _, secret := range []string{"PW-SECRET", "AT-SECRET", "RT-SECRET", "123-45-6789"} {
+				if strings.Contains(got, secret) {
+					t.Fatalf("%q leaked %q (rendered %q)", tmplStr, secret, got)
+				}
+			}
+		})
+	}
+
+	// A whitelisted claim via get must still resolve.
+	if got := render(`{{get .Claims "email"}}`); got != "e@x.com" {
+		t.Fatalf(`get of whitelisted "email" must work, got %q`, got)
+	}
+}
+
+// TestIssue149_IdTokenBothSpellingsRender pins C6: both {{.IdToken}} (documented)
+// and {{.IDToken}} (runtime data key) resolve to the ID token, and both validate.
+func TestIssue149_IdTokenBothSpellingsRender(t *testing.T) {
+	data := map[string]any{"IDToken": "IDT-REAL", "IdToken": "IDT-REAL"}
+	for _, tmplStr := range []string{`{{.IdToken}}`, `{{.IDToken}}`} {
+		if err := validateTemplateSecure(tmplStr); err != nil {
+			t.Fatalf("%q must validate: %v", tmplStr, err)
+		}
+		tmpl := template.Must(template.New("h").Option("missingkey=zero").Parse(tmplStr))
+		var b bytes.Buffer
+		if err := tmpl.Execute(&b, data); err != nil {
+			t.Fatalf("execute %q: %v", tmplStr, err)
+		}
+		if b.String() != "IDT-REAL" {
+			t.Fatalf("%q rendered %q, want IDT-REAL", tmplStr, b.String())
+		}
 	}
 }
 
