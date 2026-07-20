@@ -14,13 +14,15 @@ import (
 	"strings"
 )
 
-// templateDelimWhitespace matches whitespace immediately inside Go template
+// templateDelimWhitespace matches ANY whitespace immediately inside Go template
 // delimiters: after "{{" or before "}}". Go's text/template treats "{{ get",
-// "{{  get" and "{{get" identically, so the security validator must collapse
-// this whitespace before pattern-matching — otherwise a leading space both
-// rejects valid templates (issue #148) and lets dangerous patterns such as
-// "{{ range" slip past detection.
-var templateDelimWhitespace = regexp.MustCompile(`\{\{[ \t]+|[ \t]+\}\}`)
+// "{{  get", "{{\nget" and "{{get" identically, so the security validator must
+// collapse this whitespace before pattern-matching — otherwise a leading space
+// both rejects valid templates (issue #148) and lets dangerous patterns such as
+// "{{ range" or a newline-obfuscated "{{\nindex" / "{{\nrange" slip past
+// detection (issue #149 security review). \s covers space, tab, newline, CR,
+// form-feed and vertical-tab.
+var templateDelimWhitespace = regexp.MustCompile(`\{\{\s+|\s+\}\}`)
 
 // normalizeTemplateDelimiters collapses inner-delimiter whitespace so that
 // "{{ get .Claims \"x\" }}" becomes "{{get .Claims \"x\"}}" for matching.
@@ -560,8 +562,20 @@ func (c *Config) Validate() error {
 		if header.Value == "" {
 			return fmt.Errorf("header value template cannot be empty")
 		}
-		if !strings.Contains(header.Value, "{{") || !strings.Contains(header.Value, "}}") {
-			return fmt.Errorf("header value '%s' does not appear to be a valid template (missing {{ }})", header.Value)
+		hasOpen := strings.Contains(header.Value, "{{")
+		hasClose := strings.Contains(header.Value, "}}")
+		if hasOpen != hasClose {
+			return fmt.Errorf("header value '%s' has unbalanced template delimiters (need both {{ and }})", header.Value)
+		}
+		if !hasOpen {
+			// Static/literal header value with no template actions (e.g. a shared
+			// proxy secret or a constant marker). Allowed as-is — it worked before
+			// the constructor started calling Validate() (issue #149). Reject only
+			// header-injection characters; the rendered value is emitted verbatim.
+			if strings.ContainsAny(header.Value, "\r\n\x00") {
+				return fmt.Errorf("header value for '%s' contains invalid characters (CR/LF/NUL)", header.Name)
+			}
+			continue
 		}
 
 		// Provide more helpful guidance for common template errors BEFORE security validation
@@ -617,7 +631,6 @@ func validateTemplateSecure(templateStr string) error {
 	// Skip certain checks if using our safe functions
 	dangerousPatterns := []string{
 		"{{call",     // Function calls (except our safe ones)
-		"{{range",    // Range over arbitrary data
 		"{{define",   // Template definitions
 		"{{template", // Template inclusions
 		"{{block",    // Block definitions
@@ -649,6 +662,32 @@ func validateTemplateSecure(templateStr string) error {
 		dangerousPatterns = append(dangerousPatterns, "{{with")
 	}
 
+	// Allow 'range' ONLY when every range action iterates a specific claims
+	// collection (e.g. joining .Claims.groups / .Claims.roles into one header —
+	// the documented pattern, see README/CONFIGURATION and issue #149). The range
+	// clause (everything up to its closing "}}") must reference ".Claims.<field>",
+	// and that field is checked against the whitelist below. A range over the bare
+	// .Claims map ({{range .Claims}} / {{range $k, $v := .Claims}}) would dump
+	// every unwhitelisted claim into the header — appending a decoy {{.Claims.x}}
+	// elsewhere must not launder it — and a range over any non-claims value is
+	// meaningless; both are rejected here. Companion {{if}}/{{else}}/{{end}} and
+	// $-scoped range vars are pure control flow and were never blocked.
+	for idx := strings.Index(templateStr, "{{range"); idx != -1; {
+		rel := strings.Index(templateStr[idx:], "}}")
+		if rel == -1 {
+			return fmt.Errorf("malformed range action (missing closing }})")
+		}
+		clause := templateStr[idx : idx+rel]
+		if !strings.Contains(clause, ".Claims.") {
+			return fmt.Errorf("range is only allowed to iterate a whitelisted claims collection, e.g. {{range $i, $e := .Claims.groups}}")
+		}
+		next := strings.Index(templateStr[idx+rel:], "{{range")
+		if next == -1 {
+			break
+		}
+		idx = idx + rel + next
+	}
+
 	templateLower := strings.ToLower(templateStr)
 	for _, pattern := range dangerousPatterns {
 		// Skip check if it's one of our safe functions
@@ -678,7 +717,7 @@ func validateTemplateSecure(templateStr string) error {
 		"{{.AccessToken}}",
 		"{{.IdToken}}",
 		"{{.RefreshToken}}",
-		"{{.Claims.",
+		".Claims.",   // any Claims access: {{.Claims.x}}, {{range .. := .Claims.x}}, {{with .Claims.x}}, {{default d .Claims.x}}
 		"{{get ",     // Safe custom function
 		"{{default ", // Safe custom function
 		"{{with ",    // Safe conditional (when used with Claims)
@@ -697,8 +736,12 @@ func validateTemplateSecure(templateStr string) error {
 		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, Claims.*, or safe functions (get, default, with)")
 	}
 
-	// Validate claims access patterns
-	if strings.Contains(templateStr, "{{.Claims.") {
+	// Validate claims access patterns. Scan every ".Claims.<field>" reference
+	// regardless of the enclosing action — "{{.Claims.x}}", a join header
+	// "{{range $i,$e := .Claims.groups}}", "{{with .Claims.x}}" or
+	// "{{default d .Claims.x}}" — so a claim reached through range/with/default
+	// is whitelisted identically to a direct reference (issue #149).
+	if strings.Contains(templateStr, ".Claims.") {
 		// Simple validation - ensure claims access is to known safe fields
 		// This list includes standard OIDC claims and common provider-specific claims
 		safeClaimsFields := map[string]bool{
@@ -736,29 +779,36 @@ func validateTemplateSecure(templateStr string) error {
 			"updated_at":     true, // Last update time
 		}
 
-		// Extract field names from Claims access
-		start := strings.Index(templateStr, "{{.Claims.")
+		// Extract field names from every ".Claims.<field>" access.
+		const claimsAnchor = ".Claims."
+		isIdentRune := func(r byte) bool {
+			return r == '_' ||
+				(r >= 'a' && r <= 'z') ||
+				(r >= 'A' && r <= 'Z') ||
+				(r >= '0' && r <= '9')
+		}
+		start := strings.Index(templateStr, claimsAnchor)
 		for start != -1 {
-			end := strings.Index(templateStr[start:], "}}")
-			if end == -1 {
-				return fmt.Errorf("malformed Claims template syntax")
+			rest := templateStr[start+len(claimsAnchor):]
+			// Read the identifier immediately after ".Claims." — the first
+			// non-identifier byte (".", "}", space, etc.) ends the field name.
+			end := len(rest)
+			for i := 0; i < len(rest); i++ {
+				if !isIdentRune(rest[i]) {
+					end = i
+					break
+				}
 			}
+			fieldName := rest[:end]
 
-			// Extract the content between "{{.Claims." and "}}"
-			// start+10 skips "{{.Claims." and start+end is the position of "}}"
-			claimsContent := templateStr[start+10 : start+end]
-
-			// Get the field name (first part before any dots)
-			fieldName := strings.Split(claimsContent, ".")[0]
-
-			if !safeClaimsFields[fieldName] {
+			if fieldName == "" || !safeClaimsFields[fieldName] {
 				return fmt.Errorf("access to Claims.%s is not allowed for security reasons", fieldName)
 			}
 
-			// Search for next occurrence
-			nextStart := strings.Index(templateStr[start+end+2:], "{{.Claims.")
+			// Search for the next occurrence.
+			nextStart := strings.Index(rest, claimsAnchor)
 			if nextStart != -1 {
-				start = start + end + 2 + nextStart
+				start = start + len(claimsAnchor) + nextStart
 			} else {
 				start = -1
 			}

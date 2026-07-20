@@ -124,6 +124,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	// any session. Traefik's yaegi plugin analyzer supplies a valid key via
 	// .traefik.yml testData, so it passes; only misconfigured deployments fail.
 	if err := config.Validate(); err != nil {
+		// Surface the concrete reason. When New() returns a nil handler, Traefik
+		// only logs the opaque router-level "invalid handler type: <nil>" and
+		// swallows this error, leaving operators no way to see WHY the plugin
+		// failed to build (issue #149). Log it explicitly at construction.
+		logger.Errorf("traefikoidc: invalid configuration, middleware not built: %v", err)
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	// Setup HTTP client
