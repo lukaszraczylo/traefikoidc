@@ -55,8 +55,14 @@ type Config struct {
 	AllowedUserDomains        []string                         `json:"allowedUserDomains"`
 	AllowedUsers              []string                         `json:"allowedUsers"`
 	Headers                   []TemplatedHeader                `json:"headers"`
-	ExtraAuthParams           map[string]string                `json:"extraAuthParams,omitempty"`
-	RefreshGracePeriodSeconds int                              `json:"refreshGracePeriodSeconds"`
+	// AllowedClaims extends the built-in claims whitelist that header value
+	// templates may emit. Add the exact claim name (e.g. "employee_id") to allow
+	// {{.Claims.employee_id}} / {{get .Claims "employee_id"}}. Applies to both
+	// template validation and the runtime get helper. Built-in claims (email,
+	// groups, roles, realm_access, ...) need not be listed.
+	AllowedClaims             []string          `json:"allowedClaims,omitempty"`
+	ExtraAuthParams           map[string]string `json:"extraAuthParams,omitempty"`
+	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
 	// MaxRefreshTokenAgeSeconds is a heuristic upper bound on the lifetime of
 	// a stored refresh token. Once the token has been in the session longer
 	// than this, requests treat it as expired up-front - returning 401 to
@@ -530,7 +536,9 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Validate headers configuration for template security
+	// Validate headers configuration for template security. Header templates may
+	// emit the built-in claims plus any operator-configured AllowedClaims.
+	allowedClaims := claimsWhitelist(c.AllowedClaims)
 	for _, header := range c.Headers {
 		if header.Name == "" {
 			return fmt.Errorf("header name cannot be empty")
@@ -569,7 +577,7 @@ func (c *Config) Validate() error {
 		}
 
 		// Validate template syntax and security
-		if err := validateTemplateSecure(header.Value); err != nil {
+		if err := validateTemplateSecure(header.Value, allowedClaims); err != nil {
 			return fmt.Errorf("header template '%s' failed security validation: %w", header.Value, err)
 		}
 	}

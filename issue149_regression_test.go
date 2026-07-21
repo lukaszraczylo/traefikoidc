@@ -106,7 +106,7 @@ func TestIssue149_TemplateSecurityBoundary(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateTemplateSecure(tc.template)
+			err := validateTemplateSecure(tc.template, nil)
 			if tc.shouldFail && err == nil {
 				t.Fatalf("expected %q to be rejected, but it passed", tc.template)
 			}
@@ -165,7 +165,7 @@ func TestIssue149_GetEnforcesClaimsWhitelist(t *testing.T) {
 			"ssn":      "123-45-6789",
 		},
 	}
-	fns := headerTemplateFuncMap()
+	fns := headerTemplateFuncMap(nil)
 	render := func(tmplStr string) string {
 		tmpl := template.Must(template.New("h").Funcs(fns).Option("missingkey=zero").Parse(tmplStr))
 		var b bytes.Buffer
@@ -205,7 +205,7 @@ func TestIssue149_GetEnforcesClaimsWhitelist(t *testing.T) {
 func TestIssue149_IdTokenBothSpellingsRender(t *testing.T) {
 	data := map[string]any{"IDToken": "IDT-REAL", "IdToken": "IDT-REAL"}
 	for _, tmplStr := range []string{`{{.IdToken}}`, `{{.IDToken}}`} {
-		if err := validateTemplateSecure(tmplStr); err != nil {
+		if err := validateTemplateSecure(tmplStr, nil); err != nil {
 			t.Fatalf("%q must validate: %v", tmplStr, err)
 		}
 		tmpl := template.Must(template.New("h").Option("missingkey=zero").Parse(tmplStr))
@@ -216,6 +216,51 @@ func TestIssue149_IdTokenBothSpellingsRender(t *testing.T) {
 		if b.String() != "IDT-REAL" {
 			t.Fatalf("%q rendered %q, want IDT-REAL", tmplStr, b.String())
 		}
+	}
+}
+
+// TestIssue149_AllowedClaimsExtendsWhitelist pins the allowedClaims config
+// option: a custom claim is rejected by default but validates and renders once
+// listed, via both direct access and get.
+func TestIssue149_AllowedClaimsExtendsWhitelist(t *testing.T) {
+	const custom = "employee_id"
+
+	// Default (no allowedClaims): the custom claim is not forwardable.
+	base := issue149BaseConfig()
+	base.Headers = []TemplatedHeader{{Name: "X-Emp", Value: `{{.Claims.employee_id}}`}}
+	if err := base.Validate(); err == nil {
+		t.Fatalf("custom claim %q must be rejected without allowedClaims", custom)
+	}
+
+	// With allowedClaims: direct access and get both validate.
+	cfg := issue149BaseConfig()
+	cfg.AllowedClaims = []string{custom}
+	cfg.Headers = []TemplatedHeader{
+		{Name: "X-Emp", Value: `{{.Claims.employee_id}}`},
+		{Name: "X-Emp-Get", Value: `{{get .Claims "employee_id"}}`},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("allowedClaims must permit %q, got: %v", custom, err)
+	}
+
+	// The whitelist (validation) and the runtime get share the same effective set.
+	whitelist := claimsWhitelist(cfg.AllowedClaims)
+	if err := validateTemplateSecure(`{{get .Claims "employee_id"}}`, whitelist); err != nil {
+		t.Fatalf("get on allowed custom claim must validate: %v", err)
+	}
+	fns := headerTemplateFuncMap(whitelist)
+	tmpl := template.Must(template.New("h").Funcs(fns).Option("missingkey=zero").Parse(`{{get .Claims "employee_id"}}`))
+	var b bytes.Buffer
+	if err := tmpl.Execute(&b, map[string]any{"Claims": map[string]any{"employee_id": "E-42"}}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if b.String() != "E-42" {
+		t.Fatalf("runtime get of allowed claim rendered %q, want E-42", b.String())
+	}
+
+	// A still-unlisted claim stays rejected even when another is allowed.
+	if err := validateTemplateSecure(`{{.Claims.ssn}}`, whitelist); err == nil {
+		t.Fatal("non-allowed claim ssn must still be rejected")
 	}
 }
 

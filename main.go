@@ -84,13 +84,17 @@ var defaultExcludedURLs = map[string]struct{}{
 }
 
 // headerTemplateFuncMap returns the function map available to custom header
-// value templates. It exposes exactly two helpers:
+// value templates, gated by the effective claims whitelist (built-in +
+// config.AllowedClaims). It exposes exactly two helpers:
 //   - default: substitute a fallback when a value is nil/empty.
 //   - get: safe map access RESTRICTED to whitelisted claim keys, so it cannot be
 //     used to read a non-whitelisted claim, a raw token, or the whole data map
 //     (issue #149 review). This is the sole runtime enforcement of the claims
 //     whitelist for `get`; static validation cannot reliably parse its arguments.
-func headerTemplateFuncMap() template.FuncMap {
+func headerTemplateFuncMap(allowedClaims map[string]bool) template.FuncMap {
+	if allowedClaims == nil {
+		allowedClaims = safeClaimsFields
+	}
 	return template.FuncMap{
 		"default": func(defaultVal interface{}, val interface{}) interface{} {
 			if val == nil || val == "" {
@@ -99,7 +103,7 @@ func headerTemplateFuncMap() template.FuncMap {
 			return val
 		},
 		"get": func(m interface{}, key string) interface{} {
-			if !safeClaimsFields[key] {
+			if !allowedClaims[key] {
 				return ""
 			}
 			if mapVal, ok := m.(map[string]interface{}); ok {
@@ -422,7 +426,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	t.headerTemplates = make(map[string]*template.Template)
 
-	funcMap := headerTemplateFuncMap()
+	funcMap := headerTemplateFuncMap(claimsWhitelist(config.AllowedClaims))
 
 	for _, header := range config.Headers {
 		tmpl := template.New(header.Name).Funcs(funcMap).Option("missingkey=zero")

@@ -796,7 +796,7 @@ func TestValidateTemplateSecure_CoverageBoost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateTemplateSecure(tt.template)
+			err := validateTemplateSecure(tt.template, nil)
 			if tt.shouldError && err == nil {
 				t.Errorf("Expected error for template: %s", tt.template)
 			}

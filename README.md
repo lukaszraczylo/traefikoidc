@@ -379,8 +379,32 @@ headers:
     value: "{{{{range $i, $e := .Claims.roles}}}}{{{{if $i}}}},{{{{end}}}}{{{{$e}}}}{{{{end}}}}"
 ```
 
-Available bindings: `.Claims.<field>`, `.AccessToken`, `.IdToken`,
-`.RefreshToken`. Names are case-sensitive (`.Claims`, not `.claims`).
+Available bindings: `.Claims.<field>`, `.AccessToken`, `.IdToken`
+(or `.IDToken`), `.RefreshToken`. Names are case-sensitive (`.Claims`, not
+`.claims`).
+
+Header templates are validated at startup (a failing template stops the
+middleware from loading). Only a fixed set of claim fields may be emitted —
+standard OIDC claims plus common provider claims (`email`, `name`,
+`given_name`, `family_name`, `preferred_username`, `sub`, `groups`, `roles`,
+`realm_access`, `resource_access`, `oid`, `tid`, `upn`, `hd`, `picture`,
+`locale`, `email_verified`, and a few more; see `safeClaimsFields` in
+`template_validation.go`). To emit a claim not on that list, add it to
+`allowedClaims`:
+
+```yaml
+allowedClaims:
+  - employee_id
+headers:
+  - name: X-Employee-Id
+    value: "{{{{.Claims.employee_id}}}}"
+```
+
+Rendering the whole context (`{{.}}`, `{{$}}`), the whole claims map
+(`{{.Claims}}`), or any non-listed claim is rejected — this prevents a template
+from accidentally forwarding raw tokens or unlisted claims. `range`/`with` must
+target a specific listed claim (e.g. `{{range .Claims.groups}}`); `get`/`default`
+are the only functions allowed.
 
 > **Escape with quadruple braces.** If you see
 > `can't evaluate field AccessToken in type bool`, Traefik's YAML parser ate
