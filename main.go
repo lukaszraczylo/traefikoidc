@@ -83,6 +83,39 @@ var defaultExcludedURLs = map[string]struct{}{
 	"/favicon": {},
 }
 
+// headerTemplateFuncMap returns the function map available to custom header
+// value templates, gated by the effective claims whitelist (built-in +
+// config.AllowedClaims). It exposes exactly two helpers:
+//   - default: substitute a fallback when a value is nil/empty.
+//   - get: safe map access RESTRICTED to whitelisted claim keys, so it cannot be
+//     used to read a non-whitelisted claim, a raw token, or the whole data map
+//     (issue #149 review). This is the sole runtime enforcement of the claims
+//     whitelist for `get`; static validation cannot reliably parse its arguments.
+func headerTemplateFuncMap(allowedClaims map[string]bool) template.FuncMap {
+	if allowedClaims == nil {
+		allowedClaims = safeClaimsFields
+	}
+	return template.FuncMap{
+		"default": func(defaultVal interface{}, val interface{}) interface{} {
+			if val == nil || val == "" {
+				return defaultVal
+			}
+			return val
+		},
+		"get": func(m interface{}, key string) interface{} {
+			if !allowedClaims[key] {
+				return ""
+			}
+			if mapVal, ok := m.(map[string]interface{}); ok {
+				if val, exists := mapVal[key]; exists {
+					return val
+				}
+			}
+			return ""
+		},
+	}
+}
+
 // New creates a new TraefikOidc middleware instance.
 // It initializes all components including caches, HTTP clients, session management,
 // templates, and starts background processes for metadata discovery.
@@ -124,6 +157,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	// any session. Traefik's yaegi plugin analyzer supplies a valid key via
 	// .traefik.yml testData, so it passes; only misconfigured deployments fail.
 	if err := config.Validate(); err != nil {
+		// Surface the concrete reason. When New() returns a nil handler, Traefik
+		// only logs the opaque router-level "invalid handler type: <nil>" and
+		// swallows this error, leaving operators no way to see WHY the plugin
+		// failed to build (issue #149). Log it explicitly at construction.
+		logger.Errorf("traefikoidc: invalid configuration, middleware not built: %v", err)
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	// Setup HTTP client
@@ -388,22 +426,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	t.headerTemplates = make(map[string]*template.Template)
 
-	funcMap := template.FuncMap{
-		"default": func(defaultVal interface{}, val interface{}) interface{} {
-			if val == nil || val == "" {
-				return defaultVal
-			}
-			return val
-		},
-		"get": func(m interface{}, key string) interface{} {
-			if mapVal, ok := m.(map[string]interface{}); ok {
-				if val, exists := mapVal[key]; exists {
-					return val
-				}
-			}
-			return ""
-		},
-	}
+	funcMap := headerTemplateFuncMap(claimsWhitelist(config.AllowedClaims))
 
 	for _, header := range config.Headers {
 		tmpl := template.New(header.Name).Funcs(funcMap).Option("missingkey=zero")

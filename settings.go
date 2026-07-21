@@ -9,31 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 )
-
-// templateDelimWhitespace matches whitespace immediately inside Go template
-// delimiters: after "{{" or before "}}". Go's text/template treats "{{ get",
-// "{{  get" and "{{get" identically, so the security validator must collapse
-// this whitespace before pattern-matching — otherwise a leading space both
-// rejects valid templates (issue #148) and lets dangerous patterns such as
-// "{{ range" slip past detection.
-var templateDelimWhitespace = regexp.MustCompile(`\{\{[ \t]+|[ \t]+\}\}`)
-
-// normalizeTemplateDelimiters collapses inner-delimiter whitespace so that
-// "{{ get .Claims \"x\" }}" becomes "{{get .Claims \"x\"}}" for matching.
-// Trim markers ("{{-", "-}}") are left intact: the dash is not whitespace, so
-// they remain detectable as dangerous patterns.
-func normalizeTemplateDelimiters(templateStr string) string {
-	return templateDelimWhitespace.ReplaceAllStringFunc(templateStr, func(m string) string {
-		if strings.HasPrefix(m, "{{") {
-			return "{{"
-		}
-		return "}}"
-	})
-}
 
 // TemplatedHeader represents a custom HTTP header with a templated value.
 // The value can contain template expressions that will be evaluated for each
@@ -77,8 +55,14 @@ type Config struct {
 	AllowedUserDomains        []string                         `json:"allowedUserDomains"`
 	AllowedUsers              []string                         `json:"allowedUsers"`
 	Headers                   []TemplatedHeader                `json:"headers"`
-	ExtraAuthParams           map[string]string                `json:"extraAuthParams,omitempty"`
-	RefreshGracePeriodSeconds int                              `json:"refreshGracePeriodSeconds"`
+	// AllowedClaims extends the built-in claims whitelist that header value
+	// templates may emit. Add the exact claim name (e.g. "employee_id") to allow
+	// {{.Claims.employee_id}} / {{get .Claims "employee_id"}}. Applies to both
+	// template validation and the runtime get helper. Built-in claims (email,
+	// groups, roles, realm_access, ...) need not be listed.
+	AllowedClaims             []string          `json:"allowedClaims,omitempty"`
+	ExtraAuthParams           map[string]string `json:"extraAuthParams,omitempty"`
+	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
 	// MaxRefreshTokenAgeSeconds is a heuristic upper bound on the lifetime of
 	// a stored refresh token. Once the token has been in the session longer
 	// than this, requests treat it as expired up-front - returning 401 to
@@ -552,7 +536,9 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Validate headers configuration for template security
+	// Validate headers configuration for template security. Header templates may
+	// emit the built-in claims plus any operator-configured AllowedClaims.
+	allowedClaims := claimsWhitelist(c.AllowedClaims)
 	for _, header := range c.Headers {
 		if header.Name == "" {
 			return fmt.Errorf("header name cannot be empty")
@@ -560,8 +546,20 @@ func (c *Config) Validate() error {
 		if header.Value == "" {
 			return fmt.Errorf("header value template cannot be empty")
 		}
-		if !strings.Contains(header.Value, "{{") || !strings.Contains(header.Value, "}}") {
-			return fmt.Errorf("header value '%s' does not appear to be a valid template (missing {{ }})", header.Value)
+		hasOpen := strings.Contains(header.Value, "{{")
+		hasClose := strings.Contains(header.Value, "}}")
+		if hasOpen != hasClose {
+			return fmt.Errorf("header value '%s' has unbalanced template delimiters (need both {{ and }})", header.Value)
+		}
+		if !hasOpen {
+			// Static/literal header value with no template actions (e.g. a shared
+			// proxy secret or a constant marker). Allowed as-is — it worked before
+			// the constructor started calling Validate() (issue #149). Reject only
+			// header-injection characters; the rendered value is emitted verbatim.
+			if strings.ContainsAny(header.Value, "\r\n\x00") {
+				return fmt.Errorf("header value for '%s' contains invalid characters (CR/LF/NUL)", header.Name)
+			}
+			continue
 		}
 
 		// Provide more helpful guidance for common template errors BEFORE security validation
@@ -579,7 +577,7 @@ func (c *Config) Validate() error {
 		}
 
 		// Validate template syntax and security
-		if err := validateTemplateSecure(header.Value); err != nil {
+		if err := validateTemplateSecure(header.Value, allowedClaims); err != nil {
 			return fmt.Errorf("header template '%s' failed security validation: %w", header.Value, err)
 		}
 	}
@@ -587,196 +585,50 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// safeClaimsFields is the single source of truth for which claim fields a header
+// template may emit. It gates both static validation (validateTemplateSecure)
+// and the runtime `get` function (main.go funcMap), so a claim can never be
+// forwarded via `get`/`index` that a direct {{.Claims.x}} reference would reject.
+// Includes standard OIDC claims and common provider-specific claims.
+var safeClaimsFields = map[string]bool{
+	// Standard OIDC claims
+	"email":              true,
+	"name":               true,
+	"given_name":         true,
+	"family_name":        true,
+	"preferred_username": true,
+	"sub":                true,
+	"iss":                true,
+	"aud":                true,
+	"exp":                true,
+	"iat":                true,
+	"groups":             true,
+	"roles":              true,
+	// Common custom claims
+	"internal_role": true, // Custom roles field (issue #60)
+	"role":          true, // Alternative role field
+	"department":    true, // Organization info
+	"organization":  true, // Organization info
+	// Provider-specific claims
+	"realm_access":    true, // Keycloak specific
+	"resource_access": true, // Keycloak specific
+	"oid":             true, // Azure AD object ID
+	"tid":             true, // Azure AD tenant ID
+	"upn":             true, // Azure AD User Principal Name
+	"hd":              true, // Google hosted domain
+	"picture":         true, // Profile picture
+	// Additional standard claims
+	"locale":         true, // User locale
+	"zoneinfo":       true, // Timezone
+	"phone_number":   true, // Contact info
+	"email_verified": true, // Email verification status
+	"updated_at":     true, // Last update time
+}
+
 // validateTemplateSecure validates template expressions for security vulnerabilities.
 // It checks for dangerous template patterns that could lead to code execution or data leaks
 // while allowing safe custom functions for field access and default values.
-func validateTemplateSecure(templateStr string) error {
-	// Normalize inner-delimiter whitespace up front so that "{{ get .Claims }}"
-	// is validated identically to "{{get .Claims}}" (issue #148). All matching
-	// below operates on the normalized form, which also prevents a stray space
-	// from smuggling a dangerous pattern (e.g. "{{ range") past detection.
-	templateStr = normalizeTemplateDelimiters(templateStr)
-
-	// Allow our specific safe custom functions
-	// These are added specifically to handle missing fields safely (issue #60)
-	safeCustomFunctions := []string{
-		"{{get ",     // Safe map access function
-		"{{default ", // Safe default value function
-	}
-
-	// Check if template uses safe custom functions
-	usesSafeFunctions := false
-	for _, safeFn := range safeCustomFunctions {
-		if strings.Contains(templateStr, safeFn) {
-			usesSafeFunctions = true
-			// These functions are explicitly allowed for safe field access
-		}
-	}
-
-	// Check for dangerous template functions and patterns
-	// Skip certain checks if using our safe functions
-	dangerousPatterns := []string{
-		"{{call",     // Function calls (except our safe ones)
-		"{{range",    // Range over arbitrary data
-		"{{define",   // Template definitions
-		"{{template", // Template inclusions
-		"{{block",    // Block definitions
-		"{{/*",       // Comments that could hide malicious code
-		"{{-",        // Trim whitespace (could be used to obfuscate)
-		"-}}",        // Trim whitespace (could be used to obfuscate)
-		"{{printf",   // Printf functions
-		"{{print",    // Print functions (but not our safe ones)
-		"{{println",  // Println functions
-		"{{html",     // HTML functions
-		"{{js",       // JavaScript functions
-		"{{urlquery", // URL query functions
-		"{{index",    // Index access to arbitrary data
-		"{{slice",    // Slice operations
-		"{{len",      // Length operations on arbitrary data
-		"{{eq",       // Comparison operations
-		"{{ne",       // Comparison operations
-		"{{lt",       // Comparison operations
-		"{{le",       // Comparison operations
-		"{{gt",       // Comparison operations
-		"{{ge",       // Comparison operations
-		"{{and",      // Logical operations
-		"{{or",       // Logical operations
-		"{{not",      // Logical operations
-	}
-
-	// Allow 'with' for safe conditional access
-	if !strings.Contains(templateStr, "{{with .Claims") {
-		dangerousPatterns = append(dangerousPatterns, "{{with")
-	}
-
-	templateLower := strings.ToLower(templateStr)
-	for _, pattern := range dangerousPatterns {
-		// Skip check if it's one of our safe functions
-		if usesSafeFunctions && (pattern == "{{call" || pattern == "{{print") {
-			// Allow these if we're using safe functions
-			continue
-		}
-
-		// Special handling for comparison operators to avoid false positives with "get" and "default"
-		if pattern == "{{ge" && (strings.Contains(templateStr, "{{get ") || strings.Contains(templateStr, "{{default ")) {
-			// Skip {{ge check if we're using the safe {{get or {{default functions
-			continue
-		}
-
-		// Skip {{de checks if using {{default
-		if pattern == "{{define" && strings.Contains(templateStr, "{{default ") {
-			continue
-		}
-
-		if strings.Contains(templateLower, strings.ToLower(pattern)) {
-			return fmt.Errorf("dangerous template pattern detected: %s", pattern)
-		}
-	}
-
-	// Validate template variables against whitelist
-	allowedPatterns := []string{
-		"{{.AccessToken}}",
-		"{{.IdToken}}",
-		"{{.RefreshToken}}",
-		"{{.Claims.",
-		"{{get ",     // Safe custom function
-		"{{default ", // Safe custom function
-		"{{with ",    // Safe conditional (when used with Claims)
-	}
-
-	// Check if template contains only allowed patterns
-	hasAllowedPattern := false
-	for _, pattern := range allowedPatterns {
-		if strings.Contains(templateStr, pattern) {
-			hasAllowedPattern = true
-			break
-		}
-	}
-
-	if !hasAllowedPattern {
-		return fmt.Errorf("template must use only allowed variables: AccessToken, IdToken, RefreshToken, Claims.*, or safe functions (get, default, with)")
-	}
-
-	// Validate claims access patterns
-	if strings.Contains(templateStr, "{{.Claims.") {
-		// Simple validation - ensure claims access is to known safe fields
-		// This list includes standard OIDC claims and common provider-specific claims
-		safeClaimsFields := map[string]bool{
-			// Standard OIDC claims
-			"email":              true,
-			"name":               true,
-			"given_name":         true,
-			"family_name":        true,
-			"preferred_username": true,
-			"sub":                true,
-			"iss":                true,
-			"aud":                true,
-			"exp":                true,
-			"iat":                true,
-			"groups":             true,
-			"roles":              true,
-			// Common custom claims
-			"internal_role": true, // Custom roles field (issue #60)
-			"role":          true, // Alternative role field
-			"department":    true, // Organization info
-			"organization":  true, // Organization info
-			// Provider-specific claims
-			"realm_access":    true, // Keycloak specific
-			"resource_access": true, // Keycloak specific
-			"oid":             true, // Azure AD object ID
-			"tid":             true, // Azure AD tenant ID
-			"upn":             true, // Azure AD User Principal Name
-			"hd":              true, // Google hosted domain
-			"picture":         true, // Profile picture
-			// Additional standard claims
-			"locale":         true, // User locale
-			"zoneinfo":       true, // Timezone
-			"phone_number":   true, // Contact info
-			"email_verified": true, // Email verification status
-			"updated_at":     true, // Last update time
-		}
-
-		// Extract field names from Claims access
-		start := strings.Index(templateStr, "{{.Claims.")
-		for start != -1 {
-			end := strings.Index(templateStr[start:], "}}")
-			if end == -1 {
-				return fmt.Errorf("malformed Claims template syntax")
-			}
-
-			// Extract the content between "{{.Claims." and "}}"
-			// start+10 skips "{{.Claims." and start+end is the position of "}}"
-			claimsContent := templateStr[start+10 : start+end]
-
-			// Get the field name (first part before any dots)
-			fieldName := strings.Split(claimsContent, ".")[0]
-
-			if !safeClaimsFields[fieldName] {
-				return fmt.Errorf("access to Claims.%s is not allowed for security reasons", fieldName)
-			}
-
-			// Search for next occurrence
-			nextStart := strings.Index(templateStr[start+end+2:], "{{.Claims.")
-			if nextStart != -1 {
-				start = start + end + 2 + nextStart
-			} else {
-				start = -1
-			}
-		}
-	}
-
-	// Prevent code injection through template syntax
-	if strings.Contains(templateStr, "{{") && strings.Contains(templateStr, "}}") {
-		// Count opening and closing braces
-		openCount := strings.Count(templateStr, "{{")
-		closeCount := strings.Count(templateStr, "}}")
-		if openCount != closeCount {
-			return fmt.Errorf("unbalanced template braces")
-		}
-	}
-
-	return nil
-}
+// validateTemplateSecure lives in template_validation.go (AST-based validation).
 
 // isValidSecureURL checks if a given string represents a valid, absolute HTTPS URL.
 // It uses url.Parse and checks for a nil error, an "https" scheme, and a non-empty host.

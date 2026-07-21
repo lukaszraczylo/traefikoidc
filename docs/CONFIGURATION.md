@@ -441,12 +441,45 @@ headers:
 ```
 
 **Template Variables:**
-- `{{.Claims.field}}` - ID token claims
+- `{{.Claims.field}}` - ID token claims (only whitelisted fields; see below)
 - `{{.AccessToken}}` - Raw access token
-- `{{.IdToken}}` - Raw ID token
+- `{{.IdToken}}` / `{{.IDToken}}` - Raw ID token (both spellings work)
 - `{{.RefreshToken}}` - Raw refresh token
 
 **Important:** Use double curly braces (`{{{{` and `}}}}`) to escape templates in YAML.
+
+**Validation and the claims whitelist.** Header templates are parsed and
+validated when the middleware loads; an invalid or disallowed template stops the
+middleware from starting (the route then returns Traefik's
+`invalid handler type: <nil>`). To prevent a template from accidentally
+forwarding raw tokens or sensitive claims, only a fixed set of claim fields may
+be emitted — the standard OIDC claims plus common provider claims (`email`,
+`name`, `given_name`, `family_name`, `preferred_username`, `sub`, `groups`,
+`roles`, `internal_role`, `role`, `department`, `organization`, `realm_access`,
+`resource_access`, `oid`, `tid`, `upn`, `hd`, `picture`, `locale`, `zoneinfo`,
+`phone_number`, `email_verified`, `updated_at`; the authoritative list is
+`safeClaimsFields` in `template_validation.go`). Rejected: rendering the whole
+context (`{{.}}`, `{{$}}`) or the whole claims map (`{{.Claims}}`), any claim not
+on the list, functions other than `get`/`default`, and `range`/`with` that do not
+target a specific listed claim (e.g. `{{range .Claims}}` is rejected; `{{range
+.Claims.groups}}` is allowed).
+
+**`allowedClaims`** extends the whitelist for claims your provider issues that
+are not built in:
+
+```yaml
+allowedClaims:
+  - employee_id
+  - cost_center
+headers:
+  - name: "X-Employee-Id"
+    value: "{{{{.Claims.employee_id}}}}"
+```
+
+Listed names apply to both direct access (`{{.Claims.employee_id}}`) and
+`get` (`{{get .Claims "employee_id"}}`). Subfields of a whitelisted map-valued
+claim (e.g. `realm_access.roles`) are already accessible without listing them
+individually.
 
 ---
 

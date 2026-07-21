@@ -796,6 +796,7 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 		templateData := map[string]interface{}{
 			"AccessToken":  p.AccessToken,
 			"IDToken":      p.IDToken,
+			"IdToken":      p.IDToken, // documented spelling (README/CONFIGURATION); alias so {{.IdToken}} renders (issue #149 review)
 			"RefreshToken": p.RefreshToken,
 			"Claims":       p.Claims,
 		}

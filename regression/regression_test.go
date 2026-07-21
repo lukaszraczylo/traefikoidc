@@ -369,7 +369,10 @@ func testIssue60SafeTemplateFunctions(t *testing.T) {
 		config.Headers = []traefikoidc.TemplatedHeader{header}
 		err := config.Validate()
 		require.Error(t, err, "Dangerous template should be rejected: %s", header.Value)
-		assert.Contains(t, err.Error(), "dangerous", "Error should mention dangerous pattern")
+		// The template validator (template_validation.go) rejects these; Config.Validate
+		// wraps the reason with this stable prefix. Assert the behavior (rejected by
+		// the security validator) rather than a specific message word.
+		assert.Contains(t, err.Error(), "failed security validation", "should be rejected by the template security validator")
 	}
 
 	// Test all safe patterns from the documentation
