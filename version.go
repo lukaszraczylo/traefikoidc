@@ -14,4 +14,4 @@ const devPluginVersion = "0.0.0-dev"
 // from build info at runtime (debug.ReadBuildInfo sees Traefik's build graph,
 // not the interpreted plugin). This build-stamped constant is therefore the
 // single source of truth for the version reported by anonymous usage telemetry.
-const traefikoidcPluginVersion = "0.0.0-dev"
+const traefikoidcPluginVersion = "1.0.29"
