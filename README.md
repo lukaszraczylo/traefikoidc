@@ -372,11 +372,11 @@ Forward identity to backends via Go templates over ID-token claims and tokens:
 ```yaml
 headers:
   - name: X-User-Email
-    value: "{{{{.Claims.email}}}}"
+    value: "{{.Claims.email}}"
   - name: Authorization
-    value: "Bearer {{{{.AccessToken}}}}"
+    value: "Bearer {{.AccessToken}}"
   - name: X-User-Roles
-    value: "{{{{range $i, $e := .Claims.roles}}}}{{{{if $i}}}},{{{{end}}}}{{{{$e}}}}{{{{end}}}}"
+    value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
 ```
 
 Available bindings: `.Claims.<field>`, `.AccessToken`, `.IdToken`
@@ -397,7 +397,7 @@ allowedClaims:
   - employee_id
 headers:
   - name: X-Employee-Id
-    value: "{{{{.Claims.employee_id}}}}"
+    value: "{{.Claims.employee_id}}"
 ```
 
 Rendering the whole context (`{{.}}`, `{{$}}`), the whole claims map
@@ -406,11 +406,16 @@ from accidentally forwarding raw tokens or unlisted claims. `range`/`with` must
 target a specific listed claim (e.g. `{{range .Claims.groups}}`); `get`/`default`
 are the only functions allowed.
 
-> **Escape with quadruple braces.** If you see
-> `can't evaluate field AccessToken in type bool`, Traefik's YAML parser ate
-> your `{{ }}`. The fix that actually works is `{{{{ }}}}` — the YAML pass
-> turns it into `{{ }}` for the Go template engine. Other escaping tricks
-> (literal blocks, single quotes) do not work reliably.
+> **File-provider users: escape the braces.** Traefik's file provider runs
+> every dynamic configuration file through Go templating before the plugin
+> sees it. Plain `{{.AccessToken}}` then fails with
+> `can't evaluate field AccessToken in type bool`. Wrap the expression in a
+> raw string so the file provider emits it literally:
+> ``value: "{{`{{.Claims.email}}`}}"``. All other providers (Kubernetes CRD,
+> Docker labels, Consul, ...) pass the value through untouched — use the plain
+> form there. Quadruple braces (`{{{{ }}}}`) do not work anywhere: the file
+> provider fails to parse them, and every other path hands them to the plugin
+> verbatim, where template validation rejects them (issues #149, #151).
 
 ## Default downstream headers
 
@@ -438,7 +443,7 @@ section — see [docs/CONFIGURATION.md](docs/CONFIGURATION.md#security-headers).
 | `No matching public key found` | JWKS endpoint down, or `kid` mismatch. |
 | `Access denied: Your email domain is not allowed` | User's domain not in `allowedUserDomains`. |
 | `Access denied: You do not have any of the allowed roles or groups` | Claims missing or not in `allowedRolesAndGroups`. |
-| `can't evaluate field AccessToken in type bool` | Template not escaped — use `{{{{ }}}}`. |
+| `can't evaluate field AccessToken in type bool` | File provider templated your header value — escape it: ``"{{`{{.AccessToken}}`}}"`` (see "Templated headers"). |
 | `tls: failed to verify certificate: x509: certificate signed by unknown authority` | Internal CA — set `caCertPath` / `caCertPEM`. |
 | `invalid handler type: <nil>` | Env var name contains `API` — rename it. |
 | `false positive replay detected` | Multi-replica without Redis — see [Multi-replica deployments](#multi-replica-deployments). |

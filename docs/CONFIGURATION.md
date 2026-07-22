@@ -431,13 +431,13 @@ minimalHeaders: true  # Only forwards X-Forwarded-User
 ```yaml
 headers:
   - name: "X-User-Email"
-    value: "{{{{.Claims.email}}}}"
+    value: "{{.Claims.email}}"
   - name: "X-User-ID"
-    value: "{{{{.Claims.sub}}}}"
+    value: "{{.Claims.sub}}"
   - name: "Authorization"
-    value: "Bearer {{{{.AccessToken}}}}"
+    value: "Bearer {{.AccessToken}}"
   - name: "X-User-Roles"
-    value: "{{{{range $i, $e := .Claims.roles}}}}{{{{if $i}}}},{{{{end}}}}{{{{$e}}}}{{{{end}}}}"
+    value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
 ```
 
 **Template Variables:**
@@ -446,7 +446,14 @@ headers:
 - `{{.IdToken}}` / `{{.IDToken}}` - Raw ID token (both spellings work)
 - `{{.RefreshToken}}` - Raw refresh token
 
-**Important:** Use double curly braces (`{{{{` and `}}}}`) to escape templates in YAML.
+**Important — file provider only:** Traefik's file provider runs every dynamic
+configuration file through Go templating before the plugin sees it, so plain
+`{{ }}` fails there with `can't evaluate field AccessToken in type bool`.
+Escape with a raw string: ``value: "{{`{{.Claims.email}}`}}"``. All other
+providers (Kubernetes CRD, Docker labels, Consul, ...) pass the value through
+untouched — use the plain form shown above. Do not use quadruple braces
+(`{{{{ }}}}`); no configuration path collapses them, and template validation
+rejects them (issues #149, #151).
 
 **Validation and the claims whitelist.** Header templates are parsed and
 validated when the middleware loads; an invalid or disallowed template stops the
@@ -473,7 +480,7 @@ allowedClaims:
   - cost_center
 headers:
   - name: "X-Employee-Id"
-    value: "{{{{.Claims.employee_id}}}}"
+    value: "{{.Claims.employee_id}}"
 ```
 
 Listed names apply to both direct access (`{{.Claims.employee_id}}`) and

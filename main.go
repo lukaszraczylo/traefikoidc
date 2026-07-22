@@ -136,7 +136,20 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			telemetry.Send("traefikoidc", traefikoidcPluginVersion)
 		}
 	})
-	return NewWithContext(ctx, config, next, name)
+	// Deliberately NOT `return NewWithContext(...)` (issue #151): that tail call
+	// converts (*TraefikOidc, error) to (http.Handler, error) in the return
+	// statement. Compiled, a failed construction then returns a typed-nil
+	// *TraefikOidc wrapped in a NON-nil http.Handler; under yaegi v0.16.1 (the
+	// interpreter Traefik and the plugin-catalog analyzer embed) the same
+	// statement zeroes BOTH results on the error path, so callers saw
+	// (nil, nil) and reported the opaque "invalid handler type: <nil>" instead
+	// of the real error. The explicit split returns an untyped nil handler and
+	// keeps the error intact in both worlds.
+	t, err := NewWithContext(ctx, config, next, name)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 // NewWithContext creates a new TraefikOidc middleware instance with proper context handling.
