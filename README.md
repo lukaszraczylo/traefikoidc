@@ -42,7 +42,7 @@ experimental:
   plugins:
     traefikoidc:
       moduleName: github.com/lukaszraczylo/traefikoidc
-      version: v0.7.10
+      version: v1.0.29
 ```
 
 Then attach the middleware in your dynamic configuration (see

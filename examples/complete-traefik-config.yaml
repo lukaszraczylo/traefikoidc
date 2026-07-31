@@ -51,7 +51,7 @@ experimental:
   plugins:
     traefikoidc:
       moduleName: github.com/lukaszraczylo/traefikoidc
-      version: v0.8.0
+      version: v1.0.29
 
 log:
   level: INFO
@@ -263,7 +263,7 @@ services:
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
       - "--experimental.plugins.traefikoidc.modulename=github.com/lukaszraczylo/traefikoidc"
-      - "--experimental.plugins.traefikoidc.version=v0.8.0"
+      - "--experimental.plugins.traefikoidc.version=v1.0.29"
     ports:
       - "80:80"
       - "443:443"
