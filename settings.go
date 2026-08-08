@@ -671,6 +671,18 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
+// isLoopbackProviderURL reports whether providerURL's host is loopback
+// (localhost or a loopback IP literal). Used at construction time to derive
+// allowLoopbackHosts, so local-development providers are not blocked by
+// validateHost's outbound URL checks.
+func isLoopbackProviderURL(providerURL string) bool {
+	pu, err := url.Parse(providerURL)
+	if err != nil {
+		return false
+	}
+	return isLoopbackHost(pu.Hostname())
+}
+
 // isValidLogLevel checks if the provided log level string is one of the supported values ("debug", "info", "error").
 //
 // Parameters:

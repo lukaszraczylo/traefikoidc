@@ -390,8 +390,15 @@ func (t *TraefikOidc) validateHost(host string) error {
 
 	ip := net.ParseIP(hostname)
 	if ip != nil {
-		// Always block loopback, link-local, and multicast addresses
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		// Loopback addresses are blocked by default, but allowed when the
+		// plugin was constructed with a loopback providerURL (local
+		// development) — see allowLoopbackHosts.
+		if ip.IsLoopback() && !t.allowLoopbackHosts {
+			return fmt.Errorf("access to loopback/link-local IP addresses is not allowed: %s", ip.String())
+		}
+
+		// Link-local and multicast addresses are always blocked.
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			return fmt.Errorf("access to loopback/link-local IP addresses is not allowed: %s", ip.String())
 		}
 
@@ -405,16 +412,22 @@ func (t *TraefikOidc) validateHost(host string) error {
 		}
 	}
 
-	dangerousHosts := map[string]bool{
-		"localhost":                true,
-		"127.0.0.1":                true,
-		"::1":                      true,
+	// Always blocked regardless of allowLoopbackHosts: these have no IP-branch
+	// backstop (net.ParseIP returns nil for hostnames), so bypassing them
+	// would open an SSRF path to the cloud metadata service.
+	alwaysDangerousHosts := map[string]bool{
 		"0.0.0.0":                  true,
 		"169.254.169.254":          true,
 		"metadata.google.internal": true,
 	}
 
-	if dangerousHosts[strings.ToLower(hostname)] {
+	if alwaysDangerousHosts[strings.ToLower(hostname)] {
+		return fmt.Errorf("access to dangerous hostname is not allowed: %s", hostname)
+	}
+
+	// localhost/loopback literals are blocked unless allowLoopbackHosts
+	// permits them (see allowLoopbackHosts doc comment on TraefikOidc).
+	if !t.allowLoopbackHosts && isLoopbackHost(hostname) {
 		return fmt.Errorf("access to dangerous hostname is not allowed: %s", hostname)
 	}
 

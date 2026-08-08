@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -314,6 +313,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		scopeFilter:               NewScopeFilter(logger), // NEW - for discovery-based scope filtering
 		dcrConfig:                 config.DynamicClientRegistration,
 		allowPrivateIPAddresses:   config.AllowPrivateIPAddresses,
+		allowLoopbackHosts:        isLoopbackProviderURL(config.ProviderURL),
 		minimalHeaders:            config.MinimalHeaders,
 		stripAuthCookies:          config.StripAuthCookies,
 		enableBackchannelLogout:   config.EnableBackchannelLogout,
@@ -562,10 +562,11 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	// discovered endpoint pointed at a blocked address before the plugin issues
 	// outbound requests to it, so it can never be used to reach the cloud
 	// metadata service or an internal host.
-	allowLoopback := false
-	if pu, err := url.Parse(t.providerURL); err == nil {
-		allowLoopback = isLoopbackHost(pu.Hostname())
-	}
+	// Recomputed from t.providerURL (not the allowLoopbackHosts field) so this
+	// stays correct for TraefikOidc values built outside New() (test helpers
+	// construct &TraefikOidc{providerURL: ...} directly, leaving
+	// allowLoopbackHosts at its zero value).
+	allowLoopback := isLoopbackProviderURL(t.providerURL)
 	sanitize := func(name, raw string) string {
 		if err := t.validateDiscoveredEndpoint(raw, allowLoopback); err != nil {
 			t.logger.Errorf("Ignoring discovered %s endpoint %q: %v", name, raw, err)
