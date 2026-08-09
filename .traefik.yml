@@ -100,6 +100,7 @@ testData:
   # bearerEmitWWWAuthenticate: true       # default; RFC 6750 hint on 401s
   # bearerOverridesCookie: false          # default; cookie wins when both are present
   # requireTokenIntrospection: false      # opt-in; calls RFC 7662 introspection per request
+  # introspectionURL: https://idp.example.com/oauth/introspect  # manual override; set when discovery omits introspection_endpoint
   # maxTokenAgeSeconds: 86400             # 24h cap on iat (rejects clock-skew/forever tokens)
   # maxIdentifierLength: 256              # cap on the sanitised principal identifier
   # bearerFailureThreshold: 20            # consecutive 401s/IP that trip the throttle

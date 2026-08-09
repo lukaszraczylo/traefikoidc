@@ -49,12 +49,16 @@ type Config struct {
 	RoleClaimName             string                           `json:"roleClaimName,omitempty"`
 	CookieDomain              string                           `json:"cookieDomain"`
 	OIDCEndSessionURL         string                           `json:"oidcEndSessionURL"`
-	Scopes                    []string                         `json:"scopes"`
-	AllowedRolesAndGroups     []string                         `json:"allowedRolesAndGroups"`
-	ExcludedURLs              []string                         `json:"excludedURLs"`
-	AllowedUserDomains        []string                         `json:"allowedUserDomains"`
-	AllowedUsers              []string                         `json:"allowedUsers"`
-	Headers                   []TemplatedHeader                `json:"headers"`
+	// IntrospectionURL overrides the RFC 7662 token introspection endpoint.
+	// Set it when the IdP omits introspection_endpoint from discovery. It
+	// takes precedence over the discovered value.
+	IntrospectionURL      string            `json:"introspectionURL"`
+	Scopes                []string          `json:"scopes"`
+	AllowedRolesAndGroups []string          `json:"allowedRolesAndGroups"`
+	ExcludedURLs          []string          `json:"excludedURLs"`
+	AllowedUserDomains    []string          `json:"allowedUserDomains"`
+	AllowedUsers          []string          `json:"allowedUsers"`
+	Headers               []TemplatedHeader `json:"headers"`
 	// AllowedClaims extends the built-in claims whitelist that header value
 	// templates may emit. Add the exact claim name (e.g. "employee_id") to allow
 	// {{.Claims.employee_id}} / {{get .Claims "employee_id"}}. Applies to both
@@ -482,6 +486,10 @@ func (c *Config) Validate() error {
 	// Validate end session URL if set
 	if c.OIDCEndSessionURL != "" && !isValidSecureURL(c.OIDCEndSessionURL) {
 		return fmt.Errorf("oidcEndSessionURL must be a valid HTTPS URL")
+	}
+	// Validate introspection URL if set
+	if c.IntrospectionURL != "" && !isValidSecureURL(c.IntrospectionURL) {
+		return fmt.Errorf("introspectionURL must be a valid HTTPS URL")
 	}
 
 	// Validate post-logout redirect URI if set

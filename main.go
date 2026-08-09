@@ -271,6 +271,21 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		allowOpaqueTokens:         config.AllowOpaqueTokens,
 		requireTokenIntrospection: config.RequireTokenIntrospection,
 		disableReplayDetection:    config.DisableReplayDetection,
+		// Operator-configured endpoint overrides (issue #152). Applied inside
+		// updateMetadataEndpoints so the override survives every metadata
+		// refresh, not just construction.
+		configRevocationURL:    config.RevocationURL,
+		configEndSessionURL:    config.OIDCEndSessionURL,
+		configIntrospectionURL: config.IntrospectionURL,
+		// Cold-start seed: discovery failure must not lose operator-configured
+		// endpoints; updateMetadataEndpoints re-applies these on every refresh.
+		// Seeding introspectionURL here does not populate metadataSnapshot
+		// (only updateMetadataEndpoints does); all three consumers
+		// (token_introspection.go, token_manager.go, helpers.go) read these
+		// metadataMu-guarded fields directly, not the snapshot.
+		revocationURL:    config.RevocationURL,
+		endSessionURL:    config.OIDCEndSessionURL,
+		introspectionURL: config.IntrospectionURL,
 		scopes: func() []string {
 			userProvidedScopes := deduplicateScopes(config.Scopes)
 
@@ -601,6 +616,20 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	if discoveredIssuer != "" && t.providerURL != "" && !sameHost(discoveredIssuer, t.providerURL) {
 		t.logger.Errorf("Ignoring discovered issuer %q: host does not match configured providerURL", discoveredIssuer)
 		discoveredIssuer = ""
+	}
+	// Operator-configured endpoint overrides take precedence over discovered
+	// values. They deliberately skip validateDiscoveredEndpoint and the
+	// sameHost pin: those defend against a poisoned discovery document, while
+	// operator config sits at the same trust tier as providerURL itself and is
+	// already gated by isValidSecureURL at config time.
+	if t.configRevocationURL != "" {
+		metadata.RevokeURL = t.configRevocationURL
+	}
+	if t.configEndSessionURL != "" {
+		metadata.EndSessionURL = t.configEndSessionURL
+	}
+	if t.configIntrospectionURL != "" {
+		metadata.IntrospectionURL = t.configIntrospectionURL
 	}
 
 	t.metadataMu.Lock()

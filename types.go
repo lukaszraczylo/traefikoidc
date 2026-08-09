@@ -161,23 +161,33 @@ type TraefikOidc struct {
 	clientAuthMethod             string
 	clientAssertion              *ClientAssertionSigner
 	registrationURL              string
-	backchannelLogoutPath        string
-	frontchannelLogoutPath       string
-	scopesSupported              []string
-	scopes                       []string
-	extraAuthParams              map[string]string
-	refreshGracePeriod           time.Duration
-	maxRefreshTokenAge           time.Duration
-	metadataMu                   sync.RWMutex
-	shutdownOnce                 sync.Once
-	sessionInvalidationCache     CacheInterface
-	refreshResultCache           CacheInterface
-	minimalHeaders               bool
-	stripAuthCookies             bool
-	enableBackchannelLogout      bool
-	enableFrontchannelLogout     bool
-	requireTokenIntrospection    bool
-	allowPrivateIPAddresses      bool
+	// configRevocationURL, configEndSessionURL, and configIntrospectionURL
+	// hold operator-configured endpoint overrides (Config.RevocationURL,
+	// Config.OIDCEndSessionURL, Config.IntrospectionURL). They are set once at
+	// construction and never mutated afterwards, so they are read lock-free,
+	// the same contract as providerURL, which updateMetadataEndpoints already
+	// reads unlocked. A manual override always wins over discovery; an empty
+	// string means use the discovered value.
+	configRevocationURL       string
+	configEndSessionURL       string
+	configIntrospectionURL    string
+	backchannelLogoutPath     string
+	frontchannelLogoutPath    string
+	scopesSupported           []string
+	scopes                    []string
+	extraAuthParams           map[string]string
+	refreshGracePeriod        time.Duration
+	maxRefreshTokenAge        time.Duration
+	metadataMu                sync.RWMutex
+	shutdownOnce              sync.Once
+	sessionInvalidationCache  CacheInterface
+	refreshResultCache        CacheInterface
+	minimalHeaders            bool
+	stripAuthCookies          bool
+	enableBackchannelLogout   bool
+	enableFrontchannelLogout  bool
+	requireTokenIntrospection bool
+	allowPrivateIPAddresses   bool
 	// allowLoopbackHosts permits loopback/localhost hosts in outbound URL
 	// validation (validateHost). Derived at construction time from a loopback
 	// providerURL (local development), never operator-set directly. Mirrors

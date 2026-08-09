@@ -179,8 +179,9 @@ clientSecret: your-client-secret
 | `forceHTTPS` | bool | `true` | Force HTTPS for redirect URIs (set `false` only for plaintext HTTP local dev) |
 | `rateLimit` | int | `100` | Maximum requests per second |
 | `excludedURLs` | []string | none | Paths that bypass authentication, matched at a path-segment or file-extension boundary |
-| `revocationURL` | string | auto-discovered | Token revocation endpoint |
-| `oidcEndSessionURL` | string | auto-discovered | Provider's end session endpoint |
+| `revocationURL` | string | auto-discovered | Token revocation endpoint. Takes precedence over the discovered value. |
+| `oidcEndSessionURL` | string | auto-discovered | Provider's end session endpoint. Takes precedence over the discovered value. |
+| `introspectionURL` | string | auto-discovered | RFC 7662 token introspection endpoint. Set this when your IdP omits `introspection_endpoint` from discovery. Takes precedence over the discovered value. |
 | `enablePKCE` | bool | `false` | Enable PKCE for authorization code flow |
 | `minimalHeaders` | bool | `false` | Reduce forwarded headers |
 | `clientAuthMethod` | string | `client_secret_post` | Client authentication method at token/revocation endpoints. One of `client_secret_post`, `client_secret_basic`, `private_key_jwt`. See [Client Authentication](#client-authentication). |
