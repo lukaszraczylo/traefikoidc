@@ -190,6 +190,7 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 
 	// JWT access token present.
 	accessTokenValid := false
+	lenientAudienceOnly := false
 	if err := t.verifyToken(rs.accessToken); err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "invalid audience") || strings.Contains(errMsg, "audience") {
@@ -199,7 +200,10 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 				}
 				return false, false, true
 			}
-			// Fall through to ID-token validation.
+			// Lenient audience validation: the token's signature verified; only
+			// the audience was left unchecked. Fall through to ID-token
+			// validation, remembering the access token was structurally valid.
+			lenientAudienceOnly = true
 		}
 	} else {
 		accessTokenValid = true
@@ -209,10 +213,22 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 		if accessTokenValid {
 			return t.validateTokenExpiryRS(rs, rs.accessToken)
 		}
-		if rs.refreshToken != "" {
-			return true, true, false
+		if lenientAudienceOnly {
+			// Access token signature verified; audience check was lenient and
+			// there is no ID token to compare against. Treat as authenticated.
+			if rs.refreshToken != "" {
+				return true, true, false
+			}
+			return true, false, false
 		}
-		return true, false, false
+		// Access token failed verification (expired, bad signature, issuer, ...)
+		// and there is no ID token to corroborate it. Fail closed rather than
+		// trusting an unverified token: refresh if possible, otherwise force
+		// re-authentication.
+		if rs.refreshToken != "" {
+			return false, true, false
+		}
+		return false, false, true
 	}
 
 	if err := t.verifyToken(rs.idToken); err != nil {

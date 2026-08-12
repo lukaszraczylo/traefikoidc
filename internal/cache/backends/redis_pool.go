@@ -83,6 +83,11 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 
 		select {
 		case conn = <-p.connections:
+			if conn == nil {
+				// Pool channel was closed concurrently (Close) - receiving from a
+				// closed channel yields the zero value.
+				return nil, ErrBackendClosed
+			}
 			// Reuse existing connection - validate if health check enabled
 			if p.config.EnableHealthCheck && !p.isConnectionHealthy(conn) {
 				// Connection is stale, close it and try again
@@ -118,6 +123,11 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 			// Pool exhausted, wait for a connection with timeout
 			select {
 			case conn = <-p.connections:
+				if conn == nil {
+					// Pool channel was closed concurrently (Close) - receiving from a
+					// closed channel yields the zero value.
+					return nil, ErrBackendClosed
+				}
 				// Validate connection if health check enabled
 				if p.config.EnableHealthCheck && !p.isConnectionHealthy(conn) {
 					_ = conn.Close()

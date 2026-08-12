@@ -476,11 +476,13 @@ func TestCreateHTTPClient(t *testing.T) {
 
 // TestCreateHTTPClient_Fallback tests fallback when pool is exhausted
 func TestCreateHTTPClient_Fallback(t *testing.T) {
-	// Override global pool with limited one
-	originalPool := globalTransportPool
-	defer func() {
-		globalTransportPool = originalPool
-	}()
+	// Replace the global pool with a full one. resetGlobalTransportPoolForTest
+	// is required: the global is sync.Once-guarded, so overriding the var
+	// alone would be clobbered by GetTransportPool's once-body, and restoring
+	// a nil original after the Once was consumed would leave later callers
+	// panicking on a nil receiver.
+	resetGlobalTransportPoolForTest()
+	defer resetGlobalTransportPoolForTest()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -504,8 +506,16 @@ func TestCreateHTTPClient_Fallback(t *testing.T) {
 		return
 	}
 
+	// When the pool is exhausted, GetTransport returns nil and CreateHTTPClient
+	// falls back to a basic client: timeout set, no transport, no redirect policy.
 	if client.Timeout != timeout {
 		t.Errorf("Client timeout should be %v, got %v", timeout, client.Timeout)
+	}
+	if client.Transport != nil {
+		t.Error("Fallback client should have no transport")
+	}
+	if client.CheckRedirect != nil {
+		t.Error("Fallback client should have no redirect policy")
 	}
 }
 

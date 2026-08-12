@@ -168,7 +168,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		return
 	}
 
-	if state != csrfToken {
+	if !constantTimeStringCompare(state, csrfToken) {
 		t.logger.Error("State parameter does not match CSRF token in session during callback")
 		t.sendErrorResponse(rw, req, "Invalid state parameter (CSRF mismatch)", http.StatusBadRequest)
 		return
@@ -191,6 +191,17 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	tokenResponse, err := t.tokenExchanger.ExchangeCodeForToken(req.Context(), "authorization_code", code, redirectURL, codeVerifier)
 	if err != nil {
 		t.logger.Errorf("Failed to exchange code for token during callback: %v", err)
+		// Invalidate the one-time auth state and persist it so a
+		// partially-failed flow cannot be continued: the authorization code
+		// may still be unconsumed at the provider, so a replayed callback
+		// must re-authenticate rather than revalidate a stale
+		// state/nonce/code_verifier. Mirrors the cleanup on success.
+		session.SetCSRF("")
+		session.SetNonce("")
+		session.SetCodeVerifier("")
+		if saveErr := session.Save(req, rw); saveErr != nil {
+			t.logger.Errorf("Failed to save session after callback exchange failure: %v", saveErr)
+		}
 		t.sendErrorResponse(rw, req, "Authentication failed: Could not exchange code for token", http.StatusInternalServerError)
 		return
 	}

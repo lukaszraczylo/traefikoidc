@@ -2,6 +2,7 @@ package dcrstorage
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -460,5 +461,71 @@ func TestFileStore_DirectoryCreation(t *testing.T) {
 	}
 	if loaded == nil || loaded.ClientID != "test" {
 		t.Error("Failed to load credentials from nested directory")
+	}
+}
+
+// TestFileStore_AtomicWrite guards the temp-file + rename implementation:
+// after a successful Save the committed file is a valid JSON document, no
+// ".tmp" scratch file is left behind, and the file mode is 0600.
+func TestFileStore_AtomicWrite(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	basePath := filepath.Join(tempDir, "credentials.json")
+	store := NewFileStore(basePath, nil)
+
+	ctx := context.Background()
+	providerURL := "https://auth.example.com"
+	creds := &ClientRegistrationResponse{
+		ClientID:     "atomic-client",
+		ClientSecret: "s3cret",
+	}
+
+	if err := store.Save(ctx, providerURL, creds); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	filePath := store.GetFilePath(providerURL)
+
+	// No scratch file should remain.
+	if _, err := os.Stat(filePath + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("expected no %q scratch file after Save, stat err=%v", filePath+".tmp", err)
+	}
+
+	// Committed file must be valid JSON.
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to read committed file: %v", err)
+	}
+	var parsed ClientRegistrationResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("committed file is not valid JSON: %v", err)
+	}
+	if parsed.ClientID != creds.ClientID || parsed.ClientSecret != creds.ClientSecret {
+		t.Errorf("committed content mismatch: got %q/%q", parsed.ClientID, parsed.ClientSecret)
+	}
+
+	// Mode should be owner read/write.
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("failed to stat committed file: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("expected mode 0600, got %v", info.Mode().Perm())
+	}
+
+	// Overwriting an existing file must also be atomic and leave no residue.
+	if err := store.Save(ctx, providerURL, &ClientRegistrationResponse{ClientID: "updated"}); err != nil {
+		t.Fatalf("second Save failed: %v", err)
+	}
+	if _, err := os.Stat(filePath + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("expected no %q scratch file after overwrite", filePath+".tmp")
+	}
+	loaded, err := store.Load(ctx, providerURL)
+	if err != nil {
+		t.Fatalf("Load after overwrite failed: %v", err)
+	}
+	if loaded == nil || loaded.ClientID != "updated" {
+		t.Errorf("overwrite not reflected: %+v", loaded)
 	}
 }

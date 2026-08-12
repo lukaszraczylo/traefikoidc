@@ -178,6 +178,11 @@ func TestCacheInterfaceWrapper_Clear(t *testing.T) {
 	cm := getTestCacheManager(t)
 	cache := cm.GetSharedTokenBlacklist()
 
+	// The shared token blacklist is process-global across tests; under shuffled
+	// execution a prior test may have left items behind. Clear first so the
+	// size assertions are stable regardless of test order.
+	cache.Clear()
+
 	cache.Set("key1", "value1", time.Hour)
 	cache.Set("key2", "value2", time.Hour)
 

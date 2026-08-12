@@ -240,7 +240,8 @@ func (t *TraefikOidc) Close() error {
 		// instance. Only stop it when the LAST instance is shutting down;
 		// otherwise one instance's teardown (e.g. a single config reload) would
 		// kill chunked-session/token cleanup for all surviving instances (rank 12).
-		if unregisterLiveInstance() <= 0 {
+		lastInstance := unregisterLiveInstance() <= 0
+		if lastInstance {
 			_ = rm.StopBackgroundTask("singleton-token-cleanup") // best effort, last instance only
 		}
 		// Stop metadata refresh task using same hash-based name as startMetadataRefresh
@@ -343,10 +344,17 @@ func (t *TraefikOidc) Close() error {
 			t.safeLogDebug("Error recovery manager graceful degradation closed")
 		}
 
-		// Stop all global background tasks
-		taskRegistry := GetGlobalTaskRegistry()
-		taskRegistry.StopAllTasks()
-		t.safeLogDebug("All global background tasks stopped")
+		// Stop all process-global background tasks, but ONLY when the last
+		// instance is shutting down. The global TaskRegistry holds shared
+		// singleton tasks (singleton-token-cleanup, singleton-metadata-refresh-*,
+		// memory-monitor); stopping them on any single instance's Close (e.g. one
+		// config reload) would kill cleanup for all surviving instances — the same
+		// rationale as the targeted StopBackgroundTask above.
+		if lastInstance {
+			taskRegistry := GetGlobalTaskRegistry()
+			taskRegistry.StopAllTasks()
+			t.safeLogDebug("All global background tasks stopped")
+		}
 
 		// Note: Centralized pool in internal/pool is singleton-managed and doesn't require explicit cleanup
 		t.safeLogDebug("Memory pools managed by singleton pattern")

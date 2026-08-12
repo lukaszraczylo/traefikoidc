@@ -140,7 +140,7 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 		if expClaim, expOk := jwt.Claims["exp"].(float64); expOk {
 			expTime := time.Unix(int64(expClaim), 0)
 			tokenDuration := time.Until(expTime)
-			if tokenDuration > defaultBlacklistDuration && tokenDuration < (24*time.Hour) {
+			if tokenDuration > 0 && tokenDuration < defaultBlacklistDuration {
 				expiry = expTime
 			}
 			// else: keep default expiry for expired tokens or tokens >24h

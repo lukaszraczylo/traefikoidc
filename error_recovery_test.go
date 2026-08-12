@@ -1271,9 +1271,12 @@ func TestGracefulDegradationRegisterHealthCheck(t *testing.T) {
 	defer gd.Close()
 
 	t.Run("register health check", func(t *testing.T) {
-		healthy := true
+		var healthy atomic.Bool
+		healthy.Store(true)
+		// The health check runs on a background goroutine (performHealthChecks at
+		// the configured interval); a plain captured bool would be a data race.
 		healthCheck := func() bool {
-			return healthy
+			return healthy.Load()
 		}
 
 		gd.RegisterHealthCheck("service1", healthCheck)
@@ -1281,7 +1284,7 @@ func TestGracefulDegradationRegisterHealthCheck(t *testing.T) {
 		gd.markServiceDegraded("service1")
 		assert.True(t, gd.isServiceDegraded("service1"))
 
-		healthy = true
+		healthy.Store(true)
 		time.Sleep(100 * time.Millisecond)
 	})
 }
@@ -1609,9 +1612,12 @@ func TestGracefulDegradationFullScenario(t *testing.T) {
 		return "fallback data", nil
 	})
 
-	serviceHealthy := false
+	var serviceHealthy atomic.Bool
+	serviceHealthy.Store(false)
+	// Health checks run on a background goroutine (performHealthChecks at the
+	// configured interval); a plain captured bool is a data race.
 	gd.RegisterHealthCheck("critical-service", func() bool {
-		return serviceHealthy
+		return serviceHealthy.Load()
 	})
 
 	result1, err1 := gd.ExecuteWithFallback("critical-service", func() (interface{}, error) {
@@ -1634,7 +1640,7 @@ func TestGracefulDegradationFullScenario(t *testing.T) {
 	assert.NoError(t, err3)
 	assert.Equal(t, "fallback data", result3)
 
-	serviceHealthy = true
+	serviceHealthy.Store(true)
 	time.Sleep(250 * time.Millisecond)
 
 	metrics := gd.GetMetrics()

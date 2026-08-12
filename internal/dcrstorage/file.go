@@ -83,9 +83,17 @@ func (s *FileStore) Save(ctx context.Context, providerURL string, creds *ClientR
 		return fmt.Errorf("failed to marshal credentials: %w", err)
 	}
 
-	// Write with restrictive permissions (owner read/write only)
-	if err := os.WriteFile(filePath, data, 0600); err != nil {
+	// Write with restrictive permissions (owner read/write only). Write to a
+	// temp file and atomically rename so a crash mid-write can never leave a
+	// truncated credentials file (which would force an avoidable client
+	// re-registration on the next start).
+	tmpPath := filePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write credentials file: %w", err)
+	}
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		_ = os.Remove(tmpPath) // best-effort cleanup
+		return fmt.Errorf("failed to commit credentials file: %w", err)
 	}
 
 	s.logger.Debugf("Saved client credentials to %s", filePath)

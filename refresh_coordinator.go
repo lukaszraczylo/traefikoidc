@@ -244,14 +244,15 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 		operation.mutex.RUnlock()
 
 		if result != nil {
-			// Record metrics based on result
+			// Per-request counters only. The circuit breaker and per-session
+			// success/failure trackers must be recorded exactly once per
+			// refresh OPERATION (in executeRefreshAsync), not once per waiter:
+			// N requests coalescing onto a single refresh would otherwise
+			// multiply one upstream result into N failure records and
+			// over-trigger the circuit breaker (MaxFailures=3).
 			if result.err != nil {
-				rc.circuitBreaker.RecordFailure()
-				rc.recordRefreshFailure(sessionID)
 				atomic.AddInt64(&rc.metrics.failedRefreshes, 1)
 			} else {
-				rc.circuitBreaker.RecordSuccess()
-				rc.recordRefreshSuccess(sessionID)
 				atomic.AddInt64(&rc.metrics.successfulRefreshes, 1)
 			}
 			return result.tokenResponse, result.err
@@ -371,7 +372,7 @@ func (rc *RefreshCoordinator) failCandidate(tokenHash string, op *refreshOperati
 // executeRefreshAsync performs the actual refresh operation asynchronously
 func (rc *RefreshCoordinator) executeRefreshAsync(
 	operation *refreshOperation,
-	_ string, // sessionID - reserved for future metrics/logging
+	sessionID string,
 	tokenHash string,
 	refreshFunc func() (*TokenResponse, error),
 ) {
@@ -425,6 +426,19 @@ func (rc *RefreshCoordinator) executeRefreshAsync(
 			fromCache:     false,
 		}
 		operation.mutex.Unlock()
+	}
+
+	// Record the circuit breaker and per-session outcome exactly once per
+	// refresh operation. This function runs once per operation regardless of
+	// how many requests coalesced onto it (see CoordinateRefresh), so a
+	// single upstream refresh yields a single CB/session record rather than
+	// N (one per waiter), which would over-trigger the circuit breaker.
+	if err := operation.result.err; err != nil {
+		rc.circuitBreaker.RecordFailure()
+		rc.recordRefreshFailure(sessionID)
+	} else {
+		rc.circuitBreaker.RecordSuccess()
+		rc.recordRefreshSuccess(sessionID)
 	}
 }
 

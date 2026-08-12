@@ -278,7 +278,7 @@ func TestInitializeMetadata_Concurrency(t *testing.T) {
 	mu.Unlock()
 
 	if finalCount != numInstances {
-		t.Logf("Made %d requests for %d instances (some may have been cached)", finalCount, numInstances)
+		t.Errorf("expected %d metadata requests from %d independent instances, got %d (some instances may have been blocked, deduplicated, or failed to initialize)", numInstances, numInstances, finalCount)
 	}
 }
 

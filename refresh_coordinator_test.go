@@ -215,7 +215,9 @@ func TestCircuitBreakerProtection(t *testing.T) {
 		return nil, fmt.Errorf("service unavailable")
 	}
 
-	// Cause circuit breaker to trip
+	// Cause circuit breaker to trip with genuinely distinct failing
+	// operations (sleep so each same-token call is not absorbed as a join
+	// on the still-in-flight previous operation).
 	var tripCount int
 	for i := 0; i < 5; i++ {
 		ctx := context.Background()
@@ -225,6 +227,7 @@ func TestCircuitBreakerProtection(t *testing.T) {
 			"refresh_token",
 			refreshFunc,
 		)
+		time.Sleep(150 * time.Millisecond)
 
 		if err != nil && err.Error() == "refresh circuit breaker is open due to repeated failures" {
 			tripCount++

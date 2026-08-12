@@ -146,6 +146,22 @@ func (bt *BackgroundTask) Stop() {
 	})
 }
 
+// safeRunTask executes the task function, recovering from any panic so that a
+// single panicking run does not permanently kill the background goroutine and its
+// periodic loop. Under yaegi (where this plugin runs) unexpected panics are more
+// likely, and a silently-dead background task (metadata refresh, autocleanup,
+// memory monitor) would otherwise stop forever with no log or restart.
+func (bt *BackgroundTask) safeRunTask() {
+	defer func() {
+		if r := recover(); r != nil {
+			if bt.logger != nil {
+				bt.logger.Errorf("Background task %s panicked (recovered): %v", bt.name, r)
+			}
+		}
+	}()
+	bt.taskFunc()
+}
+
 // run is the main loop for the background task.
 // It executes the task function immediately, then periodically
 // until the stop signal is received.
@@ -187,7 +203,7 @@ func (bt *BackgroundTask) run() {
 		}
 		return
 	default:
-		bt.taskFunc()
+		bt.safeRunTask()
 	}
 
 	for {
@@ -206,7 +222,7 @@ func (bt *BackgroundTask) run() {
 				}
 				return
 			default:
-				bt.taskFunc()
+				bt.safeRunTask()
 			}
 		case <-bt.stopChan:
 			if bt.logger != nil {
@@ -463,10 +479,13 @@ func (tr *TaskRegistry) RegisterTask(name string, task *BackgroundTask) error {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 
-	// Task execution tracking is now handled in the run() method
-
 	tr.tasks[name] = task
-	tr.cb.OnTaskSuccess(name)
+	// Execution tracking (the circuit-breaker concurrent count) is handled by
+	// Start()/run(): Start() reserves a slot via OnTaskStart and run() releases
+	// it via OnTaskComplete. Do NOT also OnTaskSuccess here — that would
+	// double-count every registered task (+1 on register, +1 on Start, -1 on
+	// stop), leaking one slot per task and eventually blocking all background
+	// task creation at the concurrency limit.
 
 	if tr.logger != nil {
 		tr.logger.Debug("Registered background task: %s", name)

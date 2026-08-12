@@ -177,8 +177,18 @@ func (cb *CircuitBreaker) recordSuccess() {
 	state := CircuitBreakerState(atomic.LoadInt32(&cb.state))
 
 	// #nosec G115 -- SuccessThreshold is a small config value that fits in int32
-	if state == CircuitBreakerHalfOpen && successes >= int32(cb.config.SuccessThreshold) {
-		cb.transitionToClosed()
+	if state == CircuitBreakerHalfOpen {
+		if successes >= int32(cb.config.SuccessThreshold) {
+			cb.transitionToClosed() // resets halfOpenRequests to 0
+		} else {
+			// Release the probe slot so the half-open gate can accept the
+			// next request. Without this, halfOpenRequests stays pinned at
+			// MaxRequests once the first batch of probes completes, every
+			// later request is rejected, and consecutiveSuccesses can never
+			// reach SuccessThreshold if it exceeds MaxRequests — leaving the
+			// circuit stuck half-open forever.
+			atomic.AddInt32(&cb.halfOpenRequests, -1)
+		}
 	}
 }
 

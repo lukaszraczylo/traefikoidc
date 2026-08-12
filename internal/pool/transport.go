@@ -60,19 +60,35 @@ var (
 
 // GetTransportPool returns the global transport pool instance
 func GetTransportPool() *TransportPool {
-	transportPoolOnce.Do(func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		globalTransportPool = &TransportPool{
-			transports:  make(map[string]*sharedTransport),
-			maxConns:    20,
-			ctx:         ctx,
-			cancel:      cancel,
-			clientCount: 0,
-			maxClients:  5,
-		}
-		go globalTransportPool.cleanupRoutine(ctx)
-	})
+	if globalTransportPool == nil {
+		transportPoolOnce.Do(func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			globalTransportPool = &TransportPool{
+				transports:  make(map[string]*sharedTransport),
+				maxConns:    20,
+				ctx:         ctx,
+				cancel:      cancel,
+				clientCount: 0,
+				maxClients:  5,
+			}
+			go globalTransportPool.cleanupRoutine(ctx)
+		})
+	}
 	return globalTransportPool
+}
+
+// resetGlobalTransportPoolForTest clears the process-global transport pool so the
+// next call to GetTransportPool returns a fresh instance, and cancels the
+// current pool's cleanup goroutine. Required for order-independent tests that
+// replace the global pool: the singleton is sync.Once-guarded, so without a
+// reset a consumed Once leaves GetTransportPool returning nil and later callers
+// panic on a nil receiver (see TestCreateHTTPClient_Fallback).
+func resetGlobalTransportPoolForTest() {
+	if globalTransportPool != nil && globalTransportPool.cancel != nil {
+		globalTransportPool.cancel()
+	}
+	transportPoolOnce = sync.Once{}
+	globalTransportPool = nil
 }
 
 // DefaultTransportConfig returns a secure default configuration

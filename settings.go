@@ -1159,6 +1159,41 @@ func (rc *RedisConfig) ApplyEnvFallbacks() {
 			}
 		}
 	}
+
+	// Resilience fallbacks documented in examples/redis-config.yaml. These were
+	// previously absent: an operator following the documented env var names got
+	// no effect. Match the bool/numeric patterns used above.
+	if !rc.EnableCircuitBreaker {
+		if env := os.Getenv("REDIS_ENABLE_CIRCUIT_BREAKER"); env == "true" || env == "1" {
+			rc.EnableCircuitBreaker = true
+		}
+	}
+	if rc.CircuitBreakerThreshold == 0 {
+		if s := os.Getenv("REDIS_CIRCUIT_BREAKER_THRESHOLD"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				rc.CircuitBreakerThreshold = v
+			}
+		}
+	}
+	if rc.CircuitBreakerTimeout == 0 {
+		if s := os.Getenv("REDIS_CIRCUIT_BREAKER_TIMEOUT"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				rc.CircuitBreakerTimeout = v
+			}
+		}
+	}
+	if !rc.EnableHealthCheck {
+		if env := os.Getenv("REDIS_ENABLE_HEALTH_CHECK"); env == "true" || env == "1" {
+			rc.EnableHealthCheck = true
+		}
+	}
+	if rc.HealthCheckInterval == 0 {
+		if s := os.Getenv("REDIS_HEALTH_CHECK_INTERVAL"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				rc.HealthCheckInterval = v
+			}
+		}
+	}
 }
 
 func isOriginAllowed(origin string, allowedOrigins []string) bool {
