@@ -663,18 +663,22 @@ func (h *HybridBackend) healthMonitor() {
 
 // recordL2Error records the timestamp of an L2 error
 func (h *HybridBackend) recordL2Error() {
-	h.lastL2Error.Store(time.Now())
+	now := time.Now()
 
-	// Check if we should enter fallback mode based on recent errors
+	// Enter fallback only if there was a PRIOR error within the last second —
+	// i.e. this is at least the second L2 error in quick succession.
+	// Checking a freshly-written timestamp would always be "recent" and
+	// enter fallback on a single transient L2 error (cache stampede).
 	if !h.fallbackMode.Load() {
-		// Simple heuristic: if we've had an error in the last second, consider L2 unhealthy
 		if lastErr := h.lastL2Error.Load(); lastErr != nil {
-			if t, ok := lastErr.(time.Time); ok && time.Since(t) < time.Second {
+			if t, ok := lastErr.(time.Time); ok && now.Sub(t) < time.Second {
 				h.fallbackMode.Store(true)
 				h.logger.Warnf("Multiple L2 errors detected, entering fallback mode")
 			}
 		}
 	}
+
+	h.lastL2Error.Store(now)
 }
 
 // extractCacheType attempts to determine the cache type from the key

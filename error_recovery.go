@@ -788,6 +788,31 @@ func DefaultGracefulDegradationConfig() GracefulDegradationConfig {
 // NewGracefulDegradation creates a new graceful degradation manager
 // NewGracefulDegradation creates a new graceful degradation mechanism.
 // Initializes fallback and health check maps and starts background health monitoring.
+// gdInstances tracks live GracefulDegradation instances so the single shared
+// health-check task can run every instance's health checks (not just the first)
+// and so the task is only stopped when the last instance closes.
+var gdInstances = struct {
+	sync.RWMutex
+	set map[*GracefulDegradation]struct{}
+}{set: make(map[*GracefulDegradation]struct{})}
+
+// globalPerformHealthChecks runs the health check pass for every live
+// GracefulDegradation instance. The shared singleton task calls this, so a
+// health check registered on ANY instance is exercised, and closing one
+// instance does not stall recovery for the others.
+func globalPerformHealthChecks() {
+	gdInstances.RLock()
+	instances := make([]*GracefulDegradation, 0, len(gdInstances.set))
+	for gd := range gdInstances.set {
+		instances = append(instances, gd)
+	}
+	gdInstances.RUnlock()
+
+	for _, gd := range instances {
+		gd.performHealthChecks()
+	}
+}
+
 func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *GracefulDegradation {
 	gd := &GracefulDegradation{
 		BaseRecoveryMechanism: NewBaseRecoveryMechanism("graceful-degradation", logger),
@@ -904,13 +929,22 @@ func (gd *GracefulDegradation) executeFallback(serviceName string) (interface{},
 
 // startHealthCheckRoutine starts the background health check routine
 func (gd *GracefulDegradation) startHealthCheckRoutine() {
-	// Use singleton task registry to prevent multiple instances
+	// Register this instance so the shared task's health pass reaches it even
+	// when it was not the first instance created.
+	gdInstances.Lock()
+	gdInstances.set[gd] = struct{}{}
+	gdInstances.Unlock()
+
+	// Use the singleton task registry so multiple GracefulDegradation
+	// instances share one health-check goroutine. The task function is the
+	// global pass over every live instance, not this instance's own health
+	// checks — otherwise only the first instance's checks would run.
 	registry := GetGlobalTaskRegistry()
 
 	task, err := registry.CreateSingletonTask(
 		"graceful-degradation-health-check",
 		gd.config.HealthCheckInterval,
-		gd.performHealthChecks,
+		globalPerformHealthChecks,
 		gd.BaseRecoveryMechanism.logger,
 		nil, // No specific wait group
 	)
@@ -983,14 +1017,25 @@ func (gd *GracefulDegradation) Close() {
 			close(gd.stopChan)
 		}
 
-		// Stop health check task
-		gd.mutex.Lock()
-		task := gd.healthCheckTask
-		gd.mutex.Unlock()
+		// Stop health check task only when this was the last live instance.
+		// The task is process-global and shared by every GracefulDegradation
+		// instance; stopping it on any one instance's close would kill
+		// health checks / recovery for all surviving instances (mirror of the
+		// singleton-token-cleanup lastInstance gate).
+		gdInstances.Lock()
+		delete(gdInstances.set, gd)
+		lastInstance := len(gdInstances.set) == 0
+		gdInstances.Unlock()
 
-		if task != nil {
-			task.Stop()
-			// Don't set to nil to avoid race conditions
+		if lastInstance {
+			gd.mutex.Lock()
+			task := gd.healthCheckTask
+			gd.mutex.Unlock()
+
+			if task != nil {
+				task.Stop()
+				// Don't set to nil to avoid race conditions
+			}
 		}
 
 		gd.logger.Debug("GracefulDegradation shut down successfully")

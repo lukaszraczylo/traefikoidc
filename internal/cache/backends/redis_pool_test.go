@@ -688,3 +688,47 @@ func TestRedisConn_RejectOversizedArgumentBytes(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "arguments too large")
 }
+
+// TestConnectionPool_PutDuringClose_NoPanic hammers Put/Get concurrently with
+// Close. Before the fix, Put checked closed then sent on p.connections
+// without holding p.mu; if Close closed the channel in between, the send
+// panicked ("send on closed channel") at shutdown. Run under -race.
+func TestConnectionPool_PutDuringClose_NoPanic(t *testing.T) {
+	mr := NewMiniredisServer(t)
+
+	config := &PoolConfig{
+		Address:        mr.GetAddr(),
+		MaxConnections: 5,
+		ConnectTimeout: 5 * time.Second,
+		ReadTimeout:    3 * time.Second,
+		WriteTimeout:   3 * time.Second,
+	}
+
+	pool, err := NewConnectionPool(config)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if conn, err := pool.Get(ctx); err == nil {
+					pool.Put(conn) // may race Close
+				}
+			}
+		}()
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	_ = pool.Close()
+	close(stop)
+	wg.Wait()
+}

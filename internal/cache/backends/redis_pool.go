@@ -158,6 +158,13 @@ func (p *ConnectionPool) Put(conn *RedisConn) {
 	p.puts.Add(1)
 	p.activeConns.Add(-1)
 
+	// Hold p.mu so this is mutually exclusive with Close (which closes
+	// p.connections under the same lock). Without it, a Put that passed
+	// the closed check could send on p.connections just after Close
+	// closed it, panicking "send on closed channel" at shutdown.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.closed.Load() || conn.closed.Load() {
 		_ = conn.Close()
 		p.totalConns.Add(-1)

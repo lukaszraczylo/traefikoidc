@@ -219,20 +219,35 @@ func (p *SharedTransportPool) performCleanup() {
 
 // configKey generates a unique key for a config
 func (p *SharedTransportPool) configKey(config HTTPClientConfig) string {
-	// Pool transports by the parameters that change TLS or connection
-	// behavior. RootCAs and InsecureSkipVerify MUST be part of the key:
+	// Pool transports by every parameter the built *http.Transport actually
+	// consumes. RootCAs and InsecureSkipVerify MUST be part of the key:
 	// otherwise a middleware configured with a custom CA would share a
 	// transport with one using the system store, silently bypassing its
-	// CA configuration.
+	// CA configuration. The remaining fields affect connection behavior
+	// (HTTP version, compression, keep-alives, timeouts, buffer sizes,
+	// dial settings); omitting them would hand a caller a transport built
+	// with different settings than it requested (e.g. wrong compression).
 	skip := "0"
 	if config.InsecureSkipVerify {
 		skip = "1"
 	}
-	return fmt.Sprintf("%d|%d|%p|%s",
+	return fmt.Sprintf("%d|%d|%p|%s|%d|%d|%d|%v|%v|%v|%d|%d|%d|%d|%d|%d",
 		config.MaxConnsPerHost,
 		config.MaxIdleConnsPerHost,
 		config.RootCAs,
 		skip,
+		config.DialTimeout,
+		config.KeepAlive,
+		config.TLSHandshakeTimeout,
+		config.ForceHTTP2,
+		config.DisableKeepAlives,
+		config.DisableCompression,
+		config.ResponseHeaderTimeout,
+		config.ExpectContinueTimeout,
+		config.WriteBufferSize,
+		config.ReadBufferSize,
+		config.IdleConnTimeout,
+		config.MaxIdleConns,
 	)
 }
 

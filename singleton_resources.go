@@ -123,16 +123,23 @@ func (rm *ResourceManager) RegisterBackgroundTask(name string, interval time.Dur
 	rm.tasksMu.Lock()
 	defer rm.tasksMu.Unlock()
 
-	// Check if task already exists
-	if _, exists := rm.tasks[name]; exists {
-		if rm.logger != nil {
-			rm.logger.Debugf("Background task %s already registered", name)
+	// If a task with this name already exists and is still running, keep it
+	// (idempotent re-registration from another middleware instance).
+	if existing, exists := rm.tasks[name]; exists {
+		if atomic.LoadInt32(&existing.stopped) == 0 {
+			if rm.logger != nil {
+				rm.logger.Debugf("Background task %s already registered", name)
+			}
+			return nil
 		}
-		// Return existing task without error for idempotency
-		return nil
+		// The existing task was stopped. Reusing the same BackgroundTask
+		// object would leave it permanently dead: BackgroundTask.Start is
+		// guarded by sync.Once, so once stopped it can never restart, yet
+		// IsTaskRunning returns false and callers will call Start again.
+		// Replace it with a fresh task so re-registration after a
+		// close+recreate cycle (same provider URL) actually resumes it.
 	}
 
-	// Create new task with WaitGroup for proper cleanup
 	task := NewBackgroundTask(name, interval, taskFunc, rm.logger, &rm.wg)
 	rm.tasks[name] = task
 

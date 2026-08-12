@@ -262,9 +262,12 @@ func fetchJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*J
 		return nil, fmt.Errorf("JWKS fetch failed with status %d: %s", resp.StatusCode, body)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
 	if err != nil {
 		return nil, fmt.Errorf("error reading JWKS response: %w", err)
+	}
+	if len(body) > 1<<20 {
+		return nil, fmt.Errorf("JWKS response exceeds 1 MiB limit")
 	}
 
 	var jwks JWKSet
