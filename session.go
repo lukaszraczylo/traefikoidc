@@ -1007,7 +1007,7 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 						continue
 					}
 
-					deleteCookie := &http.Cookie{
+					deleteCookie := &http.Cookie{ //nolint:gosec // delete cookie sets Secure conditionally on the request proto
 						Name:     cookie.Name,
 						Value:    "",
 						Path:     "/",

@@ -163,7 +163,7 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 		data.Set("client_secret", t.clientSecret)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode())) //nolint:gosec // tokenURL is the operator-trusted discovery endpoint (metadataMu)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
@@ -172,7 +172,7 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 		setOAuthBasicAuth(req, t.clientID, t.clientSecret)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // req above targets the trusted tokenURL
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange tokens: %w", err)
 	}

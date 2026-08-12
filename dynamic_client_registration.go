@@ -374,7 +374,7 @@ func (r *DynamicClientRegistrar) saveCredentialsToStore(ctx context.Context, res
 func (r *DynamicClientRegistrar) saveCredentials(resp *ClientRegistrationResponse) error {
 	filePath := r.credentialsFilePath()
 
-	data, err := json.MarshalIndent(resp, "", "  ")
+	data, err := json.MarshalIndent(resp, "", "  ") //nolint:gosec // registration response incl. client_secret is the API output
 	if err != nil {
 		return fmt.Errorf("failed to marshal credentials: %w", err)
 	}

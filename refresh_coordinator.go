@@ -229,7 +229,7 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 
 	if isNew {
 		// We created a new operation, so we need to execute it
-		go rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc)
+		go rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc) //nolint:gosec // long-lived background refresh intentionally uses a background context
 	} else {
 		// Joined existing operation - this is a deduplicated request
 		atomic.AddInt64(&rc.metrics.deduplicatedRequests, 1)

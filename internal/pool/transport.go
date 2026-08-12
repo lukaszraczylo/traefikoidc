@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -246,9 +247,15 @@ func (p *TransportPool) configKey(config TransportConfig) string {
 	sb := Get().GetStringBuilder()
 	defer Get().PutStringBuilder(sb)
 
-	sb.WriteByte(byte(config.MaxConnsPerHost))
-	sb.WriteByte(byte(config.MaxIdleConnsPerHost))
-	sb.WriteByte(byte(config.MaxIdleConns))
+	// Write the int fields verbatim, not byte()s: a config value >=256 would
+	// otherwise truncate and make two distinct configs collide on one key,
+	// silently sharing a single transport with the wrong settings.
+	sb.WriteString(strconv.Itoa(config.MaxConnsPerHost))
+	sb.WriteByte('|')
+	sb.WriteString(strconv.Itoa(config.MaxIdleConnsPerHost))
+	sb.WriteByte('|')
+	sb.WriteString(strconv.Itoa(config.MaxIdleConns))
+	sb.WriteByte('|')
 	if config.ForceHTTP2 {
 		sb.WriteByte(1)
 	} else {
