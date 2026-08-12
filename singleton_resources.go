@@ -36,6 +36,9 @@ type ResourceManager struct {
 
 // GetResourceManager returns the global singleton ResourceManager instance
 func GetResourceManager() *ResourceManager {
+	resourceManagerMutex.Lock()
+	defer resourceManagerMutex.Unlock()
+
 	resourceManagerOnce.Do(func() {
 		globalResourceManager = &ResourceManager{
 			httpClients:  make(map[string]*http.Client),
