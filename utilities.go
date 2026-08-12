@@ -244,8 +244,13 @@ func (t *TraefikOidc) Close() error {
 		if lastInstance {
 			_ = rm.StopBackgroundTask("singleton-token-cleanup") // best effort, last instance only
 		}
-		// Stop metadata refresh task using same hash-based name as startMetadataRefresh
-		if t.providerURL != "" {
+		// Stop metadata refresh task using same hash-based name as
+		// startMetadataRefresh. The name derives only from providerURL
+		// (main.go), so it is SHARED by every live instance pointing at the
+		// same provider; stopping it on one instance's Close would kill 2h
+		// metadata refresh for its surviving sibling (which never re-registers).
+		// Gate on lastInstance, matching singleton-token-cleanup above.
+		if lastInstance && t.providerURL != "" {
 			hash := sha256.Sum256([]byte(t.providerURL))
 			taskName := "singleton-metadata-refresh-" + hex.EncodeToString(hash[:])[0:6]
 			_ = rm.StopBackgroundTask(taskName) // Safe to ignore: best effort cleanup

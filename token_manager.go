@@ -130,11 +130,12 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 
 	t.cacheVerifiedToken(token, jwt.Claims)
 
-	// Replay marking: add JTI to blacklist so subsequent presentations of
-	// the SAME token can short-circuit via cache. Bearer path suppresses
-	// this Set (opts.skipReplayMarking=true) because bearer tokens are
-	// designed for reuse until exp; the cache-evict-then-replay scenario
-	// would otherwise trigger false replay detection.
+	// Replay marking: record the JTI in the shared shardedReplayCache so
+	// cross-path replay detection (jwt.Verify) works. The bearer path
+	// suppresses this entirely (opts.skipReplayMarking=true) because bearer
+	// tokens are designed for reuse until exp; the cache-evict-then-replay
+	// scenario would otherwise trigger false replay detection. See the note
+	// below on why t.tokenBlacklist is deliberately not used.
 	if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" && !t.disableReplayDetection && !opts.skipReplayMarking {
 		expiry := time.Now().Add(defaultBlacklistDuration)
 		if expClaim, expOk := jwt.Claims["exp"].(float64); expOk {
@@ -146,15 +147,18 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 			// else: keep default expiry for expired tokens or tokens >24h
 		}
 
-		if t.tokenBlacklist != nil {
-			t.tokenBlacklist.Set(jti, true, time.Until(expiry))
-			t.safeLogDebugf("Added JTI %s to blacklist cache", jti)
-		} else {
-			t.safeLogErrorf("Token blacklist not available, skipping JTI %s blacklist", jti)
-		}
-
-		// Use sharded cache for replay detection - no global mutex needed
-		// This reduces lock contention by ~64x under high load
+		// Deliberately do NOT add the JTI to the per-instance
+		// t.tokenBlacklist here. That store is queried on every
+		// cache-miss re-presentation (the JTI Get above), and on the
+		// cookie path the SAME still-valid token is re-presented on every
+		// request for the session. Self-marking it would mean an LRU
+		// eviction of the raw-token cache (MaxSize 1000 / 5 MiB) turns a
+		// cache miss on a legitimate token into a false "token replay
+		// detected" (token_manager.go line ~110), forcing a valid session
+		// to re-authenticate. t.tokenBlacklist therefore holds only
+		// EXTERNAL revocations (RevokeToken). Replay tracking lives in the
+		// shared shardedReplayCache below, which is the store jwt.Verify
+		// consults for genuine replay detection.
 		initReplayCache()
 		duration := time.Until(expiry)
 		if duration > 0 {

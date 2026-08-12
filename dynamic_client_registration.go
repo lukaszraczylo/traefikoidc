@@ -292,8 +292,10 @@ func (r *DynamicClientRegistrar) buildRegistrationRequest() ([]byte, error) {
 	if metadata.TokenEndpointAuthMethod != "" {
 		reqData["token_endpoint_auth_method"] = metadata.TokenEndpointAuthMethod
 	} else {
-		// Default to client_secret_basic for confidential clients
-		reqData["token_endpoint_auth_method"] = "client_secret_basic"
+		// Default must match the plugin's runtime client-auth default
+		// (client_secret_post, settings.go Config.Validate) so an IdP that
+		// enforces the registered method does not reject the token exchange.
+		reqData["token_endpoint_auth_method"] = "client_secret_post"
 	}
 
 	if metadata.DefaultMaxAge > 0 {

@@ -359,29 +359,26 @@ func TestJWTReplayAttack(t *testing.T) {
 		t.Fatalf("First verification of token failed unexpectedly: %v", err)
 	}
 
-	// Verify that the JTI was blacklisted
-	if blacklisted, exists := tOidc.tokenBlacklist.Get(fixedJTI); !exists || blacklisted == nil {
-		t.Fatalf("JTI was not added to blacklist after first verification")
+	// Replay tracking for this path lives in the shared shardedReplayCache
+	// (see verifyTokenWithOpts); the per-instance tokenBlacklist holds only
+	// external revocations and is intentionally NOT self-marked.
+	if !shardedReplayCache.Exists(fixedJTI) {
+		t.Fatalf("JTI was not recorded in the shared replay cache after first verification")
+	}
+	if blacklisted, exists := tOidc.tokenBlacklist.Get(fixedJTI); exists && blacklisted != nil {
+		t.Errorf("per-instance tokenBlacklist must not self-record the JTI (would cause false replay after cache eviction)")
 	}
 
-	// Since there's a special bypass for tokens starting with the test JWT prefix,
-	// we need to test with a direct check of the blacklisted JTI instead
-
-	// Directly verify that a replay would be caught by checking the blacklist
-	if blacklisted, exists := tOidc.tokenBlacklist.Get(fixedJTI); !exists || blacklisted == nil {
-		t.Errorf("JTI was not properly blacklisted for replay protection")
+	// Real replay detection still works: presenting the same token through the
+	// replay-checking path must be flagged as a replay.
+	replayed, err := parseJWT(replayJWT)
+	if err != nil {
+		t.Fatalf("failed to parse replayed JWT: %v", err)
 	}
-
-	// Also verify our JTI replay detection function directly
-	claims, _ := extractClaims(replayJWT)
-	if claims != nil {
-		if jti, ok := claims["jti"].(string); ok && jti != "" {
-			if blacklisted, exists := tOidc.tokenBlacklist.Get(jti); exists && blacklisted != nil {
-				t.Logf("Replay protection verified: JTI %s is correctly blacklisted", jti)
-			} else {
-				t.Errorf("JTI %s was not found in blacklist", jti)
-			}
-		}
+	if err := replayed.Verify("https://test-issuer.com", "test-client-id", false); err == nil {
+		t.Error("expected replay to be detected via the shared replay cache")
+	} else if !strings.Contains(err.Error(), "token replay detected") {
+		t.Errorf("expected 'token replay detected', got: %v", err)
 	}
 }
 

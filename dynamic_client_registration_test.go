@@ -598,7 +598,7 @@ func TestBuildRegistrationRequest(t *testing.T) {
 				"redirect_uris":              []interface{}{"https://example.com/callback"},
 				"response_types":             []interface{}{"code"},
 				"grant_types":                []interface{}{"authorization_code", "refresh_token"},
-				"token_endpoint_auth_method": "client_secret_basic",
+				"token_endpoint_auth_method": "client_secret_post",
 			},
 			expectError: false,
 		},

@@ -422,34 +422,41 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("callbackURL must start with /")
 	}
 
-	// Validate client credentials
-	if c.ClientID == "" {
-		return fmt.Errorf("clientID is required")
-	}
-	authMethod := c.ClientAuthMethod
-	if authMethod == "" {
-		authMethod = "client_secret_post"
-	}
-	switch authMethod {
-	case "client_secret_post", "client_secret_basic":
-		if c.ClientSecret == "" {
-			return fmt.Errorf("clientSecret is required when clientAuthMethod is %q", authMethod)
+	// Validate client credentials. With Dynamic Client Registration (RFC 7591)
+	// enabled, clientID (and typically clientSecret) are not known at
+	// construction time — the provider provisions them at registration. Skip
+	// these checks in that case; the providerURL / callbackURL / session-key
+	// checks above and below still run.
+	dcrEnabled := c.DynamicClientRegistration != nil && c.DynamicClientRegistration.Enabled
+	if !(dcrEnabled && c.ClientID == "") {
+		if c.ClientID == "" {
+			return fmt.Errorf("clientID is required")
 		}
-	case "private_key_jwt":
-		if c.ClientAssertionPrivateKey == "" && c.ClientAssertionKeyPath == "" {
-			return fmt.Errorf("clientAssertionPrivateKey or clientAssertionKeyPath is required when clientAuthMethod is private_key_jwt")
+		authMethod := c.ClientAuthMethod
+		if authMethod == "" {
+			authMethod = "client_secret_post"
 		}
-		if c.ClientAssertionPrivateKey != "" && c.ClientAssertionKeyPath != "" {
-			return fmt.Errorf("only one of clientAssertionPrivateKey or clientAssertionKeyPath may be set")
+		switch authMethod {
+		case "client_secret_post", "client_secret_basic":
+			if c.ClientSecret == "" {
+				return fmt.Errorf("clientSecret is required when clientAuthMethod is %q", authMethod)
+			}
+		case "private_key_jwt":
+			if c.ClientAssertionPrivateKey == "" && c.ClientAssertionKeyPath == "" {
+				return fmt.Errorf("clientAssertionPrivateKey or clientAssertionKeyPath is required when clientAuthMethod is private_key_jwt")
+			}
+			if c.ClientAssertionPrivateKey != "" && c.ClientAssertionKeyPath != "" {
+				return fmt.Errorf("only one of clientAssertionPrivateKey or clientAssertionKeyPath may be set")
+			}
+			if c.ClientAssertionKeyID == "" {
+				return fmt.Errorf("clientAssertionKeyID is required when clientAuthMethod is private_key_jwt")
+			}
+			if c.ClientAssertionAlg != "" && !isSupportedClientAssertionAlg(c.ClientAssertionAlg) {
+				return fmt.Errorf("clientAssertionAlg %q is not supported (use RS256/384/512, PS256/384/512, or ES256/384/512)", c.ClientAssertionAlg)
+			}
+		default:
+			return fmt.Errorf("clientAuthMethod %q is not supported", authMethod)
 		}
-		if c.ClientAssertionKeyID == "" {
-			return fmt.Errorf("clientAssertionKeyID is required when clientAuthMethod is private_key_jwt")
-		}
-		if c.ClientAssertionAlg != "" && !isSupportedClientAssertionAlg(c.ClientAssertionAlg) {
-			return fmt.Errorf("clientAssertionAlg %q is not supported (use RS256/384/512, PS256/384/512, or ES256/384/512)", c.ClientAssertionAlg)
-		}
-	default:
-		return fmt.Errorf("clientAuthMethod %q is not supported", authMethod)
 	}
 
 	// Validate session encryption key
