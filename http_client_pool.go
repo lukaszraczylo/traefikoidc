@@ -121,11 +121,11 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 		ForceAttemptHTTP2:     config.ForceHTTP2,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 		ExpectContinueTimeout: config.ExpectContinueTimeout,
-		MaxIdleConns:          10,               // SECURITY FIX: Further reduced
-		MaxIdleConnsPerHost:   2,                // SECURITY FIX: Limited connections
-		IdleConnTimeout:       30 * time.Second, // Reduced from 5 minutes
+		MaxIdleConns:          config.MaxIdleConns,
+		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
+		IdleConnTimeout:       config.IdleConnTimeout,
 		DisableKeepAlives:     config.DisableKeepAlives,
-		MaxConnsPerHost:       5, // SECURITY FIX: Strict limit
+		MaxConnsPerHost:       config.MaxConnsPerHost,
 		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
 		DisableCompression:    config.DisableCompression,
 		WriteBufferSize:       config.WriteBufferSize,

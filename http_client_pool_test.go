@@ -689,3 +689,38 @@ func TestSharedTransportPoolEdgeCases(t *testing.T) {
 		assert.Equal(t, int32(0), finalCount, "client count should decrement on cleanup")
 	})
 }
+
+// TestSharedTransportPoolAppliesConfigLimits is a regression test: the pooled
+// transport must apply the configured connection limits (MaxConnsPerHost,
+// MaxIdleConnsPerHost, MaxIdleConns, IdleConnTimeout) rather than hardcoded
+// constants. Previously GetOrCreateTransport built the transport with fixed
+// values (5/2/10/30s) while configKey still incorporated these config fields,
+// so the config was valid, keyed, and validated but silently ignored
+// (dead config) — e.g. OIDCProviderHTTPClientConfig's tuning had no effect.
+func TestSharedTransportPoolAppliesConfigLimits(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := &SharedTransportPool{
+		transports:  make(map[string]*sharedTransport),
+		maxConns:    20,
+		clientCount: 0,
+		maxClients:  5,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+
+	config := DefaultHTTPClientConfig()
+	config.MaxConnsPerHost = 37
+	config.MaxIdleConnsPerHost = 13
+	config.MaxIdleConns = 41
+	config.IdleConnTimeout = 7 * time.Second
+
+	transport := pool.GetOrCreateTransport(config)
+	require.NotNil(t, transport)
+
+	assert.Equal(t, 37, transport.MaxConnsPerHost, "MaxConnsPerHost must come from config")
+	assert.Equal(t, 13, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost must come from config")
+	assert.Equal(t, 41, transport.MaxIdleConns, "MaxIdleConns must come from config")
+	assert.Equal(t, 7*time.Second, transport.IdleConnTimeout, "IdleConnTimeout must come from config")
+}
