@@ -1156,6 +1156,12 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 		sm.logger.Debugf("Invalid combined cookie chunk count: %v", firstChunk.Values["n"])
 		return false
 	}
+	// The first chunk must carry index 0; a set whose metadata disagrees with
+	// its cookie position is a mixed-generation set from an interrupted save.
+	if idx, idxOk := firstChunk.Values["i"].(int); !idxOk || idx != 0 {
+		sm.logger.Debugf("Combined cookie chunk 0 has invalid index: %v", firstChunk.Values["i"])
+		return false
+	}
 
 	// Load all chunks
 	chunkSessions := make([]*sessions.Session, totalChunks)
@@ -1166,6 +1172,16 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 		chunk, err := sm.store.Get(r, sm.combinedChunkCookieName(i))
 		if err != nil || chunk.IsNew {
 			sm.logger.Debugf("Missing combined cookie chunk %d", i)
+			return false
+		}
+		// Verify each chunk's own stored index/count match its cookie
+		// position. Without this a partial write can leave a cookie set of
+		// mixed generations that reassembles and decompresses into
+		// valid-looking but wrong session data.
+		idx, idxOk := chunk.Values["i"].(int)
+		n, nOk := chunk.Values["n"].(int)
+		if !idxOk || idx != i || !nOk || n != totalChunks {
+			sm.logger.Debugf("Combined cookie chunk %d has mismatched metadata (i=%v n=%v, want i=%d n=%d)", i, chunk.Values["i"], chunk.Values["n"], i, totalChunks)
 			return false
 		}
 		chunkSessions[i] = chunk
