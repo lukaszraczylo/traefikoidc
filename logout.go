@@ -256,6 +256,20 @@ func (t *TraefikOidc) validateLogoutToken(tokenString string) (*LogoutTokenClaim
 		return nil, fmt.Errorf("logout token must contain either sid or sub claim")
 	}
 
+	// OIDC Back-Channel Logout 1.0 §2.5: the RP MUST record the logout
+	// token's jti and reject any replayed token with the same jti.
+	// Without this a captured token could be re-applied to a session the
+	// user re-established after the genuine logout. Only enforced when a
+	// cache is available; the jti is stored under its own namespace so it
+	// never collides with sid/sub invalidation entries.
+	if claims.JTI != "" && t.sessionInvalidationCache != nil {
+		key := t.buildSessionInvalidationKey("jti", claims.JTI)
+		if _, found := t.sessionInvalidationCache.Get(key); found {
+			return nil, fmt.Errorf("logout token replay: jti %s already processed", claims.JTI)
+		}
+		t.sessionInvalidationCache.Set(key, claims.IssuedAt, sessionInvalidationTTL)
+	}
+
 	return claims, nil
 }
 

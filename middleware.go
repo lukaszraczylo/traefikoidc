@@ -395,6 +395,15 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	authenticated, needsRefresh, expired := t.isUserAuthenticatedRS(rs)
 
 	if expired {
+		// AJAX / sub-resource requests must not follow a 302 into the IdP:
+		// parallel loads would each overwrite the shared session's CSRF/nonce
+		// mid-navigation (issue #129), the same reason the sibling branches
+		// below return 401 instead of redirecting.
+		if t.isAjaxRequest(req) || t.isNonNavigationRequest(req) {
+			t.logger.Debug("Session token expired on AJAX/sub-resource request, sending 401")
+			t.sendErrorResponse(rw, req, "Authentication required", http.StatusUnauthorized)
+			return
+		}
 		t.logger.Debug("Session token is definitively expired or invalid, initiating re-auth")
 		t.handleExpiredToken(rw, req, session, redirectURL)
 		return
@@ -738,6 +747,11 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 // abusive output. Matches the input-validation default header cap (8KB).
 const headerTemplateMaxLen = 8192
 
+// noValueSentinel is Go's text/template placeholder for a missing key in an
+// interface-valued map. It is stripped from rendered header values so an
+// optional claim the provider does not emit does not leak "<no value>".
+const noValueSentinel = "<no value>"
+
 // headerClaimMaxLen returns the maximum accepted length for a claim-derived
 // header value (principal identifier, group, role). Reuses the operator-
 // configured identifier cap (default 256) so a single setting governs both
@@ -874,6 +888,14 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 				continue
 			}
 			headerValue := buf.String()
+			// Go's text/template renders a missing key in an interface-valued
+			// map as the literal "<no value>" even with missingkey=zero
+			// (zero only applies to typed keys). Replace that sentinel so an
+			// optional claim the provider did not emit (e.g. email) does not
+			// leak "<no value>" into the downstream header.
+			if strings.Contains(headerValue, noValueSentinel) {
+				headerValue = strings.ReplaceAll(headerValue, noValueSentinel, "")
+			}
 			// Sanitize the rendered output: template inputs are claim-derived
 			// and attacker-influenceable, so reject control chars (header
 			// injection), bidi-override runes, the , ; = delimiters, and an
