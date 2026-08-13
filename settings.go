@@ -459,6 +459,15 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// The token-introspection path always authenticates with client_secret_basic
+	// (token_introspection.go SetBasicAuth), regardless of clientAuthMethod.
+	// Reject the validated-but-broken config where introspection is enabled but
+	// no client secret is supplied (e.g. private_key_jwt with no secret), which
+	// would otherwise send empty Basic credentials and fail every introspection.
+	if c.RequireTokenIntrospection && c.ClientSecret == "" {
+		return fmt.Errorf("clientSecret is required when requireTokenIntrospection is enabled (introspection authenticates via client_secret_basic)")
+	}
+
 	// Validate session encryption key
 	if c.SessionEncryptionKey == "" {
 		return fmt.Errorf("sessionEncryptionKey is required")

@@ -376,9 +376,14 @@ func (r *RedisBackend) executeWithRetry(ctx context.Context, operation func(*Red
 			}
 		}
 
-		// Execute the operation
-		err = operation(conn)
-		r.pool.Put(conn)
+		// Execute the operation, guaranteeing the borrowed connection is
+		// returned to the pool even if the operation panics (previously a
+		// panic here leaked the connection and desynced the pool counters;
+		// other pool call sites use defer for this).
+		func() {
+			defer func() { r.pool.Put(conn) }()
+			err = operation(conn)
+		}()
 
 		// Check context after operation - if canceled, don't bother retrying
 		if ctx.Err() != nil {
