@@ -99,11 +99,23 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) b
 		return false
 	}
 
-	req.Header.Set("X-Forwarded-User", userIdentifier)
-	if !t.minimalHeaders {
-		req.Header.Set("X-Auth-Request-User", userIdentifier)
+	// Sanitize the claim-derived identifier before it is injected as a
+	// header, matching forwardAuthorized (which uses safeIdentifier). The
+	// value originates from an IdP-controlled claim and can contain CRLF
+	// or delimiter characters that would otherwise inject or confuse
+	// downstream header parsing. On failure, drop the header but still
+	// honor the bypass (the identity headers are decoration here).
+	safeIdentifier, ok := sanitizeHeaderClaimValue(userIdentifier, t.headerClaimMaxLen())
+	if !ok {
+		t.logger.Debugf("%s bypass: dropping unsafe user-identifier header: %s", reason, headerClaimValueReason(userIdentifier, t.headerClaimMaxLen()))
+		return true
 	}
-	t.logger.Debugf("%s bypass: forwarded user %s from session", reason, userIdentifier)
+
+	req.Header.Set("X-Forwarded-User", safeIdentifier)
+	if !t.minimalHeaders {
+		req.Header.Set("X-Auth-Request-User", safeIdentifier)
+	}
+	t.logger.Debugf("%s bypass: forwarded user %s from session", reason, safeIdentifier)
 	return true
 }
 
