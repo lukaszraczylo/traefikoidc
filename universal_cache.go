@@ -340,7 +340,7 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		data, _, exists, err := c.backend.Get(ctx, c.prefixKey(key))
+		data, ttl, exists, err := c.backend.Get(ctx, c.prefixKey(key))
 		if err != nil {
 			c.logger.Debugf("Backend get error for key %s: %v", key, err)
 			// Fall through to local cache
@@ -352,11 +352,17 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 				// Fall through to local cache
 			} else {
 				atomic.AddInt64(&c.hits, 1)
-				// Update local cache with backend value synchronously.
-				// Under yaegi, goroutine spawn is 5-10x costlier than compiled Go,
-				// and this path fires per-request on cold local cache.
-				// updateLocalCache is cheap (map write under mutex).
-				_ = c.updateLocalCache(key, value, c.config.DefaultTTL)
+				// Re-populate local cache with the backend entry's REAL remaining
+				// TTL, not the federated DefaultTTL, so the in-memory copy
+				// cannot outlive the authoritative backend entry. Previously a
+				// short-TTL backend value (e.g. a 5-minute token) was cached
+				// locally for up to DefaultTTL (often 1h); if the backend then
+				// became unreachable, getLocal kept serving it well past its
+				// intended expiry.
+				if ttl <= 0 {
+					ttl = c.config.DefaultTTL
+				}
+				_ = c.updateLocalCache(key, value, ttl)
 				return value, true
 			}
 		}
