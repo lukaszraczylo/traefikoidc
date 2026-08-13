@@ -38,21 +38,44 @@ func (t *TraefikOidc) validateGoogleTokensRS(rs *requestState) (bool, bool, bool
 	return t.validateStandardTokensRS(rs)
 }
 
-// accessTokenUnexpired reports whether a signature-verified access token's exp
-// claim is still in the future. Used on the lenient-audience path where
-// jwt.Verify short-circuits at the aud check before validating exp, so expiry
-// must be (re)checked here before the token's claims are trusted. Honors the
-// same clock-skew tolerance as normal expiration verification.
+// accessTokenUnexpired reports whether a signature-verified access
+// token's time claims still hold. Used on the lenient-audience path where
+// jwt.Verify short-circuits at the aud check BEFORE reaching exp/iat/nbf
+// validation, leaving all time claims unvalidated. Re-apply the same
+// clock-skew-aware checks the main path applies (verifyExpiration,
+// verifyIssuedAt with iat required, and verifyNotBefore when present) so a
+// token that is expired, used before its issue time, or not yet valid (nbf)
+// is not trusted for authorization here.
 func (t *TraefikOidc) accessTokenUnexpired(token string) bool {
 	parsed, err := parseJWT(token)
 	if err != nil {
 		return false
 	}
-	exp, ok := parsed.Claims["exp"].(float64)
+	claims := parsed.Claims
+
+	exp, ok := claims["exp"].(float64)
 	if !ok {
 		return false
 	}
-	return time.Now().Before(time.Unix(int64(exp), 0).Add(ClockSkewToleranceFuture))
+	if err := verifyExpiration(exp); err != nil {
+		return false
+	}
+
+	iat, ok := claims["iat"].(float64)
+	if !ok {
+		return false
+	}
+	if err := verifyIssuedAt(iat); err != nil {
+		return false
+	}
+
+	if nbf, ok := claims["nbf"].(float64); ok {
+		if err := verifyNotBefore(nbf); err != nil {
+			return false
+		}
+	}
+
+	return true
 }
 
 // validateTokenExpiryRS is the requestState-aware variant of validateTokenExpiry.
@@ -235,8 +258,9 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 			// there is no ID token to compare against. jwt.Verify returns at
 			// the aud check BEFORE reaching the exp check, so expiry was never
 			// validated on this path — an expired, wrong-audience token would
-			// otherwise be accepted as authenticated. Require the token to be
-			// still unexpired before trusting its claims for authorization.
+			// otherwise be accepted as authenticated. Require the token's time
+			// claims (exp, iat, nbf) to all still hold before trusting its
+			// claims for authorization.
 			if !t.accessTokenUnexpired(rs.accessToken) {
 				if rs.refreshToken != "" {
 					return false, true, false
