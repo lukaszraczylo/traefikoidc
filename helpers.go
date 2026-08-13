@@ -380,11 +380,23 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	idToken := session.GetIDToken()
+	accessToken := session.GetAccessToken()
+	refreshToken := session.GetRefreshToken()
 
 	if err := session.Clear(req, rw); err != nil {
 		t.logger.Errorf("Error clearing session: %v", err)
 		http.Error(rw, "Session error", http.StatusInternalServerError)
 		return
+	}
+
+	// Blacklist the session's tokens so a token captured before logout (e.g. a
+	// bearer mode access token) cannot be reused until its natural expiry.
+	// RevokeToken is a no-op-safe local blacklist (guards nil) and skips
+	// empty values.
+	for _, tok := range []string{accessToken, idToken, refreshToken} {
+		if tok != "" {
+			t.RevokeToken(tok)
+		}
 	}
 
 	host := utils.DetermineHost(req)
