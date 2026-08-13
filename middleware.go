@@ -788,6 +788,16 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 		}
 	}
 
+	// Bearer source: strip the raw inbound Authorization header to keep the
+	// token out of downstream service logs (off-by-config for operators who
+	// chain services that each re-verify the bearer). Stripped here, before
+	// header-template application, so an operator-supplied Authorization
+	// template (e.g. "Authorization: Bearer {{.AccessToken}}") can re-supply
+	// the downstream value rather than being immediately deleted.
+	if p.Source == sourceBearer && t.stripAuthorizationHeader {
+		req.Header.Del("Authorization")
+	}
+
 	if len(t.headerTemplates) > 0 {
 		// p.Claims may be nil (e.g. session without an ID token). Templates
 		// referencing .Claims.* will simply produce empty values — matches
@@ -851,13 +861,6 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 		for _, c := range filtered {
 			req.AddCookie(c)
 		}
-	}
-
-	// Bearer source: strip the Authorization header to keep the raw token
-	// out of downstream service logs. Off-by-config for operators who chain
-	// services that each re-verify the bearer.
-	if p.Source == sourceBearer && t.stripAuthorizationHeader {
-		req.Header.Del("Authorization")
 	}
 
 	t.logger.Debugf("Request authorized for user %s (source=%d), forwarding to next handler", p.Identifier, p.Source)

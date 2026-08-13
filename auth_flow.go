@@ -233,7 +233,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		return
 	}
 
-	if nonceClaim != sessionNonce {
+	if !constantTimeStringCompare(nonceClaim, sessionNonce) {
 		t.logger.Error("Nonce claim does not match session nonce during callback")
 		t.sendErrorResponse(rw, req, "Authentication failed: Nonce mismatch", http.StatusInternalServerError)
 		return
