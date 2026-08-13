@@ -415,10 +415,38 @@ func (p *GoroutinePool) worker(id int) {
 				}
 			}
 		case <-p.shutdownChan:
-			if p.logger != nil {
-				p.logger.Debugf("Worker %d shutting down", id)
+			// Drain any tasks still queued before exiting. Without this, a
+			// worker that randomly selects the (now closed) shutdownChan over a
+			// ready task would exit, and once all workers have exited the
+			// remaining buffered tasks are silently dropped — and their
+			// pendingTasks count is never decremented, so a concurrent Wait()
+			// blocks forever.
+			for {
+				select {
+				case task := <-p.taskQueue:
+					if task != nil {
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+									if p.logger != nil {
+										p.logger.Errorf("Worker %d panic recovered: %v", id, r)
+									}
+								}
+							}()
+							task()
+						}()
+
+						newCount := atomic.AddInt64(&p.pendingTasks, -1)
+						if newCount == 0 {
+							p.taskCond.L.Lock()
+							p.taskCond.Broadcast()
+							p.taskCond.L.Unlock()
+						}
+					}
+				default:
+					return
+				}
 			}
-			return
 		}
 	}
 }
