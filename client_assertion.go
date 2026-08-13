@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -98,9 +99,30 @@ func validateAlgKeyMatch(alg string, key crypto.PrivateKey) error {
 			return fmt.Errorf("alg %q requires an RSA key, got %T", alg, key)
 		}
 	case 'E': // ES*
-		if _, ok := key.(*ecdsa.PrivateKey); !ok {
+		ecKey, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
 			return fmt.Errorf("alg %q requires an EC key, got %T", alg, key)
 		}
+		// ES* maps 1:1 to a NIST curve (ES256→P-256, ES384→P-384,
+		// ES512→P-521). A key on the wrong curve would otherwise pass this
+		// check yet always produce a signature the IdP rejects.
+		if want := ecdsaAlgorithmCurve(alg); want != nil && ecKey.Curve != want {
+			return fmt.Errorf("alg %q requires a key on curve %s, got %s", alg, want.Params().Name, ecKey.Curve.Params().Name)
+		}
+	}
+	return nil
+}
+
+// ecdsaAlgorithmCurve returns the NIST curve required by an ES* algorithm, or
+// nil for any non-ES algorithm.
+func ecdsaAlgorithmCurve(alg string) elliptic.Curve {
+	switch alg {
+	case "ES256":
+		return elliptic.P256()
+	case "ES384":
+		return elliptic.P384()
+	case "ES512":
+		return elliptic.P521()
 	}
 	return nil
 }
