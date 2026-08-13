@@ -178,6 +178,24 @@ func (rm *ResourceManager) StopBackgroundTask(name string) error {
 	return nil
 }
 
+// StopAllTasks stops every background task registered with this ResourceManager.
+// BackgroundTask.Stop is stopOnce-guarded, so repeated calls are safe. This is
+// the terminal path for process-global singleton tasks; it must be called only
+// when the last plugin instance is shutting down, otherwise it would kill
+// cleanup for surviving instances sharing the same singletons.
+func (rm *ResourceManager) StopAllTasks() {
+	rm.tasksMu.RLock()
+	tasks := make([]*BackgroundTask, 0, len(rm.tasks))
+	for _, task := range rm.tasks {
+		tasks = append(tasks, task)
+	}
+	rm.tasksMu.RUnlock()
+
+	for _, task := range tasks {
+		task.Stop()
+	}
+}
+
 // IsTaskRunning checks if a background task is running
 func (rm *ResourceManager) IsTaskRunning(name string) bool {
 	rm.tasksMu.RLock()

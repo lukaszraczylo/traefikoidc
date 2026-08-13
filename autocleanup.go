@@ -518,9 +518,18 @@ func (tr *TaskRegistry) GetTask(name string) (*BackgroundTask, bool) {
 	return task, exists
 }
 
-// StopAllTasks stops all registered background tasks
+// StopAllTasks stops all registered background tasks.
+//
+// Tasks can live in two places: those registered directly via
+// TaskRegistry.RegisterTask (stored in tr.tasks) and process-global
+// singletons created via TaskRegistry.CreateSingletonTask, which delegate to
+// GetResourceManager().RegisterBackgroundTask and store the task in the
+// ResourceManager's registry (see CreateSingletonTask below) — NOT in
+// tr.tasks. Stop both so neither a direct task nor a singleton task leaks its
+// ticker goroutine past the last Close.
 func (tr *TaskRegistry) StopAllTasks() {
-	// First, copy the tasks map to avoid deadlock with GetTaskCount()
+	// First, stop tasks registered directly in this registry.
+	// Copy the tasks map to avoid deadlock with GetTaskCount().
 	tr.mu.Lock()
 	tasksCopy := make(map[string]*BackgroundTask, len(tr.tasks))
 	for name, task := range tr.tasks {
@@ -530,13 +539,15 @@ func (tr *TaskRegistry) StopAllTasks() {
 	tr.tasks = make(map[string]*BackgroundTask)
 	tr.mu.Unlock()
 
-	// Now stop all tasks without holding the lock
-	for name, task := range tasksCopy {
+	for _, task := range tasksCopy {
 		task.Stop()
-		if tr.logger != nil {
-			tr.logger.Debug("Stopped background task during shutdown: %s", name)
-		}
 	}
+
+	// Then stop process-global singleton tasks, which live in the
+	// ResourceManager's registry, not in tr.tasks (otherwise the singleton
+	// task teardown would be a silent no-op and leak every singleton task's
+	// ticker goroutine past the last Close).
+	GetResourceManager().StopAllTasks()
 }
 
 // GetTaskCount returns the number of active tasks
