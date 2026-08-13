@@ -161,6 +161,25 @@ func NewMetadataCache(baseCache *Cache, config MetadataConfig) *MetadataCache {
 	}
 }
 
+// isSecurityCritical reports whether the metadata contains any operator-listed
+// security-critical field (e.g. issuer, jwks_uri) whose staleness window
+// should be capped tighter than ordinary metadata.
+func (mc *MetadataCache) isSecurityCritical(m *ProviderMetadata) bool {
+	for _, f := range mc.config.SecurityCriticalFields {
+		switch f {
+		case "issuer":
+			if m.Issuer != "" {
+				return true
+			}
+		case "jwks_uri":
+			if m.JWKSUri != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Set stores provider metadata with grace period support
 func (mc *MetadataCache) Set(providerURL string, metadata *ProviderMetadata, ttl time.Duration) error {
 	if metadata == nil {
@@ -169,9 +188,20 @@ func (mc *MetadataCache) Set(providerURL string, metadata *ProviderMetadata, ttl
 
 	key := "metadata:" + providerURL
 
-	// Apply grace period if configured
+	// Apply grace period if configured, honoring the configured caps. Previously
+	// only GracePeriod was read and applied unboundedly; MaxGracePeriod and
+	// SecurityCriticalMaxGracePeriod were configured but had no effect, so
+	// stale discovery metadata (issuer, jwks_uri) could be served fresh for
+	// longer than the operator's intended bound.
 	if mc.config.GracePeriod > 0 {
-		ttl += mc.config.GracePeriod
+		grace := mc.config.GracePeriod
+		if mc.config.MaxGracePeriod > 0 && grace > mc.config.MaxGracePeriod {
+			grace = mc.config.MaxGracePeriod
+		}
+		if mc.isSecurityCritical(metadata) && mc.config.SecurityCriticalMaxGracePeriod > 0 && grace > mc.config.SecurityCriticalMaxGracePeriod {
+			grace = mc.config.SecurityCriticalMaxGracePeriod
+		}
+		ttl += grace
 	}
 
 	// Store as JSON for consistency
