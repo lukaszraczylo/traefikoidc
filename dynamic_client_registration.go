@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -141,8 +143,10 @@ func (r *DynamicClientRegistrar) RegisterClient(ctx context.Context, registratio
 
 	// Validate the endpoint URL
 	if !strings.HasPrefix(endpoint, "https://") {
-		// Allow http only for localhost/development
-		if !strings.HasPrefix(endpoint, "http://localhost") && !strings.HasPrefix(endpoint, "http://127.0.0.1") {
+		// Allow http only for loopback/development endpoints. Use a
+		// host-boundary check (not a prefix) so e.g.
+		// http://localhost.evil.com isn't treated as localhost.
+		if !isLoopbackRegistrationEndpoint(endpoint) {
 			return nil, fmt.Errorf("registration endpoint must use HTTPS for security")
 		}
 		r.logger.Infof("Warning: using insecure HTTP for registration endpoint (development only): %s", endpoint)
@@ -409,4 +413,22 @@ func (r *DynamicClientRegistrar) loadCredentials() (*ClientRegistrationResponse,
 	}
 
 	return &resp, nil
+}
+
+// isLoopbackRegistrationEndpoint reports whether the (plaintext) registration
+// endpoint targets a loopback host, matching the hostname boundary (not a
+// string prefix) so http://localhost.evil.com is not treated as localhost.
+func isLoopbackRegistrationEndpoint(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || !u.IsAbs() {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
 }

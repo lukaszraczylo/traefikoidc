@@ -179,6 +179,7 @@ type TraefikOidc struct {
 	refreshGracePeriod        time.Duration
 	maxRefreshTokenAge        time.Duration
 	metadataMu                sync.RWMutex
+	dcrMu                     sync.Mutex
 	shutdownOnce              sync.Once
 	sessionInvalidationCache  CacheInterface
 	refreshResultCache        CacheInterface

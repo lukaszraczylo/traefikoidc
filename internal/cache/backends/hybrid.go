@@ -561,9 +561,11 @@ func (h *HybridBackend) l1BackfillWorker() {
 			for len(h.l1BackfillBuffer) > 0 {
 				select {
 				case item := <-h.l1BackfillBuffer:
-					writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-					_ = h.primary.Set(writeCtx, item.key, item.value, item.ttl)
-					cancel()
+					if h.keyStillInSecondary(item.key) {
+						writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+						_ = h.primary.Set(writeCtx, item.key, item.value, item.ttl)
+						cancel()
+					}
 				default:
 					return
 				}
@@ -574,15 +576,31 @@ func (h *HybridBackend) l1BackfillWorker() {
 			if !ok {
 				return
 			}
-			writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			if err := h.primary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
-				h.logger.Debugf("Failed to populate L1 cache from L2 for key %s: %v", redactKey(item.key), err)
-			} else {
-				h.logger.Debugf("Populated L1 cache from L2 for key: %s", redactKey(item.key))
+			if h.keyStillInSecondary(item.key) {
+				writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				if err := h.primary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
+					h.logger.Debugf("Failed to populate L1 cache from L2 for key %s: %v", redactKey(item.key), err)
+				} else {
+					h.logger.Debugf("Populated L1 cache from L2 for key: %s", redactKey(item.key))
+				}
+				cancel()
 			}
-			cancel()
 		}
 	}
+}
+
+// keyStillInSecondary reports whether the key still exists in the L2 cache.
+// Used by the L1 backfill worker: the value was captured from L2 at read
+// time, and a Delete may have run since. Writing it into L1 without this
+// check would resurrect a key the caller just removed from both tiers.
+func (h *HybridBackend) keyStillInSecondary(key string) bool {
+	if h.fallbackMode.Load() {
+		return true // No L2 available to check; keep behavior unchanged.
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	exists, err := h.secondary.Exists(ctx, key)
+	return err != nil || exists
 }
 
 // asyncWriteWorker processes asynchronous writes to L2

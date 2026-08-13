@@ -678,10 +678,16 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 		t.logger.Debugf("Dynamic client registration endpoint discovered: %s", registrationURL)
 	}
 
-	// Perform Dynamic Client Registration if enabled and ClientID is not set
+	// Perform Dynamic Client Registration if enabled and ClientID is not set.
+	// dcrMu serializes the check and the registration so the concurrent
+	// metadata-refresh goroutine can't pass the same gate and register a
+	// second client (and so the clientID read here can't race the write in
+	// performDynamicClientRegistration).
+	t.dcrMu.Lock()
 	if t.dcrConfig != nil && t.dcrConfig.Enabled && t.clientID == "" {
 		t.performDynamicClientRegistration()
 	}
+	t.dcrMu.Unlock()
 }
 
 // performDynamicClientRegistration performs automatic client registration with the OIDC provider
