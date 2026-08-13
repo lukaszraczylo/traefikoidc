@@ -724,3 +724,23 @@ func TestSharedTransportPoolAppliesConfigLimits(t *testing.T) {
 	assert.Equal(t, 41, transport.MaxIdleConns, "MaxIdleConns must come from config")
 	assert.Equal(t, 7*time.Second, transport.IdleConnTimeout, "IdleConnTimeout must come from config")
 }
+
+// TestCreatePooledHTTPClient_CookieJarOption regresses a config no-effect:
+// CreatePooledHTTPClient ignored config.UseCookieJar, so pooled token/OIDC
+// clients dropped the cookie jar that the non-pooled CreateHTTPClient
+// honors (queue cookies from auth-server token/refresh responses were
+// never stored or re-sent).
+func TestCreatePooledHTTPClient_CookieJarOption(t *testing.T) {
+	t.Run("enabled", func(t *testing.T) {
+		client := CreatePooledHTTPClient(HTTPClientConfig{UseCookieJar: true})
+		if client.Jar == nil {
+			t.Fatal("expected a cookie jar when UseCookieJar is true")
+		}
+	})
+	t.Run("disabled", func(t *testing.T) {
+		client := CreatePooledHTTPClient(HTTPClientConfig{UseCookieJar: false})
+		if client.Jar != nil {
+			t.Fatal("expected no cookie jar when UseCookieJar is false")
+		}
+	})
+}

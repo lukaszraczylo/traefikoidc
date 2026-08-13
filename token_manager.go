@@ -564,10 +564,18 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 
 	if err := session.Save(req, rw); err != nil {
 		t.logger.Errorf("refreshToken failed: Failed to save session after successful token refresh: %v", err)
-		// Reset authentication state since we couldn't persist it
+		// Reset authentication state since we couldn't persist it. Also
+		// clear the just-rotated tokens: the old refresh token was already
+		// consumed by the IdP (rotation), so leaving the new ones in
+		// memory would be a half-rotated session that is flagged
+		// unauthenticated yet still carries a fresh refresh token.
 		if err := session.SetAuthenticated(false); err != nil {
 			t.logger.Errorf("Failed to set authenticated to false: %v", err)
 		}
+		session.SetRefreshToken("")
+		session.SetAccessToken("")
+		session.SetIDToken("")
+		session.SetUserIdentifier("")
 		return false
 	}
 

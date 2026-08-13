@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -287,6 +288,16 @@ func CreatePooledHTTPClient(config HTTPClientConfig) *http.Client {
 	client := &http.Client{
 		Timeout:   config.Timeout,
 		Transport: transport,
+	}
+
+	// Honor the cookie-jar option, matching CreateHTTPClient
+	// (http_client_factory.go). Without this, token/OIDC clients built
+	// through the pool would silently drop UseCookieJar (config no-effect),
+	// so cookies set by the auth server on token/refresh responses were
+	// never stored or re-sent.
+	if config.UseCookieJar {
+		jar, _ := cookiejar.New(nil) // Safe to ignore: nil options rarely fail
+		client.Jar = jar
 	}
 
 	// Configure redirect policy
