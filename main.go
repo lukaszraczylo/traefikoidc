@@ -296,7 +296,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			defaultSystemScopes := []string{"openid", "profile", "email"}
 			return deduplicateScopes(mergeScopes(defaultSystemScopes, userProvidedScopes))
 		}(),
-		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
+		limiter:               rate.NewLimiter(rate.Limit(config.RateLimit), config.RateLimit),
 		tokenCache:            cacheManager.GetSharedTokenCache(),
 		httpClient:            httpClient,
 		tokenHTTPClient:       tokenHTTPClient,
