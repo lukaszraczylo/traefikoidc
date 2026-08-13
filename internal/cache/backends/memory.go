@@ -179,8 +179,10 @@ func (m *MemoryCacheBackend) Get(ctx context.Context, key string) (interface{}, 
 	value, exists, expired := shard.get(key)
 
 	if expired {
-		// Clean up expired item
-		shard.delete(key)
+		// Clean up expired item. Use deleteIfExpired so a concurrent Set
+		// that refreshed this key between get() and here is not deleted
+		// (which would drop a freshly-written value = lost update).
+		shard.deleteIfExpired(key)
 		m.misses.Add(1)
 		return nil, ErrCacheMiss
 	}

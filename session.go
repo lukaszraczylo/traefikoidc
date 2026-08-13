@@ -1736,11 +1736,20 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 			changed = true
 		}
 		sd.mainSession.ID = id
-		newCreationTime := time.Now().Unix()
-		if oldTime, ok := sd.mainSession.Values["created_at"].(int64); !ok || oldTime != newCreationTime {
-			changed = true
+		// Anchor the creation timestamp only when first authenticating
+		// (transition from unauthenticated). Re-asserting an already-
+		// authenticated session — e.g. on every token refresh — must not
+		// advance the absolute session-max-age clock, otherwise an active
+		// client's session (and a captured cookie that keeps refreshing)
+		// never reaches the configured maximum (sliding window defeats the
+		// absolute timeout).
+		if currentAuth != value {
+			newCreationTime := time.Now().Unix()
+			if oldTime, ok := sd.mainSession.Values["created_at"].(int64); !ok || oldTime != newCreationTime {
+				changed = true
+			}
+			sd.mainSession.Values["created_at"] = newCreationTime
 		}
-		sd.mainSession.Values["created_at"] = newCreationTime
 		if oldAuth, ok := sd.mainSession.Values["authenticated"].(bool); !ok || oldAuth != value {
 			changed = true
 		}

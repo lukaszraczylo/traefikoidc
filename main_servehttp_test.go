@@ -5,6 +5,8 @@ import (
 	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1316,4 +1318,71 @@ func TestServeHTTP_EventStream_AppliesRolesGate(t *testing.T) {
 			t.Error("backend must be called for a user with an allowed role")
 		}
 	})
+}
+
+// TestLogout_NoOpenRedirectViaIdP regresses a post-logout open redirect:
+// handleLogout built the IdP's post_logout_redirect_uri from the
+// client-controllable request host (X-Forwarded-Host), so an attacker
+// could steer the browser to an arbitrary origin after logout. With no
+// configured postLogoutRedirectURI the parameter must be omitted, never
+// host-derived.
+func TestLogout_NoOpenRedirectViaIdP(t *testing.T) {
+	sessionManager := createTestSessionManager(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	idToken, err := createTestJWT(key, "RS256", "test-key-id", map[string]interface{}{"sub": "user@example.com"})
+	if err != nil {
+		t.Fatalf("craft id token: %v", err)
+	}
+
+	oidc := &TraefikOidc{
+		logger:         NewLogger("error"),
+		sessionManager: sessionManager,
+		endSessionURL:  "https://idp.example.com/session/end",
+		tokenBlacklist: NewCache(),
+		tokenCache:     NewTokenCache(),
+	}
+
+	req := httptest.NewRequest("GET", "/logout", nil)
+	req.Header.Set("X-Forwarded-Host", "attacker.example")
+
+	session, err := sessionManager.GetSession(req)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session.SetUserIdentifier("user@example.com")
+	if err := session.SetAuthenticated(true); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	session.SetIDToken(idToken)
+	rec := httptest.NewRecorder()
+	if err := session.Save(req, rec); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rw := httptest.NewRecorder()
+	oidc.handleLogout(rw, req)
+
+	loc := rw.Header().Get("Location")
+	if loc == "" {
+		t.Fatalf("expected logout redirect to the IdP end-session URL")
+	}
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse redirect %q: %v", loc, err)
+	}
+	plr := u.Query().Get("post_logout_redirect_uri")
+	if plr == "" {
+		// Correct: no configured target, param omitted.
+		return
+	}
+	if strings.Contains(plr, "attacker.example") {
+		t.Fatalf("open redirect via IdP: post_logout_redirect_uri=%q came from client host", plr)
+	}
 }

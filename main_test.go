@@ -1862,7 +1862,7 @@ func TestHandleLogout(t *testing.T) {
 			},
 			endSessionURL:  "https://provider/end-session",
 			expectedStatus: http.StatusFound,
-			expectedURL:    "https://provider/end-session?id_token_hint=" + url.QueryEscape(ValidIDToken) + "&post_logout_redirect_uri=http%3A%2F%2Fexample.com%2F",
+			expectedURL:    "https://provider/end-session?id_token_hint=" + url.QueryEscape(ValidIDToken),
 			host:           "test-host",
 		},
 		{

@@ -117,6 +117,24 @@ func (s *cacheShard) delete(key string) bool {
 	return true
 }
 
+// deleteIfExpired removes a key only if the entry still present is expired.
+// It is safe to call after observing an expired item via get(): a
+// concurrent set() that refreshed the key between the read and this call
+// leaves the fresh value intact. Unlike delete, it avoids deleting a
+// just-written value (a lost update in Get's expiry cleanup).
+func (s *cacheShard) deleteIfExpired(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	item, exists := s.items[key]
+	if !exists || !item.isExpired() {
+		return false
+	}
+
+	s.deleteItemLocked(item)
+	return true
+}
+
 // exists checks if a key exists (and is not expired)
 func (s *cacheShard) exists(key string) bool {
 	s.mu.RLock()

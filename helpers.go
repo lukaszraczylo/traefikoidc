@@ -13,8 +13,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/lukaszraczylo/traefikoidc/internal/utils"
 )
 
 // newUUIDv4 returns an RFC 4122 v4 UUID string (e.g.
@@ -399,24 +397,30 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	host := utils.DetermineHost(req)
-	scheme := utils.DetermineScheme(req, t.forceHTTPS)
-	baseURL := fmt.Sprintf("%s://%s", scheme, host)
-
 	postLogoutRedirectURI := t.postLogoutRedirectURI
 	// localRedirect is used when there is no provider end-session endpoint and
 	// the plugin redirects the browser itself. It must never be an absolute URL
 	// derived from the request host (X-Forwarded-Host is client-controllable and
 	// would be an open redirect); use a host-relative path, or the operator's
 	// own configured absolute URL, instead.
+	//
+	// The post_logout_redirect_uri we hand to the IdP has the same constraint:
+	// deriving it from baseURL (scheme://client-controlled host) lets an
+	// attacker's X-Forwarded-Host steer the browser to an arbitrary origin
+	// after logout (open redirect through the IdP). So we only emit it when
+	// the operator configured an explicit absolute URL (a trusted origin);
+	// otherwise BuildLogoutURL omits the parameter entirely.
 	localRedirect := "/"
-	if postLogoutRedirectURI == "" {
-		postLogoutRedirectURI = fmt.Sprintf("%s/", baseURL)
-	} else if !strings.HasPrefix(postLogoutRedirectURI, "http") {
-		localRedirect = normalizeLogoutPath(postLogoutRedirectURI)
-		postLogoutRedirectURI = fmt.Sprintf("%s%s", baseURL, postLogoutRedirectURI)
-	} else {
+	if strings.HasPrefix(postLogoutRedirectURI, "http") {
 		localRedirect = postLogoutRedirectURI
+	} else if postLogoutRedirectURI == "" {
+		// Not configured: no trusted origin available — do not send a
+		// host-derived post_logout_redirect_uri to the IdP.
+	} else {
+		// Relative operator-configured path is trusted for the plugin's own
+		// redirect but still has no trusted origin; omit the IdP param.
+		localRedirect = normalizeLogoutPath(postLogoutRedirectURI)
+		postLogoutRedirectURI = ""
 	}
 
 	// Read endSessionURL with RLock

@@ -781,3 +781,58 @@ func TestMatchPattern(t *testing.T) {
 		})
 	}
 }
+
+// TestMemoryShard_DeleteIfExpiredPreservesConcurrentRefresh regresses a
+// TOCTOU in MemoryCacheBackend.Get's expired-item cleanup. Get reads an
+// item, sees it expired (shard.get), then was deleting it with an
+// unconditional shard.delete in a separate critical section. If a
+// concurrent Set refreshed the key between the read and the delete, the
+// delete removed the freshly-written value (a lost update — the key
+// vanished right after it was refreshed). Get now uses deleteIfExpired,
+// which deletes only if the entry is still expired, leaving a concurrent
+// refresh intact. This test models that interleaving deterministically.
+func TestMemoryShard_DeleteIfExpiredPreservesConcurrentRefresh(t *testing.T) {
+	s := newCacheShard(0, 0)
+	const key = "k"
+
+	// Get's first phase: observe an already-expired entry.
+	s.set(key, "old", time.Now().Add(-time.Second), 1)
+	if _, _, expired := s.get(key); !expired {
+		t.Fatal("precondition: seeded item must be expired")
+	}
+
+	// A concurrent refresh lands a fresh value inside the get->delete window.
+	s.set(key, "fresh", time.Now().Add(time.Hour), 1)
+
+	// Get's cleanup must not remove the fresh value.
+	if s.deleteIfExpired(key) {
+		t.Fatal("deleteIfExpired removed a value a concurrent Set just wrote")
+	}
+	if v, _, _ := s.get(key); v != "fresh" {
+		t.Fatalf("fresh value was lost by expiry cleanup, got %v", v)
+	}
+}
+
+// TestMemoryShard_DeleteClobbersConcurrentRefresh documents the failure
+// mode the fix addresses: the old unconditional delete removes the value
+// a concurrent Set just wrote under the same interleaving. If
+// deleteIfExpired ever regresses to unconditional deletion, the sibling
+// test above fails.
+func TestMemoryShard_DeleteClobbersConcurrentRefresh(t *testing.T) {
+	s := newCacheShard(0, 0)
+	const key = "k"
+
+	s.set(key, "old", time.Now().Add(-time.Second), 1)
+	if _, _, expired := s.get(key); !expired {
+		t.Fatal("precondition: seeded item must be expired")
+	}
+	s.set(key, "fresh", time.Now().Add(time.Hour), 1)
+
+	// Old cleanup (delete) removes the just-written value: lost update.
+	if !s.delete(key) {
+		t.Log("old delete found no item")
+	}
+	if v, _, _ := s.get(key); v == "fresh" {
+		t.Log("note: value happened to survive, but delete is unconditional")
+	}
+}
