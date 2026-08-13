@@ -444,7 +444,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 
 	t.logger.Debug("Attempting to refresh token (mutex acquired)")
 
-	if !session.inUse {
+	if !session.inUse.Load() {
 		t.logger.Debug("refreshToken aborted: Session no longer in use")
 		return false
 	}

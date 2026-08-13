@@ -509,7 +509,7 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 			refreshMutex:       sync.Mutex{},
 			sessionMutex:       sync.RWMutex{},
 			dirty:              false,
-			inUse:              false,
+			inUse:              atomic.Bool{},
 		}
 		sd.Reset()
 		return sd
@@ -654,7 +654,7 @@ func (sm *SessionManager) cleanupSessionPool() {
 
 		if poolSession := sm.sessionPool.Get(); poolSession != nil {
 			sessionData, ok := poolSession.(*SessionData)
-			if ok && sessionData != nil && !sessionData.inUse {
+			if ok && sessionData != nil && !sessionData.inUse.Load() {
 				sessionData.Reset()
 				cleaned++
 			}
@@ -724,7 +724,7 @@ func (sm *SessionManager) PeriodicChunkCleanup() {
 	for i := 0; i < 10; i++ {
 		if poolSession := sm.sessionPool.Get(); poolSession != nil {
 			sessionData, ok := poolSession.(*SessionData)
-			if ok && sessionData != nil && !sessionData.inUse {
+			if ok && sessionData != nil && !sessionData.inUse.Load() {
 				sessionData.Reset()
 				poolCleaned++
 			}
@@ -1065,13 +1065,13 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	atomic.AddInt64(&sm.poolHits, 1)
 	atomic.AddInt64(&sm.activeSessions, 1)
 
-	sessionData.inUse = true
+	sessionData.inUse.Store(true)
 	sessionData.request = r
 	sessionData.dirty = false
 
 	handleError := func(err error, message string) (*SessionData, error) {
 		if sessionData != nil {
-			sessionData.inUse = false
+			sessionData.inUse.Store(false)
 			sessionData.Reset()
 			sm.sessionPool.Put(sessionData)
 			atomic.AddInt64(&sm.activeSessions, -1)
@@ -1305,7 +1305,7 @@ type SessionData struct {
 
 	dirty bool
 
-	inUse bool
+	inUse atomic.Bool
 
 	// cachedClaimsToken is the ID token string whose claims were last parsed and
 	// cached. A lazy, per-request cache to avoid re-parsing the JWT on every
@@ -1681,8 +1681,14 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 // It ensures the session is marked as not in use and properly reset before pooling.
 func (sd *SessionData) returnToPoolSafely() {
 	if sd != nil && sd.manager != nil {
-		if sd.inUse {
-			sd.inUse = false
+		// Exactly-once return: only the goroutine that flips inUse with a
+		// compare-and-swap claims the object. Without the CAS, two
+		// concurrent calls (e.g. request path + a goroutine cleanup) can
+		// both observe inUse and both Put the same SessionData back into
+		// the pool, leaving it present twice — which later yields two
+		// concurrent holders of one session (double side-effects) plus an
+		// extra activeSessions decrement.
+		if sd.inUse.CompareAndSwap(true, false) {
 			sd.Reset()
 			sd.manager.sessionPool.Put(sd)
 			atomic.AddInt64(&sd.manager.activeSessions, -1)
@@ -1844,7 +1850,7 @@ func (sd *SessionData) Reset() {
 	}
 
 	sd.dirty = false
-	sd.inUse = false
+	sd.inUse.Store(false)
 	sd.request = nil
 	sd.useCombinedStorage = true // Reset to use combined storage by default
 
@@ -1864,7 +1870,7 @@ func (sd *SessionData) Reset() {
 // It only returns the session if it's not currently in use.
 func (sd *SessionData) ReturnToPool() {
 	if sd != nil && sd.manager != nil {
-		if !sd.inUse {
+		if !sd.inUse.Load() {
 			sd.Reset()
 			sd.manager.sessionPool.Put(sd)
 			atomic.AddInt64(&sd.manager.activeSessions, -1)

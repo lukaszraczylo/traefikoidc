@@ -831,6 +831,18 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 		}
 	}
 
+	// Bearer (M2M) path: enforce allowedUsers / allowedUserDomains the same
+	// way every cookie-path entry point does. The bearer path reaches here
+	// via buildPrincipalFromBearerToken with no earlier isAllowedUser check;
+	// without this, a valid bearer whose subject is absent from the
+	// allowlist would still be forwarded, making the restriction a no-op.
+	if p.Source == sourceBearer && !t.isAllowedUser(p.Identifier) {
+		t.logger.Infof("Bearer user %s is not in allowed users or domains", p.Identifier)
+		errorMsg := fmt.Sprintf("Access denied: User not allowed. To log out, visit: %s", t.logoutURLPath)
+		t.sendErrorResponse(rw, req, errorMsg, http.StatusForbidden)
+		return
+	}
+
 	if len(t.allowedRolesAndGroups) > 0 {
 		allowed := false
 		for _, roleOrGroup := range append(groups, roles...) {
