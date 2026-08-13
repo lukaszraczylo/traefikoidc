@@ -2300,9 +2300,19 @@ func TestExtractGroupsAndRoles(t *testing.T) {
 			expectError:  false,
 		},
 		{
+			name: "Single string groups and roles",
+			claims: map[string]interface{}{
+				"groups": "domain_users", // single string (not array)
+				"roles":  []interface{}{"role1"},
+			},
+			expectGroups: []string{"domain_users"},
+			expectRoles:  []string{"role1"},
+			expectError:  false,
+		},
+		{
 			name: "Invalid groups format",
 			claims: map[string]interface{}{
-				"groups": "not-an-array",
+				"groups": 12345, // non-string, non-array scalar
 				"roles":  []interface{}{"role1"},
 			},
 			expectError: true,

@@ -946,6 +946,34 @@ func (t *TraefikOidc) extractGroupsAndRoles(idToken string) ([]string, []string,
 	return t.extractGroupsAndRolesFromClaims(claims)
 }
 
+// stringListFromClaim coerces a claims value into a []string, accepting:
+//   - []interface{} of strings (common JSON path)
+//   - []string (some decoders emit this directly)
+//   - a bare string (single group/role), treated as a 1-element list.
+//
+// Providers sometimes emit groups/roles as a single string rather than a
+// JSON array; rejecting that (as the previous strict []interface{} only
+// branch did) meant a valid user holding an allowed group was denied (or
+// rendered with an empty identity).
+func stringListFromClaim(value interface{}) ([]string, bool) {
+	switch v := value.(type) {
+	case string:
+		return []string{v}, true
+	case []string:
+		return v, true
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
 // extractGroupsAndRolesFromClaims extracts group and role information from
 // already-parsed claims. Hot path: callers that have a cached claims map (such
 // as SessionData.GetIDTokenClaims) should use this to skip a redundant
@@ -955,32 +983,24 @@ func (t *TraefikOidc) extractGroupsAndRolesFromClaims(claims map[string]interfac
 	var roles []string
 
 	if groupsClaim, exists := claims[t.groupClaimName]; exists {
-		groupsSlice, ok := groupsClaim.([]interface{})
+		groupsSlice, ok := stringListFromClaim(groupsClaim)
 		if !ok {
 			return nil, nil, fmt.Errorf("%s claim is not an array", t.groupClaimName)
 		}
-		for _, group := range groupsSlice {
-			if groupStr, ok := group.(string); ok {
-				t.logger.Debugf("Found group from %s claim: %s", t.groupClaimName, groupStr)
-				groups = append(groups, groupStr)
-			} else {
-				t.logger.Errorf("Non-string value found in %s claim array: %v", t.groupClaimName, group)
-			}
+		for _, groupStr := range groupsSlice {
+			t.logger.Debugf("Found group from %s claim: %s", t.groupClaimName, groupStr)
+			groups = append(groups, groupStr)
 		}
 	}
 
 	if rolesClaim, exists := claims[t.roleClaimName]; exists {
-		rolesSlice, ok := rolesClaim.([]interface{})
+		rolesSlice, ok := stringListFromClaim(rolesClaim)
 		if !ok {
 			return nil, nil, fmt.Errorf("%s claim is not an array", t.roleClaimName)
 		}
-		for _, role := range rolesSlice {
-			if roleStr, ok := role.(string); ok {
-				t.logger.Debugf("Found role from %s claim: %s", t.roleClaimName, roleStr)
-				roles = append(roles, roleStr)
-			} else {
-				t.logger.Errorf("Non-string value found in %s claim array: %v", t.roleClaimName, role)
-			}
+		for _, roleStr := range rolesSlice {
+			t.logger.Debugf("Found role from %s claim: %s", t.roleClaimName, roleStr)
+			roles = append(roles, roleStr)
 		}
 	}
 

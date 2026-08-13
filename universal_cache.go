@@ -276,10 +276,20 @@ func (c *UniversalCache) setLocal(key string, value interface{}, ttl time.Durati
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// For an existing key the replace below frees the OLD value's size, so the
+	// memory cap should only be checked against the NET growth (new - old), not
+	// the full new size while currentMemory still holds the old size. Using the
+	// full size here over-triggers eviction and drops live entries that would
+	// have fit once the old value was released.
+	growth := size
+	if existing, exists := c.items[key]; exists {
+		growth = size - existing.Size
+	}
+
 	// Check memory limits
 	if c.config.MaxMemoryBytes > 0 {
 		// Evict items if necessary to make room
-		for c.currentMemory+size > c.config.MaxMemoryBytes && c.lruList.Len() > 0 {
+		for c.currentMemory+growth > c.config.MaxMemoryBytes && c.lruList.Len() > 0 {
 			c.evictOldest()
 		}
 	}
@@ -950,9 +960,17 @@ func (c *UniversalCache) updateLocalCache(key string, value interface{}, ttl tim
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Evict against NET growth for an existing key (the replace below frees the
+	// old size), so the memory cap isn't over-triggered and live entries aren't
+	// needlessly evicted. See setLocal.
+	growth := size
+	if existing, exists := c.items[key]; exists {
+		growth = size - existing.Size
+	}
+
 	// Check memory limits
 	if c.config.MaxMemoryBytes > 0 {
-		for c.currentMemory+size > c.config.MaxMemoryBytes && c.lruList.Len() > 0 {
+		for c.currentMemory+growth > c.config.MaxMemoryBytes && c.lruList.Len() > 0 {
 			c.evictOldest()
 		}
 	}

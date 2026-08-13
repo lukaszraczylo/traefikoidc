@@ -151,9 +151,11 @@ func TestCustomClaimNames_MalformedRoleClaim(t *testing.T) {
 	// Configure custom claim names
 	ts.tOidc.roleClaimName = "custom_roles"
 
-	// Create token with malformed role claim (not an array)
+	// Create token with malformed role claim (non-string, non-array scalar).
+	// A single-string role claim is now accepted as a 1-element list, so
+	// "malformed" here means a scalar that is neither.
 	claims := map[string]interface{}{
-		"custom_roles": "this-should-be-an-array",
+		"custom_roles": 12345,
 	}
 
 	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", claims)
