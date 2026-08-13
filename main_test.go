@@ -1129,6 +1129,7 @@ func TestHandleCallback(t *testing.T) {
 			exchangeCodeForToken: func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 				return &TokenResponse{
 					IDToken:      ts.token,
+					AccessToken:  "test-access-token",
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
@@ -1203,6 +1204,7 @@ func TestHandleCallback(t *testing.T) {
 				}
 				return &TokenResponse{
 					IDToken:      disallowedToken,
+					AccessToken:  "test-access-token",
 					RefreshToken: "test-refresh-token-disallowed",
 				}, nil
 			},

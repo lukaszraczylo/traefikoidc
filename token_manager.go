@@ -541,6 +541,15 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 		t.logger.Debugf("New token expires at: %v (in %v)", expiryTime, time.Until(expiryTime))
 	}
 
+	// Guard against persisting an empty access token: validateStandardTokensRS
+	// treats a stored empty access token (with a refresh token present) as
+	// "needs refresh", which would make every subsequent request re-trigger
+	// a refresh (an infinite refresh loop). Keep the previous tokens.
+	if newToken.AccessToken == "" {
+		t.logger.Infof("Provider returned an empty access token during refresh; keeping previous tokens")
+		return false
+	}
+
 	session.SetIDToken(newToken.IDToken)
 	session.SetAccessToken(newToken.AccessToken)
 

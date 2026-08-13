@@ -217,6 +217,18 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		return
 	}
 
+	if tokenResponse.AccessToken == "" {
+		t.logger.Errorf("Token endpoint returned no access token during callback")
+		session.SetCSRF("")
+		session.SetNonce("")
+		session.SetCodeVerifier("")
+		if saveErr := session.Save(req, rw); saveErr != nil {
+			t.logger.Errorf("Failed to save session after empty access token: %v", saveErr)
+		}
+		t.sendErrorResponse(rw, req, "Authentication failed: Token endpoint returned no access token", http.StatusInternalServerError)
+		return
+	}
+
 	if err = t.verifyToken(tokenResponse.IDToken); err != nil {
 		t.logger.Errorf("Failed to verify id_token during callback: %v", err)
 		t.sendErrorResponse(rw, req, "Authentication failed: Could not verify ID token", http.StatusInternalServerError)
