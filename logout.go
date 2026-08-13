@@ -373,17 +373,27 @@ func (t *TraefikOidc) invalidateSession(sid, sub string) error {
 
 	now := time.Now().Unix()
 
+	// The default 25h invalidation lives longer than the default 24h
+	// session, but a configured sessionMaxAge longer than 25h would let
+	// the invalidation expire while a still-valid old cookie survives, so a
+	// replayed dead cookie is accepted again. Derive the TTL from the
+	// session's actual max age (with margin) when it exceeds the default.
+	ttl := sessionInvalidationTTL
+	if t.sessionManager != nil && t.sessionManager.sessionMaxAge > ttl {
+		ttl = t.sessionManager.sessionMaxAge + time.Hour
+	}
+
 	// Store by session ID
 	if sid != "" {
 		key := t.buildSessionInvalidationKey("sid", sid)
-		t.sessionInvalidationCache.Set(key, now, sessionInvalidationTTL)
+		t.sessionInvalidationCache.Set(key, now, ttl)
 		t.logger.Debugf("Invalidated session by sid: %s", sid)
 	}
 
 	// Store by subject (invalidates all sessions for this user)
 	if sub != "" {
 		key := t.buildSessionInvalidationKey("sub", sub)
-		t.sessionInvalidationCache.Set(key, now, sessionInvalidationTTL)
+		t.sessionInvalidationCache.Set(key, now, ttl)
 		t.logger.Debugf("Invalidated session by sub: %s", sub)
 	}
 

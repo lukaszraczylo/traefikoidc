@@ -944,6 +944,14 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 			if strings.Contains(headerValue, noValueSentinel) {
 				headerValue = strings.ReplaceAll(headerValue, noValueSentinel, "")
 			}
+			// Skip an empty render: Setting "" would clobber an identity
+			// header (X-Forwarded-User / X-Auth-Request-*) already injected
+			// earlier in this function with the authenticated value, silently
+			// dropping the user identity at the backend.
+			if headerValue == "" {
+				t.logger.Debugf("Skipping templated header %s: rendered value is empty", headerName)
+				continue
+			}
 			// Sanitize the rendered output: template inputs are claim-derived
 			// and attacker-influenceable, so reject control chars (header
 			// injection), bidi-override runes, the , ; = delimiters, and an
