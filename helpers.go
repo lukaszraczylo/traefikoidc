@@ -186,7 +186,9 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 	}
 
 	var tokenResponse TokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
+	// Cap the decoded body so a corrupted or malicious oversized 200-body cannot
+	// drive an unbounded read/allocation. Token responses are small (a few KB).
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tokenResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode token response: %w", err)
 	}
 

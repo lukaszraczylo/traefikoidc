@@ -521,10 +521,80 @@ func (re *RetryExecutor) ExecuteWithContext(ctx context.Context, fn func() error
 }
 
 // Execute runs the given function with retry logic (for backward compatibility)
-// Execute executes a function with retry logic (backward compatibility).
+// Execute runs a function with retry logic (backward compatibility).
 // This method provides the same functionality as ExecuteWithContext.
 func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
 	return re.ExecuteWithContext(ctx, fn)
+}
+
+// singleUseRetryableErrors are error fragments that prove the request was NEVER
+// sent to the server (dial/connect failures). Retrying those is safe.
+var singleUseRetryableErrors = []string{
+	"connection refused",
+	"network unreachable",
+	"no route to host",
+	"temporary failure",
+}
+
+// ExecuteSingleUseWithContext retries only on errors that prove the request was
+// never sent (connect/dial failures). It intentionally does NOT retry on
+// "timeout": for a single-use operation such as the authorization-code
+// exchange, a timeout may mean the provider already consumed the one-time code,
+// so re-sending it would surface invalid_grant permanently even though the
+// first attempt succeeded.
+func (re *RetryExecutor) ExecuteSingleUseWithContext(ctx context.Context, fn func() error) error {
+	re.RecordRequest()
+	var lastErr error
+
+	for attempt := 1; attempt <= re.config.MaxAttempts; attempt++ {
+		err := fn()
+		if err == nil {
+			if attempt > 1 {
+				re.LogInfo("Operation succeeded after %d attempts", attempt)
+			}
+			re.RecordSuccess()
+			return nil
+		}
+
+		lastErr = err
+
+		if !isSubstringMatch(err.Error(), singleUseRetryableErrors) {
+			re.RecordFailure()
+			return err
+		}
+
+		if attempt == re.config.MaxAttempts {
+			re.RecordFailure()
+			break
+		}
+
+		delay := re.calculateDelay(attempt)
+		if attempt == 1 || attempt%3 == 0 {
+			re.LogDebug("Retrying single-use operation after %v (attempt %d/%d): %v",
+				delay, attempt, re.config.MaxAttempts, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			re.RecordFailure()
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+
+	finalErr := fmt.Errorf("operation failed after %d attempts: %w", re.config.MaxAttempts, lastErr)
+	return finalErr
+}
+
+// isSubstringMatch reports whether s contains any of the given fragments.
+func isSubstringMatch(s string, fragments []string) bool {
+	lower := strings.ToLower(s)
+	for _, frag := range fragments {
+		if strings.Contains(lower, frag) {
+			return true
+		}
+	}
+	return false
 }
 
 // isRetryableError checks if an error should trigger a retry

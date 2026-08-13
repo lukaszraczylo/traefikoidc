@@ -104,8 +104,11 @@ func NewTokenResilienceManager(config TokenResilienceConfig, logger *Logger) *To
 	return manager
 }
 
-// ExecuteTokenOperation executes a token operation with full resilience support
-func (trm *TokenResilienceManager) ExecuteTokenOperation(ctx context.Context, operation string, fn func() error) error {
+// ExecuteTokenOperation executes a token operation with full resilience support.
+// singleUse marks operations whose request must not be re-sent after a timeout
+// (e.g. the authorization-code exchange, where the one-time code may already
+// have been consumed server-side) — only pre-send (connect) failures are retried.
+func (trm *TokenResilienceManager) ExecuteTokenOperation(ctx context.Context, operation string, singleUse bool, fn func() error) error {
 	if trm.logger != nil {
 		trm.logger.Debugf("Executing token operation %s with resilience", operation)
 	}
@@ -129,8 +132,14 @@ func (trm *TokenResilienceManager) ExecuteTokenOperation(ctx context.Context, op
 	// Wrap with retry if enabled
 	if trm.config.RetryEnabled && trm.retryExecutor != nil {
 		originalOp := finalOperation
-		finalOperation = func() error {
-			return trm.retryExecutor.ExecuteWithContext(ctx, originalOp)
+		if singleUse {
+			finalOperation = func() error {
+				return trm.retryExecutor.ExecuteSingleUseWithContext(ctx, originalOp)
+			}
+		} else {
+			finalOperation = func() error {
+				return trm.retryExecutor.ExecuteWithContext(ctx, originalOp)
+			}
 		}
 	}
 
@@ -152,7 +161,7 @@ func (trm *TokenResilienceManager) ExecuteTokenExchange(ctx context.Context, t *
 
 	operation := fmt.Sprintf("token_exchange_%s", grantType)
 
-	err = trm.ExecuteTokenOperation(ctx, operation, func() error {
+	err = trm.ExecuteTokenOperation(ctx, operation, grantType == "authorization_code", func() error {
 		result, err = t.exchangeTokens(ctx, grantType, codeOrToken, redirectURL, codeVerifier)
 		return err
 	})
@@ -165,7 +174,7 @@ func (trm *TokenResilienceManager) ExecuteTokenRefresh(ctx context.Context, t *T
 	var result *TokenResponse
 	var err error
 
-	err = trm.ExecuteTokenOperation(ctx, "token_refresh", func() error {
+	err = trm.ExecuteTokenOperation(ctx, "token_refresh", false, func() error {
 		// Call exchangeTokens directly to avoid recursion back to getNewTokenWithRefreshToken
 		// which would call ExecuteTokenRefresh again, causing infinite loop (issue #67)
 		result, err = t.exchangeTokens(ctx, "refresh_token", refreshToken, "", "")
