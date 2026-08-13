@@ -1072,7 +1072,11 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 		// Check session timeout
 		if sessionData.getCreatedAtUnsafe() > 0 {
 			if time.Since(time.Unix(sessionData.getCreatedAtUnsafe(), 0)) > sm.sessionMaxAge {
-				_ = sessionData.Clear(r, nil) // Safe to ignore: session is being invalidated
+				// handleError returns the session to the pool and fully
+				// resets it; do NOT call Clear() here too, or the same
+				// pointer is pooled twice (two GetSession calls hand out
+				// one shared object -> data race / session bleed) and
+				// activeSessions is double-decremented.
 				return handleError(fmt.Errorf("session timeout"), "session expired")
 			}
 		}
@@ -1092,7 +1096,8 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 
 	if createdAt, ok := sessionData.mainSession.Values["created_at"].(int64); ok {
 		if time.Since(time.Unix(createdAt, 0)) > sm.sessionMaxAge {
-			_ = sessionData.Clear(r, nil) // Safe to ignore: session is being invalidated
+			// handleError returns the session to the pool and resets it;
+			// do not also call Clear() (double pool-put, see above).
 			return handleError(fmt.Errorf("session timeout"), "session expired")
 		}
 	}
