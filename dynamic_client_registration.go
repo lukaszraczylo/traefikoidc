@@ -207,6 +207,19 @@ func (r *DynamicClientRegistrar) RegisterClient(ctx context.Context, registratio
 		return nil, fmt.Errorf("registration response missing client_id")
 	}
 
+	// The plugin's runtime client-auth default is client_secret_post
+	// (settings.go Config.Validate); RFC 7591 registers a confidential
+	// client. For a secret-based auth method the response must carry a
+	// client_secret, otherwise every token exchange fails. Adopting a
+	// secret-less client would silently break all auth.
+	authMethod := "client_secret_post"
+	if r.config != nil && r.config.ClientMetadata != nil && r.config.ClientMetadata.TokenEndpointAuthMethod != "" {
+		authMethod = r.config.ClientMetadata.TokenEndpointAuthMethod
+	}
+	if (authMethod == "client_secret_post" || authMethod == "client_secret_basic") && regResp.ClientSecret == "" {
+		return nil, fmt.Errorf("registration response missing client_secret for auth method %q", authMethod)
+	}
+
 	r.logger.Infof("Successfully registered client with ID: %s", regResp.ClientID)
 
 	// Cache the response
@@ -237,6 +250,15 @@ func (r *DynamicClientRegistrar) buildRegistrationRequest() ([]byte, error) {
 
 	// Required: redirect_uris
 	if len(metadata.RedirectURIs) > 0 {
+		// Reject malformed or wrong-scheme entries before they reach the IdP:
+		// RFC 7591 expects absolute http/https redirect URIs, and an invalid
+		// one sent to the IdP would corrupt the registered callback.
+		for _, uri := range metadata.RedirectURIs {
+			parsed, perr := url.ParseRequestURI(uri)
+			if perr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+				return nil, fmt.Errorf("redirect_uri %q must be an absolute http(s) URL", uri)
+			}
+		}
 		reqData["redirect_uris"] = metadata.RedirectURIs
 	} else {
 		return nil, fmt.Errorf("redirect_uris is required for client registration")

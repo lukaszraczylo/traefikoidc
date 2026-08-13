@@ -421,6 +421,14 @@ func (c *Config) Validate() error {
 	if !strings.HasPrefix(c.CallbackURL, "/") {
 		return fmt.Errorf("callbackURL must start with /")
 	}
+	// The callback is matched by exact request-path comparison
+	// (req.URL.Path == redirURLPath) and used verbatim as redirect_uri. A
+	// query string or fragment in the path config part never matches the
+	// request path and corrupts redirect_uri (buildFullURL), causing an
+	// endless re-auth loop. Reject it at config time.
+	if strings.ContainsAny(c.CallbackURL, "?#") {
+		return fmt.Errorf("callbackURL must not contain a query string or fragment")
+	}
 
 	// Validate client credentials. With Dynamic Client Registration (RFC 7591)
 	// enabled, clientID (and typically clientSecret) are not known at

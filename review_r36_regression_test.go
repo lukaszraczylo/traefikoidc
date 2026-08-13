@@ -16,10 +16,10 @@ import (
 // combination is still validated as before.
 func TestConfigValidate_DCRSkipsCredentialCheck(t *testing.T) {
 	base := Config{
-		ProviderURL:         "https://issuer.example.com",
-		CallbackURL:         "/callback",
+		ProviderURL:          "https://issuer.example.com",
+		CallbackURL:          "/callback",
 		SessionEncryptionKey: "0123456789abcdef0123456789abcdef", // >= MinSessionEncryptionKeyLength
-		RateLimit:           100,                               // >= MinRateLimit (10)
+		RateLimit:            100,                                // >= MinRateLimit (10)
 	}
 
 	// Control: without DCR, an empty clientID must still be rejected.
@@ -54,7 +54,7 @@ func TestDCRBuildRegistrationRequestDefaultAuthMethod(t *testing.T) {
 	cfg := &DynamicClientRegistrationConfig{
 		Enabled: true,
 		ClientMetadata: &ClientRegistrationMetadata{
-			RedirectURIs: []string{"/callback"},
+			RedirectURIs: []string{"https://example.com/callback"},
 		},
 	}
 	r := NewDynamicClientRegistrar(nil, nil, cfg, "https://issuer.example.com")
