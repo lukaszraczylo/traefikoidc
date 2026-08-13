@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -172,6 +173,19 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 //   - rw: The HTTP response writer.
 //   - req: The incoming HTTP request.
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// Recover from any panic in the handler chain (session decode, token
+	// validation, header injection, authorize-url build) so a bug answers a
+	// single clean 500 (and logs a stack) instead of escaping to net/http,
+	// which closes/truncates the connection. WriteHeader is idempotent, so
+	// this is safe even if a handler already wrote headers; Write appends.
+	defer func() {
+		if r := recover(); r != nil {
+			t.logger.Errorf("OIDC handler panic recovered: %v\n%s", r, debug.Stack())
+			rw.WriteHeader(http.StatusInternalServerError)
+			_, _ = rw.Write([]byte("Internal Server Error"))
+		}
+	}()
+
 	// Log request entry for debugging routing issues
 	t.logger.Debugf("Incoming request: %s %s", req.Method, req.URL.Path)
 

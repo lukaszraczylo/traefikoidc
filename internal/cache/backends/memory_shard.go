@@ -33,13 +33,14 @@ func newCacheShard(maxSize, maxMemory int64) *cacheShard {
 func (s *cacheShard) get(key string) (interface{}, bool, bool) {
 	s.mu.RLock()
 	item, exists := s.items[key]
+	expired := exists && item.isExpired()
 	s.mu.RUnlock()
 
 	if !exists {
 		return nil, false, false
 	}
 
-	if item.isExpired() {
+	if expired {
 		return nil, true, true // exists but expired
 	}
 
@@ -47,16 +48,19 @@ func (s *cacheShard) get(key string) (interface{}, bool, bool) {
 	s.mu.Lock()
 	// Re-check item exists (could have been deleted)
 	item, exists = s.items[key]
-	if exists && !item.isExpired() {
-		item.accessedAt = time.Now()
-		item.accessCount++
-		if elem, ok := item.element.(*list.Element); ok && elem != nil {
-			s.lruList.MoveToFront(elem)
+	if exists {
+		expired = item.isExpired()
+		if !expired {
+			item.accessedAt = time.Now()
+			item.accessCount++
+			if elem, ok := item.element.(*list.Element); ok && elem != nil {
+				s.lruList.MoveToFront(elem)
+			}
 		}
 	}
 	s.mu.Unlock()
 
-	if !exists || item.isExpired() {
+	if !exists || expired {
 		return nil, false, false
 	}
 
@@ -139,30 +143,32 @@ func (s *cacheShard) deleteIfExpired(key string) bool {
 func (s *cacheShard) exists(key string) bool {
 	s.mu.RLock()
 	item, exists := s.items[key]
+	expired := exists && item.isExpired()
 	s.mu.RUnlock()
 
-	if !exists {
-		return false
-	}
-
-	return !item.isExpired()
+	return exists && !expired
 }
 
 // ttl returns the remaining TTL for a key
 func (s *cacheShard) ttl(key string) (time.Duration, bool) {
 	s.mu.RLock()
 	item, exists := s.items[key]
+	expired := exists && item.isExpired()
+	var expiresAt time.Time
+	if exists {
+		expiresAt = item.expiresAt
+	}
 	s.mu.RUnlock()
 
-	if !exists || item.isExpired() {
+	if !exists || expired {
 		return 0, false
 	}
 
-	if item.expiresAt.IsZero() {
+	if expiresAt.IsZero() {
 		return 0, true // No expiration
 	}
 
-	remaining := time.Until(item.expiresAt)
+	remaining := time.Until(expiresAt)
 	if remaining < 0 {
 		return 0, false
 	}
