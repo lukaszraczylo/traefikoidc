@@ -233,8 +233,14 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 	}
 
 	if isNew {
-		// We created a new operation, so we need to execute it
-		go rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc) //nolint:gosec // long-lived background refresh intentionally uses a background context
+		// We created a new operation, so we need to execute it. Track the
+		// goroutine so Shutdown waits for in-flight refreshes to finish (they
+		// are aborted promptly via rc.ctx when stopChan closes).
+		rc.wg.Add(1)
+		go func() {
+			defer rc.wg.Done()
+			rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc) //nolint:gosec // long-lived background refresh intentionally uses a background context
+		}()
 	} else {
 		// Joined existing operation - this is a deduplicated request
 		atomic.AddInt64(&rc.metrics.deduplicatedRequests, 1)
