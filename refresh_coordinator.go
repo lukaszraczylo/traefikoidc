@@ -37,6 +37,11 @@ type RefreshCoordinator struct {
 	stopChan               chan struct{}
 	config                 RefreshCoordinatorConfig
 	wg                     sync.WaitGroup
+	// shutdownOnce makes Shutdown idempotent: close(rc.stopChan) on an
+	// already-closed channel would panic ('close of closed channel').
+	// Repeated setup/teardown (e.g. Traefik plugin reload) can close the
+	// same Authenticator -> same coordinator more than once.
+	shutdownOnce sync.Once
 }
 
 // RefreshCoordinatorConfig configures the refresh coordinator behavior
@@ -720,8 +725,10 @@ func (rc *RefreshCoordinator) GetMetrics() map[string]interface{} {
 // (one map LoadAndDelete) and harmless after Shutdown — sync.Map operations
 // remain safe on an unused coordinator until GC.
 func (rc *RefreshCoordinator) Shutdown() {
-	close(rc.stopChan)
-	rc.wg.Wait()
+	rc.shutdownOnce.Do(func() {
+		close(rc.stopChan)
+		rc.wg.Wait()
+	})
 }
 
 // AllowRequest reports whether the circuit breaker allows a request. Lock-free.
