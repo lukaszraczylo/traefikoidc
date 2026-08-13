@@ -2848,6 +2848,8 @@ func (sd *SessionData) SetIDToken(token string) {
 // Returns:
 //   - The current redirect count, 0 if not set.
 func (sd *SessionData) GetRedirectCount() int {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
 	if count, ok := sd.mainSession.Values["redirect_count"].(int); ok {
 		return count
 	}
@@ -2858,7 +2860,9 @@ func (sd *SessionData) GetRedirectCount() int {
 // STABILITY FIX: Prevents infinite redirect loops by tracking successive redirects.
 // Used to detect potential redirect loops and abort authentication if too many occur.
 func (sd *SessionData) IncrementRedirectCount() {
-	currentCount := sd.GetRedirectCount()
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+	currentCount := sd.getRedirectCountUnsafe()
 	sd.mainSession.Values["redirect_count"] = currentCount + 1
 	sd.dirty = true
 }
@@ -2867,6 +2871,8 @@ func (sd *SessionData) IncrementRedirectCount() {
 // STABILITY FIX: Prevents infinite redirect loops by clearing the counter
 // when authentication completes successfully or when starting a new flow.
 func (sd *SessionData) ResetRedirectCount() {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
 	sd.mainSession.Values["redirect_count"] = 0
 	sd.dirty = true
 }
