@@ -38,6 +38,23 @@ func (t *TraefikOidc) validateGoogleTokensRS(rs *requestState) (bool, bool, bool
 	return t.validateStandardTokensRS(rs)
 }
 
+// accessTokenUnexpired reports whether a signature-verified access token's exp
+// claim is still in the future. Used on the lenient-audience path where
+// jwt.Verify short-circuits at the aud check before validating exp, so expiry
+// must be (re)checked here before the token's claims are trusted. Honors the
+// same clock-skew tolerance as normal expiration verification.
+func (t *TraefikOidc) accessTokenUnexpired(token string) bool {
+	parsed, err := parseJWT(token)
+	if err != nil {
+		return false
+	}
+	exp, ok := parsed.Claims["exp"].(float64)
+	if !ok {
+		return false
+	}
+	return time.Now().Before(time.Unix(int64(exp), 0).Add(ClockSkewToleranceFuture))
+}
+
 // validateTokenExpiryRS is the requestState-aware variant of validateTokenExpiry.
 // Reads rs.refreshToken instead of session.GetRefreshToken() (4 RLocks avoided).
 func (t *TraefikOidc) validateTokenExpiryRS(rs *requestState, token string) (bool, bool, bool) {
@@ -215,7 +232,17 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 		}
 		if lenientAudienceOnly {
 			// Access token signature verified; audience check was lenient and
-			// there is no ID token to compare against. Treat as authenticated.
+			// there is no ID token to compare against. jwt.Verify returns at
+			// the aud check BEFORE reaching the exp check, so expiry was never
+			// validated on this path — an expired, wrong-audience token would
+			// otherwise be accepted as authenticated. Require the token to be
+			// still unexpired before trusting its claims for authorization.
+			if !t.accessTokenUnexpired(rs.accessToken) {
+				if rs.refreshToken != "" {
+					return false, true, false
+				}
+				return false, false, true
+			}
 			if rs.refreshToken != "" {
 				return true, true, false
 			}
