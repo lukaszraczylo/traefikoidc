@@ -20,6 +20,8 @@ type HybridBackend struct {
 	ctx                 context.Context
 	syncWriteCacheTypes map[string]bool
 	asyncWriteBuffer    chan *asyncWriteItem
+	asyncFlushMu        sync.Mutex
+	asyncWg             sync.WaitGroup
 	l1BackfillBuffer    chan *l1BackfillItem
 	cancel              context.CancelFunc
 	wg                  sync.WaitGroup
@@ -184,7 +186,10 @@ func (h *HybridBackend) Set(ctx context.Context, key string, value []byte, ttl t
 		h.l2Writes.Add(1)
 		h.logger.Debugf("Synchronous write to L2 completed for critical key: %s", redactKey(key))
 	} else {
-		// Asynchronous write for non-critical cache types
+		// Asynchronous write for non-critical cache types. asyncWg tracks
+		// every queued+in-flight async write so Clear can wait for the
+		// worker to finish before wiping (no buffered write lands after).
+		h.asyncWg.Add(1)
 		select {
 		case h.asyncWriteBuffer <- &asyncWriteItem{
 			key:   key,
@@ -195,6 +200,7 @@ func (h *HybridBackend) Set(ctx context.Context, key string, value []byte, ttl t
 			h.logger.Debugf("Queued async write to L2 for key: %s", redactKey(key))
 		default:
 			// Buffer is full, log and continue
+			h.asyncWg.Done()
 			h.logger.Warnf("Async write buffer full, dropping L2 write for key: %s", redactKey(key))
 			h.errors.Add(1)
 		}
@@ -289,9 +295,18 @@ func (h *HybridBackend) Exists(ctx context.Context, key string) (bool, error) {
 	return false, nil
 }
 
-// Clear removes all keys from both caches
+// Clear removes all keys from both caches.
 func (h *HybridBackend) Clear(ctx context.Context) error {
 	var lastErr error
+
+	// Wait for every queued+in-flight async L2 write to land BEFORE the
+	// wipe, so a buffered write (from a Set that preceded Clear) cannot
+	// resurrect the key. The worker drains the buffer itself; asyncWg
+	// reaches 0 only once all of them are written. Holding asyncFlushMu
+	// for the wipe also blocks a racing worker write from landing during it.
+	h.asyncWg.Wait()
+	h.asyncFlushMu.Lock()
+	defer h.asyncFlushMu.Unlock()
 
 	// Clear L1
 	if err := h.primary.Clear(ctx); err != nil {
@@ -518,6 +533,7 @@ func (h *HybridBackend) SetMany(ctx context.Context, items map[string][]byte, tt
 				}
 			} else {
 				// Async write for non-critical types
+				h.asyncWg.Add(1)
 				select {
 				case h.asyncWriteBuffer <- &asyncWriteItem{
 					key:   key,
@@ -527,6 +543,7 @@ func (h *HybridBackend) SetMany(ctx context.Context, items map[string][]byte, tt
 				}:
 					// Queued
 				default:
+					h.asyncWg.Done()
 					h.logger.Warnf("Async buffer full for batch write")
 				}
 			}
@@ -614,9 +631,12 @@ func (h *HybridBackend) asyncWriteWorker() {
 			for len(h.asyncWriteBuffer) > 0 {
 				select {
 				case item := <-h.asyncWriteBuffer:
+					h.asyncFlushMu.Lock()
 					ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 					_ = h.secondary.Set(ctx, item.key, item.value, item.ttl)
 					cancel()
+					h.asyncFlushMu.Unlock()
+					h.asyncWg.Done()
 				default:
 					return
 				}
@@ -630,10 +650,14 @@ func (h *HybridBackend) asyncWriteWorker() {
 
 			// Skip if in fallback mode
 			if h.fallbackMode.Load() {
+				h.asyncWg.Done()
 				continue
 			}
 
-			// Perform the write with a timeout
+			// Perform the write with a timeout. Holding asyncFlushMu lets
+			// Clear stall us out so no buffered write can land after a
+			// clear-then-wipe.
+			h.asyncFlushMu.Lock()
 			writeCtx, cancel := context.WithTimeout(item.ctx, 500*time.Millisecond)
 			if err := h.secondary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
 				h.errors.Add(1)
@@ -644,6 +668,8 @@ func (h *HybridBackend) asyncWriteWorker() {
 				h.logger.Debugf("Async write to L2 completed for key: %s", redactKey(item.key))
 			}
 			cancel()
+			h.asyncFlushMu.Unlock()
+			h.asyncWg.Done()
 		}
 	}
 }

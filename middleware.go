@@ -580,8 +580,19 @@ func (t *TraefikOidc) processAuthorizedRequestRS(rw http.ResponseWriter, req *ht
 				if err := session.Clear(req, rw); err != nil {
 					t.logger.Errorf("Error clearing invalidated session: %v", err)
 				}
-				session.ResetRedirectCount()
-				t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+				// Clear already returned `session` to the shared pool via
+				// returnToPoolSafely; re-acquire an owned session so a
+				// concurrent GetSession can't pop the pooled object while we
+				// write the re-auth challenge into it.
+				ns, gerr := t.sessionManager.GetSession(req)
+				if gerr != nil {
+					t.logger.Errorf("Error creating session for re-authentication: %v", gerr)
+					t.sendErrorResponse(rw, req, "Failed to start re-authentication", http.StatusInternalServerError)
+					return
+				}
+				ns.ResetRedirectCount()
+				t.defaultInitiateAuthentication(rw, req, ns, redirectURL)
+				ns.returnToPoolSafely()
 				return
 			}
 		}
@@ -662,8 +673,19 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 				if err := session.Clear(req, rw); err != nil {
 					t.logger.Errorf("Error clearing invalidated session: %v", err)
 				}
-				session.ResetRedirectCount()
-				t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+				// Clear already returned `session` to the shared pool via
+				// returnToPoolSafely; re-acquire an owned session so a
+				// concurrent GetSession can't pop the pooled object while we
+				// write the re-auth challenge into it.
+				ns, gerr := t.sessionManager.GetSession(req)
+				if gerr != nil {
+					t.logger.Errorf("Error creating session for re-authentication: %v", gerr)
+					t.sendErrorResponse(rw, req, "Failed to start re-authentication", http.StatusInternalServerError)
+					return
+				}
+				ns.ResetRedirectCount()
+				t.defaultInitiateAuthentication(rw, req, ns, redirectURL)
+				ns.returnToPoolSafely()
 				return
 			}
 		}

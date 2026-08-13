@@ -1867,10 +1867,12 @@ func (sd *SessionData) Reset() {
 
 // ReturnToPool manually returns the session to the object pool.
 // This is used in cleanup paths where Clear() is not called, to prevent memory leaks.
-// It only returns the session if it's not currently in use.
+// It returns the session only if it is currently in use, using an atomic
+// compare-and-swap so exactly one concurrent caller claims and returns the
+// object (mirrors returnToPoolSafely).
 func (sd *SessionData) ReturnToPool() {
 	if sd != nil && sd.manager != nil {
-		if !sd.inUse.Load() {
+		if sd.inUse.CompareAndSwap(true, false) {
 			sd.Reset()
 			sd.manager.sessionPool.Put(sd)
 			atomic.AddInt64(&sd.manager.activeSessions, -1)
