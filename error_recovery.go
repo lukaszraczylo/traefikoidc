@@ -191,12 +191,16 @@ type CircuitBreaker struct {
 	maxFailures int
 	// timeout is how long to wait before allowing requests in half-open state
 	timeout time.Duration
-	// resetTimeout is how long to wait before transitioning from open to half-open
+	// resetTimeout is how long to stay in half-open (after the open timeout)
+	// before a successful response fully closes the circuit
 	resetTimeout time.Duration
 	// state tracks the current circuit breaker state
 	state CircuitBreakerState
 	// failures counts consecutive failures
 	failures int64
+	// halfOpenSince is when the circuit entered half-open; used to enforce
+	// resetTimeout before a success can fully close it
+	halfOpenSince time.Time
 }
 
 // CircuitBreakerConfig holds configuration parameters for circuit breakers.
@@ -275,6 +279,7 @@ func (cb *CircuitBreaker) allowRequest() bool {
 	case CircuitBreakerOpen:
 		if now.Sub(cb.lastFailureTime) > cb.timeout {
 			cb.state = CircuitBreakerHalfOpen
+			cb.halfOpenSince = now
 			cb.logger.Infof("Circuit breaker transitioning to half-open state")
 			return true
 		}
@@ -317,6 +322,15 @@ func (cb *CircuitBreaker) recordSuccess() {
 
 	switch cb.state {
 	case CircuitBreakerHalfOpen:
+		// Honor resetTimeout: do not fully close until the circuit has been
+		// in half-open for at least resetTimeout. This provides the
+		// documented open -> half-open -> (reset cooldown) -> closed
+		// hysteresis instead of closing on the very first half-open
+		// success, which would let a stray success immediately reopen
+		// (bounce). While in half-open requests are still allowed as probes.
+		if time.Since(cb.halfOpenSince) < cb.resetTimeout {
+			return
+		}
 		cb.failures = 0
 		cb.state = CircuitBreakerClosed
 		cb.LogInfo("Circuit breaker closed after successful request in half-open state")

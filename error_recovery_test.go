@@ -89,18 +89,50 @@ func TestCircuitBreakerHalfOpenTransition(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	allowed := false
-	_ = cb.Execute(func() error {
-		allowed = true
-		return nil
-	})
-
-	if !allowed {
-		t.Error("Request should be allowed in half-open state")
+	// First request after the open timeout probes half-open. A single success
+	// does NOT immediately close: the circuit stays half-open until
+	// resetTimeout has elapsed (reset-cooldown hysteresis).
+	if err := cb.Execute(func() error { return nil }); err != nil {
+		t.Errorf("Request should be allowed in half-open state, got: %v", err)
+	}
+	if cb.GetState() != CircuitBreakerHalfOpen {
+		t.Errorf("Circuit should stay half-open during reset cooldown, got %v", circuitBreakerStateToString(cb.GetState()))
 	}
 
+	// After resetTimeout elapses, a successful request fully closes it.
+	time.Sleep(60 * time.Millisecond)
+	if err := cb.Execute(func() error { return nil }); err != nil {
+		t.Errorf("Request should be allowed, got: %v", err)
+	}
 	if cb.GetState() != CircuitBreakerClosed {
-		t.Errorf("Circuit should be closed after successful half-open request, got %v", cb.GetState())
+		t.Errorf("Circuit should be closed after successful request following reset cooldown, got %v", circuitBreakerStateToString(cb.GetState()))
+	}
+}
+
+// TestCircuitBreakerResetTimeoutEnforced is a regression test for the dead
+// resetTimeout config field: it must be consulted before a half-open success
+// can fully close the circuit. This failed on the old code where resetTimeout
+// was set but never read, so a single half-open success closed the circuit
+// immediately regardless of the configured reset cooldown.
+func TestCircuitBreakerResetTimeoutEnforced(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		MaxFailures:  1,
+		Timeout:      50 * time.Millisecond,
+		ResetTimeout: time.Minute,
+	}, nil)
+
+	_ = cb.Execute(func() error { return errors.New("fail") })
+	if cb.GetState() != CircuitBreakerOpen {
+		t.Fatal("circuit should be open after failure")
+	}
+
+	time.Sleep(70 * time.Millisecond) // past the open timeout -> half-open
+
+	if err := cb.Execute(func() error { return nil }); err != nil {
+		t.Fatalf("request should be allowed in half-open state, got: %v", err)
+	}
+	if cb.GetState() != CircuitBreakerHalfOpen {
+		t.Fatalf("circuit must remain half-open until resetTimeout elapses, got %v", circuitBreakerStateToString(cb.GetState()))
 	}
 }
 
