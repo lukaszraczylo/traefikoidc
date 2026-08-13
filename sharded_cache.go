@@ -122,6 +122,45 @@ func (c *ShardedCache) Set(key string, value interface{}, ttl time.Duration) {
 	shard.mu.Unlock()
 }
 
+// SetIfAbsent atomically inserts the item only if the key is not already
+// present and unexpired. Returns true if inserted, false if the key already
+// existed (including when a concurrent caller already inserted it). Unlike
+// the separate Exists()+Set() check-then-act, this holds the shard lock
+// across both operations, closing the double-accept race in replay
+// detection where two concurrent requests carrying the same fresh JTI could
+// both observe it absent and both be accepted.
+func (c *ShardedCache) SetIfAbsent(key string, value interface{}, ttl time.Duration) bool {
+	shard := c.getShard(key)
+
+	var expiresAt time.Time
+	if ttl > 0 {
+		expiresAt = time.Now().Add(ttl)
+	}
+
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if it, exists := shard.items[key]; exists {
+		// Present and not expired -> duplicate.
+		if it.expiresAt.IsZero() || !time.Now().After(it.expiresAt) {
+			return false
+		}
+		// Present but expired -> treat as absent and replace below.
+	}
+
+	if len(shard.items) >= c.maxPerShard {
+		c.evictFromShardLocked(shard)
+	}
+
+	shard.items[key] = &shardedCacheItem{
+		value:     value,
+		expiresAt: expiresAt,
+		seq:       shard.nextSeq,
+	}
+	shard.nextSeq++
+	return true
+}
+
 // Delete removes an item from the cache.
 func (c *ShardedCache) Delete(key string) {
 	shard := c.getShard(key)

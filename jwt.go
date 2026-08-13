@@ -365,54 +365,50 @@ func (j *JWT) Verify(issuerURL, expectedAudience string, skipReplayCheck ...bool
 	if jtiOk && !shouldSkipReplay && jtiValue != "" {
 		initReplayCache()
 
-		// Use sharded cache for replay detection - no global mutex needed
-		// This reduces lock contention by ~64x under high load
-		if shardedReplayCache != nil {
-			if shardedReplayCache.Exists(jtiValue) {
+		expFloat, ok := claims["exp"].(float64)
+		var expTime time.Time
+		if ok {
+			expTime = time.Unix(int64(expFloat), 0)
+		} else {
+			expTime = time.Now().Add(10 * time.Minute)
+		}
+		duration := time.Until(expTime)
+		if duration <= 0 {
+			// Expired token: no replay window worth recording, so nothing to do.
+			goto replayDone
+		}
+
+		// Use sharded cache for replay detection - no global mutex needed.
+		// SetIfAbsent is atomic: it holds the per-shard lock across the
+		// existence check and insert, closing the double-accept race where
+		// two concurrent requests carrying the same fresh JTI could both
+		// observe it absent and both be accepted. Guard the singleton read
+		// with replayCacheMu because cleanupReplayCache can nil it under the
+		// write lock.
+		replayCacheMu.RLock()
+		sc := shardedReplayCache
+		if sc != nil {
+			if !sc.SetIfAbsent(jtiValue, true, duration) {
+				replayCacheMu.RUnlock()
 				return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
 			}
-
-			expFloat, ok := claims["exp"].(float64)
-			var expTime time.Time
-			if ok {
-				expTime = time.Unix(int64(expFloat), 0)
-			} else {
-				expTime = time.Now().Add(10 * time.Minute)
-			}
-
-			duration := time.Until(expTime)
-			if duration > 0 {
-				shardedReplayCache.Set(jtiValue, true, duration)
-			}
-		} else {
-			// Fall back to legacy cache with mutex (should rarely happen)
-			replayCacheMu.RLock()
-			_, exists := replayCache.Get(jtiValue)
 			replayCacheMu.RUnlock()
-
+		} else {
+			// Fall back to legacy cache (should rarely happen). Hold the
+			// mutex across the get+set so the record is atomic there too.
+			replayCacheMu.Lock()
+			_, exists := replayCache.Get(jtiValue)
+			if !exists && replayCache != nil {
+				replayCache.Set(jtiValue, true, duration)
+			}
+			replayCacheMu.Unlock()
 			if exists {
 				return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
-			}
-
-			expFloat, ok := claims["exp"].(float64)
-			var expTime time.Time
-			if ok {
-				expTime = time.Unix(int64(expFloat), 0)
-			} else {
-				expTime = time.Now().Add(10 * time.Minute)
-			}
-
-			duration := time.Until(expTime)
-			if duration > 0 {
-				replayCacheMu.Lock()
-				if replayCache != nil {
-					replayCache.Set(jtiValue, true, duration)
-				}
-				replayCacheMu.Unlock()
 			}
 		}
 	}
 
+replayDone:
 	sub, ok := claims["sub"].(string)
 	if !ok || sub == "" {
 		return fmt.Errorf("missing or empty 'sub' claim")
