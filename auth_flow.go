@@ -112,6 +112,17 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		csrfToken, nonce)
 
 	authURL := t.buildAuthURL(redirectURL, csrfToken, nonce, codeChallenge)
+
+	// When dynamic client registration is enabled but has not yet produced a
+	// client_id (registration pending or failed), forging an authorize URL
+	// with client_id="" would send the user to the provider on a broken
+	// flow. Fail with a clear status instead of redirecting.
+	if t.dcrConfig != nil && t.dcrConfig.Enabled && t.clientID == "" {
+		t.logger.Errorf("OIDC dynamic client registration has not produced a client_id; refusing to redirect to provider")
+		http.Error(rw, "Identity provider registration pending", http.StatusServiceUnavailable)
+		return
+	}
+
 	t.logger.Debugf("Redirecting user to OIDC provider: %s", authURL)
 
 	http.Redirect(rw, req, authURL, http.StatusFound)

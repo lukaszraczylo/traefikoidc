@@ -284,7 +284,10 @@ func (t *TraefikOidc) validateAzureTokensRS(rs *requestState) (bool, bool, bool)
 		if rs.refreshToken != "" {
 			return false, true, false
 		}
-		return false, true, false
+		// No refresh token to use: match the standard path and fail without
+		// pretending refresh is possible (the previous copy-paste returned
+		// needsRefresh=true with nothing to refresh with).
+		return false, false, false
 	}
 
 	if rs.accessToken != "" {

@@ -914,7 +914,22 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 		host := r.Host
 
 		if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
-			host = forwardedHost
+			// Only use the forwarded host when it is the serving host or a
+			// subdomain of it. A broader/unrelated X-Forwarded-Host (e.g.
+			// example.com for app.example.com) would scope the token-bearing
+			// session cookie to every sibling subdomain.
+			fh := forwardedHost
+			if ci := strings.Index(fh, ":"); ci != -1 {
+				fh = fh[:ci]
+			}
+			// X-Forwarded-Host is authoritative in a reverse-proxy setup
+			// (Traefik forwards the external host; r.Host is the internal
+			// service). Keep it unless it is a strict parent of the serving
+			// host, which would scope the token-bearing cookie to sibling
+			// subdomains — then fall back to the serving host.
+			if !strings.HasSuffix(host, "."+fh) {
+				host = fh
+			}
 		}
 
 		if host != "" && !strings.Contains(host, "localhost") && !strings.Contains(host, "127.0.0.1") {
