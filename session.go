@@ -2026,6 +2026,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 			session.Values["token_chunk"] = chunkData
 			session.Values["compressed"] = (compressed != token)
 			session.Values["chunk_created_at"] = time.Now().Unix()
+			session.Values["token_total"] = len(chunks)
 			sd.accessTokenChunks[i] = session
 		}
 
@@ -2211,6 +2212,7 @@ func (sd *SessionData) SetRefreshToken(token string) {
 			session.Values["token_chunk"] = chunkData
 			session.Values["compressed"] = (compressed != token)
 			session.Values["chunk_created_at"] = time.Now().Unix()
+			session.Values["token_total"] = len(chunks)
 			sd.refreshTokenChunks[i] = session
 		}
 
@@ -2836,6 +2838,7 @@ func (sd *SessionData) SetIDToken(token string) {
 			session.Values["token_chunk"] = chunkData
 			session.Values["compressed"] = (compressed != token)
 			session.Values["chunk_created_at"] = time.Now().Unix()
+			session.Values["token_total"] = len(chunks)
 			sd.idTokenChunks[i] = session
 		}
 

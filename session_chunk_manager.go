@@ -360,6 +360,20 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 		return TokenRetrievalResult{Token: "", Error: err}
 	}
 
+	// Verify the chunk count matches the total recorded when the token was
+	// written. Without this, silently losing the trailing chunk(s) (browser
+	// cookie eviction, dropped Set-Cookie, attacker dropping a cookie) would
+	// reassemble a truncated prefix with no error and trust it as the token.
+	// The write path stores token_total on every chunk; check it on chunk 0.
+	if total, ok := chunks[0].Values["token_total"].(int); ok {
+		if len(chunks) != total {
+			err := fmt.Errorf("%s token chunk count mismatch: got %d, expected %d (possibly truncated)",
+				config.Type, len(chunks), total)
+			cm.logger.Errorf("Truncated %s token chunks: got %d, expected %d", config.Type, len(chunks), total)
+			return TokenRetrievalResult{Token: "", Error: err}
+		}
+	}
+
 	// Sequential chunk validation and assembly
 	var tokenParts []string
 	totalSize := 0
