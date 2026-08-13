@@ -1,6 +1,8 @@
 package traefikoidc
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -56,14 +58,14 @@ func TestServeHTTP_ExcludedURLs(t *testing.T) {
 			})
 
 			oidc := &TraefikOidc{
-				excludedURLs:           tt.excludedURLs,
-				next:                   next,
-				logger:                 NewLogger("debug"),
-				initComplete:           make(chan struct{}),
-				sessionManager:         createTestSessionManager(t),
-				firstRequestStarted: 1,
+				excludedURLs:                 tt.excludedURLs,
+				next:                         next,
+				logger:                       NewLogger("debug"),
+				initComplete:                 make(chan struct{}),
+				sessionManager:               createTestSessionManager(t),
+				firstRequestStarted:          1,
 				metadataRefreshStartedAtomic: 1,
-				issuerURL:              "https://provider.example.com", // Required for initialization check
+				issuerURL:                    "https://provider.example.com", // Required for initialization check
 			}
 			close(oidc.initComplete)
 
@@ -88,13 +90,13 @@ func TestServeHTTP_EventStream(t *testing.T) {
 
 	newOidc := func(next http.Handler) *TraefikOidc {
 		oidc := &TraefikOidc{
-			next:                   next,
-			logger:                 NewLogger("debug"),
-			initComplete:           make(chan struct{}),
-			sessionManager:         sessionManager,
-			firstRequestStarted: 1,
+			next:                         next,
+			logger:                       NewLogger("debug"),
+			initComplete:                 make(chan struct{}),
+			sessionManager:               sessionManager,
+			firstRequestStarted:          1,
 			metadataRefreshStartedAtomic: 1,
-			issuerURL:              "https://provider.example.com",
+			issuerURL:                    "https://provider.example.com",
 		}
 		close(oidc.initComplete)
 		return oidc
@@ -171,13 +173,13 @@ func TestServeHTTP_WebSocketUpgrade(t *testing.T) {
 
 	newOidc := func(next http.Handler) *TraefikOidc {
 		oidc := &TraefikOidc{
-			next:                   next,
-			logger:                 NewLogger("debug"),
-			initComplete:           make(chan struct{}),
-			sessionManager:         sessionManager,
-			firstRequestStarted: 1,
+			next:                         next,
+			logger:                       NewLogger("debug"),
+			initComplete:                 make(chan struct{}),
+			sessionManager:               sessionManager,
+			firstRequestStarted:          1,
 			metadataRefreshStartedAtomic: 1,
-			issuerURL:              "https://provider.example.com",
+			issuerURL:                    "https://provider.example.com",
 		}
 		close(oidc.initComplete)
 		return oidc
@@ -269,10 +271,10 @@ func TestServeHTTP_InitializationTimeout(t *testing.T) {
 		shortTimeout := 100 * time.Millisecond
 
 		oidc := &TraefikOidc{
-			logger:                 NewLogger("debug"),
-			initComplete:           make(chan struct{}), // Never close this to simulate timeout
-			sessionManager:         createTestSessionManager(t),
-			firstRequestStarted: 1,
+			logger:                       NewLogger("debug"),
+			initComplete:                 make(chan struct{}), // Never close this to simulate timeout
+			sessionManager:               createTestSessionManager(t),
+			firstRequestStarted:          1,
 			metadataRefreshStartedAtomic: 1,
 		}
 
@@ -304,15 +306,15 @@ func TestServeHTTP_InitializationTimeout(t *testing.T) {
 
 	t.Run("successful initialization", func(t *testing.T) {
 		oidc := &TraefikOidc{
-			logger:                 NewLogger("debug"),
-			initComplete:           make(chan struct{}),
-			sessionManager:         createTestSessionManager(t),
-			firstRequestStarted: 1,
+			logger:                       NewLogger("debug"),
+			initComplete:                 make(chan struct{}),
+			sessionManager:               createTestSessionManager(t),
+			firstRequestStarted:          1,
 			metadataRefreshStartedAtomic: 1,
-			issuerURL:              "https://provider.example.com",
-			redirURLPath:           "/callback",
-			logoutURLPath:          "/logout",
-			next:                   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+			issuerURL:                    "https://provider.example.com",
+			redirURLPath:                 "/callback",
+			logoutURLPath:                "/logout",
+			next:                         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
 		}
 
 		// Close init channel to signal completion
@@ -334,19 +336,19 @@ func TestServeHTTP_InitializationTimeout(t *testing.T) {
 func TestServeHTTP_CallbackAndLogout(t *testing.T) {
 	t.Run("callback path triggers callback handler", func(t *testing.T) {
 		oidc := &TraefikOidc{
-			logger:                 NewLogger("debug"),
-			initComplete:           make(chan struct{}),
-			sessionManager:         createTestSessionManager(t),
-			firstRequestStarted: 1,
+			logger:                       NewLogger("debug"),
+			initComplete:                 make(chan struct{}),
+			sessionManager:               createTestSessionManager(t),
+			firstRequestStarted:          1,
 			metadataRefreshStartedAtomic: 1,
-			issuerURL:              "https://provider.example.com",
-			redirURLPath:           "/callback",
-			logoutURLPath:          "/logout",
-			tokenURL:               "https://provider.example.com/token",
-			clientID:               "test-client",
-			audience:               "test-client",
-			clientSecret:           "test-secret",
-			tokenHTTPClient:        http.DefaultClient,
+			issuerURL:                    "https://provider.example.com",
+			redirURLPath:                 "/callback",
+			logoutURLPath:                "/logout",
+			tokenURL:                     "https://provider.example.com/token",
+			clientID:                     "test-client",
+			audience:                     "test-client",
+			clientSecret:                 "test-secret",
+			tokenHTTPClient:              http.DefaultClient,
 		}
 		close(oidc.initComplete)
 
@@ -364,16 +366,16 @@ func TestServeHTTP_CallbackAndLogout(t *testing.T) {
 
 	t.Run("logout path triggers logout handler", func(t *testing.T) {
 		oidc := &TraefikOidc{
-			logger:                 NewLogger("debug"),
-			initComplete:           make(chan struct{}),
-			sessionManager:         createTestSessionManager(t),
-			firstRequestStarted: 1,
+			logger:                       NewLogger("debug"),
+			initComplete:                 make(chan struct{}),
+			sessionManager:               createTestSessionManager(t),
+			firstRequestStarted:          1,
 			metadataRefreshStartedAtomic: 1,
-			issuerURL:              "https://provider.example.com",
-			redirURLPath:           "/callback",
-			logoutURLPath:          "/logout",
-			endSessionURL:          "https://provider.example.com/logout",
-			postLogoutRedirectURI:  "https://example.com",
+			issuerURL:                    "https://provider.example.com",
+			redirURLPath:                 "/callback",
+			logoutURLPath:                "/logout",
+			endSessionURL:                "https://provider.example.com/logout",
+			postLogoutRedirectURI:        "https://example.com",
 		}
 		close(oidc.initComplete)
 
@@ -736,14 +738,14 @@ func TestMinimalHeaders(t *testing.T) {
 
 			sessionManager := createTestSessionManager(t)
 			oidc := &TraefikOidc{
-				next:                   next,
-				logger:                 NewLogger("debug"),
-				initComplete:           make(chan struct{}),
-				sessionManager:         sessionManager,
-				firstRequestStarted: 1,
+				next:                         next,
+				logger:                       NewLogger("debug"),
+				initComplete:                 make(chan struct{}),
+				sessionManager:               sessionManager,
+				firstRequestStarted:          1,
 				metadataRefreshStartedAtomic: 1,
-				issuerURL:              "https://provider.example.com",
-				minimalHeaders:         tt.minimalHeaders,
+				issuerURL:                    "https://provider.example.com",
+				minimalHeaders:               tt.minimalHeaders,
 				extractClaimsFunc: func(token string) (map[string]interface{}, error) {
 					return map[string]interface{}{
 						"email": "user@example.com",
@@ -813,14 +815,14 @@ func TestMinimalHeaders_TokenHeaderNotSet(t *testing.T) {
 
 	sessionManager := createTestSessionManager(t)
 	oidc := &TraefikOidc{
-		next:                   next,
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}),
-		sessionManager:         sessionManager,
-		firstRequestStarted: 1,
+		next:                         next,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               sessionManager,
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		issuerURL:              "https://provider.example.com",
-		minimalHeaders:         true, // Enable minimal headers
+		issuerURL:                    "https://provider.example.com",
+		minimalHeaders:               true, // Enable minimal headers
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
 			return map[string]interface{}{
 				"email": "user@example.com",
@@ -899,14 +901,14 @@ func TestStripAuthCookies(t *testing.T) {
 			cookiePrefix := sessionManager.GetCookiePrefix()
 
 			oidc := &TraefikOidc{
-				next:                   next,
-				logger:                 NewLogger("debug"),
-				initComplete:           make(chan struct{}),
-				sessionManager:         sessionManager,
-				firstRequestStarted: 1,
+				next:                         next,
+				logger:                       NewLogger("debug"),
+				initComplete:                 make(chan struct{}),
+				sessionManager:               sessionManager,
+				firstRequestStarted:          1,
 				metadataRefreshStartedAtomic: 1,
-				issuerURL:              "https://provider.example.com",
-				stripAuthCookies:       tt.stripAuthCookies,
+				issuerURL:                    "https://provider.example.com",
+				stripAuthCookies:             tt.stripAuthCookies,
 				extractClaimsFunc: func(token string) (map[string]interface{}, error) {
 					return map[string]interface{}{
 						"email": "user@example.com",
@@ -983,14 +985,14 @@ func TestStripAuthCookies_NoCookies(t *testing.T) {
 
 	sessionManager := createTestSessionManager(t)
 	oidc := &TraefikOidc{
-		next:                   next,
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}),
-		sessionManager:         sessionManager,
-		firstRequestStarted: 1,
+		next:                         next,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               sessionManager,
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		issuerURL:              "https://provider.example.com",
-		stripAuthCookies:       true,
+		issuerURL:                    "https://provider.example.com",
+		stripAuthCookies:             true,
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
 			return map[string]interface{}{"email": "user@example.com"}, nil
 		},
@@ -1030,14 +1032,14 @@ func TestStripAuthCookies_OnlyOIDCCookies(t *testing.T) {
 	cookiePrefix := sessionManager.GetCookiePrefix()
 
 	oidc := &TraefikOidc{
-		next:                   next,
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}),
-		sessionManager:         sessionManager,
-		firstRequestStarted: 1,
+		next:                         next,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               sessionManager,
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		issuerURL:              "https://provider.example.com",
-		stripAuthCookies:       true,
+		issuerURL:                    "https://provider.example.com",
+		stripAuthCookies:             true,
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
 			return map[string]interface{}{"email": "user@example.com"}, nil
 		},
@@ -1081,14 +1083,14 @@ func TestStripAuthCookies_OnlyAppCookies(t *testing.T) {
 
 	sessionManager := createTestSessionManager(t)
 	oidc := &TraefikOidc{
-		next:                   next,
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}),
-		sessionManager:         sessionManager,
-		firstRequestStarted: 1,
+		next:                         next,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               sessionManager,
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		issuerURL:              "https://provider.example.com",
-		stripAuthCookies:       true,
+		issuerURL:                    "https://provider.example.com",
+		stripAuthCookies:             true,
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
 			return map[string]interface{}{"email": "user@example.com"}, nil
 		},
@@ -1144,14 +1146,14 @@ func TestStripAuthCookies_CustomPrefix(t *testing.T) {
 	customPrefix := sm.GetCookiePrefix()
 
 	oidc := &TraefikOidc{
-		next:                   next,
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}),
-		sessionManager:         sm,
-		firstRequestStarted: 1,
+		next:                         next,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               sm,
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		issuerURL:              "https://provider.example.com",
-		stripAuthCookies:       true,
+		issuerURL:                    "https://provider.example.com",
+		stripAuthCookies:             true,
 		extractClaimsFunc: func(token string) (map[string]interface{}, error) {
 			return map[string]interface{}{"email": "user@example.com"}, nil
 		},
@@ -1202,4 +1204,116 @@ func TestStripAuthCookies_CustomPrefix(t *testing.T) {
 	if !cookieNames["my_app"] {
 		t.Error("expected my_app cookie to pass through")
 	}
+}
+
+// TestServeHTTP_EventStream_AppliesRolesGate verifies that the SSE /
+// WebSocket streaming bypass enforces the allowedRolesAndGroups gate the
+// same way forwardAuthorized does. Regression for a role-gate bypass: an
+// authenticated user without any permitted role could reach the backend
+// just by setting Accept: text/event-stream.
+func TestServeHTTP_EventStream_AppliesRolesGate(t *testing.T) {
+	sessionManager := createTestSessionManager(t)
+
+	// Craft an ID token whose groups/roles the IdP would present for this
+	// user. Signature is irrelevant: claims extraction only decodes the
+	// payload.
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate test key: %v", err)
+	}
+	idTokenWithNoRole, err := createTestJWT(key, "RS256", "test-key-id", map[string]interface{}{
+		"sub":    "user@example.com",
+		"groups": []string{"readers"},
+	})
+	if err != nil {
+		t.Fatalf("failed to craft ID token: %v", err)
+	}
+	idTokenWithRole, err := createTestJWT(key, "RS256", "test-key-id", map[string]interface{}{
+		"sub":    "user@example.com",
+		"groups": []string{"readers", "admins"},
+	})
+	if err != nil {
+		t.Fatalf("failed to craft ID token: %v", err)
+	}
+
+	newOidc := func(next http.Handler) *TraefikOidc {
+		return &TraefikOidc{
+			next:                         next,
+			logger:                       NewLogger("error"),
+			initComplete:                 make(chan struct{}),
+			sessionManager:               sessionManager,
+			firstRequestStarted:          1,
+			metadataRefreshStartedAtomic: 1,
+			issuerURL:                    "https://provider.example.com",
+			extractClaimsFunc:            extractClaims,
+			groupClaimName:               "groups",
+			roleClaimName:                "roles",
+			allowedRolesAndGroups:        map[string]struct{}{"admins": {}},
+		}
+	}
+
+	buildAuthedReq := func(t *testing.T, idToken string) *http.Request {
+		req := httptest.NewRequest("GET", "/events", nil)
+		req.Header.Set("Accept", "text/event-stream")
+
+		session, err := sessionManager.GetSession(req)
+		if err != nil {
+			t.Fatalf("failed to create test session: %v", err)
+		}
+		session.SetUserIdentifier("user@example.com")
+		if err := session.SetAuthenticated(true); err != nil {
+			t.Fatalf("failed to mark session authenticated: %v", err)
+		}
+		session.SetIDToken(idToken)
+		rec := httptest.NewRecorder()
+		if err := session.Save(req, rec); err != nil {
+			t.Fatalf("failed to save session: %v", err)
+		}
+		for _, c := range rec.Result().Cookies() {
+			req.AddCookie(c)
+		}
+		return req
+	}
+
+	t.Run("user_without_allowed_role_rejected", func(t *testing.T) {
+		req := buildAuthedReq(t, idTokenWithNoRole)
+		nextCalled := false
+		oidc := newOidc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		oidc.initComplete = make(chan struct{})
+		close(oidc.initComplete)
+
+		rw := httptest.NewRecorder()
+		oidc.ServeHTTP(rw, req)
+
+		if rw.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for SSE request with no allowed role, got %d", rw.Code)
+		}
+		if nextCalled {
+			t.Error("backend must NOT be called for a user with no allowed role")
+		}
+	})
+
+	t.Run("user_with_allowed_role_forwarded", func(t *testing.T) {
+		req := buildAuthedReq(t, idTokenWithRole)
+		nextCalled := false
+		oidc := newOidc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		oidc.initComplete = make(chan struct{})
+		close(oidc.initComplete)
+
+		rw := httptest.NewRecorder()
+		oidc.ServeHTTP(rw, req)
+
+		if rw.Code != http.StatusOK {
+			t.Fatalf("expected 200 for SSE request with allowed role, got %d", rw.Code)
+		}
+		if !nextCalled {
+			t.Error("backend must be called for a user with an allowed role")
+		}
+	})
 }

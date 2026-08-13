@@ -76,27 +76,58 @@ func (t *TraefikOidc) shouldBypassAuth(req *http.Request) (bool, string) {
 // key, so the authenticated flag cannot be forged. We do NOT run full token
 // signature verification here so that SSE/WS keeps working when the OIDC
 // provider is briefly unavailable for JWK fetches.
-func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) bool {
+// The second return value (0 when forwarding) is the HTTP status to send
+// when the request is rejected, letting the caller distinguish a 401
+// (unauthenticated) from a 403 (authenticated but not permitted).
+func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (bool, int) {
 	if t.sessionManager == nil {
-		return false
+		return false, http.StatusUnauthorized
 	}
 
 	session, err := t.sessionManager.GetSession(req)
 	if err != nil {
 		t.logger.Debugf("%s bypass: unable to load session: %v", reason, err)
-		return false
+		return false, http.StatusUnauthorized
 	}
 	defer session.returnToPoolSafely()
 
 	if !session.GetAuthenticated() {
 		t.logger.Debugf("%s bypass: rejecting request without authenticated session", reason)
-		return false
+		return false, http.StatusUnauthorized
 	}
 
 	userIdentifier := session.GetUserIdentifier()
 	if userIdentifier == "" {
 		t.logger.Debugf("%s bypass: rejecting request, session has no user identifier", reason)
-		return false
+		return false, http.StatusUnauthorized
+	}
+
+	// Enforce the allowedRolesAndGroups gate, mirroring forwardAuthorized:
+	// an authenticated user without any permitted role/group must not reach
+	// the SSE/WebSocket backend just by using the streaming bypass. Claims
+	// come from the session's ID token, same source the normal path uses.
+	if len(t.allowedRolesAndGroups) > 0 {
+		idClaims, claimsErr := session.GetIDTokenClaims(t.extractClaimsFunc)
+		if claimsErr != nil || idClaims == nil {
+			t.logger.Debugf("%s bypass: cannot read claims for role check (err=%v): %s", reason, claimsErr, userIdentifier)
+			return false, http.StatusForbidden
+		}
+		groups, roles, extErr := t.extractGroupsAndRolesFromClaims(idClaims)
+		if extErr != nil {
+			t.logger.Debugf("%s bypass: role extraction failed for %s: %v", reason, userIdentifier, extErr)
+			return false, http.StatusForbidden
+		}
+		allowed := false
+		for _, roleOrGroup := range append(groups, roles...) {
+			if _, ok := t.allowedRolesAndGroups[roleOrGroup]; ok {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			t.logger.Infof("User %s does not have any allowed roles or groups (bypass)", userIdentifier)
+			return false, http.StatusForbidden
+		}
 	}
 
 	// Sanitize the claim-derived identifier before it is injected as a
@@ -108,7 +139,7 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) b
 	safeIdentifier, ok := sanitizeHeaderClaimValue(userIdentifier, t.headerClaimMaxLen())
 	if !ok {
 		t.logger.Debugf("%s bypass: dropping unsafe user-identifier header: %s", reason, headerClaimValueReason(userIdentifier, t.headerClaimMaxLen()))
-		return true
+		return true, 0
 	}
 
 	req.Header.Set("X-Forwarded-User", safeIdentifier)
@@ -116,7 +147,7 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) b
 		req.Header.Set("X-Auth-Request-User", safeIdentifier)
 	}
 	t.logger.Debugf("%s bypass: forwarded user %s from session", reason, safeIdentifier)
-	return true
+	return true, 0
 }
 
 // ServeHTTP implements the main middleware logic for processing HTTP requests.
@@ -200,8 +231,12 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			// Otherwise an unauthenticated client could hit the backend
 			// just by setting Accept: text/event-stream or sending a
 			// WebSocket upgrade.
-			if !t.applyBypassUserHeaders(req, reason) {
-				t.sendErrorResponse(rw, req, "Authentication required", http.StatusUnauthorized)
+			if ok, status := t.applyBypassUserHeaders(req, reason); !ok {
+				msg := "Authentication required"
+				if status == http.StatusForbidden {
+					msg = "Access denied"
+				}
+				t.sendErrorResponse(rw, req, msg, status)
 				return
 			}
 			t.next.ServeHTTP(rw, req)
