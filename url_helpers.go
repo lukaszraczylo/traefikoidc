@@ -163,6 +163,16 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	if t.scopeFilter != nil && len(scopesSupported) > 0 {
 		scopes = t.scopeFilter.FilterSupportedScopes(scopes, scopesSupported, t.providerURL)
 		t.logger.Debugf("TraefikOidc.buildAuthURL: After final filtering: %v", scopes)
+
+		// OIDC Core §3.1.2.1 requires the 'openid' scope for an authorization
+		// (ID-token) request, even when scopes_supported is optional and happens
+		// to omit it. FilterSupportedScopes only restores openid when EVERY
+		// requested scope is dropped, so openid can be absent here if the
+		// provider omits openid from scopes_supported while leaving other
+		// configured scopes supported. Guarantee its presence. (When the
+		// filter is inactive — no discovery scopes_supported — an explicit
+		// operator scope override, e.g. omitting openid, is respected as-is.)
+		scopes = t.scopeFilter.EnsureOpenIDScope(scopes)
 	}
 
 	if len(scopes) > 0 {
