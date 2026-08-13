@@ -138,10 +138,13 @@ func (f *HTTPClientFactory) ValidateHTTPClientConfig(config *HTTPClientConfig) e
 	return nil
 }
 
-// CreateHTTPClient creates an HTTP client with the given configuration
-// Validates configuration parameters before creating the client
-func (f *HTTPClientFactory) CreateHTTPClient(config HTTPClientConfig) *http.Client {
-	// Set defaults for zero values before validation
+// applyHTTPClientDefaults fills zero-valued fields in cfg with the standard
+// conservative defaults so that a partially-populated config never yields an
+// unbounded HTTP client (zero overall Timeout or ResponseHeaderTimeout would make
+// a stalled upstream hang forever). All construction paths MUST converge on this
+// helper so behavior is identical: CreateHTTPClient and the shared transport
+// pool (CreatePooledHTTPClient / GetOrCreateTransport).
+func applyHTTPClientDefaults(config *HTTPClientConfig) {
 	if config.Timeout == 0 {
 		config.Timeout = 30 * time.Second
 	}
@@ -178,6 +181,13 @@ func (f *HTTPClientFactory) CreateHTTPClient(config HTTPClientConfig) *http.Clie
 	if config.ReadBufferSize == 0 {
 		config.ReadBufferSize = 4096
 	}
+}
+
+// CreateHTTPClient creates an HTTP client with the given configuration
+// Validates configuration parameters before creating the client
+func (f *HTTPClientFactory) CreateHTTPClient(config HTTPClientConfig) *http.Client {
+	// Set defaults for zero values before validation
+	applyHTTPClientDefaults(&config)
 
 	// Validate configuration - only fail on critical errors
 	if err := f.ValidateHTTPClientConfig(&config); err != nil {

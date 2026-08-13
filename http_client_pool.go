@@ -58,6 +58,12 @@ func GetGlobalTransportPool() *SharedTransportPool {
 
 // GetOrCreateTransport gets or creates a shared transport with the given config
 func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *http.Transport {
+	// Apply the same zero-value defaults as CreateHTTPClient so a partially
+	// populated config never yields an unbounded client/transport, and so the
+	// pool cache key reflects normalized values (configKey). Bounded here,
+	// before the client-count gate, so both the gate and the key see
+	// normalized timeouts.
+	applyHTTPClientDefaults(&config)
 	// SECURITY FIX: Check client limit before creating new transport.
 	if atomic.LoadInt32(&p.clientCount) >= p.maxClients {
 		// At the client limit: only reuse a transport that was built for the
@@ -282,6 +288,9 @@ func (p *SharedTransportPool) Cleanup() {
 
 // CreatePooledHTTPClient creates an HTTP client using the shared transport pool
 func CreatePooledHTTPClient(config HTTPClientConfig) *http.Client {
+	// Apply the same zero-value defaults as CreateHTTPClient so a partially
+	// populated config still gets a bounded overall request Timeout.
+	applyHTTPClientDefaults(&config)
 	pool := GetGlobalTransportPool()
 	transport := pool.GetOrCreateTransport(config)
 

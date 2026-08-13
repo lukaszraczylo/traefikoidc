@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path"
 	"strings"
 )
 
@@ -33,6 +34,16 @@ func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 // an unrelated sibling such as "/publicsecret", so a configured exclusion can no
 // longer be widened into an authentication bypass on a different resource.
 func pathExcluded(requestPath, excluded string) bool {
+	// Normalize dot segments and redundant slashes so an exclusion cannot be
+	// escaped by traversal. Go's server leaves ".." in req.URL.Path (verified:
+	// url.ParseRequestURI keeps dot segments), so "/public/../admin" would match
+	// an "/public" exclusion even though the real resource is "/admin". path.Clean
+	// resolves this to "/admin" before the boundary check. "." (empty or bare)
+	// maps back to "" preserving the original root-match semantics.
+	requestPath = path.Clean(requestPath)
+	if requestPath == "." {
+		requestPath = ""
+	}
 	excluded = strings.TrimRight(excluded, "/")
 	if excluded == "" {
 		// A "/" (root) exclusion only matches the root path, not everything.
