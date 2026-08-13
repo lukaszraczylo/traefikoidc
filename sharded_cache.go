@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"hash/fnv"
+	"sort"
 	"sync"
 	"time"
 )
@@ -19,12 +20,19 @@ type ShardedCache struct {
 type cacheShard struct {
 	items map[string]*shardedCacheItem
 	mu    sync.RWMutex
+	// nextSeq is a monotonically increasing insertion counter used to evict
+	// the OLDEST entries first (FIFO). without an explicit order, Go map
+	// iteration order is random, so the old eviction could drop a just-
+	// written still-valid entry (e.g. a fresh replay-protection JTI) before
+	// its TTL had any effect.
+	nextSeq uint64
 }
 
 // shardedCacheItem represents an item in the sharded cache with expiration.
 type shardedCacheItem struct {
 	value     interface{}
 	expiresAt time.Time
+	seq       uint64 // insertion order; lower = older
 }
 
 // NewShardedCache creates a new sharded cache with the specified number of shards.
@@ -108,7 +116,9 @@ func (c *ShardedCache) Set(key string, value interface{}, ttl time.Duration) {
 	shard.items[key] = &shardedCacheItem{
 		value:     value,
 		expiresAt: expiresAt,
+		seq:       shard.nextSeq,
 	}
+	shard.nextSeq++
 	shard.mu.Unlock()
 }
 
@@ -147,16 +157,22 @@ func (c *ShardedCache) evictFromShardLocked(shard *cacheShard) {
 		}
 	}
 
-	// If still over capacity, remove some items (FIFO approximation via map iteration)
-	// This is an approximation since Go maps don't maintain insertion order
-	remaining := len(shard.items) - c.maxPerShard + 10 // Leave some headroom
+	// If still over capacity, evict the OLDEST entries (lowest insertion seq)
+	// until we're at capacity. Evicting by insertion order keeps fresh, still-
+	// valid items (e.g. replay-protection JTIs) alive for their full TTL,
+	// unlike the previous random-over-eviction which dropped a just-written
+	// entry and left each shard ~9 slots under capacity.
+	remaining := len(shard.items) - c.maxPerShard + 1
 	if remaining > 0 {
+		oldest := make([]string, 0, len(shard.items))
 		for key := range shard.items {
+			oldest = append(oldest, key)
+		}
+		sort.Slice(oldest, func(i, j int) bool {
+			return shard.items[oldest[i]].seq < shard.items[oldest[j]].seq
+		})
+		for _, key := range oldest[:remaining] {
 			delete(shard.items, key)
-			remaining--
-			if remaining <= 0 {
-				break
-			}
 		}
 	}
 }
