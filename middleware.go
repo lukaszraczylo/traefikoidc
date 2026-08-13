@@ -102,6 +102,15 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 		return false, http.StatusUnauthorized
 	}
 
+	// Enforce the user allowlist, mirroring the normal path's authorization
+	// check (isAllowedUser). Without this, an authenticated user not in
+	// allowedUsers (or whose domain is not in allowedUserDomains) could
+	// reach the backend just by using the SSE/WebSocket bypass.
+	if !t.isAllowedUser(userIdentifier) {
+		t.logger.Infof("User %s is not authorized (bypass)", userIdentifier)
+		return false, http.StatusForbidden
+	}
+
 	// Enforce the allowedRolesAndGroups gate, mirroring forwardAuthorized:
 	// an authenticated user without any permitted role/group must not reach
 	// the SSE/WebSocket backend just by using the streaming bypass. Claims

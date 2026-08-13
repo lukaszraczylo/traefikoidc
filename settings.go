@@ -521,6 +521,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("maxRefreshTokenAgeSeconds cannot be negative")
 	}
 
+	// Validate session max age. A negative value would make every session
+	// "older than maxAge" immediately (time-since-createdAt > negative),
+	// permanently locking users out.
+	if c.SessionMaxAge < 0 {
+		return fmt.Errorf("sessionMaxAge cannot be negative")
+	}
+
 	// Validate audience if specified
 	if c.Audience != "" {
 		// Validate audience format - should be a valid identifier or URL
@@ -887,6 +894,18 @@ func (c *Config) GetSecurityHeadersApplier() func(http.ResponseWriter, *http.Req
 		}
 		if c.SecurityHeaders.ContentSecurityPolicy != "" {
 			headers.Set("Content-Security-Policy", c.SecurityHeaders.ContentSecurityPolicy)
+		}
+		if c.SecurityHeaders.PermissionsPolicy != "" {
+			headers.Set("Permissions-Policy", c.SecurityHeaders.PermissionsPolicy)
+		}
+		if c.SecurityHeaders.CrossOriginResourcePolicy != "" {
+			headers.Set("Cross-Origin-Resource-Policy", c.SecurityHeaders.CrossOriginResourcePolicy)
+		}
+		if c.SecurityHeaders.CrossOriginOpenerPolicy != "" {
+			headers.Set("Cross-Origin-Opener-Policy", c.SecurityHeaders.CrossOriginOpenerPolicy)
+		}
+		if c.SecurityHeaders.CrossOriginEmbedderPolicy != "" {
+			headers.Set("Cross-Origin-Embedder-Policy", c.SecurityHeaders.CrossOriginEmbedderPolicy)
 		}
 
 		// HSTS for HTTPS
