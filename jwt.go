@@ -6,9 +6,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"fmt"
 	"math/big"
 	"strings"
@@ -513,31 +511,9 @@ func verifyNotBefore(notBefore float64) error {
 	return verifyTimeConstraint(notBefore, "nbf", false)
 }
 
-// verifySignature verifies the JWT signature using the provided public key.
-// Supports RSA (RS256/384/512, PS256/384/512) and ECDSA (ES256/384/512) algorithms.
-// Parameters:
-//   - tokenString: The complete JWT token string
-//   - publicKeyPEM: The public key in PEM format
-//   - alg: The signing algorithm specified in the JWT header
-//
-// Returns:
-//   - An error if the key parsing fails, the algorithm is unsupported,
-//     or the signature verification fails
-func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error {
-	block, _ := pem.Decode(publicKeyPEM)
-	if block == nil {
-		return fmt.Errorf("failed to parse PEM block containing the public key")
-	}
-	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse public key: %w", err)
-	}
-	return verifySignatureWithKey(tokenString, pubKey, alg)
-}
-
 // verifySignatureWithKey verifies a JWT signature using an already-parsed
-// public key, skipping the PEM-encode/decode round trip that verifySignature
-// performs. This is the hot path used by VerifyJWTSignatureAndClaims.
+// public key, skipping the PEM-encode/decode round trip. This is the hot
+// path used by VerifyJWTSignatureAndClaims and verifyLogoutTokenSignature.
 func verifySignatureWithKey(tokenString string, pubKey crypto.PublicKey, alg string) error {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {

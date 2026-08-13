@@ -30,6 +30,7 @@ type LogoutTokenClaims struct {
 	Subject   string                 `json:"sub,omitempty"`
 	Audience  interface{}            `json:"aud"` // Can be string or []string
 	IssuedAt  int64                  `json:"iat"`
+	ExpiresAt int64                  `json:"exp,omitempty"`
 	JTI       string                 `json:"jti"`
 	Events    map[string]interface{} `json:"events"`
 	SessionID string                 `json:"sid,omitempty"`
@@ -194,7 +195,8 @@ func (t *TraefikOidc) validateLogoutToken(tokenString string) (*LogoutTokenClaim
 		}
 	}
 
-	// Verify signature only (not standard claims - logout tokens don't have 'exp')
+	// Verify signature (standard logout-token claims like exp are validated
+	// below; exp IS present per OIDC Back-Channel Logout 1.0 §2.4).
 	if err := t.verifyLogoutTokenSignature(jwt, tokenString); err != nil {
 		return nil, fmt.Errorf("signature verification failed: %w", err)
 	}
@@ -236,6 +238,20 @@ func (t *TraefikOidc) validateLogoutToken(tokenString string) (*LogoutTokenClaim
 	// Token should not be from the future (with 5 min clock skew tolerance)
 	if iatTime.After(time.Now().Add(5 * time.Minute)) {
 		return nil, fmt.Errorf("logout token issued in the future: %v", iatTime)
+	}
+
+	// Validate exp. OIDC Back-Channel Logout 1.0 §2.4 marks exp REQUIRED
+	// and §2.6 REQUIREDs validating it the same way as ID Tokens; the
+	// spec's security note also recommends short exp precisely so a
+	// captured logout token can't be replayed later. Without this an
+	// expired logout token was still accepted and still invalidated live
+	// sessions.
+	if claims.ExpiresAt == 0 {
+		return nil, fmt.Errorf("missing exp claim")
+	}
+	expTime := time.Unix(claims.ExpiresAt, 0)
+	if time.Now().After(expTime.Add(5 * time.Minute)) {
+		return nil, fmt.Errorf("logout token expired at %v", expTime)
 	}
 
 	// Validate events claim - must contain the logout event
@@ -294,32 +310,14 @@ func (t *TraefikOidc) validateLogoutTokenAudience(aud interface{}) bool {
 	return false
 }
 
-// verifyLogoutTokenSignature verifies only the signature of a logout token.
-// Unlike VerifyJWTSignatureAndClaims, this does NOT validate standard claims like 'exp'
-// because logout tokens don't have an expiration claim per OIDC Back-Channel Logout spec.
-//
-// Parameters:
-//   - jwt: The parsed JWT structure
-//   - tokenString: The raw token string for signature verification
-//
-// Returns:
-//   - An error if signature verification fails
+// verifyLogoutTokenSignature verifies the signature of a logout token.
+// Like every other token path it resolves the key via GetPublicKey,
+// which on a kid miss performs a bounded live JWKS refresh - so a logout
+// token signed with a freshly rotated key is accepted immediately
+// instead of failing for up to the 1h JWKS TTL (which would leave the
+// user's session alive after the IdP logged them out).
 func (t *TraefikOidc) verifyLogoutTokenSignature(jwt *JWT, tokenString string) error {
 	t.logger.Debug("Verifying logout token signature")
-
-	// Read jwksURL with RLock
-	t.metadataMu.RLock()
-	jwksURL := t.jwksURL
-	t.metadataMu.RUnlock()
-
-	jwks, err := t.jwkCache.GetJWKS(context.Background(), jwksURL, t.httpClient)
-	if err != nil {
-		return fmt.Errorf("failed to get JWKS: %w", err)
-	}
-
-	if jwks == nil {
-		return fmt.Errorf("JWKS is nil, cannot verify token")
-	}
 
 	kid, ok := jwt.Header["kid"].(string)
 	if !ok || kid == "" {
@@ -331,25 +329,19 @@ func (t *TraefikOidc) verifyLogoutTokenSignature(jwt *JWT, tokenString string) e
 		return fmt.Errorf("missing algorithm in token header")
 	}
 
-	// Find the matching key in JWKS
-	var matchingKey *JWK
-	for i := range jwks.Keys {
-		if jwks.Keys[i].Kid == kid {
-			matchingKey = &jwks.Keys[i]
-			break
-		}
-	}
+	// GetPublicKey bounds a live JWKS refresh when kid is absent from the
+	// cached keyset, matching the normal token-verification path and
+	// keeping logout recovery robust across key rotation.
+	t.metadataMu.RLock()
+	jwksURL := t.jwksURL
+	t.metadataMu.RUnlock()
 
-	if matchingKey == nil {
-		return fmt.Errorf("no matching public key found for kid: %s", kid)
-	}
-
-	publicKeyPEM, err := jwkToPEM(matchingKey)
+	pubKey, err := t.jwkCache.GetPublicKey(context.Background(), jwksURL, kid, t.httpClient)
 	if err != nil {
-		return fmt.Errorf("failed to convert JWK to PEM: %w", err)
+		return fmt.Errorf("failed to get public key for logout token: %w", err)
 	}
 
-	if err := verifySignature(tokenString, publicKeyPEM, alg); err != nil {
+	if err := verifySignatureWithKey(tokenString, pubKey, alg); err != nil {
 		return fmt.Errorf("signature verification failed: %w", err)
 	}
 

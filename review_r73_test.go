@@ -76,6 +76,7 @@ func TestBackchannelLogout_RejectsReplayedJTI(t *testing.T) {
 			"iss": "https://provider.example.com",
 			"aud": "test-client",
 			"iat": time.Now().Unix(),
+			"exp": time.Now().Add(time.Hour).Unix(),
 			"jti": "unique-jti-123",
 			"events": map[string]interface{}{
 				"http://schemas.openid.net/event/backchannel-logout": map[string]interface{}{},

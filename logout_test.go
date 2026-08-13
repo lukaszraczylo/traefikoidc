@@ -726,6 +726,7 @@ func TestBackchannelLogoutIntegration(t *testing.T) {
 		"iss": "https://provider.example.com",
 		"aud": "test-client",
 		"iat": now,
+		"exp": time.Now().Add(time.Hour).Unix(),
 		"jti": "unique-id-123",
 		"events": map[string]interface{}{
 			"http://schemas.openid.net/event/backchannel-logout": map[string]interface{}{},
@@ -1643,6 +1644,12 @@ func createSignedLogoutToken(t *testing.T, privateKey *ecdsa.PrivateKey, claims 
 	}
 	headerJSON, _ := json.Marshal(header)
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+
+	// OIDC Back-Channel Logout requires exp; default-inject a valid future
+	// one unless the caller supplies its own (e.g. an expired-exp test).
+	if _, ok := claims["exp"]; !ok {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
+	}
 
 	claimsJSON, _ := json.Marshal(claims)
 	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
