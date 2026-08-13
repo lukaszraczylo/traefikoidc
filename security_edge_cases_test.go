@@ -1595,3 +1595,80 @@ func TestInvalidRedirectURI(t *testing.T) {
 		t.Errorf("Expected redirect to /legitimate-redirect, but got: %s", location)
 	}
 }
+
+// Review regression: RSA signature verification must reject tokens signed
+// with keys below the NIST 2048-bit minimum modulus size.
+func TestJWTRSAKeySizeMinimum(t *testing.T) {
+	tc := newTestCleanup(t)
+	logger := NewLogger("debug")
+
+	mkToidc := func(pub *rsa.PublicKey) *TraefikOidc {
+		jwk := JWK{
+			Kty: "RSA",
+			Kid: "test-key-id",
+			Alg: "RS256",
+			N:   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+			E:   base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}), // 65537
+		}
+		o := &TraefikOidc{
+			issuerURL:    "https://test-issuer.com",
+			clientID:     "test-client-id",
+			audience:     "test-client-id",
+			clientSecret: "test-client-secret",
+			jwkCache:     &MockJWKCache{JWKS: &JWKSet{Keys: []JWK{jwk}}, Err: nil},
+			jwksURL:      "https://test-jwks-url.com",
+			tokenBlacklist: tc.addCache(NewCache()),
+			tokenCache:     tc.addTokenCache(NewTokenCache()),
+			limiter:        rate.NewLimiter(rate.Every(time.Second), 10),
+			logger:         logger,
+			excludedURLs:   map[string]struct{}{},
+			httpClient:     &http.Client{},
+			extractClaimsFunc: extractClaims,
+		}
+		o.jwtVerifier = o
+		o.tokenVerifier = o
+		return o
+	}
+
+	claims := func() map[string]interface{} {
+		return map[string]interface{}{
+			"iss": "https://test-issuer.com",
+			"aud": "test-client-id",
+			"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+			"iat": float64(time.Now().Add(-2 * time.Minute).Unix()),
+			"sub": "test-subject",
+			"jti": "rsa-keysize-" + generateRandomString(8),
+		}
+	}
+
+	t.Run("weak 1024-bit RSA key rejected", func(t *testing.T) {
+		weak, err := rsa.GenerateKey(rand.Reader, 1024)
+		if err != nil {
+			t.Fatalf("failed to generate weak key: %v", err)
+		}
+		o := mkToidc(&weak.PublicKey)
+		tok, err := createTestJWT(weak, "RS256", "test-key-id", claims())
+		if err != nil {
+			t.Fatalf("failed to create JWT: %v", err)
+		}
+		err = o.VerifyToken(tok)
+		if err == nil {
+			t.Fatal("expected 1024-bit RSA token to be rejected, but verification succeeded")
+		}
+	})
+
+	t.Run("2048-bit RSA key accepted", func(t *testing.T) {
+		strong, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("failed to generate strong key: %v", err)
+		}
+		o := mkToidc(&strong.PublicKey)
+		tok, err := createTestJWT(strong, "RS256", "test-key-id", claims())
+		if err != nil {
+			t.Fatalf("failed to create JWT: %v", err)
+		}
+		if err = o.VerifyToken(tok); err != nil {
+			t.Fatalf("expected 2048-bit RSA token to verify, got: %v", err)
+		}
+	})
+}

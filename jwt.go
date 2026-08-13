@@ -568,6 +568,13 @@ func verifySignatureWithKey(tokenString string, pubKey crypto.PublicKey, alg str
 	hashed := h.Sum(nil)
 	switch pubKey := pubKey.(type) {
 	case *rsa.PublicKey:
+		// Enforce a minimum RSA modulus size (NIST SP 800-57: ≥2048 bits).
+		// Without this, a token signed with a weak (<2048-bit) RSA key whose
+		// modulus the trusted JWKS publishes is accepted as valid. Modern
+		// providers all use ≥2048; rejecting smaller keys is safe hardening.
+		if pubKey.N.BitLen() < 2048 {
+			return fmt.Errorf("RSA key size %d bits is below the minimum 2048 bits", pubKey.N.BitLen())
+		}
 		if strings.HasPrefix(alg, "RS") {
 			return rsa.VerifyPKCS1v15(pubKey, hashFunc, hashed, signature)
 		} else if strings.HasPrefix(alg, "PS") {
