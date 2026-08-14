@@ -40,6 +40,9 @@ func (r *replayJWKCache) GetPublicKey(ctx context.Context, u, kid string, c *htt
 	}
 	return nil, fmt.Errorf("missing key %s", kid)
 }
+func (r *replayJWKCache) getPublicKeyFresh(ctx context.Context, u, kid string, c *http.Client) (crypto.PublicKey, error) {
+	return r.GetPublicKey(ctx, u, kid, c)
+}
 func (r *replayJWKCache) Clear()   {}
 func (r *replayJWKCache) Cleanup() {}
 func (r *replayJWKCache) Close()   {}

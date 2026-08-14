@@ -163,15 +163,12 @@ func TestCustomClaimNames_MalformedRoleClaim(t *testing.T) {
 		t.Fatalf("Failed to create test token: %v", err)
 	}
 
-	_, _, err = ts.tOidc.extractGroupsAndRoles(token)
-	if err == nil {
-		t.Error("Expected error for malformed role claim, got nil")
+	groups, roles, err := ts.tOidc.extractGroupsAndRoles(token)
+	if err != nil {
+		t.Fatalf("Expected no error for malformed role claim, got %v", err)
 	}
-
-	// Check error message contains the custom claim name
-	expectedError := "custom_roles claim is not an array"
-	if err.Error() != expectedError {
-		t.Errorf("Expected error '%s', got '%s'", expectedError, err.Error())
+	if len(groups) != 0 || len(roles) != 0 {
+		t.Errorf("Expected empty groups and roles for a malformed (numeric) role claim, got groups=%v roles=%v", groups, roles)
 	}
 }
 
@@ -193,15 +190,12 @@ func TestCustomClaimNames_MalformedGroupClaim(t *testing.T) {
 		t.Fatalf("Failed to create test token: %v", err)
 	}
 
-	_, _, err = ts.tOidc.extractGroupsAndRoles(token)
-	if err == nil {
-		t.Error("Expected error for malformed group claim, got nil")
+	groups, roles, err := ts.tOidc.extractGroupsAndRoles(token)
+	if err != nil {
+		t.Fatalf("Expected no error for malformed group claim, got %v", err)
 	}
-
-	// Check error message contains the custom claim name
-	expectedError := "custom_groups claim is not an array"
-	if err.Error() != expectedError {
-		t.Errorf("Expected error '%s', got '%s'", expectedError, err.Error())
+	if len(groups) != 0 || len(roles) != 0 {
+		t.Errorf("Expected empty groups and roles for a malformed (numeric) group claim, got groups=%v roles=%v", groups, roles)
 	}
 }
 
@@ -330,9 +324,10 @@ func TestCustomClaimNames_NonStringInRoleArray(t *testing.T) {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
-	// Should only extract string elements
-	if !stringSliceEqual(roles, []string{"role1", "role2"}) {
-		t.Errorf("Expected roles [role1 role2], got %v", roles)
+	// String elements kept, numeric scalars stringified (R105, matching R102
+	// numeric-tolerance), only non-scalars (here: bool) dropped.
+	if !stringSliceEqual(roles, []string{"role1", "12345", "role2"}) {
+		t.Errorf("Expected roles [role1 12345 role2], got %v", roles)
 	}
 }
 
@@ -359,8 +354,9 @@ func TestCustomClaimNames_NonStringInGroupArray(t *testing.T) {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
-	// Should only extract string elements
-	if !stringSliceEqual(groups, []string{"group1", "group2"}) {
-		t.Errorf("Expected groups [group1 group2], got %v", groups)
+	// String elements kept, numeric scalars stringified (R105); only
+	// non-scalars (here: nil) dropped.
+	if !stringSliceEqual(groups, []string{"group1", "group2", "3.14"}) {
+		t.Errorf("Expected groups [group1 group2 3.14], got %v", groups)
 	}
 }

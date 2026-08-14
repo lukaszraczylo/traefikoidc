@@ -275,7 +275,13 @@ func TestCircuitBreakerIsAvailable(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	if !cb.IsAvailable() {
-		t.Error("Circuit should be available in half-open state")
+		t.Error("Circuit should report availability once the open timeout has elapsed")
+	}
+	// R94: IsAvailable is a read-only probe and must not mutate circuit
+	// state. Merely checking availability must NOT transition the circuit
+	// to half-open (that is the job of real request admission).
+	if got := cb.GetState(); got != CircuitBreakerOpen {
+		t.Errorf("IsAvailable must not change circuit state; expected Open, got %v", got)
 	}
 }
 

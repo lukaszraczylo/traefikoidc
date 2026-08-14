@@ -1386,3 +1386,45 @@ func TestLogout_NoOpenRedirectViaIdP(t *testing.T) {
 		t.Fatalf("open redirect via IdP: post_logout_redirect_uri=%q came from client host", plr)
 	}
 }
+
+// TestServeHTTP_AppliesSecurityHeadersOnBypass verifies R132: security
+// headers (X-Frame-Options etc.) are applied at the top of ServeHTTP so
+// every middleware-AUTHORED response carries them — including a forwarded
+// URL (bypass), which previously reached only the forwardAuthorized tail
+// and got no security headers at all.
+func TestServeHTTP_AppliesSecurityHeadersOnBypass(t *testing.T) {
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	oidc := &TraefikOidc{
+		excludedURLs:                 map[string]struct{}{"/health": {}},
+		next:                         next,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               createTestSessionManager(t),
+		firstRequestStarted:          1,
+		metadataRefreshStartedAtomic: 1,
+		issuerURL:                    "https://provider.example.com",
+	}
+	close(oidc.initComplete)
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	rw := httptest.NewRecorder()
+	oidc.ServeHTTP(rw, req)
+
+	if !nextCalled {
+		t.Fatal("expected bypass forward to next handler")
+	}
+	// Fallback security headers must be present on the bypassed response
+	// (they are applied at the top of ServeHTTP now). Before R132 they
+	// were only set inside forwardAuthorized, so /health got none.
+	if got := rw.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("bypassed response must carry X-Frame-Options, got %q", got)
+	}
+	if got := rw.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("bypassed response must carry X-Content-Type-Options, got %q", got)
+	}
+}

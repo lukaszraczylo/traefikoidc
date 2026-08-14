@@ -362,7 +362,7 @@ func TestJWTReplayAttack(t *testing.T) {
 	// Replay tracking for this path lives in the shared shardedReplayCache
 	// (see verifyTokenWithOpts); the per-instance tokenBlacklist holds only
 	// external revocations and is intentionally NOT self-marked.
-	if !shardedReplayCache.Exists(fixedJTI) {
+	if !shardedReplayCache.Exists(replayCacheKey(tOidc.issuerURL, fixedJTI)) {
 		t.Fatalf("JTI was not recorded in the shared replay cache after first verification")
 	}
 	if blacklisted, exists := tOidc.tokenBlacklist.Get(fixedJTI); exists && blacklisted != nil {
@@ -409,11 +409,6 @@ func TestMissingClaims(t *testing.T) {
 			expectedError: "missing or invalid 'exp'",
 		},
 		{
-			name:          "Missing IssuedAt",
-			omittedClaims: []string{"iat"},
-			expectedError: "missing or invalid 'iat'",
-		},
-		{
 			name:          "Missing Subject",
 			omittedClaims: []string{"sub"},
 			expectedError: "missing or empty 'sub'",
@@ -457,6 +452,27 @@ func TestMissingClaims(t *testing.T) {
 			}
 		})
 	}
+
+	// R126: iat is OPTIONAL per RFC 7519 §4.1.6, so a token that omits it
+	// must still verify (previously it was rejected as "missing or invalid
+	// 'iat'").
+	t.Run("Missing IssuedAt is optional", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"iss":   "https://test-issuer.com",
+			"aud":   "test-client-id",
+			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
+			"sub":   "test-subject",
+			"email": "user@example.com",
+			"jti":   generateRandomString(16),
+		}
+		validJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", claims)
+		if err != nil {
+			t.Fatalf("Failed to create JWT without iat: %v", err)
+		}
+		if err := ts.tOidc.VerifyToken(validJWT); err != nil {
+			t.Fatalf("token without optional iat should verify, got: %v", err)
+		}
+	})
 }
 
 // TestSessionFixationAttack tests the plugin's resistance to session fixation attacks
@@ -1611,18 +1627,18 @@ func TestJWTRSAKeySizeMinimum(t *testing.T) {
 			E:   base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}), // 65537
 		}
 		o := &TraefikOidc{
-			issuerURL:    "https://test-issuer.com",
-			clientID:     "test-client-id",
-			audience:     "test-client-id",
-			clientSecret: "test-client-secret",
-			jwkCache:     &MockJWKCache{JWKS: &JWKSet{Keys: []JWK{jwk}}, Err: nil},
-			jwksURL:      "https://test-jwks-url.com",
-			tokenBlacklist: tc.addCache(NewCache()),
-			tokenCache:     tc.addTokenCache(NewTokenCache()),
-			limiter:        rate.NewLimiter(rate.Every(time.Second), 10),
-			logger:         logger,
-			excludedURLs:   map[string]struct{}{},
-			httpClient:     &http.Client{},
+			issuerURL:         "https://test-issuer.com",
+			clientID:          "test-client-id",
+			audience:          "test-client-id",
+			clientSecret:      "test-client-secret",
+			jwkCache:          &MockJWKCache{JWKS: &JWKSet{Keys: []JWK{jwk}}, Err: nil},
+			jwksURL:           "https://test-jwks-url.com",
+			tokenBlacklist:    tc.addCache(NewCache()),
+			tokenCache:        tc.addTokenCache(NewTokenCache()),
+			limiter:           rate.NewLimiter(rate.Every(time.Second), 10),
+			logger:            logger,
+			excludedURLs:      map[string]struct{}{},
+			httpClient:        &http.Client{},
 			extractClaimsFunc: extractClaims,
 		}
 		o.jwtVerifier = o

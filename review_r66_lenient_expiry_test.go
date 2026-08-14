@@ -60,7 +60,7 @@ func TestLenientAudienceRequiresUnexpiredAccessToken(t *testing.T) {
 		accessToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 			"iss":   "https://test-issuer.com",
 			"aud":   []interface{}{"https://other-api.example.com"}, // wrong audience
-			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()), // still valid
+			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),  // still valid
 			"iat":   float64(time.Now().Unix()),
 			"sub":   "test-user",
 			"scope": "openid profile email",

@@ -665,6 +665,10 @@ func (m *mockJWKCacheForLogout) GetPublicKey(ctx context.Context, jwksURL, kid s
 	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
 }
 
+func (m *mockJWKCacheForLogout) getPublicKeyFresh(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	return m.GetPublicKey(ctx, jwksURL, kid, httpClient)
+}
+
 func (m *mockJWKCacheForLogout) Clear()   {}
 func (m *mockJWKCacheForLogout) Cleanup() {}
 func (m *mockJWKCacheForLogout) Close()   {}
@@ -796,6 +800,10 @@ func (s *staticJWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, 
 		}
 	}
 	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
+}
+
+func (s *staticJWKCache) getPublicKeyFresh(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	return s.GetPublicKey(ctx, jwksURL, kid, httpClient)
 }
 
 func (s *staticJWKCache) Clear()   {}

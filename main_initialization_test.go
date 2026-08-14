@@ -135,7 +135,8 @@ func TestInitializeMetadata(t *testing.T) {
 							"issuer":                 srv.URL,
 							"authorization_endpoint": srv.URL + "/auth",
 							"token_endpoint":         srv.URL + "/token",
-							// Missing jwks_uri, revocation_endpoint, end_session_endpoint
+							"jwks_uri":               srv.URL + "/jwks",
+							// Missing revocation_endpoint, end_session_endpoint (both optional)
 						})
 					}
 				}))

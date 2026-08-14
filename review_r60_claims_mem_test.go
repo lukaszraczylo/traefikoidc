@@ -19,7 +19,7 @@ func TestExtractGroupsRolesSingleString(t *testing.T) {
 	}
 
 	groups, roles, err := oidc.extractGroupsAndRolesFromClaims(map[string]interface{}{
-		"groups": "domain_users",          // single string
+		"groups": "domain_users",         // single string
 		"roles":  []interface{}{"admin"}, // array form still works
 	})
 	if err != nil {

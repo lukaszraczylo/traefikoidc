@@ -541,6 +541,7 @@ func TestCredentialsValidation(t *testing.T) {
 			name: "valid non-expiring credentials",
 			response: &ClientRegistrationResponse{
 				ClientID:              "test-client-id",
+				ClientSecret:          "test-client-secret",
 				ClientSecretExpiresAt: 0, // Never expires
 			},
 			expected: true,
@@ -549,6 +550,7 @@ func TestCredentialsValidation(t *testing.T) {
 			name: "valid future-expiring credentials",
 			response: &ClientRegistrationResponse{
 				ClientID:              "test-client-id",
+				ClientSecret:          "test-client-secret",
 				ClientSecretExpiresAt: time.Now().Add(1 * time.Hour).Unix(),
 			},
 			expected: true,

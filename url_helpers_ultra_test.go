@@ -620,7 +620,7 @@ func TestBuildAuthURLGuaranteesOpenIDScope(t *testing.T) {
 	t.Run("openid omitted from scopes_supported but other scopes kept", func(t *testing.T) {
 		m := createMinimalMiddleware()
 		m.providerURL = "https://provider.example.com"
-		m.scopes = []string{"email", "profile"} // no openid configured
+		m.scopes = []string{"email", "profile"}          // no openid configured
 		m.scopesSupported = []string{"email", "profile"} // provider omits openid
 		m.scopeFilter = NewScopeFilter(newNoOpLogger())
 

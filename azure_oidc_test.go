@@ -725,10 +725,10 @@ func TestValidateAzureTokensEdgeCases(t *testing.T) {
 				session.SetAccessToken("opaque_access_token_longer_than_minimum") // Not JWT format but long enough
 				return session
 			},
-			expectedAuth:    true,
+			expectedAuth:    false,
 			expectedRefresh: false,
-			expectedExpired: false,
-			description:     "Azure session with opaque access token",
+			expectedExpired: true,
+			description:     "Azure session with opaque access token but NO ID token fails closed (no unverified auth, R99)",
 		},
 		{
 			name: "AuthenticatedWithBothTokensInvalid",

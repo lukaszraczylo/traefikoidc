@@ -9,9 +9,9 @@ import (
 // stubBackend implements backends.CacheBackend with a controllable TTL so the
 // UniversalCache.Get re-population path can be tested deterministically.
 type stubBackend struct {
-	val     []byte
-	ttl     time.Duration
-	exists  bool
+	val    []byte
+	ttl    time.Duration
+	exists bool
 }
 
 func (s *stubBackend) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
@@ -22,10 +22,10 @@ func (s *stubBackend) Get(ctx context.Context, key string) ([]byte, time.Duratio
 }
 func (s *stubBackend) Delete(ctx context.Context, key string) (bool, error) { return true, nil }
 func (s *stubBackend) Exists(ctx context.Context, key string) (bool, error) { return s.exists, nil }
-func (s *stubBackend) Clear(ctx context.Context) error                     { return nil }
-func (s *stubBackend) GetStats() map[string]interface{}                    { return nil }
-func (s *stubBackend) Close() error                                       { return nil }
-func (s *stubBackend) Ping(ctx context.Context) error                     { return nil }
+func (s *stubBackend) Clear(ctx context.Context) error                      { return nil }
+func (s *stubBackend) GetStats() map[string]interface{}                     { return nil }
+func (s *stubBackend) Close() error                                         { return nil }
+func (s *stubBackend) Ping(ctx context.Context) error                       { return nil }
 
 // TestUniversalCacheBackendRepopulateKeepsRealTTL guards against Get() re-caching a
 // backend value under the federated DefaultTTL instead of the entry's real

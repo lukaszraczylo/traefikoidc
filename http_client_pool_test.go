@@ -63,9 +63,17 @@ func TestSharedTransportPoolGetOrCreateTransport(t *testing.T) {
 		}
 
 		config := DefaultHTTPClientConfig()
+		config.InsecureSkipVerify = true //nolint:gosec // distinct TLS config to miss the tlsKey cache
 		transport := pool.GetOrCreateTransport(config)
 
-		assert.Nil(t, transport, "should return nil when at client limit")
+		// R95: at the client limit with no TLS-compatible transport, we must
+		// still return a correctly-configured transport (never nil, which
+		// previously fell back to http.DefaultTransport and dropped TLS
+		// settings).
+		require.NotNil(t, transport, "at-cap transport must not be nil")
+		if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+			t.Fatal("at-cap transport must preserve the requested TLS settings")
+		}
 	})
 
 	t.Run("client limit with existing transport", func(t *testing.T) {
@@ -256,7 +264,7 @@ func TestSharedTransportPoolCleanup(t *testing.T) {
 		assert.Len(t, pool.transports, 0, "all transports should be removed")
 	})
 
-	t.Run("cleanup cancels context", func(t *testing.T) {
+	t.Run("cleanup cancels the old context and stays reusable", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		pool := &SharedTransportPool{
 			transports:  make(map[string]*sharedTransport),
@@ -270,10 +278,16 @@ func TestSharedTransportPoolCleanup(t *testing.T) {
 		pool.Cleanup()
 
 		select {
-		case <-pool.ctx.Done():
-			// Context was canceled
+		case <-ctx.Done():
+			// The previous cleanup context was canceled (goroutine stopped).
 		case <-time.After(100 * time.Millisecond):
-			t.Error("context should be canceled")
+			t.Error("the previous cleanup context should be canceled")
+		}
+
+		// R125: Cleanup must leave the pool fully reusable — a fresh
+		// context is installed and new transports can still be acquired.
+		if tr := pool.GetOrCreateTransport(DefaultHTTPClientConfig()); tr == nil {
+			t.Error("pool must remain usable after Cleanup")
 		}
 	})
 

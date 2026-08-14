@@ -23,8 +23,8 @@ func TestForwardAuthorized_BearerStripPreservesTemplatedAuthorization(t *testing
 
 	authTpl := template.Must(template.New("auth").Parse("Bearer {{.AccessToken}}"))
 	oidc := &TraefikOidc{
-		logger:                NewLogger("debug"),
-		next:                  next,
+		logger:                   NewLogger("debug"),
+		next:                     next,
 		stripAuthorizationHeader: true,
 		headerTemplates: map[string]*template.Template{
 			"Authorization": authTpl,
@@ -59,8 +59,8 @@ func TestForwardAuthorized_BearerStripDefault(t *testing.T) {
 	})
 
 	oidc := &TraefikOidc{
-		logger:                NewLogger("debug"),
-		next:                  next,
+		logger:                   NewLogger("debug"),
+		next:                     next,
 		stripAuthorizationHeader: true,
 	}
 

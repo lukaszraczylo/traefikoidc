@@ -98,13 +98,21 @@ func TestJWKSRotationBoundRefetch(t *testing.T) {
 	_, err = cache.GetPublicKey(context.Background(), srv.URL, "bogus1", http.DefaultClient)
 	require.Error(err)
 
-	// Within the cooldown window, further bogus kids must NOT each trigger a
-	// live fetch (amplification bound) — they reuse the freshly cached set.
+	time.Sleep(100 * time.Millisecond)
+	// The first request did exactly one live fetch: the gated refresh
+	// performed a fresh fetch and, finding no kid, did NOT re-fetch
+	// (R124 refinement — an immediate second fetch is redundant).
+	require.Equal(int32(1), atomic.LoadInt32(&fetches), "first request must make exactly one live fetch")
+
+	// Within the cooldown window, a further bogus kid triggers the gated
+	// (cached) refresh plus ONE ungated live pick-up for the lagging-
+	// rotation case (R124), so amplification stays bounded per-request
+	// (2 total across both requests, not 1 per unknown key).
 	_, err = cache.GetPublicKey(context.Background(), srv.URL, "bogus2", http.DefaultClient)
 	require.Error(err)
 
 	time.Sleep(100 * time.Millisecond)
-	require.Equal(int32(1), atomic.LoadInt32(&fetches), "only one live fetch within the cooldown window")
+	require.Equal(int32(2), atomic.LoadInt32(&fetches), "within the cooldown window a new bogus kid costs exactly one ungated live fetch")
 }
 
 func writeJWKS(t *testing.T, w http.ResponseWriter, kid string, pub *rsa.PublicKey) {

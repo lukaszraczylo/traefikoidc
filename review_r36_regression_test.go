@@ -107,7 +107,7 @@ func TestVerifyTokenNoSelfReplayMarkAfterCacheEviction(t *testing.T) {
 	if err := ts.tOidc.VerifyToken(token); err != nil {
 		t.Fatalf("first verification should succeed: %v", err)
 	}
-	if !shardedReplayCache.Exists(jti) {
+	if !shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
 		t.Error("JTI should be recorded in the shared shardedReplayCache for cross-path replay detection")
 	}
 	// The per-instance tokenBlacklist must NOT be self-marked (this was the

@@ -20,17 +20,17 @@ func TestConcurrentServeHTTP_SharedInstance(t *testing.T) {
 	})
 
 	oidc := &TraefikOidc{
-		next:              next,
-		logger:            NewLogger("debug"),
-		initComplete:      make(chan struct{}),
-		sessionManager:    createTestSessionManager(t),
-		issuerURL:         "https://provider.example.com",
-		redirURLPath:      "/callback",
-		logoutURLPath:     "/logout",
-		clientID:          "test-client",
-		audience:          "test-client",
-		authURL:           "https://provider.example.com/auth",
-		firstRequestStarted:        0, // let exactly one goroutine win the bootstrap CAS
+		next:                         next,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               createTestSessionManager(t),
+		issuerURL:                    "https://provider.example.com",
+		redirURLPath:                 "/callback",
+		logoutURLPath:                "/logout",
+		clientID:                     "test-client",
+		audience:                     "test-client",
+		authURL:                      "https://provider.example.com/auth",
+		firstRequestStarted:          0, // let exactly one goroutine win the bootstrap CAS
 		metadataRefreshStartedAtomic: 0,
 	}
 	close(oidc.initComplete)
@@ -66,13 +66,13 @@ func TestConcurrentServeHTTP_ExcludedBypass(t *testing.T) {
 	})
 
 	oidc := &TraefikOidc{
-		next:                      next,
-		logger:                    NewLogger("debug"),
-		initComplete:              make(chan struct{}),
-		sessionManager:            createTestSessionManager(t),
-		firstRequestStarted:       1,
+		next:                         next,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               createTestSessionManager(t),
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		authURL:                   "https://provider.example.com/auth",
+		authURL:                      "https://provider.example.com/auth",
 	}
 	close(oidc.initComplete)
 
