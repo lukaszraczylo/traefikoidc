@@ -54,6 +54,7 @@ type DynamicClientRegistrar struct {
 	registrationResponse *ClientRegistrationResponse
 	store                DCRCredentialsStore // Storage backend for credentials
 	providerURL          string
+	scopes               []string // Runtime auth/scopes from the operator config (merged)
 	mu                   sync.RWMutex
 }
 
@@ -103,6 +104,19 @@ func (r *DynamicClientRegistrar) SetStore(store DCRCredentialsStore) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.store = store
+}
+
+// EffectiveTokenEndpointAuthMethod returns the token-endpoint auth method that
+// was (or will be) advertised to the IdP during registration:
+// ClientMetadata.TokenEndpointAuthMethod if set, else client_secret_post
+// (RFC 7591 confidential-client default). The IdP provisions the client
+// according to this method, so the runtime must authenticate to the token
+// endpoint with the SAME method or every exchange fails (R157).
+func (r *DynamicClientRegistrar) EffectiveTokenEndpointAuthMethod() string {
+	if r.config != nil && r.config.ClientMetadata != nil && r.config.ClientMetadata.TokenEndpointAuthMethod != "" {
+		return r.config.ClientMetadata.TokenEndpointAuthMethod
+	}
+	return "client_secret_post"
 }
 
 // RegisterClient performs dynamic client registration with the OIDC provider
@@ -264,6 +278,27 @@ func (r *DynamicClientRegistrar) buildRegistrationRequest() ([]byte, error) {
 		return nil, fmt.Errorf("redirect_uris is required for client registration")
 	}
 
+	// Validate the optional URI metadata fields with the same absolute
+	// http(s) rule as redirect_uris. A relative or non-http(s) value
+	// (e.g. a malformed jwks_uri on a private_key_jwt client) would be
+	// forwarded to the IdP and make the registered client unverifiable at
+	// runtime (R141).
+	for _, field := range []struct{ val, name string }{
+		{metadata.LogoURI, "logo_uri"},
+		{metadata.ClientURI, "client_uri"},
+		{metadata.PolicyURI, "policy_uri"},
+		{metadata.TOSURI, "tos_uri"},
+		{metadata.JWKSURI, "jwks_uri"},
+	} {
+		if field.val == "" {
+			continue
+		}
+		parsed, perr := url.ParseRequestURI(field.val)
+		if perr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return nil, fmt.Errorf("%s %q must be an absolute http(s) URL", field.name, field.val)
+		}
+	}
+
 	// Optional fields - only include if set
 	if len(metadata.ResponseTypes) > 0 {
 		reqData["response_types"] = metadata.ResponseTypes
@@ -338,6 +373,13 @@ func (r *DynamicClientRegistrar) buildRegistrationRequest() ([]byte, error) {
 
 	if metadata.Scope != "" {
 		reqData["scope"] = metadata.Scope
+	} else if len(r.scopes) > 0 {
+		// Register with the union of runtime auth scopes when the operator
+		// gave no explicit registration scope. IdPs that only grant
+		// registered/advertised scopes (Keycloak offline_access, Auth0)
+		// otherwise register a client whose later token/refresh grant is
+		// rejected with invalid_scope, breaking refresh (R124).
+		reqData["scope"] = strings.Join(deduplicateScopes(r.scopes), " ")
 	}
 
 	return json.Marshal(reqData)
@@ -353,6 +395,19 @@ func (r *DynamicClientRegistrar) GetCachedResponse() *ClientRegistrationResponse
 // areCredentialsValid checks if the cached credentials are still valid
 func (r *DynamicClientRegistrar) areCredentialsValid(resp *ClientRegistrationResponse) bool {
 	if resp == nil || resp.ClientID == "" {
+		return false
+	}
+
+	// For a secret-based auth method the response must carry a client_secret,
+	// mirroring the fresh-registration check (RegisterClient). A stored
+	// record with a client_id but empty secret would otherwise be accepted
+	// and installed as t.clientSecret="", breaking every token exchange
+	// (R124).
+	authMethod := "client_secret_post"
+	if r.config != nil && r.config.ClientMetadata != nil && r.config.ClientMetadata.TokenEndpointAuthMethod != "" {
+		authMethod = r.config.ClientMetadata.TokenEndpointAuthMethod
+	}
+	if (authMethod == "client_secret_post" || authMethod == "client_secret_basic") && resp.ClientSecret == "" {
 		return false
 	}
 
