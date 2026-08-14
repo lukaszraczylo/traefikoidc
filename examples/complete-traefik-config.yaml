@@ -445,22 +445,22 @@ spec:
 # you can set these. NOTE: Plugin configuration takes precedence!
 
 # Docker Compose env file (.env)
----
+# ----- (below is an example .env file, NOT YAML — shown for reference) -----
 # OIDC Configuration
-OIDC_CLIENT_ID=your-client-id
-OIDC_CLIENT_SECRET=your-client-secret
-OIDC_PROVIDER_URL=https://auth.example.com
+# OIDC_CLIENT_ID=your-client-id
+# OIDC_CLIENT_SECRET=your-client-secret
+# OIDC_PROVIDER_URL=https://auth.example.com
 
 # Redis Configuration (fallback)
-REDIS_ENABLED=true
-REDIS_ADDRESS=redis:6379
-REDIS_PASSWORD=yourredispassword
-REDIS_DB=0
-REDIS_KEY_PREFIX=traefikoidc:
-REDIS_CACHE_MODE=hybrid
-REDIS_POOL_SIZE=20
-REDIS_ENABLE_CIRCUIT_BREAKER=true
-REDIS_ENABLE_HEALTH_CHECK=true
+# REDIS_ENABLED=true
+# REDIS_ADDRESS=redis:6379
+# REDIS_PASSWORD=yourredispassword
+# REDIS_DB=0
+# REDIS_KEY_PREFIX=traefikoidc:
+# REDIS_CACHE_MODE=hybrid
+# REDIS_POOL_SIZE=20
+# REDIS_ENABLE_CIRCUIT_BREAKER=true
+# REDIS_ENABLE_HEALTH_CHECK=true
 
 
 # ============================================================================
