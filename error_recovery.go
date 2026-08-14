@@ -243,6 +243,14 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 	cb.RecordRequest()
 
 	if !cb.allowRequest() {
+		// A request rejected while the circuit is open is an admission
+		// outcome, not a never-started request: count it as a failure so
+		// GetBaseMetrics' success_rate (successes/total_requests) and
+		// total_failures reflect actual admission, matching the
+		// internal/recovery circuit breaker. Previously open-rejects only
+		// incremented total_requests, understating failures and
+		// deflating the reported success rate (R180).
+		cb.RecordFailure()
 		return fmt.Errorf("circuit breaker is open")
 	}
 
@@ -362,7 +370,24 @@ func (cb *CircuitBreaker) Reset() {
 // IsAvailable returns whether the circuit breaker is currently allowing requests.
 // This provides a quick way to check if the service is available.
 func (cb *CircuitBreaker) IsAvailable() bool {
-	return cb.allowRequest()
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	switch cb.state {
+	case CircuitBreakerClosed:
+		return true
+	case CircuitBreakerHalfOpen:
+		return true
+	case CircuitBreakerOpen:
+		// Read-only availability probe: report that a request would be
+		// admitted only after the open timeout has elapsed, but do NOT
+		// transition to half-open — IsAvailable must not take a permit or
+		// mutate circuit state. Real traffic admission is gated by
+		// allowRequest (triggerRequest) which performs the transition.
+		return time.Since(cb.lastFailureTime) > cb.timeout
+	default:
+		return false
+	}
 }
 
 // GetMetrics returns comprehensive metrics about the circuit breaker.
@@ -607,6 +632,18 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		return false
 	}
 
+	// A terminal HTTP error (a real status that is neither 5xx nor 429)
+	// must be classified by its status BEFORE any message-substring scan.
+	// Otherwise a 4xx whose provider message merely contains a
+	// retryable-looking word — e.g. "certificate"/"tls" (isCertificateError),
+	// "EOF" (isEOFError), or a generic "timeout" — would be reclassified
+	// retryable and retried to MaxAttempts on a permanent error, repeating
+	// the failing request (R123, R157).
+	var statusHTTP *HTTPError
+	if errors.As(err, &statusHTTP) && statusHTTP.StatusCode != 0 && statusHTTP.StatusCode < 500 && statusHTTP.StatusCode != 429 {
+		return false
+	}
+
 	// Check for Traefik default certificate error (startup race condition)
 	// See: https://github.com/lukaszraczylo/traefikoidc/issues/90
 	if isTraefikDefaultCertError(err) {
@@ -631,7 +668,8 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	if netErr, ok := err.(net.Error); ok {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
 		if netErr.Timeout() {
 			return true
 		}
@@ -652,8 +690,18 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	if httpErr, ok := err.(*HTTPError); ok {
-		return httpErr.StatusCode >= 500 || httpErr.StatusCode == 429
+	// errors.As so retry classification survives error wrapping: a transient
+	// or 5xx/429 error returned as fmt.Errorf("...: %w", err) from an
+	// upstream layer must still be retried. Direct type assertions on the
+	// top-level error silently misclassified wrapped transient errors as
+	// permanent, giving up before any retry (R111).
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		status := httpErr.StatusCode
+		// A 0 StatusCode means the producer used HTTPError purely as a
+		// message carrier (no real HTTP status). Treat it as unknown
+		// (non-retryable) rather than spuriously matching 5xx (R118).
+		return status != 0 && (status >= 500 || status == 429)
 	}
 
 	return false
@@ -880,11 +928,23 @@ var gdInstances = struct {
 	set map[*GracefulDegradation]struct{}
 }{set: make(map[*GracefulDegradation]struct{})}
 
+// globalHealthCheckMu serializes the global pass. globalPerformHealthChecks
+// runs from more than one goroutine — the shared singleton task's run loop
+// AND the once-guarded StartBackgroundTask path both drive it — so without
+// this, any health check registered via the public RegisterHealthCheck
+// API would be invoked concurrently (a latent production race, and the
+// source of an intermittent full-suite race in tests). Serializing the
+// whole pass keeps registered health checks single-threaded (R189).
+var globalHealthCheckMu sync.Mutex
+
 // globalPerformHealthChecks runs the health check pass for every live
 // GracefulDegradation instance. The shared singleton task calls this, so a
 // health check registered on ANY instance is exercised, and closing one
 // instance does not stall recovery for the others.
 func globalPerformHealthChecks() {
+	globalHealthCheckMu.Lock()
+	defer globalHealthCheckMu.Unlock()
+
 	gdInstances.RLock()
 	instances := make([]*GracefulDegradation, 0, len(gdInstances.set))
 	for gd := range gdInstances.set {
@@ -1201,8 +1261,14 @@ func (erm *ErrorRecoveryManager) GetCircuitBreaker(serviceName string) *CircuitB
 func (erm *ErrorRecoveryManager) ExecuteWithRecovery(ctx context.Context, serviceName string, fn func() error) error {
 	cb := erm.GetCircuitBreaker(serviceName)
 
-	return erm.retryExecutor.Execute(ctx, func() error {
-		return cb.Execute(fn)
+	// Retry INNER, circuit OUTER (matching TokenResilienceManager and the
+	// documented R106 compositing rule). Wrapping cb around the whole retry
+	// run means one logical call counts as a single circuit failure even
+	// when it was retried internally; the previous nesting (cb inside the
+	// retry loop) recorded each retry attempt as a separate failure and
+	// could open the circuit after only one flaky-but-retryable call (R144).
+	return cb.ExecuteWithContext(ctx, func() error {
+		return erm.retryExecutor.Execute(ctx, fn)
 	})
 }
 

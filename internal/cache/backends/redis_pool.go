@@ -67,6 +67,22 @@ func NewConnectionPool(config *PoolConfig) (*ConnectionPool, error) {
 	return pool, nil
 }
 
+// reserveConnectionSlot atomically reserves capacity for one new connection,
+// returning false when the pool is already at MaxConnections. The
+// reservation is released via totalConns.Add(-1) if the dial fails.
+func (p *ConnectionPool) reserveConnectionSlot() bool {
+	max := int32(p.config.MaxConnections) // nolint:gosec // MaxConnections is operator-bounded well below int32 max
+	for {
+		cur := p.totalConns.Load()
+		if cur >= max {
+			return false
+		}
+		if p.totalConns.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
 // Get retrieves a connection from the pool or creates a new one
 func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 	if p.closed.Load() {
@@ -102,11 +118,15 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 			return nil, ctx.Err()
 
 		default:
-			// No available connection, create new one if under limit
-			// #nosec G115 -- MaxConnections is a small config value that fits in int32
-			if p.totalConns.Load() < int32(p.config.MaxConnections) {
+			// No available connection, create new one if under limit.
+			// Reserve capacity atomically before dialing: checking
+			// totalConns then dialing is not atomic, so concurrent Gets
+			// could each pass the check and spike the live socket count
+			// far above MaxConnections (FD / Redis maxclients exhaustion).
+			if p.reserveConnectionSlot() {
 				conn, err = p.createConnection(ctx)
 				if err != nil {
+					p.totalConns.Add(-1) // release the reserved slot
 					// If this is the last attempt, return error
 					if attempt == maxAttempts-1 {
 						return nil, err
@@ -116,7 +136,6 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 					continue
 				}
 				p.activeConns.Add(1)
-				p.totalConns.Add(1)
 				return conn, nil
 			}
 
@@ -335,7 +354,9 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	resp, err := reader.ReadResponse()
 	reader.Release() // Return to pool immediately after use
 	if err != nil {
-		if !errors.Is(err, ErrNilResponse) {
+		// A nil response or a Redis command error reply leaves the
+		// connection healthy — only an IO/parse error closes it.
+		if !errors.Is(err, ErrNilResponse) && !errors.Is(err, ErrCommandReply) {
 			c.closed.Store(true)
 		}
 		return nil, err
@@ -468,6 +489,14 @@ func (p *Pipeline) Execute() ([]interface{}, error) {
 			// For nil responses, store nil instead of erroring
 			if errors.Is(err, ErrNilResponse) {
 				responses[i] = nil
+				continue
+			}
+			if errors.Is(err, ErrCommandReply) {
+				// A Redis command error reply: the connection is healthy
+				// and the remaining replies are still readable. Store the
+				// error value so per-command validation upstream can
+				// report it without aborting the batch.
+				responses[i] = err
 				continue
 			}
 			p.conn.closed.Store(true)

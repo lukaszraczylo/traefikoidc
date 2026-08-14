@@ -71,8 +71,8 @@ func (s *RedisStore) Save(ctx context.Context, providerURL string, creds *Client
 
 	key := s.makeKey(providerURL)
 
-	// Calculate TTL based on client_secret_expires_at if available
-	ttl := 30 * 24 * time.Hour // Default: 30 days
+	// Calculate TTL based on client_secret_expires_at if available.
+	var ttl time.Duration
 	if creds.ClientSecretExpiresAt > 0 {
 		expiresAt := time.Unix(creds.ClientSecretExpiresAt, 0)
 		ttl = time.Until(expiresAt)
@@ -83,6 +83,13 @@ func (s *RedisStore) Save(ctx context.Context, providerURL string, creds *Client
 		if ttl > time.Minute {
 			ttl -= time.Minute
 		}
+	} else {
+		// RFC 7591: client_secret_expires_at == 0 means the secret never
+		// expires (areCredentialsValid treats it as always-valid). Persist it
+		// effectively-permanently: a bounded TTL (previously 30 days) would
+		// evict a valid non-expiring credential mid-use, forcing a needless
+		// re-registration and orphaning the previous client at the IdP.
+		ttl = 100 * 365 * 24 * time.Hour
 	}
 
 	// Serialize credentials to JSON for storage

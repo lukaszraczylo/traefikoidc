@@ -148,19 +148,39 @@ func (c *Cache) Set(key string, value interface{}, ttl time.Duration) error {
 		return fmt.Errorf("cache is closed")
 	}
 
+	// Negative TTL means "don't cache" (matches the backends:
+	// memory.go:209 and redis.go:104). cacheVerifiedToken can pass a
+	// negative duration for an already-expired token
+	// (token_manager.go:244); storing an already-expired entry would just
+	// waste a hot-cache slot and misreport currentSize (R138).
+	if ttl < 0 {
+		return nil
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Calculate size
+	// Calculate size and snapshot the existing entry (if any) so the
+	// eviction decisions below account for replacement: refreshing an
+	// existing key neither grows the item count nor adds its full size, so
+	// at capacity it must not evict an unrelated LRU entry (R139 F2).
 	size := c.estimateSize(value)
-
-	// Check memory limit
-	if c.config.EnableMemoryLimit && c.currentMemory+size > c.config.MaxMemoryBytes {
-		c.evictLRU()
+	oldItem, exists := c.items[key]
+	var oldSize int64
+	if exists {
+		oldSize = oldItem.Size
 	}
 
-	// Check size limit
-	if c.config.MaxSize > 0 && len(c.items) >= c.config.MaxSize {
+	// Check memory limit (only evict when the NET addition exceeds it)
+	if c.config.EnableMemoryLimit {
+		if netAdd := size - oldSize; netAdd > 0 && c.currentMemory+netAdd > c.config.MaxMemoryBytes {
+			c.evictLRU()
+		}
+	}
+
+	// Check size limit (only evict when a NEW key would exceed it;
+	// replacement of an existing key keeps the count flat)
+	if c.config.MaxSize > 0 && !exists && len(c.items) >= c.config.MaxSize {
 		c.evictLRU()
 	}
 
@@ -176,7 +196,8 @@ func (c *Cache) Set(key string, value interface{}, ttl time.Duration) error {
 		Metadata:     make(map[string]interface{}),
 	}
 
-	// Remove old item if exists
+	// Remove old item if it still exists (it may have been the LRU victim
+	// of an eviction above; re-check so we don't double-account).
 	if oldItem, exists := c.items[key]; exists {
 		c.lruList.Remove(oldItem.element)
 		c.currentMemory -= oldItem.Size
@@ -293,7 +314,10 @@ func (c *Cache) Close() error {
 	}
 
 	c.cancel()
-	if c.config.EnableAutoCleanup {
+	// stopCleanup is only allocated (and the cleanup goroutine started) when
+	// EnableAutoCleanup && CleanupInterval > 0; must mirror that guard here
+	// or close(nil) panics on shutdown (R149).
+	if c.config.EnableAutoCleanup && c.config.CleanupInterval > 0 {
 		close(c.stopCleanup)
 		c.wg.Wait()
 	}

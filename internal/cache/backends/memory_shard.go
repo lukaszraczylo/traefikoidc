@@ -30,6 +30,19 @@ func newCacheShard(maxSize, maxMemory int64) *cacheShard {
 
 // get retrieves a value from this shard
 // Returns: value, exists, expired
+// peekSize returns the size of the existing entry for key and whether it
+// exists, without touching LRU state. Used by the global limit enforcer
+// to decide whether a Set is a replacement (count-neutral) or a new item.
+func (s *cacheShard) peekSize(key string) (int64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	item, exists := s.items[key]
+	if !exists {
+		return 0, false
+	}
+	return item.size, true
+}
+
 func (s *cacheShard) get(key string) (interface{}, bool, bool) {
 	s.mu.RLock()
 	item, exists := s.items[key]
@@ -72,15 +85,27 @@ func (s *cacheShard) set(key string, value interface{}, expiresAt time.Time, siz
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if we need to evict items
-	if s.maxSize > 0 && s.size >= s.maxSize {
-		s.evictLRULocked()
-	}
-	if s.maxMemory > 0 && s.memoryUsed+size > s.maxMemory {
-		s.evictLRULocked()
+	// Snapshot the existing entry so the eviction decisions account for
+	// replacement: refreshing an existing key neither grows the count nor
+	// adds its full size, so at capacity it must not evict an unrelated
+	// LRU entry (R139 F2).
+	oldItem, exists := s.items[key]
+	var oldSize int64
+	if exists {
+		oldSize = oldItem.size
 	}
 
-	// Remove old item if exists
+	if s.maxSize > 0 && !exists && s.size >= s.maxSize {
+		s.evictLRULocked()
+	}
+	if s.maxMemory > 0 {
+		if net := size - oldSize; net > 0 && s.memoryUsed+net > s.maxMemory {
+			s.evictLRULocked()
+		}
+	}
+
+	// Remove old item if it still exists (it may have been the LRU victim
+	// of an eviction above; re-check so we don't double-account).
 	if oldItem, exists := s.items[key]; exists {
 		s.memoryUsed -= oldItem.size
 		if elem, ok := oldItem.element.(*list.Element); ok && elem != nil {

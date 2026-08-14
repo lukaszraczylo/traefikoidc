@@ -9,11 +9,11 @@ import (
 // TestDetermineScheme verifies the scheme priority: forceHTTPS > X-Forwarded-Proto > TLS > http.
 func TestDetermineScheme(t *testing.T) {
 	cases := []struct {
-		name        string
-		forceHTTPS  bool
-		fwdProto    string
-		tls         bool
-		want        string
+		name       string
+		forceHTTPS bool
+		fwdProto   string
+		tls        bool
+		want       string
 	}{
 		{"force https wins over header", true, "http", false, "https"},
 		{"force https wins over tls absence", true, "", false, "https"},
@@ -21,6 +21,11 @@ func TestDetermineScheme(t *testing.T) {
 		{"forwarded proto http", false, "http", true, "http"},
 		{"tls connection", false, "", true, "https"},
 		{"default http", false, "", false, "http"},
+		// R103: a malformed X-Forwarded-Proto must not be emitted verbatim
+		// into redirect_uri (would yield a broken/weakened scheme). It
+		// falls through to the TLS check / http default instead.
+		{"invalid proto falls through to tls", false, "ftp", true, "https"},
+		{"invalid proto falls through to http", false, "ftp", false, "http"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -41,10 +46,10 @@ func TestDetermineScheme(t *testing.T) {
 // TestDetermineHost verifies forwarding-header preference and fallback to req.Host.
 func TestDetermineHost(t *testing.T) {
 	cases := []struct {
-		name  string
-		fwd   string
-		host  string
-		want  string
+		name string
+		fwd  string
+		host string
+		want string
 	}{
 		{"forwarded host used", "api.example.com", "backend.local", "api.example.com"},
 		{"first of comma list taken", "a.example.com, b.example.com", "backend.local", "a.example.com"},

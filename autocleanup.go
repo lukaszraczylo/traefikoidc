@@ -46,6 +46,12 @@ func NewBackgroundTask(name string, interval time.Duration, taskFunc func(), log
 	if len(wg) > 0 {
 		externalWG = wg[0]
 	}
+	// run() uses time.NewTicker(interval), which panics for d <= 0 inside
+	// the started goroutine (autocleanup.go:186), crashing the whole
+	// process on a misconfigured interval. Normalize here (R149).
+	if interval <= 0 {
+		interval = time.Minute
+	}
 	return &BackgroundTask{
 		name:       name,
 		interval:   interval,
@@ -88,8 +94,20 @@ func (bt *BackgroundTask) Start() {
 			return
 		}
 
-		// Reserve the task slot immediately when starting
-		registry.cb.OnTaskStart(bt.name)
+		// Reserve the task slot immediately when starting. OnTaskStart
+		// is the authoritative concurrency gate (R165): it returns false
+		// if maxConcurrent is already reached, in which case this task
+		// must not launch run() (its slot was not taken).
+		if !registry.cb.OnTaskStart(bt.name) {
+			if bt.logger != nil {
+				bt.logger.Debugf("Cannot start task %s: concurrency limit reached, slot not acquired", bt.name)
+			}
+			// Close doneChan since the task won't run
+			if atomic.CompareAndSwapInt32(&bt.doneClosed, 0, 1) {
+				close(bt.doneChan)
+			}
+			return
+		}
 
 		atomic.StoreInt32(&bt.started, 1)
 		bt.internalWG.Add(1)
@@ -114,6 +132,14 @@ func (bt *BackgroundTask) Stop() {
 			if atomic.CompareAndSwapInt32(&bt.doneClosed, 0, 1) {
 				close(bt.doneChan)
 			}
+			// Also close stopChan (R117): a concurrent Start may be in-flight
+			// and about to launch run(). Signaling stopChan lets it exit at
+			// the next stop check instead of leaking the goroutine and its
+			// circuit-breaker slot (taken by OnTaskStart but never released).
+			func() {
+				defer func() { _ = recover() }() // safe if already closed
+				close(bt.stopChan)
+			}()
 			return
 		}
 
@@ -134,15 +160,18 @@ func (bt *BackgroundTask) Stop() {
 		// This avoids the race condition with WaitGroup
 		select {
 		case <-bt.doneChan:
-			// Normal completion
+			// Normal completion: the goroutine has returned, so it is safe
+			// to wait on the WaitGroup.
+			bt.internalWG.Wait()
 		case <-time.After(5 * time.Second):
+			// The task goroutine is still running (its taskFunc is blocked or
+			// long-lived). Do NOT wait on the WaitGroup here — that would
+			// block Stop() (and shutdown) for as long as the task runs.
+			// Return now; the goroutine is reaped when it completes.
 			if bt.logger != nil {
 				bt.logger.Errorf("Timeout waiting for background task %s to stop", bt.name)
 			}
 		}
-
-		// Wait for the internal WaitGroup synchronously after doneChan signals
-		bt.internalWG.Wait()
 	})
 }
 
@@ -345,9 +374,30 @@ func (cb *TaskCircuitBreaker) CanCreateTask(taskName string) error {
 	}
 }
 
-// OnTaskStart records a task starting execution
-func (cb *TaskCircuitBreaker) OnTaskStart(taskName string) {
-	atomic.AddInt32(&cb.concurrentTasks, 1)
+// OnTaskStart records a task starting execution. It atomically reserves a
+// concurrency slot and returns whether one was available. The reservation
+// is fundamental (R165): CanCreateTask's limit check is only advisory —
+// it is also called by RegisterTask without starting the task — so a
+// check-then-act TOCTOU meant two concurrently starting tasks could both
+// read current < limit and then both start, letting live tasks exceed
+// maxConcurrent and defeating the DoS backstop. OnTaskStart is the
+// single commit point, so it enforces maxConcurrent here via a CAS loop:
+// only maxConcurrent tasks can hold slots at once. BackgroundTask.Start
+// aborts (without launching run) when this returns false.
+func (cb *TaskCircuitBreaker) OnTaskStart(taskName string) bool {
+	max := atomic.LoadInt32(&cb.maxConcurrent)
+	for {
+		current := atomic.LoadInt32(&cb.concurrentTasks)
+		if current >= max {
+			if cb.logger != nil {
+				cb.logger.Debug("Concurrent task limit reached, refusing slot for: %s", taskName)
+			}
+			return false
+		}
+		if atomic.CompareAndSwapInt32(&cb.concurrentTasks, current, current+1) {
+			break
+		}
+	}
 	cb.tasksMu.Lock()
 	cb.activeTasks[taskName] = struct{}{}
 	cb.tasksMu.Unlock()
@@ -358,6 +408,7 @@ func (cb *TaskCircuitBreaker) OnTaskStart(taskName string) {
 		cb.logger.Debug("Task started, concurrent count: %d, task: %s",
 			atomic.LoadInt32(&cb.concurrentTasks), taskName)
 	}
+	return true
 }
 
 // OnTaskComplete records a task completing execution
@@ -751,9 +802,14 @@ func (mm *TaskMemoryMonitor) checkForMemoryIssues(stats TaskMemoryStats) {
 	historyLen := len(mm.statsHistory)
 	if historyLen >= 2 {
 		prev := mm.statsHistory[historyLen-2]
-		heapGrowth := float64(stats.HeapAlloc) / float64(prev.HeapAlloc)
-		if heapGrowth > 2.0 && stats.NumGC == prev.NumGC {
-			mm.logger.Infof("Potential memory leak: heap grew %.2fx without GC", heapGrowth)
+		// Guard against div-by-zero (prev.HeapAlloc == 0) which would make
+		// heapGrowth == +Inf and fire a spurious "memory leak" alert for a
+		// first-ever measurement (R103).
+		if prev.HeapAlloc > 0 {
+			heapGrowth := float64(stats.HeapAlloc) / float64(prev.HeapAlloc)
+			if heapGrowth > 2.0 && stats.NumGC == prev.NumGC {
+				mm.logger.Infof("Potential memory leak: heap grew %.2fx without GC", heapGrowth)
+			}
 		}
 	}
 	mm.mu.RUnlock()

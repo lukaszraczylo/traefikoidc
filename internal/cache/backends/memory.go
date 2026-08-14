@@ -202,6 +202,14 @@ func (m *MemoryCacheBackend) Set(ctx context.Context, key string, value interfac
 		return ErrBackendUnavailable
 	}
 
+	// A NEGATIVE TTL means "already expired" (the stack's convention for
+	// a value whose validity has passed — see redis.go). Previously ttl<=0
+	// fell through to a permanent entry, diverging from redis and
+	// universal_cache. Zero remains the documented "no expiry" contract.
+	if ttl < 0 {
+		return nil
+	}
+
 	start := time.Now()
 	defer func() {
 		duration := time.Since(start).Nanoseconds()
@@ -212,15 +220,19 @@ func (m *MemoryCacheBackend) Set(ctx context.Context, key string, value interfac
 	// Calculate item size
 	itemSize := int64(len(key)) + estimateValueSize(value)
 
-	// Enforce global limits before adding new item
-	m.enforceGlobalLimits(itemSize)
+	// Snapshot replacement state so the global limit enforcer accounts for
+	// key replacement: refreshing an existing key neither grows the count
+	// nor adds its full size, so at global capacity it must not evict an
+	// unrelated live entry (mirrors cacheShard.set, R177).
+	shard := m.getShard(key)
+	oldSize, exists := shard.peekSize(key)
+	m.enforceGlobalLimits(itemSize, oldSize, exists)
 
 	var expiresAt time.Time
 	if ttl > 0 {
 		expiresAt = time.Now().Add(ttl)
 	}
 
-	shard := m.getShard(key)
 	shard.set(key, value, expiresAt, itemSize)
 
 	m.sets.Add(1)
@@ -228,14 +240,30 @@ func (m *MemoryCacheBackend) Set(ctx context.Context, key string, value interfac
 }
 
 // enforceGlobalLimits ensures global size and memory limits are respected
-// by evicting from shards when necessary
-func (m *MemoryCacheBackend) enforceGlobalLimits(newItemSize int64) {
-	// Check and enforce size limit
+// by evicting from shards when necessary.
+//
+// It is replacement-aware: an existing key being rewritten (exists=oldSize)
+// is count-neutral (global cap is on the number of entries) and grows
+// memory by only the net delta, mirroring cacheShard.set. At global
+// capacity a pure key replacement must therefore not evict an unrelated
+// live entry (R177).
+func (m *MemoryCacheBackend) enforceGlobalLimits(newItemSize, oldSize int64, exists bool) {
+	// Count (entry-size) budget only grows for genuinely new keys.
+	sizeTrigger := m.maxSize > 0 && !exists
+	// Memory budget grows by the net delta for a replacement.
+	netMemory := newItemSize
+	if exists {
+		netMemory = newItemSize - oldSize
+		if netMemory < 0 {
+			netMemory = 0
+		}
+	}
+
 	for {
 		totalSize, totalMemory := m.getGlobalStats()
 
-		needsSizeEviction := m.maxSize > 0 && totalSize >= m.maxSize
-		needsMemoryEviction := m.maxMemory > 0 && totalMemory+newItemSize > m.maxMemory
+		needsSizeEviction := sizeTrigger && totalSize >= m.maxSize
+		needsMemoryEviction := m.maxMemory > 0 && totalMemory+netMemory > m.maxMemory
 
 		if !needsSizeEviction && !needsMemoryEviction {
 			break

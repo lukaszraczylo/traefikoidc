@@ -16,11 +16,13 @@ import (
 type CacheType string
 
 const (
-	CacheTypeToken    CacheType = "token"
-	CacheTypeMetadata CacheType = "metadata"
-	CacheTypeJWK      CacheType = "jwk"
-	CacheTypeSession  CacheType = "session"
-	CacheTypeGeneral  CacheType = "general"
+	CacheTypeToken         CacheType = "token"
+	CacheTypeBlacklist     CacheType = "blacklist"
+	CacheTypeMetadata      CacheType = "metadata"
+	CacheTypeIntrospection CacheType = "introspection"
+	CacheTypeJWK           CacheType = "jwk"
+	CacheTypeSession       CacheType = "session"
+	CacheTypeGeneral       CacheType = "general"
 
 	// maxCacheEntrySize defines the maximum size for a single cache entry (64 MiB)
 	// This prevents integer overflow when allocating memory for serialization
@@ -248,7 +250,17 @@ func (c *UniversalCache) Set(key string, value interface{}, ttl time.Duration) e
 
 		if err := c.backend.Set(ctx, c.prefixKey(key), data, ttl); err != nil {
 			c.logger.Infof("Backend set error for key %s: %v", key, err)
-			// Continue with local cache even if backend fails
+			// The backend still holds an OLDER entry for this key. If we
+			// leave it in place, a subsequent Get treats the backend as
+			// authoritative and (via updateLocalCache) overwrites the
+			// just-written local value with the stale one (R162). Evict the
+			// stale backend entry so Get falls through to the fresh local
+			// value instead of resurrecting the old one.
+			dctx, dcancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			if _, derr := c.backend.Delete(dctx, c.prefixKey(key)); derr != nil {
+				c.logger.Debugf("Backend delete after failed set for key %s: %v", key, derr)
+			}
+			dcancel()
 		}
 	}
 
@@ -294,8 +306,12 @@ func (c *UniversalCache) setLocal(key string, value interface{}, ttl time.Durati
 		}
 	}
 
-	// Check size limits
-	if c.lruList.Len() >= c.config.MaxSize {
+	// Check size limits — only evict when inserting a NEW key. An in-place
+	// update of an existing key adds no net entry, so evicting would drop an
+	// unrelated live LRU entry and leave the cache one below capacity (cache
+	// thrashes under sustained traffic at MaxSize). Mirror of the shard
+	// backend fix (R139 F2).
+	if _, present := c.items[key]; !present && c.lruList.Len() >= c.config.MaxSize {
 		c.evictOldest()
 	}
 
@@ -397,7 +413,7 @@ func (c *UniversalCache) getLocal(key string) (interface{}, bool) {
 	// previous unconditional Lock serialized every JWT verify on a single
 	// mutex and pinned a CPU under load.
 	switch c.config.Type {
-	case CacheTypeToken, CacheTypeJWK, CacheTypeSession:
+	case CacheTypeToken, CacheTypeJWK, CacheTypeSession, CacheTypeIntrospection:
 		c.mu.RLock()
 		item, exists := c.items[key]
 		if !exists {
@@ -975,8 +991,11 @@ func (c *UniversalCache) updateLocalCache(key string, value interface{}, ttl tim
 		}
 	}
 
-	// Check size limits
-	if c.lruList.Len() >= c.config.MaxSize {
+	// Check size limits — only evict when inserting a NEW key. An in-place
+	// update adds no net entry (the replace below frees the old size), so
+	// evicting would drop an unrelated live LRU entry and leave the cache
+	// one below capacity. See setLocal (R141).
+	if _, present := c.items[key]; !present && c.lruList.Len() >= c.config.MaxSize {
 		c.evictOldest()
 	}
 

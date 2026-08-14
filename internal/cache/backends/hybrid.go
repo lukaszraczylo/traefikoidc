@@ -37,7 +37,6 @@ type HybridBackend struct {
 
 // asyncWriteItem represents an async write operation
 type asyncWriteItem struct {
-	ctx   context.Context
 	key   string
 	value []byte
 	ttl   time.Duration
@@ -195,7 +194,6 @@ func (h *HybridBackend) Set(ctx context.Context, key string, value []byte, ttl t
 			key:   key,
 			value: value,
 			ttl:   ttl,
-			ctx:   ctx,
 		}:
 			h.logger.Debugf("Queued async write to L2 for key: %s", redactKey(key))
 		default:
@@ -265,14 +263,23 @@ func (h *HybridBackend) Delete(ctx context.Context, key string) (bool, error) {
 		deleted = true
 	}
 
-	// Delete from L2 if not in fallback mode
-	if !h.fallbackMode.Load() {
-		if d, err := h.secondary.Delete(ctx, key); err != nil {
-			h.logger.Debugf("Failed to delete from L2 cache: %v", err)
-			h.recordL2Error()
-		} else if d {
-			deleted = true
-		}
+	if h.fallbackMode.Load() {
+		return deleted, nil
+	}
+
+	// Drain in-flight async L2 writes before deleting L2. A Set's async
+	// write could otherwise land AFTER this DEL, resurrecting the just-
+	// deleted key with its stale value (L1/L2 divergence). Waiting for
+	// the async worker (which tracks queued + in-flight non-critical
+	// writes) ensures no pre-existing async Set lands post-DEL (R124).
+	h.asyncWg.Wait()
+
+	// Delete from L2
+	if d, err := h.secondary.Delete(ctx, key); err != nil {
+		h.logger.Debugf("Failed to delete from L2 cache: %v", err)
+		h.recordL2Error()
+	} else if d {
+		deleted = true
 	}
 
 	return deleted, nil
@@ -390,12 +397,14 @@ func (h *HybridBackend) Ping(ctx context.Context) error {
 
 // Close shuts down the hybrid backend
 func (h *HybridBackend) Close() error {
-	// Cancel context to stop workers
+	// Cancel context to stop workers.
 	h.cancel()
 
-	// Close async write channel
-	close(h.asyncWriteBuffer)
-	close(h.l1BackfillBuffer)
+	// Do NOT close asyncWriteBuffer / l1BackfillBuffer: the workers key off
+	// h.ctx.Done() and exit on cancel, and closing these channels creates a
+	// race where a concurrent Set's select-send (line ~193) hits a closed
+	// channel and panics ("send on closed channel"). Buffered items a late
+	// Set queues after the workers have exited are harmless at shutdown.
 
 	// Wait for workers to finish with timeout
 	done := make(chan struct{})
@@ -539,7 +548,6 @@ func (h *HybridBackend) SetMany(ctx context.Context, items map[string][]byte, tt
 					key:   key,
 					value: value,
 					ttl:   ttl,
-					ctx:   ctx,
 				}:
 					// Queued
 				default:
@@ -593,7 +601,7 @@ func (h *HybridBackend) l1BackfillWorker() {
 			if !ok {
 				return
 			}
-			if h.keyStillInSecondary(item.key) {
+			if h.keyStillInSecondary(item.key) && !h.keyAlreadyInPrimary(item.key) {
 				writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 				if err := h.primary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
 					h.logger.Debugf("Failed to populate L1 cache from L2 for key %s: %v", redactKey(item.key), err)
@@ -618,6 +626,19 @@ func (h *HybridBackend) keyStillInSecondary(key string) bool {
 	defer cancel()
 	exists, err := h.secondary.Exists(ctx, key)
 	return err != nil || exists
+}
+
+// keyAlreadyInPrimary reports whether the key already exists in the L1
+// cache. The backfill worker writes an L2-resolved value into L1; if a
+// concurrent Set already placed a fresher value there, writing over it
+// would clobber the newer value with the stale L2 snapshot (R124). Skip
+// the backfill when L1 already has the key — L1 is only a cache and the
+// next L2 hit re-arms the write-through.
+func (h *HybridBackend) keyAlreadyInPrimary(key string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	exists, err := h.primary.Exists(ctx, key)
+	return err == nil && exists
 }
 
 // asyncWriteWorker processes asynchronous writes to L2
@@ -658,7 +679,11 @@ func (h *HybridBackend) asyncWriteWorker() {
 			// Clear stall us out so no buffered write can land after a
 			// clear-then-wipe.
 			h.asyncFlushMu.Lock()
-			writeCtx, cancel := context.WithTimeout(item.ctx, 500*time.Millisecond)
+			// Use a detached context, never the originating request's ctx:
+			// this is a background write that typically runs after the
+			// request has returned, so the request ctx would be canceled
+			// and the L2 write silently dropped (R94).
+			writeCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			if err := h.secondary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
 				h.errors.Add(1)
 				h.logger.Debugf("Async write to L2 failed for key %s: %v", redactKey(item.key), err)

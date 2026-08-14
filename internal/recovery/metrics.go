@@ -3,6 +3,8 @@ package recovery
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -144,8 +146,13 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	// Check for HTTP errors
-	if httpErr, ok := err.(*HTTPError); ok {
+	// Check for HTTP errors. Use errors.As (not a direct type assertion) so an
+	// error that wraps an *HTTPError — e.g. fmt.Errorf("token exchange failed:
+	// %w", httpErr) — is still recognized as retryable: previously a wrapped
+	// retryable error was misclassified as terminal and bailed after one
+	// attempt, defeating retry despite the production wrapping pattern.
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
 		for _, code := range re.config.RetryableStatusCodes {
 			if httpErr.StatusCode == code {
 				return true
@@ -157,13 +164,14 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	// Check for OIDC errors
-	if oidcErr, ok := err.(*OIDCError); ok {
+	// Check for OIDC errors (unwrapped or wrapped).
+	var oidcErr *OIDCError
+	if errors.As(err, &oidcErr) {
 		return oidcErr.IsRetryable()
 	}
 
 	// Check for context errors (don't retry these)
-	if err == context.Canceled || err == context.DeadlineExceeded {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
@@ -186,6 +194,12 @@ func (re *RetryExecutor) calculateDelay(attempt int) time.Duration {
 	if re.config.RandomizationFactor > 0 {
 		jitter := delay * re.config.RandomizationFactor
 		minDelay := delay - jitter
+		// A RandomizationFactor > 1 makes minDelay negative, which turns
+		// time.After(negative) into an immediate (zero) backoff and defeats
+		// the retry spacing (R150). Clamp to zero so backoff stays bounded.
+		if minDelay < 0 {
+			minDelay = 0
+		}
 		maxDelay := delay + jitter
 		delay = minDelay + rand.Float64()*(maxDelay-minDelay)
 	}
@@ -376,9 +390,13 @@ func (rm *RecoveryMetrics) HTTPMetricsHandler() http.HandlerFunc {
 			"health":  health,
 		}
 
-		// Would normally use json.Marshal here, but keeping it simple for the module
+		body, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "failed to marshal metrics", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "%v", response)
+		_, _ = w.Write(body)
 	}
 }

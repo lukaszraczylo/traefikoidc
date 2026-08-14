@@ -95,7 +95,15 @@ func (r *RedisBackend) Set(ctx context.Context, key string, value []byte, ttl ti
 		return ErrBackendClosed
 	}
 
+	// A NEGATIVE TTL means "already expired" (the stack's convention for a
+	// value whose validity has passed). Previously ttl<=0 fell through to a
+	// bare SET with no expiry, silently making the entry permanent. Zero here
+	// is the documented "no expiry" contract (see SetManyNoTTL), so only
+	// strictly-negative TTLs are skipped.
 	prefixedKey := r.prefixKey(key)
+	if ttl < 0 {
+		return nil
+	}
 
 	// Execute with retry logic
 	return r.executeWithRetry(ctx, func(conn *RedisConn) error {
@@ -447,6 +455,13 @@ func (r *RedisBackend) SetMany(ctx context.Context, items map[string][]byte, ttl
 	}
 
 	if len(items) == 0 {
+		return nil
+	}
+
+	if ttl < 0 {
+		// Already-expired TTL: nothing to persist (see Set's guard). Avoids
+		// creating permanent entries for past-dated values via the multi path.
+		// Zero retains the "no expiry" contract (see SetManyNoTTL).
 		return nil
 	}
 

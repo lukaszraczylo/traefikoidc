@@ -88,8 +88,17 @@ func (c *ShardedCache) Get(key string) (interface{}, bool) {
 
 	// Check expiration
 	if !item.expiresAt.IsZero() && time.Now().After(item.expiresAt) {
-		// Item expired - remove it lazily
-		c.Delete(key)
+		// Item expired — remove it lazily, but ONLY if this is still the
+		// same entry. A concurrent Set/SetIfAbsent that refreshed the key
+		// (e.g. a freshly-recorded replay JTI) since this read must not be
+		// removed, else the just-recorded JTI is lost and a duplicate token
+		// could pass (R129; matches deleteIfExpired in
+		// internal/cache/backends/memory_shard.go).
+		shard.mu.Lock()
+		if cur, ok := shard.items[key]; ok && cur == item {
+			delete(shard.items, key)
+		}
+		shard.mu.Unlock()
 		return nil, false
 	}
 
@@ -107,9 +116,11 @@ func (c *ShardedCache) Set(key string, value interface{}, ttl time.Duration) {
 	}
 
 	shard.mu.Lock()
-	// Check if we need to evict items
-	if len(shard.items) >= c.maxPerShard {
-		// Simple eviction: remove expired items first, then oldest
+	// Overwriting an existing key needs no free slot; only evict when
+	// inserting a genuinely new key at capacity, so an overwrite never
+	// drops an unrelated oldest still-valid entry and shrinks the shard
+	// by one (repeats the R57 hazard) (R153).
+	if _, present := shard.items[key]; !present && len(shard.items) >= c.maxPerShard {
 		c.evictFromShardLocked(shard)
 	}
 
@@ -140,6 +151,7 @@ func (c *ShardedCache) SetIfAbsent(key string, value interface{}, ttl time.Durat
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
+	_, found := shard.items[key]
 	if it, exists := shard.items[key]; exists {
 		// Present and not expired -> duplicate.
 		if it.expiresAt.IsZero() || !time.Now().After(it.expiresAt) {
@@ -148,7 +160,9 @@ func (c *ShardedCache) SetIfAbsent(key string, value interface{}, ttl time.Durat
 		// Present but expired -> treat as absent and replace below.
 	}
 
-	if len(shard.items) >= c.maxPerShard {
+	// The replace-an-expired path needs no free slot; only evict when the
+	// key is absent and the shard is at capacity (R153).
+	if !found && len(shard.items) >= c.maxPerShard {
 		c.evictFromShardLocked(shard)
 	}
 

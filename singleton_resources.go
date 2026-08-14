@@ -124,20 +124,25 @@ func (rm *ResourceManager) RegisterBackgroundTask(name string, interval time.Dur
 	defer rm.tasksMu.Unlock()
 
 	// If a task with this name already exists and is still running, keep it
-	// (idempotent re-registration from another middleware instance).
+	// (idempotent re-registration from another middleware instance). Keep it
+	// only when it has STARTED (started==1 && stopped==0). A task whose
+	// startOnce was consumed without ever starting — e.g. Start was
+	// rejected by the circuit breaker, or Stop raced re-registration —
+	// would otherwise be kept here, then StartBackgroundTask would be a
+	// permanent no-op (Start is sync.Once-guarded) and the singleton
+	// task would never run again until process restart.
 	if existing, exists := rm.tasks[name]; exists {
-		if atomic.LoadInt32(&existing.stopped) == 0 {
+		if atomic.LoadInt32(&existing.started) == 1 && atomic.LoadInt32(&existing.stopped) == 0 {
 			if rm.logger != nil {
 				rm.logger.Debugf("Background task %s already registered", name)
 			}
 			return nil
 		}
-		// The existing task was stopped. Reusing the same BackgroundTask
-		// object would leave it permanently dead: BackgroundTask.Start is
-		// guarded by sync.Once, so once stopped it can never restart, yet
-		// IsTaskRunning returns false and callers will call Start again.
-		// Replace it with a fresh task so re-registration after a
-		// close+recreate cycle (same provider URL) actually resumes it.
+		// The existing task was either stopped or never actually started.
+		// Reusing the same BackgroundTask object would leave it permanently
+		// dead: BackgroundTask.Start is guarded by sync.Once, so once
+		// consumed it can never start again. Replace it with a fresh task
+		// so re-registration actually resumes it.
 	}
 
 	task := NewBackgroundTask(name, interval, taskFunc, rm.logger, &rm.wg)

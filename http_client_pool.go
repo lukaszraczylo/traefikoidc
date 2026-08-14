@@ -81,10 +81,21 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 				return shared.transport
 			}
 		}
-		// No TLS-compatible transport available; return nil so the caller falls
-		// back to a default, certificate-verifying transport rather than one
-		// with a different (possibly verification-disabled) trust store.
-		return nil
+		// No TLS-compatible transport available. Returning nil would make the
+		// caller fall back to http.DefaultTransport, silently dropping the
+		// configured RootCAs / InsecureSkipVerify — custom-CA TLS would
+		// break and self-signed skip-verify would be lost (R95). Build and
+		// return the correctly-configured transport instead; honoring TLS
+		// settings takes precedence over the soft client cap.
+		t := newSharedTransport(config)
+		p.transports[p.configKey(config)] = &sharedTransport{
+			transport: t,
+			refCount:  1,
+			lastUsed:  time.Now(),
+			tlsKey:    want,
+		}
+		atomic.AddInt32(&p.clientCount, 1)
+		return t
 	}
 
 	p.mu.Lock()
@@ -101,8 +112,26 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 	// Increment client count
 	atomic.AddInt32(&p.clientCount, 1)
 
-	// Create new transport with conservative limits
-	transport := &http.Transport{
+	transport := newSharedTransport(config)
+
+	p.transports[key] = &sharedTransport{
+		transport: transport,
+		refCount:  1,
+		lastUsed:  time.Now(),
+		tlsKey:    tlsConfigKey(config),
+	}
+
+	return transport
+}
+
+// newSharedTransport builds a properly-configured *http.Transport from the
+// given config, enforcing TLS 1.2+ and secure cipher suites. Shared by the
+// normal acquisition path and the at-cap fallback so the TLS settings are
+// NEVER silently dropped (the at-cap fallback previously returned nil,
+// making the caller fall back to http.DefaultTransport and lose the
+// configured RootCAs / InsecureSkipVerify — R95).
+func newSharedTransport(config HTTPClientConfig) *http.Transport {
+	return &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			dialer := &net.Dialer{
@@ -138,15 +167,6 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 		WriteBufferSize:       config.WriteBufferSize,
 		ReadBufferSize:        config.ReadBufferSize,
 	}
-
-	p.transports[key] = &sharedTransport{
-		transport: transport,
-		refCount:  1,
-		lastUsed:  time.Now(),
-		tlsKey:    tlsConfigKey(config),
-	}
-
-	return transport
 }
 
 // ReleaseTransport decrements the reference count for a transport
@@ -270,20 +290,31 @@ func tlsConfigKey(config HTTPClientConfig) string {
 	return fmt.Sprintf("%p|%s", config.RootCAs, skip)
 }
 
-// Cleanup closes all transports and stops the cleanup goroutine
+// Cleanup closes all transports, resets the pool, and restarts the cleanup
+// goroutine so the (singleton) pool remains fully usable afterwards. Prior
+// to R125, Cleanup canceled the cleanup goroutine but never restarted it
+// and left clientCount unreset: a reused singleton then had a permanently
+// dead cleaner (idle conns never pruned) and a stale count (the soft
+// maxClients cap keyed off it was wrong after reuse).
 func (p *SharedTransportPool) Cleanup() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Stop the cleanup goroutine
-	if p.cancel != nil {
-		p.cancel()
-	}
-
 	for _, shared := range p.transports {
-		shared.transport.CloseIdleConnections()
+		if shared != nil && shared.transport != nil {
+			shared.transport.CloseIdleConnections()
+		}
 	}
 	p.transports = make(map[string]*sharedTransport)
+	atomic.StoreInt32(&p.clientCount, 0)
+	oldCancel := p.cancel
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	p.cancel = cancel
+	p.mu.Unlock()
+
+	if oldCancel != nil {
+		oldCancel()
+	}
+	go p.cleanupIdleTransports(ctx)
 }
 
 // CreatePooledHTTPClient creates an HTTP client using the shared transport pool
