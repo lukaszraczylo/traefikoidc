@@ -1,6 +1,7 @@
 package traefikoidc
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,6 +15,16 @@ func (t *TraefikOidc) validateRedirectCount(session *SessionData, rw http.Respon
 	if redirectCount >= maxRedirects {
 		t.logger.Errorf("Maximum redirect limit (%d) exceeded, possible redirect loop detected", maxRedirects)
 		session.ResetRedirectCount()
+		// Persist the reset so the NEXT request starts at 0 and can
+		// attempt auth again. Without Save, the reset only touched the
+		// in-memory session value (dirty flag set but never flushed): the
+		// cookie still carried the old count, so every subsequent
+		// request re-observed redirect_count==max and the user was
+		// hard-locked on 508 for the whole session with no recovery
+		// (R123).
+		if err := session.Save(req, rw); err != nil {
+			t.logger.Errorf("Failed to save session after redirect reset: %v", err)
+		}
 		t.sendErrorResponse(rw, req, "Authentication failed: Too many redirects", http.StatusLoopDetected)
 		return fmt.Errorf("redirect limit exceeded")
 	}
@@ -68,8 +79,33 @@ func (t *TraefikOidc) prepareSessionForAuthentication(session *SessionData, csrf
 //   - req: The HTTP request initiating authentication.
 //   - session: The session data to prepare for authentication.
 //   - redirectURL: The pre-calculated callback URL (redirect_uri) for this middleware instance.
+//
+// rateLimitPerSourceAuth applies the (optional) per-external-source auth
+// throttle at an OIDC gate. Returns true if the request was already
+// answered with 429 and the caller must return. No-op when the limiter is
+// disabled (PerSourceLoginRateLimit <= 0) or the source is internal.
+func (t *TraefikOidc) rateLimitPerSourceAuth(rw http.ResponseWriter, req *http.Request) bool {
+	if t.perSourceLimiter == nil {
+		return false
+	}
+	if t.perSourceLimiter.allow(req) {
+		return false
+	}
+	rw.Header().Set("Retry-After", "1")
+	t.sendErrorResponse(rw, req, "Too many authentication attempts, please try again shortly", http.StatusTooManyRequests)
+	return true
+}
+
 func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 	t.logger.Debugf("Initiating new OIDC authentication flow for request: %s", req.URL.RequestURI())
+
+	// Per-external-source throttle on login initiation: a single host
+	// flooding the route with auth starts shouldn't be able to spin up an
+	// unbounded number of IdP round-trips or wear the shared token-origin
+	// bucket down for everyone (R185).
+	if t.rateLimitPerSourceAuth(rw, req) {
+		return
+	}
 
 	// Check and handle redirect limits
 	if err := t.validateRedirectCount(session, rw, req); err != nil {
@@ -97,8 +133,41 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		return
 	}
 
+	// Build the provider authorize URL BEFORE mutating the session. A URL-
+	// build failure must not clear a valid existing session, and must not
+	// emit an empty-Location redirect (browsers reload the current page,
+	// re-entering this flow and bumping the redirect count until the hard
+	// 508). Fail closed with an explicit status instead (R142).
+	authURL := t.buildAuthURL(redirectURL, csrfToken, nonce, codeChallenge)
+	if authURL == "" {
+		t.logger.Errorf("Failed to build provider authorize URL; aborting login flow")
+		http.Error(rw, "Failed to build provider authorize URL", http.StatusInternalServerError)
+		return
+	}
+
+	// When dynamic client registration is enabled but has not yet produced a
+	// client_id (registration pending or failed), forging an authorize URL
+	// with client_id="" would send the user to the provider on a broken
+	// flow. Fail with a clear status instead of redirecting. This guard
+	// must run BEFORE prepareSessionForAuthentication re-seeds the session:
+	// re-seeding (and the save that follows) would otherwise mutate and
+	// persist the session even though we are about to answer 503 with no
+	// redirect — discarding any existing session state for no reason (R163).
+	// Snapshot clientID under metadataMu: DCR rewrites it at runtime (R137).
+	clientID, _, _, _, _ := t.clientCredentials()
+	if t.dcrConfig != nil && t.dcrConfig.Enabled && clientID == "" {
+		t.logger.Errorf("OIDC dynamic client registration has not produced a client_id; refusing to redirect to provider")
+		http.Error(rw, "Identity provider registration pending", http.StatusServiceUnavailable)
+		return
+	}
+
 	// Clear existing session data and set new authentication state
 	t.prepareSessionForAuthentication(session, csrfToken, nonce, codeVerifier, req.URL.RequestURI())
+
+	// Persist the redirect_uri so the callback reuses the exact value sent
+	// to the IdP, instead of rebuilding it from the (client-affectable)
+	// callback request's X-Forwarded-Host (R136).
+	session.SetRedirectURL(redirectURL)
 
 	session.MarkDirty()
 
@@ -111,20 +180,13 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 	t.logger.Debugf("Session saved before redirect. CSRF: %s, Nonce: %s",
 		csrfToken, nonce)
 
-	authURL := t.buildAuthURL(redirectURL, csrfToken, nonce, codeChallenge)
-
-	// When dynamic client registration is enabled but has not yet produced a
-	// client_id (registration pending or failed), forging an authorize URL
-	// with client_id="" would send the user to the provider on a broken
-	// flow. Fail with a clear status instead of redirecting.
-	if t.dcrConfig != nil && t.dcrConfig.Enabled && t.clientID == "" {
-		t.logger.Errorf("OIDC dynamic client registration has not produced a client_id; refusing to redirect to provider")
-		http.Error(rw, "Identity provider registration pending", http.StatusServiceUnavailable)
-		return
-	}
-
 	t.logger.Debugf("Redirecting user to OIDC provider: %s", authURL)
 
+	// 302s into the IdP must not be heuristically cacheable (RFC 7234):
+	// a stale, cached redirect could replay the pre-re-authentication URL.
+	// Every other auth response sets no-store; these redirects were missed
+	// (R147).
+	rw.Header().Set("Cache-Control", "no-store")
 	http.Redirect(rw, req, authURL, http.StatusFound)
 }
 
@@ -135,7 +197,31 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 //   - rw: The HTTP response writer.
 //   - req: The callback request containing authorization code and state.
 //   - redirectURL: The fully qualified callback URL (used in the token exchange request).
+//
+// clearOneTimeAuthState clears the one-time CSRF/nonce/PKCE-verifier after a
+// callback that consumed the authorization code but then failed, and persists
+// the cleared state. Without it the failed session stays in a pending-auth
+// state and a retried callback would re-exchange a fresh code before failing
+// again. Mirrors the cleanup on the exchange-failure / empty-access-token
+// paths (R134).
+func (t *TraefikOidc) clearOneTimeAuthState(session *SessionData, req *http.Request, rw http.ResponseWriter) {
+	session.SetCSRF("")
+	session.SetNonce("")
+	session.SetCodeVerifier("")
+	if saveErr := session.Save(req, rw); saveErr != nil {
+		t.logger.Errorf("Failed to save session after callback failure: %v", saveErr)
+	}
+}
+
 func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, redirectURL string) {
+	// Per-external-source throttle on the authorization-code callback: this
+	// is where the one-time code exchange (server round-trip + token
+	// cache write) happens, so a single source can't brute-force
+	// repeated code exchanges or drown the shared limiter (R185).
+	if t.rateLimitPerSourceAuth(rw, req) {
+		return
+	}
+
 	session, err := t.sessionManager.GetSession(req)
 	if err != nil {
 		t.logger.Errorf("Session error during callback: %v", err)
@@ -144,15 +230,28 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	}
 	defer session.returnToPoolSafely()
 
-	t.logger.Debugf("Handling callback, URL: %s", req.URL.String())
+	t.logger.Debugf("Handling callback, URL: %s", redactCallbackURL(req.URL.String()))
 
 	if req.URL.Query().Get("error") != "" {
 		errorDescription := req.URL.Query().Get("error_description")
 		if errorDescription == "" {
 			errorDescription = req.URL.Query().Get("error")
 		}
-		t.logger.Errorf("Authentication error from provider during callback: %s - %s", req.URL.Query().Get("error"), errorDescription)
-		t.sendErrorResponse(rw, req, fmt.Sprintf("Authentication error from provider: %s", errorDescription), http.StatusBadRequest)
+		// error / error_description are attacker-controlled query params.
+		// Sanitize before logging and before echoing back to the client:
+		// an embedded newline would inject a forged line into (especially
+		// structured) logs, and unbounded length would bloat the log and
+		// the error response (R145).
+		sanitizeErr := func(s string) string {
+			s = strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
+			const maxErrLen = 512
+			if len(s) > maxErrLen {
+				s = s[:maxErrLen]
+			}
+			return s
+		}
+		t.logger.Errorf("Authentication error from provider during callback: %s - %s", sanitizeErr(req.URL.Query().Get("error")), sanitizeErr(errorDescription))
+		t.sendErrorResponse(rw, req, fmt.Sprintf("Authentication error from provider: %s", sanitizeErr(errorDescription)), http.StatusBadRequest)
 		return
 	}
 
@@ -166,7 +265,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	csrfToken := session.GetCSRF()
 	if csrfToken == "" {
 		t.logger.Errorf("CSRF token missing in session during callback. Authenticated: %v, Request URL: %s",
-			session.GetAuthenticated(), req.URL.String())
+			session.GetAuthenticated(), redactCallbackURL(req.URL.String()))
 
 		cookie, err := req.Cookie("_oidc_raczylo_m")
 		if err != nil {
@@ -199,6 +298,13 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		return
 	}
 
+	// Use the redirect_uri persisted at initiate time (must match what was
+	// sent to the IdP's authorize endpoint). Fall back to the rebuilt one
+	// only for pre-existing sessions that predate R136 (R136).
+	if stored := session.GetRedirectURL(); stored != "" {
+		redirectURL = stored
+	}
+
 	tokenResponse, err := t.tokenExchanger.ExchangeCodeForToken(req.Context(), "authorization_code", code, redirectURL, codeVerifier)
 	if err != nil {
 		t.logger.Errorf("Failed to exchange code for token during callback: %v", err)
@@ -207,30 +313,29 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		// may still be unconsumed at the provider, so a replayed callback
 		// must re-authenticate rather than revalidate a stale
 		// state/nonce/code_verifier. Mirrors the cleanup on success.
-		session.SetCSRF("")
-		session.SetNonce("")
-		session.SetCodeVerifier("")
-		if saveErr := session.Save(req, rw); saveErr != nil {
-			t.logger.Errorf("Failed to save session after callback exchange failure: %v", saveErr)
-		}
+		t.clearOneTimeAuthState(session, req, rw)
 		t.sendErrorResponse(rw, req, "Authentication failed: Could not exchange code for token", http.StatusInternalServerError)
 		return
 	}
 
 	if tokenResponse.AccessToken == "" {
 		t.logger.Errorf("Token endpoint returned no access token during callback")
-		session.SetCSRF("")
-		session.SetNonce("")
-		session.SetCodeVerifier("")
-		if saveErr := session.Save(req, rw); saveErr != nil {
-			t.logger.Errorf("Failed to save session after empty access token: %v", saveErr)
-		}
+		t.clearOneTimeAuthState(session, req, rw)
 		t.sendErrorResponse(rw, req, "Authentication failed: Token endpoint returned no access token", http.StatusInternalServerError)
 		return
 	}
 
 	if err = t.verifyToken(tokenResponse.IDToken); err != nil {
 		t.logger.Errorf("Failed to verify id_token during callback: %v", err)
+		t.clearOneTimeAuthState(session, req, rw)
+		if errors.Is(err, ErrRateLimitExceeded) {
+			// Rate-limit exhaustion must be a 429 + Retry-After, not a
+			// generic 500: a single source's burst currently degrades
+			// every user's callback to "server error" (R179).
+			rw.Header().Set("Retry-After", "1")
+			t.sendErrorResponse(rw, req, "Authentication failed: Too many requests, please retry", http.StatusTooManyRequests)
+			return
+		}
 		t.sendErrorResponse(rw, req, "Authentication failed: Could not verify ID token", http.StatusInternalServerError)
 		return
 	}
@@ -238,6 +343,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	claims, err := t.extractClaimsFunc(tokenResponse.IDToken)
 	if err != nil {
 		t.logger.Errorf("Failed to extract claims during callback: %v", err)
+		t.clearOneTimeAuthState(session, req, rw)
 		t.sendErrorResponse(rw, req, "Authentication failed: Could not extract claims from token", http.StatusInternalServerError)
 		return
 	}
@@ -245,41 +351,57 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	nonceClaim, ok := claims["nonce"].(string)
 	if !ok || nonceClaim == "" {
 		t.logger.Error("Nonce claim missing in id_token during callback")
-		t.sendErrorResponse(rw, req, "Authentication failed: Nonce missing in token", http.StatusInternalServerError)
+		t.clearOneTimeAuthState(session, req, rw)
+		t.sendErrorResponse(rw, req, "Authentication failed: Nonce missing in token", http.StatusBadRequest)
 		return
 	}
 
 	sessionNonce := session.GetNonce()
 	if sessionNonce == "" {
 		t.logger.Error("Nonce not found in session during callback")
-		t.sendErrorResponse(rw, req, "Authentication failed: Nonce missing in session", http.StatusInternalServerError)
+		t.clearOneTimeAuthState(session, req, rw)
+		t.sendErrorResponse(rw, req, "Authentication failed: Nonce missing in session", http.StatusBadRequest)
 		return
 	}
 
 	if !constantTimeStringCompare(nonceClaim, sessionNonce) {
 		t.logger.Error("Nonce claim does not match session nonce during callback")
-		t.sendErrorResponse(rw, req, "Authentication failed: Nonce mismatch", http.StatusInternalServerError)
+		t.clearOneTimeAuthState(session, req, rw)
+		t.sendErrorResponse(rw, req, "Authentication failed: Nonce mismatch", http.StatusBadRequest)
 		return
 	}
 
 	// Extract user identifier from the configured claim (defaults to "email" for backward compatibility)
-	userIdentifier, _ := claims[t.userIdentifierClaim].(string)
+	userIdentifier, _ := claimScalarString(claims[t.userIdentifierClaim])
 	if userIdentifier == "" {
 		// Try "sub" as fallback since it's required by OIDC spec
 		if t.userIdentifierClaim != "sub" {
-			userIdentifier, _ = claims["sub"].(string)
+			userIdentifier, _ = claimScalarString(claims["sub"])
 		}
 		if userIdentifier == "" {
 			t.logger.Errorf("User identifier claim '%s' missing or empty in token during callback", t.userIdentifierClaim)
+			t.clearOneTimeAuthState(session, req, rw)
 			t.sendErrorResponse(rw, req, "Authentication failed: User identifier missing in token", http.StatusInternalServerError)
 			return
 		}
 		t.logger.Debugf("Configured claim '%s' not found, using 'sub' claim as fallback", t.userIdentifierClaim)
 	}
 
+	// Validate user authorization. When the identity is an email, require the
+	// IdP not to have explicitly flagged it as unverified — an unverified
+	// address must not satisfy an email/domain allowlist (see
+	// emailIdentityPermitted).
+	if !emailIdentityPermitted(userIdentifier, claims) {
+		t.logger.Errorf("User email not verified during callback, rejecting email-based authorization: %s", userIdentifier)
+		t.clearOneTimeAuthState(session, req, rw)
+		t.sendErrorResponse(rw, req, "Authentication failed: Email not verified", http.StatusForbidden)
+		return
+	}
+
 	// Validate user authorization
 	if !t.isAllowedUser(userIdentifier) {
 		t.logger.Errorf("User not authorized during callback: %s", userIdentifier)
+		t.clearOneTimeAuthState(session, req, rw)
 		t.sendErrorResponse(rw, req, "Authentication failed: User not authorized", http.StatusForbidden)
 		return
 	}
@@ -316,6 +438,8 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	}
 
 	t.logger.Debugf("Callback successful, redirecting to %s", redirectPath)
+	// no-store so the post-auth redirect isn't cached and replayed (R147).
+	rw.Header().Set("Cache-Control", "no-store")
 	http.Redirect(rw, req, redirectPath, http.StatusFound)
 }
 

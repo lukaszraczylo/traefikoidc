@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -41,10 +42,14 @@ func ResetGlobalSessionCounters() {
 // Predefined configurations for each token type
 var (
 	AccessTokenConfig = TokenConfig{
-		Type:              "access",
-		MinLength:         5,
-		MaxLength:         100 * 1024,
-		MaxChunks:         25,
+		Type:      "access",
+		MinLength: 5,
+		MaxLength: 100 * 1024,
+		// Must be >= the write path's hard chunk cap (session.go Set*Token
+		// allows up to 50 chunks) so a token that was written can always be
+		// read back. A lower read limit silently made written tokens
+		// unreadable (data loss / forced re-auth) — see R95.
+		MaxChunks:         50,
 		MaxChunkSize:      maxCookieSize,
 		AllowOpaqueTokens: true,
 		RequireJWTFormat:  false,
@@ -54,7 +59,7 @@ var (
 		Type:              "refresh",
 		MinLength:         5,
 		MaxLength:         50 * 1024,
-		MaxChunks:         15,
+		MaxChunks:         50, // R95: match write-path cap (see AccessTokenConfig)
 		MaxChunkSize:      maxCookieSize,
 		AllowOpaqueTokens: true,
 		RequireJWTFormat:  false,
@@ -64,7 +69,7 @@ var (
 		Type:              "id",
 		MinLength:         5,
 		MaxLength:         75 * 1024,
-		MaxChunks:         20,
+		MaxChunks:         50, // R95: match write-path cap (see AccessTokenConfig)
 		MaxChunkSize:      maxCookieSize,
 		AllowOpaqueTokens: false,
 		RequireJWTFormat:  true,
@@ -292,9 +297,7 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 		return TokenRetrievalResult{Token: "", Error: sizeErr}
 	}
 
-	if chunkErr := cm.validateChunkingEfficiency(token, config); chunkErr != nil {
-		return TokenRetrievalResult{Token: "", Error: chunkErr}
-	}
+	cm.validateChunkingEfficiency(token, config)
 
 	if contentErr := cm.validateTokenContent(token, config); contentErr != nil {
 		return TokenRetrievalResult{Token: "", Error: contentErr}
@@ -365,12 +368,27 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 	// cookie eviction, dropped Set-Cookie, attacker dropping a cookie) would
 	// reassemble a truncated prefix with no error and trust it as the token.
 	// The write path stores token_total on every chunk; check it on chunk 0.
-	if total, ok := chunks[0].Values["token_total"].(int); ok {
-		if len(chunks) != total {
-			err := fmt.Errorf("%s token chunk count mismatch: got %d, expected %d (possibly truncated)",
-				config.Type, len(chunks), total)
-			cm.logger.Errorf("Truncated %s token chunks: got %d, expected %d", config.Type, len(chunks), total)
-			return TokenRetrievalResult{Token: "", Error: err}
+	// Guard against a sparse set missing index 0 (the assembly loop below
+	// reports the missing chunk; don't nil-deref here) (R148).
+	if first, has0 := chunks[0]; has0 && first != nil {
+		if total, ok := first.Values["token_total"].(int); ok {
+			if len(chunks) > total {
+				// Stale higher-index chunks left behind when a token was
+				// rewritten with fewer chunks (Set*Token writes 0..n-1 but does
+				// not clear cookies above n). token_total is the authoritative
+				// count; drop the excess rather than failing — which forced a
+				// re-auth and discarded the still-valid new token (R129).
+				n := len(chunks)
+				for i := total; i < n; i++ {
+					delete(chunks, i)
+				}
+			}
+			if len(chunks) < total {
+				err := fmt.Errorf("%s token chunk count mismatch: got %d, expected %d (possibly truncated)",
+					config.Type, len(chunks), total)
+				cm.logger.Errorf("Truncated %s token chunks: got %d, expected %d", config.Type, len(chunks), total)
+				return TokenRetrievalResult{Token: "", Error: err}
+			}
 		}
 	}
 
@@ -422,6 +440,27 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 	}
 
 	reassembledToken := strings.Join(tokenParts, "")
+
+	// Cross-chunk integrity: chunk 0 (and every chunk, on new writes)
+	// carries a SHA-256 of the assembled chunk string. Each chunk is
+	// already individually authenticated by its own securecookie MAC, so
+	// forgery is impossible; this binds the chunks to ONE another, so an
+	// authentic-but-mixed set (a stale chunk from an earlier session
+	// combined with chunks from the current one, when counts still match)
+	// is detected here instead of assembling a wrong token that would only
+	// surface as a downstream JWT-validation failure. Absent (old
+	// sessions written before this) → verification is skipped, keeping
+	// backward compatibility (R188).
+	if first, has0 := chunks[0]; has0 && first != nil {
+		if want, ok := first.Values["chunk_integrity"].(string); ok && want != "" {
+			got := fmt.Sprintf("%x", sha256.Sum256([]byte(reassembledToken)))
+			if got != want {
+				err := fmt.Errorf("%s token chunk integrity mismatch: chunks appear to belong to different sessions", config.Type)
+				cm.logger.Error("Token chunk integrity mismatch for %s: chunks belong to different sessions", config.Type)
+				return TokenRetrievalResult{Token: "", Error: err}
+			}
+		}
+	}
 
 	compressed, _ := chunks[0].Values["compressed"].(bool)
 
@@ -601,7 +640,7 @@ func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) erro
 	}
 
 	if config.AllowOpaqueTokens && !strings.Contains(token, ".") {
-		if tokenLen > 8*1024 {
+		if tokenLen > config.MaxLength {
 			err := fmt.Errorf("%s opaque token unusually large (%d bytes)", config.Type, tokenLen)
 			return err
 		}
@@ -610,34 +649,23 @@ func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) erro
 	return nil
 }
 
-// validateChunkingEfficiency ensures that chunking is used appropriately.
-// It calculates expected chunk counts and warns about potential inefficiencies
-// in token storage strategies.
-// Parameters:
-//   - token: The token to analyze for chunking efficiency.
-//   - config: Token configuration with chunking limits.
-//
-// Returns:
-//   - An error if chunking requirements would be violated, nil if acceptable.
-func (cm *ChunkManager) validateChunkingEfficiency(token string, config TokenConfig) error {
+// validateChunkingEfficiency warns about potential inefficiencies in token
+// storage strategies based on the token's length. It is advisory only: the
+// actual chunk budget is enforced at write time on the stored (compressed)
+// representation (session.go), and the read path size-bounds tokens via
+// validateTokenSize. It must NOT hard-reject on the read path, which sees
+// the *decompressed* token: a large access token legitimately stored
+// compressed (e.g. decompressing to > MaxChunks*MaxChunkSize bytes) would
+// otherwise be permanently rejected on every read, forcing re-auth while
+// the valid token sits in the browser (R104).
+func (cm *ChunkManager) validateChunkingEfficiency(token string, config TokenConfig) {
 	tokenLen := len(token)
 
-	if tokenLen <= config.MaxChunkSize && tokenLen <= maxCookieSize {
-	}
-
 	expectedChunks := (tokenLen + config.MaxChunkSize - 1) / config.MaxChunkSize
-	if expectedChunks > config.MaxChunks {
-		err := fmt.Errorf("%s token would require %d chunks (max: %d)",
-			config.Type, expectedChunks, config.MaxChunks)
-		return err
-	}
-
 	if expectedChunks > 10 && tokenLen < 50*1024 {
 		cm.logger.Info("%s token requires many chunks (%d) for size (%d bytes) - consider token optimization",
 			config.Type, expectedChunks, tokenLen)
 	}
-
-	return nil
 }
 
 // validateTokenContent performs comprehensive token content validation.

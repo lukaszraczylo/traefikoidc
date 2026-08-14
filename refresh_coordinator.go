@@ -183,7 +183,7 @@ func NewRefreshCoordinator(config RefreshCoordinatorConfig, logger *Logger) *Ref
 	rc := &RefreshCoordinator{
 		// inFlightRefreshes and sessionRefreshAttempts are both sync.Map;
 		// their zero values are ready to use.
-		config:        config,
+		config:   config,
 		metrics:  &RefreshMetrics{},
 		logger:   logger,
 		stopChan: make(chan struct{}),
@@ -225,10 +225,22 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 
 	// CRITICAL FIX: Atomically check for existing operation OR create new one
 	// This prevents the race where multiple goroutines check, find nothing, then all create
+	//
+	// R154: increment the WaitGroup BEFORE getOrCreateOperation registers
+	// the operation. Previously the Add(1) happened only after the op was
+	// registered and published as new, so a concurrent Shutdown
+	// (close(stopChan); wg.Wait) could observe the registered op, see a
+	// zero wg count, and return before this goroutine's Add landed — the
+	// just-started refresh then ran past Shutdown unreaped. Done() is
+	// balanced once per path: by the spawned goroutine, or immediately
+	// on the join/reject paths (which spawn nothing).
+	rc.wg.Add(1)
+
 	operation, isNew, err := rc.getOrCreateOperation(ctx, sessionID, tokenHash, refreshToken)
 
 	if err != nil {
 		// Operation creation was rejected (rate limit, memory pressure, concurrent limit)
+		rc.wg.Done() // no goroutine launched
 		return nil, err
 	}
 
@@ -236,7 +248,6 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 		// We created a new operation, so we need to execute it. Track the
 		// goroutine so Shutdown waits for in-flight refreshes to finish (they
 		// are aborted promptly via rc.ctx when stopChan closes).
-		rc.wg.Add(1)
 		go func() {
 			defer rc.wg.Done()
 			rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc) //nolint:gosec // long-lived background refresh intentionally uses a background context
@@ -244,6 +255,7 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 	} else {
 		// Joined existing operation - this is a deduplicated request
 		atomic.AddInt64(&rc.metrics.deduplicatedRequests, 1)
+		rc.wg.Done() // joined an existing op; no goroutine tracked here
 	}
 
 	// Wait for the operation to complete
@@ -665,15 +677,20 @@ func refreshCoordinatorSessionID(token string) string {
 const refreshCoordinatorWaitTimeout = 35 * time.Second
 
 // isUnderMemoryPressure checks if the system is under memory pressure by
-// consulting the global memory monitor. Returns true when pressure reaches
-// High or Critical, at which point we refuse new refresh operations to
-// avoid aggravating an already-stressed heap.
+// consulting the global memory monitor. Returns true when the current heap
+// exceeds the coordinator's OWN configured MemoryPressureThresholdMB, at
+// which point we refuse new refresh operations to avoid aggravating an
+// already-stressed heap.
 func (rc *RefreshCoordinator) isUnderMemoryPressure() bool {
 	monitor := GetGlobalMemoryMonitor()
 	if monitor == nil {
 		return false
 	}
-	return monitor.GetMemoryPressure() >= MemoryPressureHigh
+	stats := monitor.GetCurrentStats()
+	if stats == nil || rc.config.MemoryPressureThresholdMB == 0 {
+		return false
+	}
+	return stats.HeapAllocBytes > rc.config.MemoryPressureThresholdMB*1024*1024
 }
 
 // cleanupRoutine periodically cleans up stale tracking entries

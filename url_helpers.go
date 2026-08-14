@@ -75,8 +75,11 @@ func pathExcluded(requestPath, excluded string) bool {
 // Returns:
 //   - The fully constructed authorization URL string.
 func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge string) string {
+	// Snapshot clientID/audience under metadataMu: DCR rewrites them at
+	// runtime (R137).
+	clientID, _, _, audience, _ := t.clientCredentials()
 	params := url.Values{}
-	params.Set("client_id", t.clientID)
+	params.Set("client_id", clientID)
 	params.Set("response_type", "code")
 	params.Set("redirect_uri", redirectURL)
 	params.Set("state", state)
@@ -86,9 +89,9 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	// This allows access tokens to have the correct audience claim
 	// Only add if audience is configured and different from client_id
 	// ID tokens will always have aud=client_id per OIDC spec
-	if t.audience != "" && t.audience != t.clientID {
-		params.Set("audience", t.audience)
-		t.logger.Debugf("Adding audience parameter to authorize URL: %s", t.audience)
+	if audience != "" && audience != clientID {
+		params.Set("audience", audience)
+		t.logger.Debugf("Adding audience parameter to authorize URL: %s", audience)
 	}
 
 	if t.enablePKCE && codeChallenge != "" {
@@ -224,6 +227,22 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 //
 // Returns:
 //   - The fully constructed URL string with appended query parameters.
+//
+// preserveBaseQuery seeds url parameters from the base URL's pre-existing
+// query string, without overriding authoritative plugin-supplied params.
+// Some IdPs embed client_id or template params in their discovered
+// authorization/end-session endpoints; overwriting RawQuery dropped them
+// (R101).
+func (t *TraefikOidc) preserveBaseQuery(u *url.URL, params url.Values) {
+	for k, vs := range u.Query() {
+		if params.Get(k) == "" {
+			for _, v := range vs {
+				params.Add(k, v)
+			}
+		}
+	}
+}
+
 func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) string {
 	if baseURL != "" {
 		if strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://") {
@@ -259,6 +278,7 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 			return ""
 		}
 
+		t.preserveBaseQuery(resolvedURL, params)
 		resolvedURL.RawQuery = params.Encode()
 		return resolvedURL.String()
 	}
@@ -274,6 +294,7 @@ func (t *TraefikOidc) buildURLWithParams(baseURL string, params url.Values) stri
 		return ""
 	}
 
+	t.preserveBaseQuery(u, params)
 	u.RawQuery = params.Encode()
 	return u.String()
 }
@@ -359,6 +380,14 @@ func (t *TraefikOidc) validateDiscoveredEndpoint(urlStr string, allowLoopback bo
 	if u.Scheme != "https" && u.Scheme != "http" {
 		return fmt.Errorf("disallowed URL scheme: %q", u.Scheme)
 	}
+	// Pin the discovered endpoint's scheme to the provider's own scheme. A
+	// provider served over HTTPS must hand out HTTPS endpoints; a legacy or
+	// poisoned discovery document that downgrades a credential-bearing
+	// endpoint (client_secret, tokens) to plaintext HTTP would otherwise be
+	// used as-is, shipping secrets over an unauthenticated channel (R146).
+	if u.Scheme == "http" && t.providerUsesHTTPS() {
+		return fmt.Errorf("discovered endpoint uses plaintext http while the provider is https; refusing scheme downgrade")
+	}
 	if u.Host == "" {
 		return fmt.Errorf("missing host in URL")
 	}
@@ -371,6 +400,15 @@ func (t *TraefikOidc) validateDiscoveredEndpoint(urlStr string, allowLoopback bo
 		case ip.IsPrivate() && !t.allowPrivateIPAddresses:
 			return fmt.Errorf("endpoint host is a private address: %s", ip)
 		}
+	} else if err := t.validateHost(u.Hostname()); err != nil && !(allowLoopback && isLoopbackHost(u.Hostname())) {
+		// Name-based hosts (localhost, metadata.google.internal, any
+		// hostname) bypass the IP-literal checks above; run the hostname
+		// SSRF guard so a discovery doc pointing at such a host is
+		// rejected (R97). Loopback names (localhost) are permitted when
+		// allowLoopback is set, mirroring the IP-literal branch; hard
+		// metadata-service names (metadata.google.internal) are never
+		// allowed because they are not loopback.
+		return fmt.Errorf("discovered endpoint host is not allowed: %w", err)
 	}
 	if strings.Contains(u.Path, "..") {
 		return fmt.Errorf("path traversal detected in URL path")
@@ -382,6 +420,14 @@ func (t *TraefikOidc) validateDiscoveredEndpoint(urlStr string, allowLoopback bo
 // Used to pin the credential-bearing introspection endpoint to the operator-
 // configured provider so a poisoned discovery document cannot redirect the
 // client secret to an attacker-controlled host.
+// providerUsesHTTPS reports whether the operator-configured provider URL is
+// served over HTTPS. Used to pin discovered endpoint schemes.
+func (t *TraefikOidc) providerUsesHTTPS() bool {
+	t.metadataMu.RLock()
+	defer t.metadataMu.RUnlock()
+	return t.providerURL != "" && strings.HasPrefix(strings.ToLower(t.providerURL), "https://")
+}
+
 func sameHost(a, b string) bool {
 	ua, erra := url.Parse(a)
 	ub, errb := url.Parse(b)
@@ -453,4 +499,25 @@ func (t *TraefikOidc) validateHost(host string) error {
 	}
 
 	return nil
+}
+
+// redactCallbackURL returns the callback URL with the one-time
+// authorization code (and state) query values redacted. The single-use
+// code is a quiet credential: logging the full callback URL (as the
+// per-request Debug line and the CSRF-failure Error line did) would
+// publish it into the log pipeline (R153). Malformed URLs are returned
+// unchanged.
+func redactCallbackURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	for _, k := range []string{"code", "state"} {
+		if q.Get(k) != "" {
+			q.Set(k, "[REDACTED]")
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }

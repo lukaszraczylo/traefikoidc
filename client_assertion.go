@@ -95,8 +95,17 @@ func NewClientAssertionSigner(pemBytes []byte, alg, kid string) (*ClientAssertio
 func validateAlgKeyMatch(alg string, key crypto.PrivateKey) error {
 	switch alg[0] {
 	case 'R', 'P': // RS* or PS*
-		if _, ok := key.(*rsa.PrivateKey); !ok {
+		rsaKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
 			return fmt.Errorf("alg %q requires an RSA key, got %T", alg, key)
+		}
+		// RFC 7518 §3.3: RS*/PS* MUST use a key of 2048 bits or larger.
+		// A smaller key signs locally but conformant IdPs (Entra, Okta,
+		// Keycloak) reject it, so every exchange/refresh/revocation fails
+		// invalid_client at runtime — better to fail at construction
+		// (R135).
+		if rsaKey.N.BitLen() < 2048 {
+			return fmt.Errorf("alg %q requires an RSA key of at least 2048 bits, got %d", alg, rsaKey.N.BitLen())
 		}
 	case 'E': // ES*
 		ecKey, ok := key.(*ecdsa.PrivateKey)
@@ -141,6 +150,14 @@ func (s *ClientAssertionSigner) Sign(audience, clientID string) (string, error) 
 	}
 
 	now := nowFn()
+
+	// RFC 7523 §3: aud must be the token (or introspection/revocation)
+	// endpoint URL. An empty audience yields a client_assertion with
+	// "aud":"" that the IdP will reject, so fail fast with a clear
+	// error rather than minting a useless token (R150).
+	if audience == "" {
+		return "", fmt.Errorf("client assertion audience must not be empty")
+	}
 
 	// 16 random bytes as lowercase hex for jti uniqueness.
 	jtiBytes := make([]byte, 16)
@@ -312,6 +329,3 @@ func buildClientAssertionSignerFromConfig(config *Config) (*ClientAssertionSigne
 
 	return NewClientAssertionSigner(pemBytes, alg, config.ClientAssertionKeyID)
 }
-
-
-

@@ -38,7 +38,10 @@ func (sf *ScopeFilter) FilterSupportedScopes(requestedScopes, supportedScopes []
 	// If no supported scopes declared, return all requested (backward compatibility)
 	if len(supportedScopes) == 0 {
 		sf.logger.Debugf("ScopeFilter: Provider %s has no scopes_supported in discovery doc, using all requested scopes", providerURL)
-		return requestedScopes
+		// Return a copy so the caller can append without aliasing the
+		// slice it passed in (which would let the two views of the same
+		// backing array cross-contaminate each other).
+		return append([]string(nil), requestedScopes...)
 	}
 
 	// Build lookup map for efficient checking

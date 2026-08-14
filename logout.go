@@ -100,7 +100,10 @@ func (t *TraefikOidc) handleBackchannelLogout(rw http.ResponseWriter, req *http.
 	t.logger.Infof("Backchannel logout: successfully invalidated session (sid=%s, sub=%s)",
 		claims.SessionID, claims.Subject)
 
-	// Return 200 OK with empty body per spec
+	// Return 200 OK with empty body per spec; mark it non-cacheable so a
+	// proxy cannot replay a stale logout acknowledgement (R147 contract).
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	rw.WriteHeader(http.StatusOK)
 }
 
@@ -291,18 +294,27 @@ func (t *TraefikOidc) validateLogoutToken(tokenString string) (*LogoutTokenClaim
 
 // validateLogoutTokenAudience checks if the logout token audience contains our client_id
 func (t *TraefikOidc) validateLogoutTokenAudience(aud interface{}) bool {
+	// t.clientID is mutated at runtime by the DCR path
+	// (performDynamicClientRegistration, under metadataMu). Read it under
+	// the same lock as every other credential field (issuer, jwksURL) so a
+	// backchannel-logout token validated concurrent with client re-issuance
+	// does not race the write.
+	t.metadataMu.RLock()
+	clientID := t.clientID
+	t.metadataMu.RUnlock()
+
 	switch v := aud.(type) {
 	case string:
-		return v == t.clientID
+		return v == clientID
 	case []interface{}:
 		for _, a := range v {
-			if s, ok := a.(string); ok && s == t.clientID {
+			if s, ok := a.(string); ok && s == clientID {
 				return true
 			}
 		}
 	case []string:
 		for _, a := range v {
-			if a == t.clientID {
+			if a == clientID {
 				return true
 			}
 		}
@@ -342,6 +354,17 @@ func (t *TraefikOidc) verifyLogoutTokenSignature(jwt *JWT, tokenString string) e
 	}
 
 	if err := verifySignatureWithKey(tokenString, pubKey, alg); err != nil {
+		// The signature failed against the (possibly stale) cached key. The
+		// provider may have rotated its signing keys in place, reusing the
+		// same kid (R109): refresh the JWKS once and retry before failing.
+		// Without this a logout token signed with an in-place-rotated key is
+		// rejected for up to the JWKS cache TTL, leaving the user's session
+		// alive after the IdP logged them out (R130).
+		if freshKey, ferr := t.jwkCache.getPublicKeyFresh(context.Background(), jwksURL, kid, t.httpClient); ferr == nil {
+			if verr := verifySignatureWithKey(tokenString, freshKey, alg); verr == nil {
+				return nil
+			}
+		}
 		return fmt.Errorf("signature verification failed: %w", err)
 	}
 
@@ -402,6 +425,29 @@ func (t *TraefikOidc) invalidateSession(sid, sub string) error {
 //
 // Returns:
 //   - true if the session has been invalidated, false otherwise
+//
+// sessionInvalidationTime extracts the invalidation timestamp from a cache
+// value regardless of backend storage semantics. The in-memory cache returns
+// the raw int64 we stored; serializing backends (e.g. Redis) JSON round-trip
+// numbers, so Get yields a float64. Accepting both keeps backchannel/front-
+// channel logout functional in multi-instance (distributed) deployments;
+// previously the strict int64 assertion silently returned false there.
+func sessionInvalidationTime(val interface{}) (int64, bool) {
+	switch v := val.(type) {
+	case int64:
+		return v, true
+	case float64:
+		return int64(v), true
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
+}
+
 func (t *TraefikOidc) isSessionInvalidated(sid, sub string, sessionCreatedAt time.Time) bool {
 	if t.sessionInvalidationCache == nil {
 		return false
@@ -414,7 +460,7 @@ func (t *TraefikOidc) isSessionInvalidated(sid, sub string, sessionCreatedAt tim
 	if sid != "" {
 		key := t.buildSessionInvalidationKey("sid", sid)
 		if val, found := t.sessionInvalidationCache.Get(key); found {
-			if invalidatedAt, ok := val.(int64); ok {
+			if invalidatedAt, ok := sessionInvalidationTime(val); ok {
 				// Session was invalidated at or after it was created
 				invalidationTime := time.Unix(invalidatedAt, 0)
 				if !invalidationTime.Before(sessionCreatedAtSec) {
@@ -429,7 +475,7 @@ func (t *TraefikOidc) isSessionInvalidated(sid, sub string, sessionCreatedAt tim
 	if sub != "" {
 		key := t.buildSessionInvalidationKey("sub", sub)
 		if val, found := t.sessionInvalidationCache.Get(key); found {
-			if invalidatedAt, ok := val.(int64); ok {
+			if invalidatedAt, ok := sessionInvalidationTime(val); ok {
 				// Sessions for this subject created at or before invalidation are invalid
 				invalidationTime := time.Unix(invalidatedAt, 0)
 				if !invalidationTime.Before(sessionCreatedAtSec) {
@@ -446,6 +492,25 @@ func (t *TraefikOidc) isSessionInvalidated(sid, sub string, sessionCreatedAt tim
 // buildSessionInvalidationKey creates a cache key for session invalidation
 func (t *TraefikOidc) buildSessionInvalidationKey(keyType, value string) string {
 	return fmt.Sprintf("session_invalidation:%s:%s", keyType, value)
+}
+
+// sessionCreatedAtForInvalidation returns the session creation time to use
+// for the backchannel/front-channel logout invalidation check. It prefers
+// the ID token's iat claim; when iat is absent, it falls back to the
+// session's own created_at (recorded at login) rather than time.Now().
+// Using time.Now() here meant a session whose ID token lacks iat was
+// always treated as created "now" (after any logout), so invalidation
+// never matched and IdP-initiated logout silently had no effect (R98).
+func (t *TraefikOidc) sessionCreatedAtForInvalidation(idToken string, session *SessionData) time.Time {
+	if jwt, err := parseJWT(idToken); err == nil {
+		if iat, ok := jwt.Claims["iat"].(float64); ok {
+			return time.Unix(int64(iat), 0)
+		}
+	}
+	if ca := session.getCreatedAtUnsafe(); ca > 0 {
+		return time.Unix(ca, 0)
+	}
+	return time.Time{} // zero: treated as invalidated -> safe re-auth
 }
 
 // extractSessionInfo extracts sid and sub from an ID token for session tracking

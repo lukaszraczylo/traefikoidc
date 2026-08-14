@@ -4,9 +4,12 @@
 package traefikoidc
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"net/http"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -15,6 +18,45 @@ import (
 	"github.com/lukaszraczylo/traefikoidc/internal/utils"
 )
 
+// trackingWriter wraps an http.ResponseWriter so the deferred panic handler
+// can tell whether a response was already committed. WriteHeader is
+// idempotent so calling it again after commit is a no-op, but a later
+// Write appends to the committed body - so writing "Internal Server
+// Error" after a handler has already produced a valid 200 (or a 302
+// redirect) corrupts the response. Flush/Hijack are forwarded so
+// downstream SSE and WebSocket handlers keep working through the wrapper.
+type trackingWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *trackingWriter) WriteHeader(code int) {
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *trackingWriter) Write(b []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *trackingWriter) Flush() {
+	w.wroteHeader = true
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *trackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.wroteHeader = true
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+func (w *trackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // bypassReason describes why a request is being forwarded without OIDC auth.
 // It is only used for logging and to decide whether extra side-effects
 // (propagating the user header from an existing session) should run.
@@ -22,6 +64,7 @@ const (
 	bypassReasonExcluded  = "excluded-url"
 	bypassReasonSSE       = "sse"
 	bypassReasonWebSocket = "websocket"
+	bypassReasonOptions   = "options"
 )
 
 // isWebSocketUpgrade reports whether req is a WebSocket upgrade handshake
@@ -54,6 +97,14 @@ func (t *TraefikOidc) shouldBypassAuth(req *http.Request) (bool, string) {
 	if t.determineExcludedURL(req.URL.Path) {
 		return true, bypassReasonExcluded
 	}
+	// CORS preflights carry no session cookie and must reach the backend so
+	// it can answer with Access-Control-Allow-*. Otherwise the 401 here
+	// (with no ACAO headers, since the security applier only runs on the
+	// authenticated path) makes the browser block the cross-origin
+	// request entirely and the real request never proceeds (R124).
+	if req.Method == http.MethodOptions {
+		return true, bypassReasonOptions
+	}
 	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
 		return true, bypassReasonSSE
 	}
@@ -80,6 +131,29 @@ func (t *TraefikOidc) shouldBypassAuth(req *http.Request) (bool, string) {
 // The second return value (0 when forwarding) is the HTTP status to send
 // when the request is rejected, letting the caller distinguish a 401
 // (unauthenticated) from a 403 (authenticated but not permitted).
+// identityHeaders are the headers this middleware owns upstream. It
+// unconditionally strips any inbound values with these names before
+// forwarding — both on authenticated and bypassed requests — so forged
+// values (e.g. X-Forwarded-User: admin on a public path) can never
+// reach the backend and be trusted for downstream authorization.
+var identityHeaders = []string{
+	"X-Forwarded-User",
+	"X-User-Groups",
+	"X-User-Roles",
+	"X-Auth-Request-User",
+	"X-Auth-Request-Redirect",
+	"X-Auth-Request-Token",
+}
+
+// stripIdentityHeaders removes any inbound identity headers from req. The
+// middleware re-injects its own authoritative values afterwards where
+// appropriate. See identityHeaders.
+func stripIdentityHeaders(req *http.Request) {
+	for _, h := range identityHeaders {
+		req.Header.Del(h)
+	}
+}
+
 func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (bool, int) {
 	if t.sessionManager == nil {
 		return false, http.StatusUnauthorized
@@ -115,14 +189,25 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 	// Enforce the allowedRolesAndGroups gate, mirroring forwardAuthorized:
 	// an authenticated user without any permitted role/group must not reach
 	// the SSE/WebSocket backend just by using the streaming bypass. Claims
-	// come from the session's ID token, same source the normal path uses.
+	// come from the session's ID token by preference, falling back to the
+	// access token when there is no ID token — the same source selection the
+	// main authorization path (processAuthorizedRequest) uses. Without the
+	// fallback, opaque-ID-token providers (groups only in the access token)
+	// were granted on normal requests but 403'd on the streaming bypass
+	// (R118).
 	if len(t.allowedRolesAndGroups) > 0 {
-		idClaims, claimsErr := session.GetIDTokenClaims(t.extractClaimsFunc)
-		if claimsErr != nil || idClaims == nil {
+		var groupClaims map[string]interface{}
+		var claimsErr error
+		if idToken := session.GetIDToken(); idToken != "" {
+			groupClaims, claimsErr = session.GetIDTokenClaims(t.extractClaimsFunc)
+		} else if accessToken := session.GetAccessToken(); accessToken != "" {
+			groupClaims, claimsErr = t.extractClaimsFunc(accessToken)
+		}
+		if claimsErr != nil || groupClaims == nil {
 			t.logger.Debugf("%s bypass: cannot read claims for role check (err=%v): %s", reason, claimsErr, userIdentifier)
 			return false, http.StatusForbidden
 		}
-		groups, roles, extErr := t.extractGroupsAndRolesFromClaims(idClaims)
+		groups, roles, extErr := t.extractGroupsAndRolesFromClaims(groupClaims)
 		if extErr != nil {
 			t.logger.Debugf("%s bypass: role extraction failed for %s: %v", reason, userIdentifier, extErr)
 			return false, http.StatusForbidden
@@ -139,6 +224,17 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 			return false, http.StatusForbidden
 		}
 	}
+
+	// This middleware fully owns the identity headers it injects upstream, even
+	// on the SSE/WebSocket bypass path. Unconditionally remove inbound values
+	// for the same names first: a client can forge X-User-Groups /
+	// X-Auth-Request-User etc. on a bypassed request, and since this path
+	// only sets X-Forwarded-User / X-Auth-Request-User (never groups/roles),
+	// forged group/role headers would otherwise survive to the backend,
+	// which commonly trusts them for downstream authorization. Must precede
+	// the sanitize gate so even the drop-on-unsafe early return has already
+	// cleared forged values (R100).
+	stripIdentityHeaders(req)
 
 	// Sanitize the claim-derived identifier before it is injected as a
 	// header, matching forwardAuthorized (which uses safeIdentifier). The
@@ -172,19 +268,81 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 // Parameters:
 //   - rw: The HTTP response writer.
 //   - req: The incoming HTTP request.
+//
+// shouldSkipGraceRefresh reports whether a proactive refresh can be skipped for
+// this request. The token forwarded downstream (forwardAuthorized) is the
+// ACCESS token, and needsRefresh (validateStandardTokensRS -> validateTokenExpiryRS)
+// is derived from the ACCESS token's expiry whenever it is a verifiable JWT.
+// Basing the skip decision on the (possibly longer-lived) ID token's exp would
+// forward a stale access token whenever the ID token is still fresh. Base it on
+// the access token's expiry, falling back to the ID token only when the access
+// token is opaque and unparseable (worst case: refresh when a skip might have
+// been possible — the safe direction).
+func (t *TraefikOidc) shouldSkipGraceRefresh(session *SessionData) bool {
+	return skipRefreshForTokens(session.GetAccessToken(), session.GetIDToken(), t.refreshGracePeriod)
+}
+
+// skipRefreshForTokens reports whether a proactive refresh can be skipped given
+// the session's access and ID tokens.
+func skipRefreshForTokens(accessToken, idToken string, grace time.Duration) bool {
+	graceToken := accessToken
+	graceJWT, graceErr := parseJWT(graceToken)
+	if graceErr != nil || graceJWT == nil {
+		graceToken = idToken
+		graceJWT, graceErr = parseJWT(graceToken)
+	}
+	if graceJWT == nil || graceErr != nil {
+		return false
+	}
+	expClaim, ok := graceJWT.Claims["exp"].(float64)
+	if !ok {
+		return false
+	}
+	expTimeObj := time.Unix(int64(expClaim), 0)
+	return !expTimeObj.Before(time.Now().Add(grace))
+}
+
 func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// Track whether a response has been committed so the panic handler can
+	// avoid appending an error body to an already-emitted valid response.
+	tw := &trackingWriter{ResponseWriter: rw}
+	rw = tw
 	// Recover from any panic in the handler chain (session decode, token
 	// validation, header injection, authorize-url build) so a bug answers a
 	// single clean 500 (and logs a stack) instead of escaping to net/http,
-	// which closes/truncates the connection. WriteHeader is idempotent, so
-	// this is safe even if a handler already wrote headers; Write appends.
+	// which closes/truncates the connection. If the response was already
+	// committed by a handler (200 + body or a redirect), WriteHeader is an
+	// idempotent no-op and appending the body would corrupt a valid
+	// response, so only write when nothing has been sent yet.
 	defer func() {
 		if r := recover(); r != nil {
 			t.logger.Errorf("OIDC handler panic recovered: %v\n%s", r, debug.Stack())
-			rw.WriteHeader(http.StatusInternalServerError)
-			_, _ = rw.Write([]byte("Internal Server Error"))
+			if !tw.wroteHeader {
+				// A panic-induced 500 must not be cached (consistent with
+				// every other auth-failure response, R101/R172).
+				rw.Header().Set("Cache-Control", "no-store")
+				rw.WriteHeader(http.StatusInternalServerError)
+				_, _ = rw.Write([]byte("Internal Server Error"))
+			}
 		}
 	}()
+
+	// Apply security headers to EVERY response this middleware authors
+	// (redirects, error pages, bypass forwards, and authenticated
+	// forwards), not just the forwardAuthorized tail. Previously they only
+	// reached successfully-authenticated forwarding, so the initial
+	// 302-to-IdP, /health, /metrics, error pages and SSE/WS responses
+	// carried no Strict-Transport-Security / framing / MIME sniffing
+	// protections (R132).
+	if t.securityHeadersApplier != nil {
+		t.securityHeadersApplier(rw, req)
+	} else {
+		// Fallback to basic security headers
+		rw.Header().Set("X-Frame-Options", "DENY")
+		rw.Header().Set("X-Content-Type-Options", "nosniff")
+		rw.Header().Set("X-XSS-Protection", "1; mode=block")
+		rw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	}
 
 	// Log request entry for debugging routing issues
 	t.logger.Debugf("Incoming request: %s %s", req.Method, req.URL.Path)
@@ -241,12 +399,20 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		// public endpoint logs via downstream services that don't expect it.
 		// Excluded URLs are explicitly public; bearer is an artifact of the
 		// API auth flow that doesn't belong on them.
-		if t.enableBearerAuth {
+		// Also honor stripAuthorizationHeader (default true) so a raw
+		// client-supplied Authorization header is not forwarded verbatim on
+		// the SSE/WebSocket/excluded bypass — the same leak R144 closed for
+		// the normal path was left open on the streaming bypass (R151).
+		if t.enableBearerAuth || t.stripAuthorizationHeader {
 			req.Header.Del("Authorization")
 		}
 		switch reason {
 		case bypassReasonExcluded:
 			// Operator-declared excluded URLs forward unconditionally.
+			// These are public paths; still strip any client-forged
+			// identity headers so X-Forwarded-User / X-User-Groups etc.
+			// on a public endpoint can't be trusted downstream (R102).
+			stripIdentityHeaders(req)
 			t.next.ServeHTTP(rw, req)
 		case bypassReasonSSE, bypassReasonWebSocket:
 			// Skip the OIDC redirect dance (clients can't follow it
@@ -262,6 +428,11 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				t.sendErrorResponse(rw, req, msg, status)
 				return
 			}
+			t.next.ServeHTTP(rw, req)
+		case bypassReasonOptions:
+			// CORS preflight: forward unconditionally (no session needed)
+			// so the backend can answer with CORS headers.
+			stripIdentityHeaders(req)
 			t.next.ServeHTTP(rw, req)
 		default:
 			t.next.ServeHTTP(rw, req)
@@ -351,14 +522,31 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		cleanReq := req.Clone(req.Context())
 		session, _ = t.sessionManager.GetSession(cleanReq) // Safe to ignore: error already logged, proceeding with new session
 		if session != nil {
-			defer session.returnToPoolSafely()
 			if clearErr := session.Clear(cleanReq, rw); clearErr != nil {
 				t.logger.Errorf("Error clearing potentially corrupted session: %v", clearErr)
 			}
-		} else {
-			t.logger.Error("Critical session error: Failed to get even a new session.")
-			t.sendErrorResponse(rw, req, "Critical session error", http.StatusInternalServerError)
-			return
+			// Clear() returns the session to the object pool, so discard the
+			// pointer — reusing it would be a use-after-return, since a
+			// concurrent GetSession may already own the pooled object
+			// (cross-request session bleed / data race). Obtain a fresh
+			// owned session in the shared block below. (R108)
+			session = nil
+		}
+		if session == nil {
+			// Session cookie is expired (past sessionMaxAge): a fresh
+			// GetSession still re-reads the same expired cookie and returns
+			// nil, so obtain a clean session and let the shared block below
+			// re-initiate authentication rather than returning 500 —
+			// otherwise every request past the session max age is a 500
+			// with no way to recover (R97).
+			session = t.sessionManager.newSession(cleanReq)
+			if session == nil {
+				t.logger.Error("Critical session error: Failed to get even a new session.")
+				t.sendErrorResponse(rw, req, "Critical session error", http.StatusInternalServerError)
+				return
+			}
+			defer session.returnToPoolSafely()
+			t.logger.Infof("Session expired or unreadable; re-initiating authentication")
 		}
 		// Sub-resource requests (script/image/fetch/serviceWorker) must not
 		// trigger an OIDC redirect from this path either: they would overwrite
@@ -398,6 +586,19 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	t.logger.Debugf("Checking callback URL match: request_path=%q, configured_callback=%q", req.URL.Path, t.redirURLPath)
 	if req.URL.Path == t.redirURLPath {
 		t.logger.Debugf("Callback URL matched, processing OIDC callback (redirect_url=%s)", redirectURL)
+		// The authorization-code response is delivered to the redirect
+		// endpoint via HTTP GET (RFC 6749 §3.1.2): handleCallback reads
+		// code/state/error only from the query string (form_post is not
+		// supported - a POST would see an empty query and fail with "No
+		// authorization code" anyway). Reject other methods with 405 so a
+		// HEAD/non-GET probe doesn't consume the one-time state and code
+		// and emit a 302 (R181).
+		if req.Method != http.MethodGet {
+			t.logger.Debugf("Callback requested with method %s (want GET); returning 405", req.Method)
+			rw.Header().Set("Cache-Control", "no-store")
+			rw.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		t.handleCallback(rw, req, redirectURL)
 		return
 	}
@@ -466,25 +667,17 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if shouldAttemptRefresh {
-		idToken := session.GetIDToken()
-		if idToken != "" {
-			jwt, err := parseJWT(idToken)
-			if err == nil {
-				claims := jwt.Claims
-				if expClaim, ok := claims["exp"].(float64); ok {
-					expTime := int64(expClaim)
-					expTimeObj := time.Unix(expTime, 0)
-					refreshThreshold := time.Now().Add(t.refreshGracePeriod)
-
-					if !expTimeObj.Before(refreshThreshold) {
-						t.logger.Debug("Token is valid and outside grace period, skipping refresh")
-						t.processAuthorizedRequest(rw, req, session, redirectURL)
-						return
-					}
-				} else {
-					t.logger.Debug("Could not extract 'exp' claim for grace period check, proceeding with refresh")
-				}
-			}
+		// Only skip the proactive refresh when the session is genuinely
+		// authenticated. skipRefreshForTokens only parseJWT's the access
+		// token and reads the raw exp claim — it does not verify the
+		// signature or identity, so gating on the authenticated flag keeps
+		// an unauthenticated session (or one that failed verification for a
+		// non-expiry reason) from being bare-forwarded past the allowlist
+		// gate (R142).
+		if authenticated && t.shouldSkipGraceRefresh(session) {
+			t.logger.Debug("Token is valid and outside grace period, skipping refresh")
+			t.processAuthorizedRequest(rw, req, session, redirectURL)
+			return
 		}
 
 		if needsRefresh && authenticated {
@@ -574,7 +767,8 @@ func (t *TraefikOidc) processAuthorizedRequestRS(rw http.ResponseWriter, req *ht
 	idToken := rs.idToken
 	if t.enableBackchannelLogout || t.enableFrontchannelLogout {
 		if idToken != "" {
-			sid, sub, createdAt := t.extractSessionInfo(idToken)
+			sid, sub, _ := t.extractSessionInfo(idToken)
+			createdAt := t.sessionCreatedAtForInvalidation(idToken, session)
 			if t.isSessionInvalidated(sid, sub, createdAt) {
 				t.logger.Infof("Session for user %s has been invalidated via IdP-initiated logout", userIdentifier)
 				if err := session.Clear(req, rw); err != nil {
@@ -666,7 +860,8 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 	if t.enableBackchannelLogout || t.enableFrontchannelLogout {
 		idToken := session.GetIDToken()
 		if idToken != "" {
-			sid, sub, createdAt := t.extractSessionInfo(idToken)
+			sid, sub, _ := t.extractSessionInfo(idToken)
+			createdAt := t.sessionCreatedAtForInvalidation(idToken, session)
 			if t.isSessionInvalidated(sid, sub, createdAt) {
 				t.logger.Infof("Session for user %s has been invalidated via IdP-initiated logout", userIdentifier)
 				// Clear the session and redirect to login
@@ -788,6 +983,18 @@ const headerTemplateMaxLen = 8192
 // optional claim the provider does not emit does not leak "<no value>".
 const noValueSentinel = "<no value>"
 
+// noValueTokenRe matches "<no value>" only as a whole token (bounded by
+// non-alphanumerics or string end), so a legitimate claim value that
+// happens to contain the substring survives the strip instead of being
+// corrupted (R103).
+var noValueTokenRe = regexp.MustCompile(`(^|[^0-9A-Za-z])` + regexp.QuoteMeta(noValueSentinel) + `([^0-9A-Za-z]|$)`)
+
+// stripNoValueSentinels removes text/template's missing-key placeholder
+// only when it appears as a whole token.
+func stripNoValueSentinels(s string) string {
+	return noValueTokenRe.ReplaceAllString(s, "${1}${2}")
+}
+
 // headerClaimMaxLen returns the maximum accepted length for a claim-derived
 // header value (principal identifier, group, role). Reuses the operator-
 // configured identifier cap (default 256) so a single setting governs both
@@ -820,7 +1027,46 @@ func (t *TraefikOidc) sanitizeHeaderClaimList(values []string, headerName string
 	return safe
 }
 
+// joinBoundedClaimHeader joins sanitized claim values with commas, bounding
+// the TOTAL length to headerTemplateMaxLen. A provider can return an
+// unbounded number of groups/roles; joining them all into a single header
+// would let an oversized value reach a downstream proxy that rejects or
+// truncates over-long headers (431), even though each value already passed
+// the per-value cap. Accumulates as many leading values as fit, so a
+// well-formed list is unaffected; an empty result means nothing fit and the
+// caller should drop the header (fail-closed).
+func joinBoundedClaimHeader(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, v := range values {
+		sep := 0
+		if b.Len() > 0 {
+			sep = 1 // leading comma
+		}
+		if b.Len()+sep+len(v) > headerTemplateMaxLen {
+			break
+		}
+		if sep > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(v)
+	}
+	return b.String()
+}
+
 func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Request, p *principal) {
+	// This middleware fully owns the identity headers it injects upstream.
+	// Unconditionally remove any inbound values with the same names first:
+	// a request could carry a forged X-User-Groups / X-Auth-Request-User
+	// etc. that, if the middleware computes no value for one of them
+	// (e.g. an authenticated user with no groups, an absent ID token, a
+	// a header-template skip), would otherwise survive through to the
+	// backend and be trusted for downstream authorization. Clearing here —
+	// before any conditional Set — makes the values we emit authoritative.
+	stripIdentityHeaders(req)
+
 	var (
 		groups, roles []string
 		extractErr    error
@@ -844,11 +1090,24 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 			// header injection and an embedded comma would inject extra
 			// entries into the comma-joined header. Fail closed: drop any
 			// value that does not pass.
-			if safeGroups := t.sanitizeHeaderClaimList(groups, "X-User-Groups"); len(safeGroups) > 0 {
-				req.Header.Set("X-User-Groups", strings.Join(safeGroups, ","))
-			}
-			if safeRoles := t.sanitizeHeaderClaimList(roles, "X-User-Roles"); len(safeRoles) > 0 {
-				req.Header.Set("X-User-Roles", strings.Join(safeRoles, ","))
+			// X-User-Groups / X-User-Roles are the largest variably-sized
+			// forward headers; gate them behind minimalHeaders like the
+			// X-Auth-Request-* family so group-heavy users don't still trip
+			// HTTP 431 on the backend (the failure minimalHeaders exists to
+			// prevent, #64). Identity (X-Forwarded-User) stays
+			// unconditional; the allowedRolesAndGroups gate below still
+			// evaluates groups regardless of emission.
+			if !t.minimalHeaders {
+				if safeGroups := t.sanitizeHeaderClaimList(groups, "X-User-Groups"); len(safeGroups) > 0 {
+					if gh := joinBoundedClaimHeader(safeGroups); gh != "" {
+						req.Header.Set("X-User-Groups", gh)
+					}
+				}
+				if safeRoles := t.sanitizeHeaderClaimList(roles, "X-User-Roles"); len(safeRoles) > 0 {
+					if rh := joinBoundedClaimHeader(safeRoles); rh != "" {
+						req.Header.Set("X-User-Roles", rh)
+					}
+				}
 			}
 		}
 	}
@@ -902,17 +1161,29 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 			t.logger.Debugf("Dropping X-Auth-Request-User header: identifier failed claim sanitization")
 		}
 		if p.IDToken != "" {
-			req.Header.Set("X-Auth-Request-Token", p.IDToken)
+			// Bound the raw ID token to the same header budget as rendered
+			// template values so a large token can't push this (and every
+			// other header on the request) past nginx/traefik 431 limits.
+			idTokenHeader := p.IDToken
+			if len(idTokenHeader) > headerTemplateMaxLen {
+				idTokenHeader = idTokenHeader[:headerTemplateMaxLen]
+			}
+			req.Header.Set("X-Auth-Request-Token", idTokenHeader)
 		}
 	}
 
-	// Bearer source: strip the raw inbound Authorization header to keep the
-	// token out of downstream service logs (off-by-config for operators who
-	// chain services that each re-verify the bearer). Stripped here, before
-	// header-template application, so an operator-supplied Authorization
-	// template (e.g. "Authorization: Bearer {{.AccessToken}}") can re-supply
-	// the downstream value rather than being immediately deleted.
-	if p.Source == sourceBearer && t.stripAuthorizationHeader {
+	// Strip the raw inbound Authorization header for BOTH auth paths when
+	// configured. The bearer path already stripped it; the cookie/session
+	// path forwarded a client-supplied Authorization verbatim, letting a
+	// session user present an arbitrary (and possibly more privileged)
+	// bearer that a downstream verifier might trust over X-Forwarded-User,
+	// or leaking a raw token into downstream logs. Kept out of downstream
+	// logs and make X-Forwarded-User / X-Auth-Request-Token the
+	// authoritative identity signal. Stripped here, before header-template
+	// application, so an operator-supplied Authorization template (e.g.
+	// "Authorization: Bearer {{.AccessToken}}") can re-supply the
+	// downstream value rather than being immediately deleted.
+	if t.stripAuthorizationHeader {
 		req.Header.Del("Authorization")
 	}
 
@@ -942,7 +1213,7 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 			// optional claim the provider did not emit (e.g. email) does not
 			// leak "<no value>" into the downstream header.
 			if strings.Contains(headerValue, noValueSentinel) {
-				headerValue = strings.ReplaceAll(headerValue, noValueSentinel, "")
+				headerValue = stripNoValueSentinels(headerValue)
 			}
 			// Skip an empty render: Setting "" would clobber an identity
 			// header (X-Forwarded-User / X-Auth-Request-*) already injected
@@ -968,17 +1239,6 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 			// it — even at debug — leaks credentials into logs.
 			t.logger.Debugf("Set templated header %s (%d bytes)", headerName, len(headerValue))
 		}
-	}
-
-	// Apply security headers if configured
-	if t.securityHeadersApplier != nil {
-		t.securityHeadersApplier(rw, req)
-	} else {
-		// Fallback to basic security headers
-		rw.Header().Set("X-Frame-Options", "DENY")
-		rw.Header().Set("X-Content-Type-Options", "nosniff")
-		rw.Header().Set("X-XSS-Protection", "1; mode=block")
-		rw.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	}
 
 	// Strip OIDC session cookies before forwarding to the backend to prevent

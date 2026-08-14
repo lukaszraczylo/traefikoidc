@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +17,12 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrRateLimitExceeded is returned by verifyTokenWithOpts when the shared
+// per-instance token-origin rate limiter is exhausted. Callers (e.g.
+// handleCallback) surface it as HTTP 429 + Retry-After rather than a
+// generic 500, so burst-driven throttling is not reported as a server error.
+var ErrRateLimitExceeded = errors.New("request rate limit exceeded")
 
 // VerifyToken verifies the validity of an ID token or access token.
 // It performs comprehensive validation including format checks, blacklist verification,
@@ -30,6 +38,17 @@ import (
 //nolint:gocognit,gocyclo // Complex token verification logic requires multiple security checks
 func (t *TraefikOidc) VerifyToken(token string) error {
 	return t.verifyTokenWithOpts(token, verifyOpts{})
+}
+
+// clientCredentials returns a consistent snapshot of the client credential
+// fields under metadataMu. DCR (performDynamicClientRegistration, main.go)
+// can rewrite clientID/clientSecret/audience at runtime under metadataMu.Lock,
+// so every request-path reader must snapshot these fields under RLock rather
+// than read them directly (which would be a data race) (R137).
+func (t *TraefikOidc) clientCredentials() (clientID, clientSecret, clientAuthMethod, audience string, clientAssertion *ClientAssertionSigner) {
+	t.metadataMu.RLock()
+	defer t.metadataMu.RUnlock()
+	return t.clientID, t.clientSecret, t.clientAuthMethod, t.audience, t.clientAssertion
 }
 
 // verifyOpts are internal-only knobs for verifyTokenWithOpts. Kept unexported
@@ -77,6 +96,19 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 	// dozens of times per second by validateStandardTokens.
 	if t.tokenCache != nil {
 		if claims, exists := t.tokenCache.Get(token); exists && len(claims) > 0 {
+			// A cached hit normally short-circuits the parse, but it must
+			// still reject a token whose JTI has been blacklisted: a
+			// rotated token that shares this cached string's JTI (IdP JTI
+			// reuse) but was revoked under a different raw value would
+			// otherwise keep returning "valid" until the cache TTL, while
+			// every cold presentation of it is rejected (R148).
+			if t.tokenBlacklist != nil && !t.disableReplayDetection {
+				if jti, ok := claims["jti"].(string); ok && jti != "" {
+					if b, exists := t.tokenBlacklist.Get(jti); exists && b != nil {
+						return fmt.Errorf("token replay detected (jti: %s) in cache", jti)
+					}
+				}
+			}
 			return nil
 		}
 	}
@@ -87,8 +119,10 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 	}
 
 	tokenType := "UNKNOWN"
+	clientID := ""
+	clientID, _, _, _, _ = t.clientCredentials()
 	if aud, ok := parsedJWT.Claims["aud"]; ok {
-		if audStr, ok := aud.(string); ok && audStr == t.clientID {
+		if audStr, ok := aud.(string); ok && audStr == clientID {
 			tokenType = "ID_TOKEN"
 		}
 	}
@@ -105,18 +139,16 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 	if jti, ok := parsedJWT.Claims["jti"].(string); ok && jti != "" {
 		// Skip JTI blacklist check if replay detection is disabled
 		if !t.disableReplayDetection {
-			if !strings.HasPrefix(token, "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LWlkIiwidHlwIjoiSldUIn0") {
-				if t.tokenBlacklist != nil {
-					if blacklisted, exists := t.tokenBlacklist.Get(jti); exists && blacklisted != nil {
-						return fmt.Errorf("token replay detected (jti: %s) in cache", jti)
-					}
+			if t.tokenBlacklist != nil {
+				if blacklisted, exists := t.tokenBlacklist.Get(jti); exists && blacklisted != nil {
+					return fmt.Errorf("token replay detected (jti: %s) in cache", jti)
 				}
 			}
 		}
 	}
 
 	if !t.limiter.Allow() {
-		return fmt.Errorf("rate limit exceeded")
+		return fmt.Errorf("%w", ErrRateLimitExceeded)
 	}
 
 	jwt := parsedJWT
@@ -142,7 +174,10 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 			expTime := time.Unix(int64(expClaim), 0)
 			tokenDuration := time.Until(expTime)
 			if tokenDuration > 0 && tokenDuration < defaultBlacklistDuration {
-				expiry = expTime
+				// Extend by ClockSkewToleranceFuture so the replay entry
+				// covers the full acceptance window (exp + skew), closing
+				// the post-exp replay window (mirrors jwt.go, R179).
+				expiry = expTime.Add(ClockSkewToleranceFuture)
 			}
 			// else: keep default expiry for expired tokens or tokens >24h
 		}
@@ -162,13 +197,21 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 		initReplayCache()
 		duration := time.Until(expiry)
 		if duration > 0 {
-			if shardedReplayCache != nil {
-				shardedReplayCache.Set(jti, true, duration)
+			// Guard the singleton read with replayCacheMu because
+			// cleanupReplayCache (jwt.go) can nil shardedReplayCache under
+			// the write lock. Mirror the locked read in jwt.go
+			// SetIfAbsent so the pointer deref below cannot race a nil-out.
+			replayCacheMu.RLock()
+			sc := shardedReplayCache
+			if sc != nil {
+				sc.Set(replayCacheKey(t.issuerURL, jti), true, duration)
+				replayCacheMu.RUnlock()
 			} else {
+				replayCacheMu.RUnlock()
 				// Fall back to legacy cache (should rarely happen)
 				replayCacheMu.Lock()
 				if replayCache != nil {
-					replayCache.Set(jti, true, duration)
+					replayCache.Set(replayCacheKey(t.issuerURL, jti), true, duration)
 				}
 				replayCacheMu.Unlock()
 			}
@@ -195,6 +238,21 @@ func (t *TraefikOidc) verifyToken(token string) error {
 //   - token: The verified token string to cache.
 //   - claims: The map of claims extracted from the verified token.
 func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interface{}) {
+	// Defense-in-depth (F1/R133): a concurrent RevokeToken may have
+	// blacklisted this token (raw or jti) after we passed the top-of-
+	// verify blacklist check but before we cache. Do not re-populate
+	// the verified-cache with a revoked token.
+	if t.tokenBlacklist != nil {
+		if b, ok := t.tokenBlacklist.Get(token); ok && b != nil {
+			return
+		}
+		if jti, okv := claims["jti"].(string); okv && jti != "" {
+			if b, ok := t.tokenBlacklist.Get(jti); ok && b != nil {
+				return
+			}
+		}
+	}
+
 	expClaim, ok := claims["exp"].(float64)
 	if !ok {
 		t.safeLogError("Failed to cache token: invalid 'exp' claim type")
@@ -204,7 +262,14 @@ func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interfa
 	expirationTime := time.Unix(int64(expClaim), 0)
 	now := time.Now()
 	duration := expirationTime.Sub(now)
-	t.tokenCache.Set(token, claims, duration)
+	// Do not cache an already-expired token under a negative TTL. Via the
+	// ClockSkewToleranceFuture leeway an expired-then-verified token can
+	// reach here; a negative TTL entry would sit in the cache as dead
+	// weight (only swept by the periodic cleanup) and its ExpiresAt
+	// would already be past, so every hit would re-verify anyway (R153).
+	if duration > 0 {
+		t.tokenCache.Set(token, claims, duration)
+	}
 }
 
 // detectTokenType efficiently detects whether a token is an ID token or access token.
@@ -225,6 +290,9 @@ func (t *TraefikOidc) detectTokenType(jwt *JWT, token string) bool {
 	// key and be mis-classified.
 	sum := sha256.Sum256([]byte(token))
 	cacheKey := hex.EncodeToString(sum[:])
+
+	// Snapshot clientID under metadataMu: DCR rewrites it at runtime (R137).
+	clientID, _, _, _, _ := t.clientCredentials()
 
 	// Check cache first
 	if t.tokenTypeCache != nil {
@@ -306,16 +374,20 @@ func (t *TraefikOidc) detectTokenType(jwt *JWT, token string) bool {
 	// 5. Check if aud == clientID only (ID token pattern)
 	if aud, ok := jwt.Claims["aud"]; ok {
 		// Check string audience
-		if audStr, ok := aud.(string); ok && audStr == t.clientID {
+		if audStr, ok := aud.(string); ok && audStr == clientID {
 			isIDToken = true
 		} else if audArr, ok := aud.([]interface{}); ok {
-			// Check array audience - only treat as ID token if client_id is sole audience
-			if len(audArr) == 1 {
-				for _, v := range audArr {
-					if str, ok := v.(string); ok && str == t.clientID {
-						isIDToken = true
-						break
-					}
+			// Check array audience - treat as ID token if client_id is
+			// present anywhere in the array. OIDC ID tokens legitimately
+			// carry multiple aud entries (e.g. [clientID, API-resource])
+			// in multi-audience setups; insisting on client_id being the
+			// SOLE audience misclassified such ID tokens as access tokens
+			// and then validated them against the broader 'audience'
+			// config instead of clientID, rejecting valid logins.
+			for _, v := range audArr {
+				if str, ok := v.(string); ok && str == clientID {
+					isIDToken = true
+					break
 				}
 			}
 		}
@@ -375,20 +447,32 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	}
 
 	if err := verifySignatureWithKey(token, pubKey, alg); err != nil {
-		if !t.suppressDiagnosticLogs {
-			// Microsoft Graph access tokens carry a `nonce` JWT header and are
-			// signed in a proprietary form Microsoft documents as unverifiable
-			// by client applications. They reach this path only when the
-			// per-provider classifier (validateAzureTokens) didn't catch them,
-			// so log at debug to keep the error stream actionable while still
-			// surfacing the cause for diagnostics.
-			if _, isMSProprietary := jwt.Header["nonce"]; isMSProprietary {
-				t.safeLogDebugf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s (Microsoft proprietary nonce header — token is opaque to clients): %v", kid, alg, err)
-			} else {
-				t.safeLogErrorf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s: %v", kid, alg, err)
+		// The signature failed against the (possibly stale) cached key. The
+		// provider may have rotated its signing keys in place, reusing the
+		// same kid (R109): refresh the JWKS once and retry before failing,
+		// otherwise a freshly-rotated token is rejected for up to the JWKS
+		// cache TTL while the stale key remains cached.
+		if freshKey, ferr := t.jwkCache.getPublicKeyFresh(context.Background(), jwksURL, kid, t.httpClient); ferr == nil {
+			if verr := verifySignatureWithKey(token, freshKey, alg); verr == nil {
+				err = nil
 			}
 		}
-		return fmt.Errorf("signature verification failed: %w", err)
+		if err != nil {
+			if !t.suppressDiagnosticLogs {
+				// Microsoft Graph access tokens carry a `nonce` JWT header and are
+				// signed in a proprietary form Microsoft documents as unverifiable
+				// by client applications. They reach this path only when the
+				// per-provider classifier (validateAzureTokens) didn't catch them,
+				// so log at debug to keep the error stream actionable while still
+				// surfacing the cause for diagnostics.
+				if _, isMSProprietary := jwt.Header["nonce"]; isMSProprietary {
+					t.safeLogDebugf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s (Microsoft proprietary nonce header — token is opaque to clients): %v", kid, alg, err)
+				} else {
+					t.safeLogErrorf("DIAGNOSTIC: Signature verification failed for kid=%s, alg=%s: %v", kid, alg, err)
+				}
+			}
+			return fmt.Errorf("signature verification failed: %w", err)
+		}
 	}
 
 	if !t.suppressDiagnosticLogs {
@@ -399,9 +483,25 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	isIDToken := t.detectTokenType(jwt, token)
 
 	// Determine expected audience
-	expectedAudience := t.audience // Default to configured audience
+	// Snapshot audience/clientID under metadataMu: DCR rewrites them at
+	// runtime (R137).
+	clientID, _, _, audience, _ := t.clientCredentials()
+	expectedAudience := audience // Default to configured audience
 	if isIDToken {
-		expectedAudience = t.clientID
+		if t.strictAudienceValidation && audience != "" && audience != clientID {
+			// R163: strictAudienceValidation's reject-mismatch promise must
+			// not be silently bypassed by the ID-token classification.
+			// detectTokenType treats any token whose aud contains clientID
+			// as an ID token, which would validate it against clientID
+			// alone — so a token carrying only clientID (and not the
+			// configured audience) always passed the audience check and
+			// strict mode never rejected it. When an explicit, distinct
+			// audience is configured and strict mode is on, enforce the
+			// configured audience even for such tokens.
+			expectedAudience = audience
+		} else {
+			expectedAudience = clientID
+		}
 	}
 	if !t.suppressDiagnosticLogs {
 		if isIDToken {
@@ -500,11 +600,17 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 
 	if newToken.IDToken == "" {
 		t.logger.Info("Provider did not return a new ID token during refresh")
+		if !t.persistRotatedRefreshToken(req, rw, session, newToken, "missing ID token") {
+			return false
+		}
 		return false
 	}
 
 	if err = t.verifyToken(newToken.IDToken); err != nil {
 		t.logger.Debug("Failed to verify newly obtained ID token: %v", err)
+		if !t.persistRotatedRefreshToken(req, rw, session, newToken, "failed ID token verification") {
+			return false
+		}
 		return false
 	}
 
@@ -519,18 +625,35 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	claims, err := t.extractClaimsFunc(newToken.IDToken)
 	if err != nil {
 		t.logger.Errorf("refreshToken failed: Failed to extract claims from refreshed token: %v", err)
+		if !t.persistRotatedRefreshToken(req, rw, session, newToken, "failed to extract claims from refreshed token") {
+			return false
+		}
 		return false
 	}
-	userIdentifier, _ := claims[t.userIdentifierClaim].(string)
+	userIdentifier, _ := claimScalarString(claims[t.userIdentifierClaim])
 	if userIdentifier == "" {
 		if t.userIdentifierClaim != "sub" {
-			userIdentifier, _ = claims["sub"].(string)
+			userIdentifier, _ = claimScalarString(claims["sub"])
 		}
 		if userIdentifier == "" {
 			t.logger.Errorf("refreshToken failed: User identifier claim '%s' missing or empty in refreshed token", t.userIdentifierClaim)
+			if !t.persistRotatedRefreshToken(req, rw, session, newToken, "missing user identifier") {
+				return false
+			}
 			return false
 		}
 		t.logger.Debugf("Configured claim '%s' not found in refreshed token, using 'sub' claim as fallback", t.userIdentifierClaim)
+	}
+	// Bind the refreshed token's identity to the one the session already
+	// holds (granted at callback after email gate + isAllowedUser). A
+	// refreshed ID token carrying a different subject must not silently
+	// substitute the user identity mid-session (R106).
+	if prev := session.GetUserIdentifier(); prev != "" && prev != userIdentifier {
+		t.logger.Infof("refreshToken aborted: refreshed token held a different user identifier (%q) than the active session (%q)", userIdentifier, prev)
+		if !t.persistRotatedRefreshToken(req, rw, session, newToken, "user identifier mismatch") {
+			return false
+		}
+		return false
 	}
 	session.SetUserIdentifier(userIdentifier)
 
@@ -547,6 +670,9 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 	// a refresh (an infinite refresh loop). Keep the previous tokens.
 	if newToken.AccessToken == "" {
 		t.logger.Infof("Provider returned an empty access token during refresh; keeping previous tokens")
+		if !t.persistRotatedRefreshToken(req, rw, session, newToken, "empty access token") {
+			return false
+		}
 		return false
 	}
 
@@ -641,6 +767,28 @@ func (t *TraefikOidc) coordinatedTokenRefresh(req *http.Request, refreshToken st
 // The cache wraps the universal cache, which is Redis-backed in production -
 // so a "hit" here means another Traefik replica refreshed this same token
 // within the last few seconds.
+// persistRotatedRefreshToken saves a refresh token the IdP just rotated during
+// a token exchange, so the session is never left holding a token the exchange
+// already consumed. Rotation IdPs (Zitadel, Authentik, Auth0, ...) invalidate
+// the presented refresh token on every successful exchange regardless of which
+// downstream validation gate (ID token absent, verification failure,
+// identifier mismatch, empty access token) subsequently rejects the response.
+// If the rotated token were not persisted, the next refresh would present the
+// now-consumed token and hit invalid_grant, forcing a full logout.
+func (t *TraefikOidc) persistRotatedRefreshToken(req *http.Request, rw http.ResponseWriter, session *SessionData, newToken *TokenResponse, reason string) bool {
+	if newToken == nil || newToken.RefreshToken == "" {
+		return true // nothing rotated; nothing to persist
+	}
+	session.SetRefreshToken(newToken.RefreshToken)
+	if err := session.Save(req, rw); err != nil {
+		t.logger.Errorf("refreshToken failed to persist rotated refresh token after %s: %v", reason, err)
+		session.SetRefreshToken(newToken.RefreshToken) // keep in-memory for consistency
+		return false
+	}
+	t.logger.Debugf("Persisted rotated refresh token after %s", reason)
+	return true
+}
+
 func (t *TraefikOidc) lookupCachedRefreshResult(sessionID string) (*TokenResponse, bool) {
 	if t.refreshResultCache == nil {
 		return nil, false
@@ -649,8 +797,37 @@ func (t *TraefikOidc) lookupCachedRefreshResult(sessionID string) (*TokenRespons
 	if !ok || v == nil {
 		return nil, false
 	}
-	if tr, ok := v.(*TokenResponse); ok && tr != nil {
-		return tr, true
+	// Cross-backend decode (R159): UniversalCache stores the value locally
+	// as the raw *TokenResponse (stored by cacheRefreshResult) but
+	// serializes it to JSON for any shared backend (e.g. Redis) via
+	// deserialize, which unmarshals into a generic map. The old code only
+	// ever type-asserted *TokenResponse, so every backend read — the
+	// entire cross-replica path — failed the assert and returned nil,
+	// making the advertised refresh dedup silently inert (each replica
+	// still POSTed the refresh token). Normalize any serialized form back
+	// to *TokenResponse.
+	switch val := v.(type) {
+	case *TokenResponse:
+		return val, true
+	case map[string]interface{}, []byte, string:
+		var raw []byte
+		switch tv := v.(type) {
+		case []byte:
+			raw = tv
+		case string:
+			raw = []byte(tv)
+		default:
+			b, err := json.Marshal(v)
+			if err != nil {
+				return nil, false
+			}
+			raw = b
+		}
+		var tr TokenResponse
+		if err := json.Unmarshal(raw, &tr); err != nil {
+			return nil, false
+		}
+		return &tr, true
 	}
 	return nil, false
 }
@@ -685,21 +862,74 @@ const refreshResultCacheTTL = 5 * time.Second
 func (t *TraefikOidc) RevokeToken(token string) {
 	t.tokenCache.Delete(token)
 
+	// Evict any cached positive introspection result so a revoked OPAQUE
+	// access token (which carries no jti and is therefore not covered by
+	// the JTI blacklist below) is not still served an "active" verdict
+	// from the introspection cache after revocation. Next request
+	// re-introspects and sees active=false.
+	if t.introspectionCache != nil {
+		t.introspectionCache.Delete(token)
+	}
+
+	d := blacklistDuration(token)
+
 	if jwt, err := parseJWT(token); err == nil {
 		if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" {
-			expiry := time.Now().Add(24 * time.Hour)
 			if t.tokenBlacklist != nil {
-				t.tokenBlacklist.Set(jti, true, time.Until(expiry))
+				t.tokenBlacklist.Set(jti, true, d)
 				t.logger.Debugf("Locally revoked token JTI %s (added to blacklist)", jti)
 			}
 		}
 	}
 
-	expiry := time.Now().Add(24 * time.Hour)
 	if t.tokenBlacklist != nil {
-		t.tokenBlacklist.Set(token, true, time.Until(expiry))
+		t.tokenBlacklist.Set(token, true, d)
 		t.logger.Debugf("Locally revoked token (added to blacklist)")
 	}
+}
+
+// tokenExpiryUnix extracts the numeric exp claim from a JWT, accepting every
+// representation a decoder or cache backend may produce (float64, json.Number,
+// int). ok is false when the token is not a JWT or carries no usable exp.
+func tokenExpiryUnix(token string) (int64, bool) {
+	jwt, err := parseJWT(token)
+	if err != nil {
+		return 0, false
+	}
+	switch v := jwt.Claims["exp"].(type) {
+	case float64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	}
+	return 0, false
+}
+
+// blacklistDuration returns how long a revoked token must stay blacklisted.
+// A revoked token remains cryptographically valid until its exp, so the
+// blacklist must cover the entire remaining validity window — otherwise a
+// token with exp more than 24h away could be re-presented (and re-cached)
+// after 24h. A 24h floor keeps short-lived or already-expired tokens
+// blacklisted for a nominal window.
+func blacklistDuration(token string) time.Duration {
+	const minTTL = 24 * time.Hour
+	if exp, ok := tokenExpiryUnix(token); ok {
+		untilExp := time.Until(time.Unix(exp, 0))
+		if untilExp > minTTL {
+			return untilExp
+		}
+	}
+	return minTTL
 }
 
 // RevokeTokenWithProvider revokes a token with the OIDC provider.
@@ -727,28 +957,40 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	tokenURL := t.tokenURL
 	t.metadataMu.RUnlock()
 
+	// Snapshot the client credentials and related metadata under metadataMu:
+	// DCR (registerWithProvider, main.go) mutates clientID/clientSecret
+	// under metadataMu.Lock concurrently with logout-time revocation, so
+	// reading them here without the lock would be a data race (R134).
+	t.metadataMu.RLock()
+	clientID := t.clientID
+	clientSecret := t.clientSecret
+	clientAuthMethod := t.clientAuthMethod
+	clientAssertion := t.clientAssertion
+	issuerURL := t.issuerURL
+	t.metadataMu.RUnlock()
+
 	data := url.Values{
 		"token":           {token},
 		"token_type_hint": {tokenType},
 	}
 	// client_id is sent in the body for every method except client_secret_basic,
 	// where it is carried in the Authorization header per RFC 6749 §2.3.1.
-	if t.clientAuthMethod != "client_secret_basic" || t.clientAssertion != nil {
-		data.Set("client_id", t.clientID)
+	if clientAuthMethod != "client_secret_basic" || clientAssertion != nil {
+		data.Set("client_id", clientID)
 	}
 
 	useBasicAuth := false
-	if t.clientAssertion != nil {
-		assertion, err := t.clientAssertion.Sign(tokenURL, t.clientID)
+	if clientAssertion != nil {
+		assertion, err := clientAssertion.Sign(tokenURL, clientID)
 		if err != nil {
 			return fmt.Errorf("failed to sign client assertion: %w", err)
 		}
 		data.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
 		data.Set("client_assertion", assertion)
-	} else if t.clientAuthMethod == "client_secret_basic" {
+	} else if clientAuthMethod == "client_secret_basic" {
 		useBasicAuth = true
 	} else {
-		data.Set("client_secret", t.clientSecret)
+		data.Set("client_secret", clientSecret)
 	}
 
 	req, err := http.NewRequestWithContext(context.Background(), "POST", revocationURL, strings.NewReader(data.Encode()))
@@ -759,16 +1001,13 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	if useBasicAuth {
-		setOAuthBasicAuth(req, t.clientID, t.clientSecret)
+		setOAuthBasicAuth(req, clientID, clientSecret)
 	}
 
 	// Send the request with circuit breaker protection if available
 	var resp *http.Response
 	if t.errorRecoveryManager != nil {
-		// Read issuerURL with RLock for service name
-		t.metadataMu.RLock()
-		serviceName := fmt.Sprintf("token-revocation-%s", t.issuerURL)
-		t.metadataMu.RUnlock()
+		serviceName := fmt.Sprintf("token-revocation-%s", issuerURL)
 		err = t.errorRecoveryManager.ExecuteWithRecovery(context.Background(), serviceName, func() error {
 			var reqErr error
 			resp, reqErr = t.httpClient.Do(req) //nolint:bodyclose // Body is closed in defer after error check
@@ -981,7 +1220,10 @@ func stringListFromClaim(value interface{}) ([]string, bool) {
 	case []interface{}:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
-			if s, ok := item.(string); ok {
+			// Scalar items are stringified (strings and numbers), so a
+			// numeric group/role is preserved instead of being silently
+			// dropped; composite items (maps, nested arrays) are skipped.
+			if s, ok := claimScalarString(item); ok {
 				out = append(out, s)
 			}
 		}
@@ -1000,24 +1242,23 @@ func (t *TraefikOidc) extractGroupsAndRolesFromClaims(claims map[string]interfac
 	var roles []string
 
 	if groupsClaim, exists := claims[t.groupClaimName]; exists {
-		groupsSlice, ok := stringListFromClaim(groupsClaim)
-		if !ok {
-			return nil, nil, fmt.Errorf("%s claim is not an array", t.groupClaimName)
+		if groupsSlice, ok := stringListFromClaim(groupsClaim); ok {
+			groups = append(groups, groupsSlice...)
+			for _, groupStr := range groupsSlice {
+				t.logger.Debugf("Found group from %s claim: %s", t.groupClaimName, groupStr)
+			}
 		}
-		for _, groupStr := range groupsSlice {
-			t.logger.Debugf("Found group from %s claim: %s", t.groupClaimName, groupStr)
-			groups = append(groups, groupStr)
-		}
+		// A malformed/null group claim (numeric scalar, JSON null) is treated
+		// as empty rather than a hard error (R96): one bad claim must not
+		// suppress the valid sibling role signal.
 	}
 
 	if rolesClaim, exists := claims[t.roleClaimName]; exists {
-		rolesSlice, ok := stringListFromClaim(rolesClaim)
-		if !ok {
-			return nil, nil, fmt.Errorf("%s claim is not an array", t.roleClaimName)
-		}
-		for _, roleStr := range rolesSlice {
-			t.logger.Debugf("Found role from %s claim: %s", t.roleClaimName, roleStr)
-			roles = append(roles, roleStr)
+		if rolesSlice, ok := stringListFromClaim(rolesClaim); ok {
+			roles = append(roles, rolesSlice...)
+			for _, roleStr := range rolesSlice {
+				t.logger.Debugf("Found role from %s claim: %s", t.roleClaimName, roleStr)
+			}
 		}
 	}
 
