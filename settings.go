@@ -97,6 +97,13 @@ type Config struct {
 	AllowPrivateIPAddresses   bool   `json:"allowPrivateIPAddresses,omitempty"`
 	MinimalHeaders            bool   `json:"minimalHeaders,omitempty"`
 	StripAuthCookies          bool   `json:"stripAuthCookies,omitempty"`
+	// CookiePath restricts session cookies to a specific path prefix instead of "/".
+	// When traefikoidc protects some but not all paths on a domain, set this to the
+	// middleware's path prefix (e.g. "/app-protegido") so the browser does not send
+	// the OIDC session cookies to unprotected paths — preventing "Request Header
+	// Or Cookie Too Large" (431) errors on those paths.
+	// Default "/" (all paths, current behaviour).
+	CookiePath                string `json:"cookiePath,omitempty"`
 	EnableBackchannelLogout   bool   `json:"enableBackchannelLogout,omitempty"`
 	EnableFrontchannelLogout  bool   `json:"enableFrontchannelLogout,omitempty"`
 	BackchannelLogoutURL      string `json:"backchannelLogoutURL,omitempty"`

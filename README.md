@@ -121,6 +121,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `enablePKCE` | `false` | PKCE on the auth code flow. |
 | `cookieDomain` | auto | Set explicitly for multi-subdomain setups (`.example.com`). |
 | `cookiePrefix` | `_oidc_raczylo_` | Unique prefix per middleware instance to isolate sessions. |
+| `cookiePath` | `/` | Restrict cookies to a path prefix. Set to the middleware's path (e.g. `/app`) to prevent the browser from sending OIDC cookies to unprotected paths, avoiding 431 "Request Header Or Cookie Too Large" errors on mixed-use domains. |
 | `sessionMaxAge` | `86400` | Session lifetime in seconds. |
 | `refreshGracePeriodSeconds` | `60` | Proactively refresh tokens this many seconds before expiry. |
 | `maxRefreshTokenAgeSeconds` | `21600` | Heuristic max stored refresh-token lifetime (6h). Past this, the plugin treats the RT as expired without contacting the IdP — returns 401 to AJAX, full re-auth on navigations. Set `0` to disable. Tune to match your IdP's RT TTL. |
