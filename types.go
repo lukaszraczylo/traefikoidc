@@ -91,100 +91,115 @@ type TraefikOidc struct {
 	// Hot-path readers (middleware.ServeHTTP, token verification) load it
 	// directly; less-frequent paths still acquire metadataMu.RLock and
 	// read the individual fields below.
-	metadataSnapshot           atomic.Value
+	metadataSnapshot atomic.Value
 	// lastMetadataRetryNano is the UnixNano timestamp of the last metadata
 	// recovery attempt. Stored atomically so the hot ServeHTTP path can
 	// throttle retries without acquiring metadataRetryMutex on every request.
-	lastMetadataRetryNano      int64
+	lastMetadataRetryNano int64
 	// firstRequestStarted is 0 until the very first non-health request fires
 	// the background-task bootstrap; then it flips to 1 via CAS. Replaces the
 	// firstRequestMutex + firstRequestReceived combo which previously took
 	// a write lock on every non-health request forever.
-	firstRequestStarted        int32
+	firstRequestStarted int32
 	// metadataRefreshStartedAtomic is the CAS-only variant of the old
 	// metadataRefreshStarted bool. Both flags live under the same atomic so
 	// concurrent first-request goroutines race exactly once.
 	metadataRefreshStartedAtomic int32
-	jwkCache                   JWKCacheInterface
-	jwtVerifier                JWTVerifier
-	ctx                        context.Context
-	tokenVerifier              TokenVerifier
-	next                       http.Handler
-	tokenExchanger             TokenExchanger
-	tokenBlacklist             CacheInterface
-	tokenTypeCache             CacheInterface
-	introspectionCache         CacheInterface
-	initComplete               chan struct{}
-	limiter                    *rate.Limiter
-	headerTemplates            map[string]*template.Template
-	sessionManager             *SessionManager
-	tokenCleanupStopChan       chan struct{}
-	excludedURLs               map[string]struct{}
-	extractClaimsFunc          func(tokenString string) (map[string]any, error)
-	initiateAuthenticationFunc func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
-	metadataCache              *MetadataCache
-	allowedRolesAndGroups      map[string]struct{}
-	allowedUsers               map[string]struct{}
-	allowedUserDomains         map[string]struct{}
-	tokenCache                 *TokenCache
-	httpClient                 *http.Client
-	tokenHTTPClient            *http.Client
-	logger                     *Logger
-	metadataRefreshStopChan    chan struct{}
-	cancelFunc                 context.CancelFunc
-	errorRecoveryManager       *ErrorRecoveryManager
-	tokenResilienceManager     *TokenResilienceManager
-	refreshCoordinator         *RefreshCoordinator
-	goroutineWG                *sync.WaitGroup
-	dcrConfig                  *DynamicClientRegistrationConfig
-	dynamicClientRegistrar     *DynamicClientRegistrar
-	scopeFilter                *ScopeFilter
-	securityHeadersApplier     func(http.ResponseWriter, *http.Request)
-	userIdentifierClaim        string
-	revocationURL              string
-	name                       string
-	redirURLPath               string
-	logoutURLPath              string
-	tokenURL                   string
-	authURL                    string
-	endSessionURL              string
-	postLogoutRedirectURI      string
-	jwksURL                    string
-	issuerURL                  string
-	groupClaimName             string
-	introspectionURL           string
-	providerURL                string
-	roleClaimName              string
-	audience                   string
-	clientID                   string
-	clientSecret               string
-	clientAuthMethod           string
-	clientAssertion            *ClientAssertionSigner
-	registrationURL            string
-	backchannelLogoutPath      string
-	frontchannelLogoutPath     string
-	scopesSupported            []string
-	scopes                     []string
-	extraAuthParams            map[string]string
-	refreshGracePeriod         time.Duration
-	maxRefreshTokenAge         time.Duration
-	metadataMu                 sync.RWMutex
-	shutdownOnce               sync.Once
-	sessionInvalidationCache   CacheInterface
-	refreshResultCache         CacheInterface
-	minimalHeaders             bool
-	stripAuthCookies           bool
-	enableBackchannelLogout    bool
-	enableFrontchannelLogout   bool
-	requireTokenIntrospection  bool
-	allowPrivateIPAddresses    bool
-	disableReplayDetection     bool
-	allowOpaqueTokens          bool
-	strictAudienceValidation   bool
-	overrideScopes             bool
-	enablePKCE                 bool
-	forceHTTPS                 bool
-	suppressDiagnosticLogs     bool
+	jwkCache                     JWKCacheInterface
+	jwtVerifier                  JWTVerifier
+	ctx                          context.Context
+	tokenVerifier                TokenVerifier
+	next                         http.Handler
+	tokenExchanger               TokenExchanger
+	tokenBlacklist               CacheInterface
+	tokenTypeCache               CacheInterface
+	introspectionCache           CacheInterface
+	initComplete                 chan struct{}
+	limiter                      *rate.Limiter
+	headerTemplates              map[string]*template.Template
+	sessionManager               *SessionManager
+	tokenCleanupStopChan         chan struct{}
+	excludedURLs                 map[string]struct{}
+	extractClaimsFunc            func(tokenString string) (map[string]any, error)
+	initiateAuthenticationFunc   func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string)
+	metadataCache                *MetadataCache
+	allowedRolesAndGroups        map[string]struct{}
+	allowedUsers                 map[string]struct{}
+	allowedUserDomains           map[string]struct{}
+	tokenCache                   *TokenCache
+	httpClient                   *http.Client
+	tokenHTTPClient              *http.Client
+	logger                       *Logger
+	metadataRefreshStopChan      chan struct{}
+	cancelFunc                   context.CancelFunc
+	errorRecoveryManager         *ErrorRecoveryManager
+	tokenResilienceManager       *TokenResilienceManager
+	refreshCoordinator           *RefreshCoordinator
+	goroutineWG                  *sync.WaitGroup
+	dcrConfig                    *DynamicClientRegistrationConfig
+	dynamicClientRegistrar       *DynamicClientRegistrar
+	scopeFilter                  *ScopeFilter
+	securityHeadersApplier       func(http.ResponseWriter, *http.Request)
+	userIdentifierClaim          string
+	revocationURL                string
+	name                         string
+	redirURLPath                 string
+	logoutURLPath                string
+	tokenURL                     string
+	authURL                      string
+	endSessionURL                string
+	postLogoutRedirectURI        string
+	jwksURL                      string
+	issuerURL                    string
+	groupClaimName               string
+	introspectionURL             string
+	providerURL                  string
+	roleClaimName                string
+	audience                     string
+	clientID                     string
+	clientSecret                 string
+	clientAuthMethod             string
+	clientAssertion              *ClientAssertionSigner
+	registrationURL              string
+	// configRevocationURL, configEndSessionURL, and configIntrospectionURL
+	// hold operator-configured endpoint overrides (Config.RevocationURL,
+	// Config.OIDCEndSessionURL, Config.IntrospectionURL). They are set once at
+	// construction and never mutated afterwards, so they are read lock-free,
+	// the same contract as providerURL, which updateMetadataEndpoints already
+	// reads unlocked. A manual override always wins over discovery; an empty
+	// string means use the discovered value.
+	configRevocationURL       string
+	configEndSessionURL       string
+	configIntrospectionURL    string
+	backchannelLogoutPath     string
+	frontchannelLogoutPath    string
+	scopesSupported           []string
+	scopes                    []string
+	extraAuthParams           map[string]string
+	refreshGracePeriod        time.Duration
+	maxRefreshTokenAge        time.Duration
+	metadataMu                sync.RWMutex
+	shutdownOnce              sync.Once
+	sessionInvalidationCache  CacheInterface
+	refreshResultCache        CacheInterface
+	minimalHeaders            bool
+	stripAuthCookies          bool
+	enableBackchannelLogout   bool
+	enableFrontchannelLogout  bool
+	requireTokenIntrospection bool
+	allowPrivateIPAddresses   bool
+	// allowLoopbackHosts permits loopback/localhost hosts in outbound URL
+	// validation (validateHost). Derived at construction time from a loopback
+	// providerURL (local development), never operator-set directly. Mirrors
+	// the allowLoopback derivation in updateMetadataEndpoints.
+	allowLoopbackHosts       bool
+	disableReplayDetection   bool
+	allowOpaqueTokens        bool
+	strictAudienceValidation bool
+	overrideScopes           bool
+	enablePKCE               bool
+	forceHTTPS               bool
+	suppressDiagnosticLogs   bool
 
 	// Bearer-auth runtime state (populated only when EnableBearerAuth=true).
 	bearerIdentifierClaim     string

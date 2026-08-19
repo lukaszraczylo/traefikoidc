@@ -194,6 +194,7 @@ func TestGoroutineLeakPrevention_MultipleInstances(t *testing.T) {
 		config.SessionEncryptionKey = "test-encryption-key-32-bytes-long"
 		config.ClientID = "test-client-id"
 		config.ClientSecret = "test-client-secret"
+		config.CallbackURL = "/callback"
 
 		handler, err := New(ctx, nil, config, "test")
 		if err != nil {
@@ -322,6 +323,7 @@ func TestGoroutineLeakPrevention_BackgroundTaskCleanup(t *testing.T) {
 	config.SessionEncryptionKey = "test-encryption-key-32-bytes-long"
 	config.ClientID = "test-client-id"
 	config.ClientSecret = "test-client-secret"
+	config.CallbackURL = "/callback"
 
 	handler, err := New(ctx, nil, config, "test")
 	if err != nil {

@@ -298,13 +298,20 @@ strictAudienceValidation: true
    ```
    Look for `introspection_endpoint`
 
-2. **Disable required introspection (less secure):**
+2. **Configure the endpoint manually:**
+   ```yaml
+   introspectionURL: https://YOUR_DOMAIN/oauth/introspect
+   ```
+   Set this when Auth0 omits `introspection_endpoint` from discovery. The
+   manual value takes precedence over the discovered value.
+
+3. **Disable required introspection (less secure):**
    ```yaml
    allowOpaqueTokens: true
    requireTokenIntrospection: false  # Falls back to ID token
    ```
 
-3. **Use JWT access tokens instead** (recommended)
+4. **Use JWT access tokens instead** (recommended)
 
 ---
 

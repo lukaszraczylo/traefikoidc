@@ -6,7 +6,7 @@ experimental:
   plugins:
     traefikoidc:
       moduleName: github.com/lukaszraczylo/traefikoidc
-      version: v0.8.0
+      version: v1.0.29
 
 # Dynamic configuration (dynamic.yml or labels)
 http:

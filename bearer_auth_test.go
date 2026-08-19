@@ -67,31 +67,31 @@ func makeBearerOIDC(t *testing.T, next http.Handler) *TraefikOidc {
 	t.Helper()
 	sm := createTestSessionManager(t)
 	oidc := &TraefikOidc{
-		next:                      next,
-		logger:                    NewLogger("error"),
-		initComplete:              make(chan struct{}),
-		sessionManager:            sm,
-		firstRequestStarted: 1,
+		next:                         next,
+		logger:                       NewLogger("error"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               sm,
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		issuerURL:                 "https://issuer.example.com",
-		audience:                  "https://api.example.com",
-		clientID:                  "https://api.example.com",
-		tokenCache:                NewTokenCache(),
-		excludedURLs:              map[string]struct{}{"/favicon.ico": {}},
-		allowedRolesAndGroups:     map[string]struct{}{},
-		limiter:                   rate.NewLimiter(rate.Every(time.Second), 1000),
-		ctx:                       context.Background(),
-		enableBearerAuth:          true,
-		stripAuthorizationHeader:  true,
-		bearerEmitWWWAuthenticate: true,
-		bearerOverridesCookie:     false,
-		bearerIdentifierClaim:     "sub",
-		maxIdentifierLength:       256,
-		maxTokenAge:               24 * time.Hour,
-		bearerFailureThreshold:    20,
-		bearerFailureWindow:       60 * time.Second,
-		bearerFailurePenalty:      60 * time.Second,
-		bearerFailureTracker:      newBearerFailureTracker(20, 60*time.Second, 60*time.Second),
+		issuerURL:                    "https://issuer.example.com",
+		audience:                     "https://api.example.com",
+		clientID:                     "https://api.example.com",
+		tokenCache:                   NewTokenCache(),
+		excludedURLs:                 map[string]struct{}{"/favicon.ico": {}},
+		allowedRolesAndGroups:        map[string]struct{}{},
+		limiter:                      rate.NewLimiter(rate.Every(time.Second), 1000),
+		ctx:                          context.Background(),
+		enableBearerAuth:             true,
+		stripAuthorizationHeader:     true,
+		bearerEmitWWWAuthenticate:    true,
+		bearerOverridesCookie:        false,
+		bearerIdentifierClaim:        "sub",
+		maxIdentifierLength:          256,
+		maxTokenAge:                  24 * time.Hour,
+		bearerFailureThreshold:       20,
+		bearerFailureWindow:          60 * time.Second,
+		bearerFailurePenalty:         60 * time.Second,
+		bearerFailureTracker:         newBearerFailureTracker(20, 60*time.Second, 60*time.Second),
 	}
 	oidc.extractClaimsFunc = extractClaims
 	close(oidc.initComplete)
@@ -303,14 +303,32 @@ func TestBearerFailureTracker(t *testing.T) {
 	if b, retry := tr.blocked(ip); !b || retry <= 0 {
 		t.Fatalf("expected blocked with positive retry, got=%v retry=%v", b, retry)
 	}
-	// Success clears the counter.
+	// A success while a penalty is active must NOT wipe the in-effect lockout
+	// (otherwise a single success could clear an attacker's penalty).
 	tr.recordSuccess(ip)
-	if b, _ := tr.blocked(ip); b {
-		t.Fatalf("expected unblocked after success")
+	if b, _ := tr.blocked(ip); !b {
+		t.Fatalf("expected still blocked after success while penalty active")
 	}
 	// Other IPs are unaffected.
 	if b, _ := tr.blocked("10.0.0.2"); b {
 		t.Fatalf("unrelated IP should not be blocked")
+	}
+
+	// With an expired penalty, a success resets the counter so a subsequent
+	// sub-threshold failure does not immediately re-block.
+	tr2 := newBearerFailureTracker(3, 60*time.Second, 1*time.Millisecond)
+	const ip2 = "10.0.0.3"
+	for i := 0; i < 3; i++ {
+		tr2.recordFailure(ip2)
+	}
+	time.Sleep(5 * time.Millisecond) // let the short penalty expire
+	if b, _ := tr2.blocked(ip2); b {
+		t.Fatalf("expected unblocked after penalty expiry")
+	}
+	tr2.recordSuccess(ip2) // resets count since penalty has passed
+	tr2.recordFailure(ip2) // single failure, well below threshold
+	if b, _ := tr2.blocked(ip2); b {
+		t.Fatalf("expected unblocked: counter should have reset after success")
 	}
 }
 

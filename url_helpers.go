@@ -19,12 +19,37 @@ import (
 //   - true if the URL should be excluded from authentication, false otherwise.
 func (t *TraefikOidc) determineExcludedURL(currentRequest string) bool {
 	for excludedURL := range t.excludedURLs {
-		if strings.HasPrefix(currentRequest, excludedURL) {
+		if pathExcluded(currentRequest, excludedURL) {
 			t.logger.Debugf("URL is excluded - got %s / excluded hit: %s", currentRequest, excludedURL)
 			return true
 		}
 	}
 	return false
+}
+
+// pathExcluded reports whether requestPath is covered by an excluded prefix at a
+// natural boundary: an exact match, a sub-path ("/public" → "/public/x"), or a
+// file extension ("/favicon" → "/favicon.ico"). It deliberately does NOT match
+// an unrelated sibling such as "/publicsecret", so a configured exclusion can no
+// longer be widened into an authentication bypass on a different resource.
+func pathExcluded(requestPath, excluded string) bool {
+	excluded = strings.TrimRight(excluded, "/")
+	if excluded == "" {
+		// A "/" (root) exclusion only matches the root path, not everything.
+		return requestPath == "" || requestPath == "/"
+	}
+	if requestPath == excluded {
+		return true
+	}
+	if !strings.HasPrefix(requestPath, excluded) {
+		return false
+	}
+	switch requestPath[len(excluded)] {
+	case '/', '.':
+		return true
+	default:
+		return false
+	}
 }
 
 // buildAuthURL constructs the OIDC provider authorization URL.
@@ -288,6 +313,63 @@ func (t *TraefikOidc) validateParsedURL(u *url.URL) error {
 	return nil
 }
 
+// validateDiscoveredEndpoint validates an endpoint URL obtained from the
+// provider's OIDC/OAuth2 discovery document before the plugin issues any
+// outbound request to it. A discovery document is attacker-influenced if the
+// provider is malicious or its TLS is broken, so an unvalidated endpoint is an
+// SSRF vector (e.g. jwks_uri or introspection_endpoint pointed at the cloud
+// metadata service 169.254.169.254 or an internal host).
+//
+// Empty endpoints are allowed (they are optional). Link-local (which covers the
+// 169.254.0.0/16 metadata range), multicast and unspecified addresses are
+// always rejected. Private addresses are rejected unless allowPrivateIPAddresses
+// is set. Loopback is rejected unless allowLoopback is true — which the caller
+// sets only when the operator-configured providerURL is itself loopback (local
+// development, in-cluster sidecars, tests), so production deployments pointed at
+// a real provider still block loopback SSRF.
+func (t *TraefikOidc) validateDiscoveredEndpoint(urlStr string, allowLoopback bool) error {
+	if urlStr == "" {
+		return nil
+	}
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("disallowed URL scheme: %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("missing host in URL")
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		switch {
+		case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified():
+			return fmt.Errorf("endpoint host is a blocked address: %s", ip)
+		case ip.IsLoopback() && !allowLoopback:
+			return fmt.Errorf("endpoint host is a loopback address: %s", ip)
+		case ip.IsPrivate() && !t.allowPrivateIPAddresses:
+			return fmt.Errorf("endpoint host is a private address: %s", ip)
+		}
+	}
+	if strings.Contains(u.Path, "..") {
+		return fmt.Errorf("path traversal detected in URL path")
+	}
+	return nil
+}
+
+// sameHost reports whether two URLs share the same host:port (case-insensitive).
+// Used to pin the credential-bearing introspection endpoint to the operator-
+// configured provider so a poisoned discovery document cannot redirect the
+// client secret to an attacker-controlled host.
+func sameHost(a, b string) bool {
+	ua, erra := url.Parse(a)
+	ub, errb := url.Parse(b)
+	if erra != nil || errb != nil || ua.Host == "" || ub.Host == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Host, ub.Host)
+}
+
 // validateHost validates a hostname or IP address for security.
 // It prevents access to localhost, private networks, and known metadata endpoints.
 // When allowPrivateIPAddresses is enabled, private IP checks are skipped.
@@ -308,8 +390,15 @@ func (t *TraefikOidc) validateHost(host string) error {
 
 	ip := net.ParseIP(hostname)
 	if ip != nil {
-		// Always block loopback, link-local, and multicast addresses
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		// Loopback addresses are blocked by default, but allowed when the
+		// plugin was constructed with a loopback providerURL (local
+		// development) — see allowLoopbackHosts.
+		if ip.IsLoopback() && !t.allowLoopbackHosts {
+			return fmt.Errorf("access to loopback/link-local IP addresses is not allowed: %s", ip.String())
+		}
+
+		// Link-local and multicast addresses are always blocked.
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			return fmt.Errorf("access to loopback/link-local IP addresses is not allowed: %s", ip.String())
 		}
 
@@ -323,16 +412,22 @@ func (t *TraefikOidc) validateHost(host string) error {
 		}
 	}
 
-	dangerousHosts := map[string]bool{
-		"localhost":                true,
-		"127.0.0.1":                true,
-		"::1":                      true,
+	// Always blocked regardless of allowLoopbackHosts: these have no IP-branch
+	// backstop (net.ParseIP returns nil for hostnames), so bypassing them
+	// would open an SSRF path to the cloud metadata service.
+	alwaysDangerousHosts := map[string]bool{
 		"0.0.0.0":                  true,
 		"169.254.169.254":          true,
 		"metadata.google.internal": true,
 	}
 
-	if dangerousHosts[strings.ToLower(hostname)] {
+	if alwaysDangerousHosts[strings.ToLower(hostname)] {
+		return fmt.Errorf("access to dangerous hostname is not allowed: %s", hostname)
+	}
+
+	// localhost/loopback literals are blocked unless allowLoopbackHosts
+	// permits them (see allowLoopbackHosts doc comment on TraefikOidc).
+	if !t.allowLoopbackHosts && isLoopbackHost(hostname) {
 		return fmt.Errorf("access to dangerous hostname is not allowed: %s", hostname)
 	}
 

@@ -16,8 +16,9 @@ type CacheManager struct {
 }
 
 var (
-	globalCacheManagerInstance *CacheManager
-	cacheManagerInitOnce       sync.Once
+	globalCacheManagerInstance    *CacheManager
+	cacheManagerInitOnce          sync.Once
+	cacheManagerActiveFingerprint string
 )
 
 // GetGlobalCacheManager returns a singleton CacheManager instance.
@@ -29,7 +30,9 @@ func GetGlobalCacheManager(wg *sync.WaitGroup) *CacheManager {
 
 // GetGlobalCacheManagerWithConfig returns a singleton CacheManager instance with optional Redis configuration
 func GetGlobalCacheManagerWithConfig(wg *sync.WaitGroup, config *Config) *CacheManager {
+	fp := redisFingerprint(config)
 	cacheManagerInitOnce.Do(func() {
+		cacheManagerActiveFingerprint = fp
 		var redisConfig *RedisConfig
 		var logger *Logger
 
@@ -55,7 +58,25 @@ func GetGlobalCacheManagerWithConfig(wg *sync.WaitGroup, config *Config) *CacheM
 			manager: GetUniversalCacheManagerWithConfig(logger, redisConfig),
 		}
 	})
+	// Warn loudly if a later instance asks for a DIFFERENT explicit Redis
+	// backend than the one that won initialization: the cache manager is a
+	// process-global singleton shared across plugin instances (yaegi), so this
+	// instance's divergent configuration is silently ignored, which would
+	// otherwise collapse cache/state isolation between routes (rank 9).
+	if fp != "" && cacheManagerActiveFingerprint != "" && fp != cacheManagerActiveFingerprint {
+		NewLogger(config.LogLevel).Errorf("cache manager already initialized with Redis backend %q; this instance's Redis backend %q is IGNORED (process-global singleton). Use a single consistent cache configuration across all routes.", cacheManagerActiveFingerprint, fp)
+	}
 	return globalCacheManagerInstance
+}
+
+// redisFingerprint returns a stable identifier for an explicitly-enabled Redis
+// backend (address + key prefix), or "" when Redis is not explicitly enabled.
+// Used to detect divergent cache configurations across plugin instances.
+func redisFingerprint(config *Config) string {
+	if config == nil || config.Redis == nil || !config.Redis.Enabled {
+		return ""
+	}
+	return config.Redis.Address + "|" + config.Redis.KeyPrefix
 }
 
 // GetSharedTokenBlacklist returns the shared token blacklist cache

@@ -178,9 +178,10 @@ clientSecret: your-client-secret
 | `logLevel` | string | `info` | Logging verbosity (`debug`, `info`, `error`) |
 | `forceHTTPS` | bool | `true` | Force HTTPS for redirect URIs (set `false` only for plaintext HTTP local dev) |
 | `rateLimit` | int | `100` | Maximum requests per second |
-| `excludedURLs` | []string | none | Paths that bypass authentication |
-| `revocationURL` | string | auto-discovered | Token revocation endpoint |
-| `oidcEndSessionURL` | string | auto-discovered | Provider's end session endpoint |
+| `excludedURLs` | []string | none | Paths that bypass authentication, matched at a path-segment or file-extension boundary |
+| `revocationURL` | string | auto-discovered | Token revocation endpoint. Takes precedence over the discovered value. |
+| `oidcEndSessionURL` | string | auto-discovered | Provider's end session endpoint. Takes precedence over the discovered value. |
+| `introspectionURL` | string | auto-discovered | RFC 7662 token introspection endpoint. Set this when your IdP omits `introspection_endpoint` from discovery. Takes precedence over the discovered value. |
 | `enablePKCE` | bool | `false` | Enable PKCE for authorization code flow |
 | `minimalHeaders` | bool | `false` | Reduce forwarded headers |
 | `clientAuthMethod` | string | `client_secret_post` | Client authentication method at token/revocation endpoints. One of `client_secret_post`, `client_secret_basic`, `private_key_jwt`. See [Client Authentication](#client-authentication). |
@@ -431,22 +432,62 @@ minimalHeaders: true  # Only forwards X-Forwarded-User
 ```yaml
 headers:
   - name: "X-User-Email"
-    value: "{{{{.Claims.email}}}}"
+    value: "{{.Claims.email}}"
   - name: "X-User-ID"
-    value: "{{{{.Claims.sub}}}}"
+    value: "{{.Claims.sub}}"
   - name: "Authorization"
-    value: "Bearer {{{{.AccessToken}}}}"
+    value: "Bearer {{.AccessToken}}"
   - name: "X-User-Roles"
-    value: "{{{{range $i, $e := .Claims.roles}}}}{{{{if $i}}}},{{{{end}}}}{{{{$e}}}}{{{{end}}}}"
+    value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
 ```
 
 **Template Variables:**
-- `{{.Claims.field}}` - ID token claims
+- `{{.Claims.field}}` - ID token claims (only whitelisted fields; see below)
 - `{{.AccessToken}}` - Raw access token
-- `{{.IdToken}}` - Raw ID token
+- `{{.IdToken}}` / `{{.IDToken}}` - Raw ID token (both spellings work)
 - `{{.RefreshToken}}` - Raw refresh token
 
-**Important:** Use double curly braces (`{{{{` and `}}}}`) to escape templates in YAML.
+**Important — file provider only:** Traefik's file provider runs every dynamic
+configuration file through Go templating before the plugin sees it, so plain
+`{{ }}` fails there with `can't evaluate field AccessToken in type bool`.
+Escape with a raw string: ``value: "{{`{{.Claims.email}}`}}"``. All other
+providers (Kubernetes CRD, Docker labels, Consul, ...) pass the value through
+untouched — use the plain form shown above. Do not use quadruple braces
+(`{{{{ }}}}`); no configuration path collapses them, and template validation
+rejects them (issues #149, #151).
+
+**Validation and the claims whitelist.** Header templates are parsed and
+validated when the middleware loads; an invalid or disallowed template stops the
+middleware from starting (the route then returns Traefik's
+`invalid handler type: <nil>`). To prevent a template from accidentally
+forwarding raw tokens or sensitive claims, only a fixed set of claim fields may
+be emitted — the standard OIDC claims plus common provider claims (`email`,
+`name`, `given_name`, `family_name`, `preferred_username`, `sub`, `groups`,
+`roles`, `internal_role`, `role`, `department`, `organization`, `realm_access`,
+`resource_access`, `oid`, `tid`, `upn`, `hd`, `picture`, `locale`, `zoneinfo`,
+`phone_number`, `email_verified`, `updated_at`; the authoritative list is
+`safeClaimsFields` in `template_validation.go`). Rejected: rendering the whole
+context (`{{.}}`, `{{$}}`) or the whole claims map (`{{.Claims}}`), any claim not
+on the list, functions other than `get`/`default`, and `range`/`with` that do not
+target a specific listed claim (e.g. `{{range .Claims}}` is rejected; `{{range
+.Claims.groups}}` is allowed).
+
+**`allowedClaims`** extends the whitelist for claims your provider issues that
+are not built in:
+
+```yaml
+allowedClaims:
+  - employee_id
+  - cost_center
+headers:
+  - name: "X-Employee-Id"
+    value: "{{.Claims.employee_id}}"
+```
+
+Listed names apply to both direct access (`{{.Claims.employee_id}}`) and
+`get` (`{{get .Claims "employee_id"}}`). Subfields of a whitelisted map-valued
+claim (e.g. `realm_access.roles`) are already accessible without listing them
+individually.
 
 ---
 

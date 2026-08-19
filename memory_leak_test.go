@@ -1652,6 +1652,7 @@ func TestGoroutineLeaks(t *testing.T) {
 				config.SessionEncryptionKey = "test-encryption-key-32-bytes-long"
 				config.ClientID = "test-client"
 				config.ClientSecret = "test-secret"
+				config.CallbackURL = "/callback"
 
 				handler, err := New(context.Background(), nil, config, "test")
 				require.NoError(t, err)

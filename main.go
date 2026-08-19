@@ -16,12 +16,18 @@ import (
 	"text/template"
 	"time"
 
+	telemetry "github.com/lukaszraczylo/oss-telemetry"
 	"golang.org/x/time/rate"
 )
 
 const (
 	ConstSessionTimeout = 86400
 )
+
+// telemetryStartupOnce keeps the anonymous "plugin loaded" ping to one per
+// process. Traefik calls New once per route that uses the plugin; oss-telemetry
+// does not deduplicate client-side (the server does), so the gate stays here.
+var telemetryStartupOnce sync.Once
 
 // isTestMode detects if the code is running in a test environment.
 func isTestMode() bool {
@@ -76,6 +82,39 @@ var defaultExcludedURLs = map[string]struct{}{
 	"/favicon": {},
 }
 
+// headerTemplateFuncMap returns the function map available to custom header
+// value templates, gated by the effective claims whitelist (built-in +
+// config.AllowedClaims). It exposes exactly two helpers:
+//   - default: substitute a fallback when a value is nil/empty.
+//   - get: safe map access RESTRICTED to whitelisted claim keys, so it cannot be
+//     used to read a non-whitelisted claim, a raw token, or the whole data map
+//     (issue #149 review). This is the sole runtime enforcement of the claims
+//     whitelist for `get`; static validation cannot reliably parse its arguments.
+func headerTemplateFuncMap(allowedClaims map[string]bool) template.FuncMap {
+	if allowedClaims == nil {
+		allowedClaims = safeClaimsFields
+	}
+	return template.FuncMap{
+		"default": func(defaultVal interface{}, val interface{}) interface{} {
+			if val == nil || val == "" {
+				return defaultVal
+			}
+			return val
+		},
+		"get": func(m interface{}, key string) interface{} {
+			if !allowedClaims[key] {
+				return ""
+			}
+			if mapVal, ok := m.(map[string]interface{}); ok {
+				if val, exists := mapVal[key]; exists {
+					return val
+				}
+			}
+			return ""
+		},
+	}
+}
+
 // New creates a new TraefikOidc middleware instance.
 // It initializes all components including caches, HTTP clients, session management,
 // templates, and starts background processes for metadata discovery.
@@ -89,8 +128,27 @@ var defaultExcludedURLs = map[string]struct{}{
 //   - The configured TraefikOidc handler ready to process requests.
 //   - An error if essential configuration is missing or invalid (e.g., short encryption key).
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	sendTelemetry(pluginVersion)
-	return NewWithContext(ctx, config, next, name)
+	telemetryStartupOnce.Do(func() {
+		// Only stamped release builds phone home; dev/local/test builds keep the
+		// devPluginVersion sentinel (see version.go) and stay silent.
+		if traefikoidcPluginVersion != devPluginVersion {
+			telemetry.Send("traefikoidc", traefikoidcPluginVersion)
+		}
+	})
+	// Deliberately NOT `return NewWithContext(...)` (issue #151): that tail call
+	// converts (*TraefikOidc, error) to (http.Handler, error) in the return
+	// statement. Compiled, a failed construction then returns a typed-nil
+	// *TraefikOidc wrapped in a NON-nil http.Handler; under yaegi v0.16.1 (the
+	// interpreter Traefik and the plugin-catalog analyzer embed) the same
+	// statement zeroes BOTH results on the error path, so callers saw
+	// (nil, nil) and reported the opaque "invalid handler type: <nil>" instead
+	// of the real error. The explicit split returns an untyped nil handler and
+	// keeps the error intact in both worlds.
+	t, err := NewWithContext(ctx, config, next, name)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 // NewWithContext creates a new TraefikOidc middleware instance with proper context handling.
@@ -100,18 +158,23 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		config = CreateConfig()
 	}
 
-	if config.SessionEncryptionKey == "" {
-		config.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	}
-
 	logger := NewLogger(config.LogLevel)
-	if len(config.SessionEncryptionKey) < minEncryptionKeyLength {
-		if runtime.Compiler == "yaegi" {
-			config.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-			logger.Infof("Session encryption key is too short; using default key for analyzer")
-		} else {
-			return nil, fmt.Errorf("encryption key must be at least %d bytes long", minEncryptionKeyLength)
-		}
+
+	// Fail closed on invalid configuration. Validate() enforces the security
+	// constraints (required fields, HTTPS-only URLs, key length, excludedURLs
+	// safety, rate-limit floor, audience format, ...) that were previously
+	// unenforced because this constructor never called it. Crucially it rejects
+	// an empty or too-short SessionEncryptionKey instead of silently
+	// substituting a public hardcoded key, which would let an attacker forge
+	// any session. Traefik's yaegi plugin analyzer supplies a valid key via
+	// .traefik.yml testData, so it passes; only misconfigured deployments fail.
+	if err := config.Validate(); err != nil {
+		// Surface the concrete reason. When New() returns a nil handler, Traefik
+		// only logs the opaque router-level "invalid handler type: <nil>" and
+		// swallows this error, leaving operators no way to see WHY the plugin
+		// failed to build (issue #149). Log it explicitly at construction.
+		logger.Errorf("traefikoidc: invalid configuration, middleware not built: %v", err)
+		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	// Setup HTTP client
 	caPool, err := config.loadCACertPool()
@@ -208,6 +271,21 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		allowOpaqueTokens:         config.AllowOpaqueTokens,
 		requireTokenIntrospection: config.RequireTokenIntrospection,
 		disableReplayDetection:    config.DisableReplayDetection,
+		// Operator-configured endpoint overrides (issue #152). Applied inside
+		// updateMetadataEndpoints so the override survives every metadata
+		// refresh, not just construction.
+		configRevocationURL:    config.RevocationURL,
+		configEndSessionURL:    config.OIDCEndSessionURL,
+		configIntrospectionURL: config.IntrospectionURL,
+		// Cold-start seed: discovery failure must not lose operator-configured
+		// endpoints; updateMetadataEndpoints re-applies these on every refresh.
+		// Seeding introspectionURL here does not populate metadataSnapshot
+		// (only updateMetadataEndpoints does); all three consumers
+		// (token_introspection.go, token_manager.go, helpers.go) read these
+		// metadataMu-guarded fields directly, not the snapshot.
+		revocationURL:    config.RevocationURL,
+		endSessionURL:    config.OIDCEndSessionURL,
+		introspectionURL: config.IntrospectionURL,
 		scopes: func() []string {
 			userProvidedScopes := deduplicateScopes(config.Scopes)
 
@@ -223,7 +301,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		httpClient:            httpClient,
 		tokenHTTPClient:       tokenHTTPClient,
 		excludedURLs:          createStringMap(config.ExcludedURLs),
-		allowedUserDomains:    createStringMap(config.AllowedUserDomains),
+		allowedUserDomains:    createCaseInsensitiveStringMap(config.AllowedUserDomains),
 		allowedUsers:          createCaseInsensitiveStringMap(config.AllowedUsers),
 		allowedRolesAndGroups: createStringMap(config.AllowedRolesAndGroups),
 		initComplete:          make(chan struct{}),
@@ -250,6 +328,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		scopeFilter:               NewScopeFilter(logger), // NEW - for discovery-based scope filtering
 		dcrConfig:                 config.DynamicClientRegistration,
 		allowPrivateIPAddresses:   config.AllowPrivateIPAddresses,
+		allowLoopbackHosts:        isLoopbackProviderURL(config.ProviderURL),
 		minimalHeaders:            config.MinimalHeaders,
 		stripAuthCookies:          config.StripAuthCookies,
 		enableBackchannelLogout:   config.EnableBackchannelLogout,
@@ -334,7 +413,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	// Convert sessionMaxAge from seconds to duration (0 will use default 24 hours)
 	sessionMaxAge := time.Duration(config.SessionMaxAge) * time.Second
-	t.sessionManager, _ = NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, config.CookiePrefix, sessionMaxAge, t.logger) // Safe to ignore: session manager creation with fallback to defaults
+	sessionManager, err := NewSessionManager(config.SessionEncryptionKey, config.ForceHTTPS, config.CookieDomain, config.CookiePrefix, sessionMaxAge, t.logger)
+	if err != nil {
+		cancelFunc()
+		return nil, fmt.Errorf("failed to create session manager: %w", err)
+	}
+	t.sessionManager = sessionManager
 	if config.CookiePath != "" {
 		t.sessionManager.cookiePath = config.CookiePath
 		t.logger.Debugf("Using configured cookie path: %s", config.CookiePath)
@@ -374,22 +458,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	t.headerTemplates = make(map[string]*template.Template)
 
-	funcMap := template.FuncMap{
-		"default": func(defaultVal interface{}, val interface{}) interface{} {
-			if val == nil || val == "" {
-				return defaultVal
-			}
-			return val
-		},
-		"get": func(m interface{}, key string) interface{} {
-			if mapVal, ok := m.(map[string]interface{}); ok {
-				if val, exists := mapVal[key]; exists {
-					return val
-				}
-			}
-			return ""
-		},
-	}
+	funcMap := headerTemplateFuncMap(claimsWhitelist(config.AllowedClaims))
 
 	for _, header := range config.Headers {
 		tmpl := template.New(header.Name).Funcs(funcMap).Option("missingkey=zero")
@@ -429,6 +498,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	// Add reference for this instance
 	rm.AddReference(name)
+	registerLiveInstance()
 
 	// Initialize metadata in a goroutine with proper tracking
 	if t.goroutineWG != nil {
@@ -506,13 +576,73 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 // Parameters:
 //   - metadata: A pointer to the ProviderMetadata struct containing the discovered endpoints.
 func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
+	// SSRF defense (audit ranks 3 & 4): a discovery document is attacker-
+	// influenced when the provider or its TLS is compromised. Reject any
+	// discovered endpoint pointed at a blocked address before the plugin issues
+	// outbound requests to it, so it can never be used to reach the cloud
+	// metadata service or an internal host.
+	// Recomputed from t.providerURL (not the allowLoopbackHosts field) so this
+	// stays correct for TraefikOidc values built outside New() (test helpers
+	// construct &TraefikOidc{providerURL: ...} directly, leaving
+	// allowLoopbackHosts at its zero value).
+	allowLoopback := isLoopbackProviderURL(t.providerURL)
+	sanitize := func(name, raw string) string {
+		if err := t.validateDiscoveredEndpoint(raw, allowLoopback); err != nil {
+			t.logger.Errorf("Ignoring discovered %s endpoint %q: %v", name, raw, err)
+			return ""
+		}
+		return raw
+	}
+	metadata.JWKSURL = sanitize("jwks_uri", metadata.JWKSURL)
+	metadata.AuthURL = sanitize("authorization", metadata.AuthURL)
+	metadata.TokenURL = sanitize("token", metadata.TokenURL)
+	metadata.RevokeURL = sanitize("revocation", metadata.RevokeURL)
+	metadata.EndSessionURL = sanitize("end_session", metadata.EndSessionURL)
+	metadata.RegistrationURL = sanitize("registration", metadata.RegistrationURL)
+	metadata.IntrospectionURL = sanitize("introspection", metadata.IntrospectionURL)
+	// The introspection request authenticates with the client secret via HTTP
+	// Basic, so the endpoint must live on the same host as the operator-
+	// configured provider; otherwise a poisoned discovery document could
+	// exfiltrate the client secret to an attacker-controlled host.
+	if metadata.IntrospectionURL != "" && t.providerURL != "" && !sameHost(metadata.IntrospectionURL, t.providerURL) {
+		t.logger.Errorf("Ignoring introspection endpoint %q: host does not match configured providerURL", metadata.IntrospectionURL)
+		metadata.IntrospectionURL = ""
+	}
+
+	// Pin the discovered issuer to the operator-configured provider host. The
+	// issuer is the trust anchor for JWT issuer validation, so a poisoned
+	// discovery document advertising an attacker-chosen issuer must never be
+	// stored. Real providers (Google, Azure, Keycloak, Okta, Auth0) keep the
+	// issuer on the same host as the configured providerURL. On mismatch, leave
+	// issuerURL empty/unchanged so downstream issuer validation fails closed
+	// rather than trusting the attacker-chosen value.
+	discoveredIssuer := metadata.Issuer
+	if discoveredIssuer != "" && t.providerURL != "" && !sameHost(discoveredIssuer, t.providerURL) {
+		t.logger.Errorf("Ignoring discovered issuer %q: host does not match configured providerURL", discoveredIssuer)
+		discoveredIssuer = ""
+	}
+	// Operator-configured endpoint overrides take precedence over discovered
+	// values. They deliberately skip validateDiscoveredEndpoint and the
+	// sameHost pin: those defend against a poisoned discovery document, while
+	// operator config sits at the same trust tier as providerURL itself and is
+	// already gated by isValidSecureURL at config time.
+	if t.configRevocationURL != "" {
+		metadata.RevokeURL = t.configRevocationURL
+	}
+	if t.configEndSessionURL != "" {
+		metadata.EndSessionURL = t.configEndSessionURL
+	}
+	if t.configIntrospectionURL != "" {
+		metadata.IntrospectionURL = t.configIntrospectionURL
+	}
+
 	t.metadataMu.Lock()
 
 	t.jwksURL = metadata.JWKSURL
 	t.scopesSupported = metadata.ScopesSupported // Store supported scopes from discovery
 	t.authURL = metadata.AuthURL
 	t.tokenURL = metadata.TokenURL
-	t.issuerURL = metadata.Issuer
+	t.issuerURL = discoveredIssuer
 	t.revocationURL = metadata.RevokeURL
 	t.endSessionURL = metadata.EndSessionURL
 	t.introspectionURL = metadata.IntrospectionURL // OAuth 2.0 Token Introspection endpoint (RFC 7662)
@@ -525,7 +655,7 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	// Publish the read-mostly URL bundle atomically. Hot-path readers Load
 	// this directly instead of acquiring metadataMu.RLock per request.
 	t.metadataSnapshot.Store(&MetadataSnapshot{
-		IssuerURL:        metadata.Issuer,
+		IssuerURL:        discoveredIssuer,
 		JWKSURL:          metadata.JWKSURL,
 		TokenURL:         metadata.TokenURL,
 		AuthURL:          metadata.AuthURL,

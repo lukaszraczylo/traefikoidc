@@ -603,15 +603,28 @@ func (c *UniversalCache) removeItem(key string, item *CacheItem) {
 
 // evictOldest evicts the oldest item from the cache (must be called with lock held)
 func (c *UniversalCache) evictOldest() {
-	if elem := c.lruList.Back(); elem != nil {
-		key, _ := elem.Value.(string) // Safe to ignore: cache internal type assertion
-		if item, exists := c.items[key]; exists {
-			c.removeItem(key, item)
-			atomic.AddInt64(&c.evictions, 1)
-			if c.logger.IsDebug() {
-				c.logger.Debugf("UniversalCache[%s]: Evicted key=%s", c.config.Type, key)
-			}
+	elem := c.lruList.Back()
+	if elem == nil {
+		return
+	}
+	key, _ := elem.Value.(string) // Safe to ignore: cache internal type assertion
+	if item, exists := c.items[key]; exists && item.element == elem {
+		c.removeItem(key, item)
+		atomic.AddInt64(&c.evictions, 1)
+		if c.logger.IsDebug() {
+			c.logger.Debugf("UniversalCache[%s]: Evicted key=%s", c.config.Type, key)
 		}
+		return
+	}
+	// Defensive forward-progress guard: the back node is dangling — its key is
+	// absent from c.items, or c.items[key] points at a newer node (a stale
+	// duplicate). Drop the node directly so an eviction loop
+	// (`for ... && c.lruList.Len() > 0`) is guaranteed to terminate and can
+	// never spin holding c.mu.Lock(). With the updateLocalCache replace-in-place
+	// fix this branch should be unreachable, but it makes the spin impossible.
+	c.lruList.Remove(elem)
+	if c.currentSize > 0 {
+		c.currentSize--
 	}
 }
 
@@ -944,6 +957,30 @@ func (c *UniversalCache) updateLocalCache(key string, value interface{}, ttl tim
 	}
 
 	now := time.Now()
+	// Replace an existing entry in place: update the item and move its single
+	// list node to the front. Without this, a repeat populate of the same key
+	// (the per-request Get->backend-hit path) would PushFront a duplicate node
+	// and overwrite c.items[key], orphaning the previous node. Orphans inflate
+	// currentMemory/currentSize and, once eviction deletes the key, leave a
+	// Back() node whose key is absent from c.items — so evictOldest() spins
+	// while holding c.mu.Lock(): the 100%-CPU write-lock convoy seen in pprof.
+	// setLocal dedups the same way; evictOldest also guards any dangling node.
+	if existing, exists := c.items[key]; exists {
+		c.currentMemory -= existing.Size
+		c.lruList.Remove(existing.element)
+
+		existing.Value = value
+		existing.Size = size
+		existing.ExpiresAt = now.Add(ttl)
+		existing.LastAccessed = now
+		existing.AccessCount++
+
+		existing.element = c.lruList.PushFront(key)
+		c.currentMemory += size
+
+		return nil
+	}
+
 	item := &CacheItem{
 		Key:          key,
 		Value:        value,

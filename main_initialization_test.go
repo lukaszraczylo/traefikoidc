@@ -26,37 +26,46 @@ func TestInitializeMetadata(t *testing.T) {
 			name:        "successful metadata initialization",
 			providerURL: "",
 			setupMock: func() *httptest.Server {
-				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Issuer must share the host with providerURL (the httptest
+				// server), otherwise the discovery doc is rejected as poisoned
+				// (audit ranks 21/22). Real providers keep issuer + endpoints on
+				// the same host, so derive them all from the server URL.
+				var srv *httptest.Server
+				srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(ProviderMetadata{
-							Issuer:        "https://provider.example.com",
-							AuthURL:       "https://provider.example.com/auth",
-							TokenURL:      "https://provider.example.com/token",
-							JWKSURL:       "https://provider.example.com/jwks",
-							RevokeURL:     "https://provider.example.com/revoke",
-							EndSessionURL: "https://provider.example.com/logout",
+							Issuer:        srv.URL,
+							AuthURL:       srv.URL + "/auth",
+							TokenURL:      srv.URL + "/token",
+							JWKSURL:       srv.URL + "/jwks",
+							RevokeURL:     srv.URL + "/revoke",
+							EndSessionURL: srv.URL + "/logout",
 						})
 					} else {
 						w.WriteHeader(http.StatusNotFound)
 					}
 				}))
+				return srv
 			},
 			validateFunc: func(t *testing.T, oidc *TraefikOidc) {
-				if oidc.authURL != "https://provider.example.com/auth" {
+				if oidc.authURL == "" || !strings.HasSuffix(oidc.authURL, "/auth") {
 					t.Errorf("expected authURL to be set, got %s", oidc.authURL)
 				}
-				if oidc.tokenURL != "https://provider.example.com/token" {
+				if oidc.tokenURL == "" || !strings.HasSuffix(oidc.tokenURL, "/token") {
 					t.Errorf("expected tokenURL to be set, got %s", oidc.tokenURL)
 				}
-				if oidc.jwksURL != "https://provider.example.com/jwks" {
+				if oidc.jwksURL == "" || !strings.HasSuffix(oidc.jwksURL, "/jwks") {
 					t.Errorf("expected jwksURL to be set, got %s", oidc.jwksURL)
 				}
-				if oidc.revocationURL != "https://provider.example.com/revoke" {
+				if oidc.revocationURL == "" || !strings.HasSuffix(oidc.revocationURL, "/revoke") {
 					t.Errorf("expected revocationURL to be set, got %s", oidc.revocationURL)
 				}
-				if oidc.endSessionURL != "https://provider.example.com/logout" {
+				if oidc.endSessionURL == "" || !strings.HasSuffix(oidc.endSessionURL, "/logout") {
 					t.Errorf("expected endSessionURL to be set, got %s", oidc.endSessionURL)
+				}
+				if oidc.issuerURL == "" {
+					t.Errorf("expected issuerURL to be pinned to provider host, got empty")
 				}
 			},
 			wantPanic: false,
@@ -116,24 +125,27 @@ func TestInitializeMetadata(t *testing.T) {
 			name:        "partial metadata response",
 			providerURL: "",
 			setupMock: func() *httptest.Server {
-				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Issuer host must match providerURL (audit ranks 21/22).
+				var srv *httptest.Server
+				srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
 						w.Header().Set("Content-Type", "application/json")
 						// Only return some fields
 						json.NewEncoder(w).Encode(map[string]string{
-							"issuer":                 "https://partial.example.com",
-							"authorization_endpoint": "https://partial.example.com/auth",
-							"token_endpoint":         "https://partial.example.com/token",
+							"issuer":                 srv.URL,
+							"authorization_endpoint": srv.URL + "/auth",
+							"token_endpoint":         srv.URL + "/token",
 							// Missing jwks_uri, revocation_endpoint, end_session_endpoint
 						})
 					}
 				}))
+				return srv
 			},
 			validateFunc: func(t *testing.T, oidc *TraefikOidc) {
-				if oidc.authURL != "https://partial.example.com/auth" {
+				if oidc.authURL == "" || !strings.HasSuffix(oidc.authURL, "/auth") {
 					t.Errorf("expected authURL to be set, got %s", oidc.authURL)
 				}
-				if oidc.tokenURL != "https://partial.example.com/token" {
+				if oidc.tokenURL == "" || !strings.HasSuffix(oidc.tokenURL, "/token") {
 					t.Errorf("expected tokenURL to be set, got %s", oidc.tokenURL)
 				}
 				// JWKS URL and others may be empty
@@ -198,20 +210,22 @@ func TestInitializeMetadata_Concurrency(t *testing.T) {
 	requestCount := 0
 	var mu sync.Mutex
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		requestCount++
 		mu.Unlock()
 
 		if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
 			w.Header().Set("Content-Type", "application/json")
+			// Issuer host must match providerURL (audit ranks 21/22).
 			json.NewEncoder(w).Encode(ProviderMetadata{
-				Issuer:        "https://concurrent.example.com",
-				AuthURL:       "https://concurrent.example.com/auth",
-				TokenURL:      "https://concurrent.example.com/token",
-				JWKSURL:       "https://concurrent.example.com/jwks",
-				RevokeURL:     "https://concurrent.example.com/revoke",
-				EndSessionURL: "https://concurrent.example.com/logout",
+				Issuer:        server.URL,
+				AuthURL:       server.URL + "/auth",
+				TokenURL:      server.URL + "/token",
+				JWKSURL:       server.URL + "/jwks",
+				RevokeURL:     server.URL + "/revoke",
+				EndSessionURL: server.URL + "/logout",
 			})
 		}
 	}))
@@ -250,7 +264,7 @@ func TestInitializeMetadata_Concurrency(t *testing.T) {
 			oidc.initializeMetadata(server.URL)
 
 			// Verify initialization
-			if oidc.tokenURL != "https://concurrent.example.com/token" {
+			if oidc.tokenURL == "" || !strings.HasSuffix(oidc.tokenURL, "/token") {
 				t.Errorf("expected tokenURL to be set")
 			}
 		}()
@@ -342,17 +356,19 @@ func TestProviderDetection(t *testing.T) {
 // TestInitializationWaiting tests waiting for initialization to complete
 func TestInitializationWaiting(t *testing.T) {
 	t.Run("wait for initialization completion", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var server *httptest.Server
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Delay response to simulate slow initialization
 			time.Sleep(100 * time.Millisecond)
 
 			if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
 				w.Header().Set("Content-Type", "application/json")
+				// Issuer host must match providerURL (audit ranks 21/22).
 				json.NewEncoder(w).Encode(ProviderMetadata{
-					Issuer:   "https://slow.example.com",
-					AuthURL:  "https://slow.example.com/auth",
-					TokenURL: "https://slow.example.com/token",
-					JWKSURL:  "https://slow.example.com/jwks",
+					Issuer:   server.URL,
+					AuthURL:  server.URL + "/auth",
+					TokenURL: server.URL + "/token",
+					JWKSURL:  server.URL + "/jwks",
 				})
 			}
 		}))
@@ -389,7 +405,7 @@ func TestInitializationWaiting(t *testing.T) {
 		select {
 		case <-oidc.initComplete:
 			// Success
-			if oidc.tokenURL != "https://slow.example.com/token" {
+			if oidc.tokenURL == "" || !strings.HasSuffix(oidc.tokenURL, "/token") {
 				t.Error("expected tokenURL to be set after initialization")
 			}
 		case <-time.After(2 * time.Second):
@@ -398,17 +414,19 @@ func TestInitializationWaiting(t *testing.T) {
 	})
 
 	t.Run("multiple waiters for initialization", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var server *httptest.Server
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Delay to ensure multiple waiters
 			time.Sleep(50 * time.Millisecond)
 
 			if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
 				w.Header().Set("Content-Type", "application/json")
+				// Issuer host must match providerURL (audit ranks 21/22).
 				json.NewEncoder(w).Encode(ProviderMetadata{
-					Issuer:   "https://multi.example.com",
-					AuthURL:  "https://multi.example.com/auth",
-					TokenURL: "https://multi.example.com/token",
-					JWKSURL:  "https://multi.example.com/jwks",
+					Issuer:   server.URL,
+					AuthURL:  server.URL + "/auth",
+					TokenURL: server.URL + "/token",
+					JWKSURL:  server.URL + "/jwks",
 				})
 			}
 		}))
@@ -453,7 +471,7 @@ func TestInitializationWaiting(t *testing.T) {
 				select {
 				case <-oidc.initComplete:
 					// All waiters should see the same initialized state
-					if oidc.tokenURL != "https://multi.example.com/token" {
+					if oidc.tokenURL == "" || !strings.HasSuffix(oidc.tokenURL, "/token") {
 						t.Errorf("waiter %d: expected tokenURL to be set", id)
 					}
 				case <-time.After(2 * time.Second):

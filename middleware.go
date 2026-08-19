@@ -472,6 +472,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 //   - req: The HTTP request to process.
 //   - session: The user's session data containing tokens and claims.
 //   - redirectURL: The callback URL for re-authentication if needed.
+//
 // processAuthorizedRequestRS is the requestState-aware variant of
 // processAuthorizedRequest. It reads SessionData fields from the captured
 // snapshot in rs instead of calling session.GetX() (each of which acquires
@@ -675,6 +676,44 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 //
 // Session persistence is the CALLER's responsibility — it must happen before
 // this function so Set-Cookie reaches the response.
+// headerTemplateMaxLen bounds the length of a rendered operator-defined header
+// template before it is forwarded downstream. Generous enough for an
+// "Authorization: Bearer <jwt>" value but small enough to reject obviously
+// abusive output. Matches the input-validation default header cap (8KB).
+const headerTemplateMaxLen = 8192
+
+// headerClaimMaxLen returns the maximum accepted length for a claim-derived
+// header value (principal identifier, group, role). Reuses the operator-
+// configured identifier cap (default 256) so a single setting governs both
+// auth paths; falls back to 256 when unset.
+func (t *TraefikOidc) headerClaimMaxLen() int {
+	if t.maxIdentifierLength > 0 {
+		return t.maxIdentifierLength
+	}
+	return 256
+}
+
+// sanitizeHeaderClaimList drops any group/role value that fails claim
+// sanitization (control chars, bidi-override runes, the , ; = delimiters, or an
+// over-long value) and returns the surviving values. Failing closed on a bad
+// entry prevents header injection and stops an embedded comma from injecting
+// extra entries into the comma-joined header. headerName is used only for
+// debug logging — the value is never logged.
+func (t *TraefikOidc) sanitizeHeaderClaimList(values []string, headerName string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	safe := make([]string, 0, len(values))
+	for _, v := range values {
+		if clean, ok := sanitizeHeaderClaimValue(v, t.headerClaimMaxLen()); ok {
+			safe = append(safe, clean)
+		} else {
+			t.logger.Debugf("Dropping %s entry: value failed claim sanitization", headerName)
+		}
+	}
+	return safe
+}
+
 func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Request, p *principal) {
 	var (
 		groups, roles []string
@@ -692,11 +731,18 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 			return
 		}
 		if extractErr == nil {
-			if len(groups) > 0 {
-				req.Header.Set("X-User-Groups", strings.Join(groups, ","))
+			// Sanitize each group/role before it is joined into a comma-
+			// delimited header. The cookie/session path does not otherwise
+			// sanitize claim-derived values (the bearer path sanitizes its
+			// identifier at construction), so a control char would enable
+			// header injection and an embedded comma would inject extra
+			// entries into the comma-joined header. Fail closed: drop any
+			// value that does not pass.
+			if safeGroups := t.sanitizeHeaderClaimList(groups, "X-User-Groups"); len(safeGroups) > 0 {
+				req.Header.Set("X-User-Groups", strings.Join(safeGroups, ","))
 			}
-			if len(roles) > 0 {
-				req.Header.Set("X-User-Roles", strings.Join(roles, ","))
+			if safeRoles := t.sanitizeHeaderClaimList(roles, "X-User-Roles"); len(safeRoles) > 0 {
+				req.Header.Set("X-User-Roles", strings.Join(safeRoles, ","))
 			}
 		}
 	}
@@ -717,12 +763,26 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	req.Header.Set("X-Forwarded-User", p.Identifier)
+	// Sanitize the principal identifier before injecting it into headers. The
+	// bearer path already sanitizes its identifier at construction; the
+	// cookie/session path does not, so a claim carrying control chars, bidi-
+	// override runes, or , ; = could inject or spoof header content. Fail
+	// closed: drop the identifier header(s) rather than forward a tainted value.
+	safeIdentifier, identifierOK := sanitizeHeaderClaimValue(p.Identifier, t.headerClaimMaxLen())
+	if identifierOK {
+		req.Header.Set("X-Forwarded-User", safeIdentifier)
+	} else {
+		t.logger.Debugf("Dropping X-Forwarded-User header: identifier failed claim sanitization")
+	}
 
 	// When minimalHeaders is enabled, skip extra headers to prevent 431 errors
 	if !t.minimalHeaders {
 		req.Header.Set("X-Auth-Request-Redirect", req.URL.RequestURI())
-		req.Header.Set("X-Auth-Request-User", p.Identifier)
+		if identifierOK {
+			req.Header.Set("X-Auth-Request-User", safeIdentifier)
+		} else {
+			t.logger.Debugf("Dropping X-Auth-Request-User header: identifier failed claim sanitization")
+		}
 		if p.IDToken != "" {
 			req.Header.Set("X-Auth-Request-Token", p.IDToken)
 		}
@@ -736,6 +796,7 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 		templateData := map[string]interface{}{
 			"AccessToken":  p.AccessToken,
 			"IDToken":      p.IDToken,
+			"IdToken":      p.IDToken, // documented spelling (README/CONFIGURATION); alias so {{.IdToken}} renders (issue #149 review)
 			"RefreshToken": p.RefreshToken,
 			"Claims":       p.Claims,
 		}
@@ -747,8 +808,21 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 				continue
 			}
 			headerValue := buf.String()
+			// Sanitize the rendered output: template inputs are claim-derived
+			// and attacker-influenceable, so reject control chars (header
+			// injection), bidi-override runes, the , ; = delimiters, and an
+			// over-long value. Fail closed by dropping the header rather than
+			// forwarding a tainted value. Do not log the value (it commonly
+			// carries the access token); log only name + reason.
+			if reason := headerValueReason(headerValue, headerTemplateMaxLen); reason != "" {
+				t.logger.Debugf("Dropping templated header %s: value failed sanitization (%s)", headerName, reason)
+				continue
+			}
 			req.Header.Set(headerName, headerValue)
-			t.logger.Debugf("Set templated header %s = %s", headerName, headerValue)
+			// Do not log the value: templated headers commonly carry the access
+			// token (e.g. "Authorization: Bearer {{.AccessToken}}"), and logging
+			// it — even at debug — leaks credentials into logs.
+			t.logger.Debugf("Set templated header %s (%d bytes)", headerName, len(headerValue))
 		}
 	}
 

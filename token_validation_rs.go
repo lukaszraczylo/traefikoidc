@@ -149,7 +149,15 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 				if rs.idToken != "" {
 					return t.validateTokenExpiryRS(rs, rs.idToken)
 				}
-				return true, false, false
+				// No ID token to corroborate an access token we cannot verify
+				// (Azure nonce-bearing Graph access tokens carry a proprietary,
+				// client-unverifiable signature). Do NOT authenticate on an
+				// unverified token: refresh if a refresh token is available,
+				// otherwise force re-authentication.
+				if rs.refreshToken != "" {
+					return false, true, false
+				}
+				return false, false, true
 			}
 		}
 
@@ -158,7 +166,12 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 			if rs.refreshToken != "" {
 				return false, true, false
 			}
-			return true, false, false
+			// Opaque access token, no ID token to corroborate it, and
+			// introspection was unavailable/disabled/errored (e.g.
+			// circuit-breaker open). There is nothing left to verify the token
+			// against, so fail closed and force re-authentication rather than
+			// trusting an unverified opaque token.
+			return false, false, true
 		}
 		if err := t.verifyToken(rs.idToken); err != nil {
 			if strings.Contains(err.Error(), "token has expired") {

@@ -5,6 +5,8 @@ package traefikoidc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -212,11 +214,13 @@ func (t *TraefikOidc) cacheVerifiedToken(token string, claims map[string]interfa
 //
 //nolint:gocognit,gocyclo // Complex token type detection with multiple provider-specific checks
 func (t *TraefikOidc) detectTokenType(jwt *JWT, token string) bool {
-	// Use first 32 chars of token as cache key (sufficient for uniqueness)
-	cacheKey := token
-	if len(token) > 32 {
-		cacheKey = token[:32]
-	}
+	// Key on a hash of the FULL token. The first 32 characters of a JWT are
+	// only the base64url-encoded header, which is identical for every token
+	// sharing the same alg+kid, so distinct tokens (e.g. an ID token and an
+	// access token from the same issuer) would otherwise collide on the cache
+	// key and be mis-classified.
+	sum := sha256.Sum256([]byte(token))
+	cacheKey := hex.EncodeToString(sum[:])
 
 	// Check cache first
 	if t.tokenTypeCache != nil {
@@ -857,7 +861,6 @@ func (t *TraefikOidc) isAzureProvider() bool {
 		strings.Contains(issuerURL, "sts.windows.net") ||
 		strings.Contains(issuerURL, "login.windows.net")
 }
-
 
 // startTokenCleanup starts background cleanup goroutines for cache maintenance.
 // It runs periodic cleanup of token cache, JWK cache, and session chunks.

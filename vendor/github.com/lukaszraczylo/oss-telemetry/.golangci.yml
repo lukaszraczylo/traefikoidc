@@ -1,0 +1,36 @@
+version: "2"
+
+run:
+  timeout: 2m
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - gocritic
+    - gocyclo
+    - govet
+    - ineffassign
+    - misspell
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    gocyclo:
+      min-complexity: 12
+    revive:
+      rules:
+        - name: var-naming
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: redefines-builtin-id
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

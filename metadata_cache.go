@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -141,8 +142,17 @@ func (mc *MetadataCache) GetProviderMetadata(ctx context.Context, providerURL st
 	}
 
 	var metadata ProviderMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&metadata); err != nil {
 		return nil, fmt.Errorf("failed to decode metadata: %w", err)
+	}
+
+	// Pin the advertised issuer to the configured provider host. The issuer is
+	// the trust anchor for JWT issuer validation; rejecting a mismatch here
+	// ensures a poisoned discovery document advertising an attacker-chosen
+	// issuer is never cached or returned. Real providers (Google, Azure,
+	// Keycloak, Okta, Auth0) keep the issuer on the same host as providerURL.
+	if metadata.Issuer != "" && !sameHost(metadata.Issuer, providerURL) {
+		return nil, fmt.Errorf("discovery issuer %q host does not match provider %q", metadata.Issuer, providerURL)
 	}
 
 	// Cache for 1 hour by default

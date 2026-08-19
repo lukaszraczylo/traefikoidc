@@ -42,7 +42,7 @@ experimental:
   plugins:
     traefikoidc:
       moduleName: github.com/lukaszraczylo/traefikoidc
-      version: v0.7.10
+      version: v1.0.29
 ```
 
 Then attach the middleware in your dynamic configuration (see
@@ -112,7 +112,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `postLogoutRedirectURI` | `/` | Where to send users after logout. |
 | `scopes` | appended to `openid profile email` | Extra OAuth scopes. Set `overrideScopes: true` to replace defaults. |
 | `extraAuthParams` | none | Map of extra query parameters appended to the authorization request (e.g. `screen_hint: signup`, `login_hint`, `ui_locales`, `prompt`). Plugin-managed params (`client_id`, `state`, `nonce`, `redirect_uri`, `code_challenge`, `scope`, `response_type`, …) cannot be overridden. |
-| `excludedURLs` | none | Prefix-matched paths that bypass auth. |
+| `excludedURLs` | none | Paths that bypass auth, matched at a path-segment or file-extension boundary (e.g. `/public` matches `/public`, `/public/sub` and `/public.json`, but **not** `/publicsecret`). |
 | `allowedUserDomains` | none | Restrict to email domains. |
 | `allowedUsers` | none | Restrict to specific addresses (or claim values when `userIdentifierClaim != email`). |
 | `allowedRolesAndGroups` | none | Require any of these roles/groups from ID-token claims. |
@@ -148,6 +148,18 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Production gotchas
 
+### Upgrading from an earlier release
+
+- **Sessions are re-issued once.** Session cookies are now AES-256 encrypted
+  (previously signed only) and their cryptographic lifetime tracks
+  `sessionMaxAge` (previously a fixed 30 days). Existing cookies become invalid
+  on upgrade, so users re-authenticate one time.
+- **Invalid configuration now fails closed at startup** instead of being
+  silently accepted: a `sessionEncryptionKey` shorter than 32 bytes, a
+  `rateLimit` below 10, a missing `callbackURL`, or a non-HTTPS remote
+  `providerURL` are rejected. Plaintext HTTP is permitted only for loopback
+  hosts (local development).
+
 ### TLS termination at a load balancer
 
 `forceHTTPS` defaults to `true`, so redirect URIs always use `https://`. This is
@@ -167,6 +179,8 @@ detected" when the same token hits different replicas. Two options:
 
 For IdP-initiated logout (back/front-channel) in multi-replica setups, Redis is
 **required** so a logout on one instance invalidates sessions on the others.
+Front-channel logout requests must include a matching `iss` query parameter;
+requests that omit it are rejected with `400`.
 
 ### Multiple middleware instances on the same host
 
@@ -359,21 +373,50 @@ Forward identity to backends via Go templates over ID-token claims and tokens:
 ```yaml
 headers:
   - name: X-User-Email
-    value: "{{{{.Claims.email}}}}"
+    value: "{{.Claims.email}}"
   - name: Authorization
-    value: "Bearer {{{{.AccessToken}}}}"
+    value: "Bearer {{.AccessToken}}"
   - name: X-User-Roles
-    value: "{{{{range $i, $e := .Claims.roles}}}}{{{{if $i}}}},{{{{end}}}}{{{{$e}}}}{{{{end}}}}"
+    value: "{{range $i, $e := .Claims.roles}}{{if $i}},{{end}}{{$e}}{{end}}"
 ```
 
-Available bindings: `.Claims.<field>`, `.AccessToken`, `.IdToken`,
-`.RefreshToken`. Names are case-sensitive (`.Claims`, not `.claims`).
+Available bindings: `.Claims.<field>`, `.AccessToken`, `.IdToken`
+(or `.IDToken`), `.RefreshToken`. Names are case-sensitive (`.Claims`, not
+`.claims`).
 
-> **Escape with quadruple braces.** If you see
-> `can't evaluate field AccessToken in type bool`, Traefik's YAML parser ate
-> your `{{ }}`. The fix that actually works is `{{{{ }}}}` — the YAML pass
-> turns it into `{{ }}` for the Go template engine. Other escaping tricks
-> (literal blocks, single quotes) do not work reliably.
+Header templates are validated at startup (a failing template stops the
+middleware from loading). Only a fixed set of claim fields may be emitted —
+standard OIDC claims plus common provider claims (`email`, `name`,
+`given_name`, `family_name`, `preferred_username`, `sub`, `groups`, `roles`,
+`realm_access`, `resource_access`, `oid`, `tid`, `upn`, `hd`, `picture`,
+`locale`, `email_verified`, and a few more; see `safeClaimsFields` in
+`template_validation.go`). To emit a claim not on that list, add it to
+`allowedClaims`:
+
+```yaml
+allowedClaims:
+  - employee_id
+headers:
+  - name: X-Employee-Id
+    value: "{{.Claims.employee_id}}"
+```
+
+Rendering the whole context (`{{.}}`, `{{$}}`), the whole claims map
+(`{{.Claims}}`), or any non-listed claim is rejected — this prevents a template
+from accidentally forwarding raw tokens or unlisted claims. `range`/`with` must
+target a specific listed claim (e.g. `{{range .Claims.groups}}`); `get`/`default`
+are the only functions allowed.
+
+> **File-provider users: escape the braces.** Traefik's file provider runs
+> every dynamic configuration file through Go templating before the plugin
+> sees it. Plain `{{.AccessToken}}` then fails with
+> `can't evaluate field AccessToken in type bool`. Wrap the expression in a
+> raw string so the file provider emits it literally:
+> ``value: "{{`{{.Claims.email}}`}}"``. All other providers (Kubernetes CRD,
+> Docker labels, Consul, ...) pass the value through untouched — use the plain
+> form there. Quadruple braces (`{{{{ }}}}`) do not work anywhere: the file
+> provider fails to parse them, and every other path hands them to the plugin
+> verbatim, where template validation rejects them (issues #149, #151).
 
 ## Default downstream headers
 
@@ -401,7 +444,7 @@ section — see [docs/CONFIGURATION.md](docs/CONFIGURATION.md#security-headers).
 | `No matching public key found` | JWKS endpoint down, or `kid` mismatch. |
 | `Access denied: Your email domain is not allowed` | User's domain not in `allowedUserDomains`. |
 | `Access denied: You do not have any of the allowed roles or groups` | Claims missing or not in `allowedRolesAndGroups`. |
-| `can't evaluate field AccessToken in type bool` | Template not escaped — use `{{{{ }}}}`. |
+| `can't evaluate field AccessToken in type bool` | File provider templated your header value — escape it: ``"{{`{{.AccessToken}}`}}"`` (see "Templated headers"). |
 | `tls: failed to verify certificate: x509: certificate signed by unknown authority` | Internal CA — set `caCertPath` / `caCertPEM`. |
 | `invalid handler type: <nil>` | Env var name contains `API` — rename it. |
 | `false positive replay detected` | Multi-replica without Redis — see [Multi-replica deployments](#multi-replica-deployments). |
