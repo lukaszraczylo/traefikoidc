@@ -419,6 +419,10 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		return nil, fmt.Errorf("failed to create session manager: %w", err)
 	}
 	t.sessionManager = sessionManager
+	if config.CookiePath != "" {
+		t.sessionManager.cookiePath = config.CookiePath
+		t.logger.Debugf("Using configured cookie path: %s", config.CookiePath)
+	}
 	t.errorRecoveryManager = NewErrorRecoveryManager(t.logger)
 
 	// Initialize token resilience manager with default configuration

@@ -423,6 +423,7 @@ type SessionManager struct {
 	cancel         context.CancelFunc
 	cookieDomain   string
 	cookiePrefix   string
+	cookiePath     string
 	sessionMaxAge  time.Duration
 	activeSessions int64
 	poolHits       int64
@@ -905,7 +906,12 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 	}
 
 	options.HttpOnly = true
-	options.Path = "/" // Ensure cookies are available on all paths for OAuth flow
+	// Use configured cookie path (default "/" for backward compatibility)
+	cookiePath := sm.cookiePath
+	if cookiePath == "" {
+		cookiePath = "/"
+	}
+	options.Path = cookiePath
 
 	if sm.cookieDomain != "" {
 		options.Domain = sm.cookieDomain
