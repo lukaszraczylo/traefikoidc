@@ -302,7 +302,7 @@ func (t *TraefikOidc) Close() error {
 				transport.CloseIdleConnections()
 				t.safeLogDebug("Token HTTP client idle connections closed")
 			}
-			if t.tokenHTTPClient.Transport != t.httpClient.Transport {
+			if t.httpClient == nil || t.tokenHTTPClient.Transport != t.httpClient.Transport {
 				if transport, ok := t.tokenHTTPClient.Transport.(*http.Transport); ok {
 					transport.CloseIdleConnections()
 					t.safeLogDebug("Token HTTP client transport closed (separate from main)")
