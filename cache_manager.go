@@ -107,7 +107,7 @@ func (cm *CacheManager) GetSharedMetadataCache() *MetadataCache {
 func (cm *CacheManager) GetSharedJWKCache() JWKCacheInterface {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return &JWKCache{cache: cm.manager.GetJWKCache()}
+	return &JWKCache{cache: cm.manager.GetJWKCache(), lastForceRefresh: make(map[string]time.Time)}
 }
 
 // GetSharedIntrospectionCache returns the shared token introspection cache

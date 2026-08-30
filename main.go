@@ -296,7 +296,8 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			defaultSystemScopes := []string{"openid", "profile", "email"}
 			return deduplicateScopes(mergeScopes(defaultSystemScopes, userProvidedScopes))
 		}(),
-		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
+		limiter:               rate.NewLimiter(rate.Limit(config.RateLimit), config.RateLimit),
+		perSourceLimiter:      newPerSourceAuthLimiter(config.PerSourceLoginRateLimit),
 		tokenCache:            cacheManager.GetSharedTokenCache(),
 		httpClient:            httpClient,
 		tokenHTTPClient:       tokenHTTPClient,
@@ -447,6 +448,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
 	}
+	// Lazily build a client-assertion signer from the static key material,
+	// used only when DCR later provisions a private_key_jwt client (R162).
+	t.dcrClientAssertionBuilder = func() (*ClientAssertionSigner, error) {
+		return buildClientAssertionSignerFromConfig(config)
+	}
 
 	for k, v := range defaultExcludedURLs {
 		t.excludedURLs[k] = v
@@ -465,8 +471,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 		parsedTmpl, err := tmpl.Parse(header.Value)
 		if err != nil {
-			logger.Errorf("Failed to parse header template for %s: %v", header.Name, err)
-			continue
+			// Fail closed: a configured identity/security header that does not
+			// compile must stop startup rather than silently run the middleware
+			// without it (R141). Validate() gates non-empty templates with the
+			// same engine, so this is a final safety net.
+			return nil, fmt.Errorf("failed to parse header template for %s: %w", header.Name, err)
 		}
 
 		t.headerTemplates[header.Name] = parsedTmpl
@@ -608,6 +617,22 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 		t.logger.Errorf("Ignoring introspection endpoint %q: host does not match configured providerURL", metadata.IntrospectionURL)
 		metadata.IntrospectionURL = ""
 	}
+	// Token and revocation endpoints are NOT same-host pinned: mainstream
+	// OIDC providers split them across hosts (e.g. Google's issuer is
+	// accounts.google.com but token_endpoint is oauth2.googleapis.com).
+	// A same-host pin here would clear the real token endpoint on those
+	// providers, leaving tokenURL empty and breaking the code exchange.
+	// SSRF defense for these (and every endpoint) is handled above by
+	// validateDiscoveredEndpoint (blocks private/loopback/cloud-metadata
+	// hosts), which is the appropriate gate. The client secret travels to
+	// the (TLS-verified, SSRF-filtered) endpoint the IdP advertises,
+	// matching standard OIDC behavior (R158).
+	if metadata.TokenURL != "" && t.providerURL != "" && !sameHost(metadata.TokenURL, t.providerURL) {
+		t.logger.Debugf("Accepted discovered token endpoint on a different host than providerURL: %s", metadata.TokenURL)
+	}
+	if metadata.RevokeURL != "" && t.providerURL != "" && !sameHost(metadata.RevokeURL, t.providerURL) {
+		t.logger.Debugf("Accepted discovered revocation endpoint on a different host than providerURL: %s", metadata.RevokeURL)
+	}
 
 	// Pin the discovered issuer to the operator-configured provider host. The
 	// issuer is the trust anchor for JWT issuer validation, so a poisoned
@@ -638,10 +663,32 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 
 	t.metadataMu.Lock()
 
-	t.jwksURL = metadata.JWKSURL
+	// Preserve the previously-good issuer when the discovered one is empty
+	// (a transiently-malformed discovery document on refresh, or a host
+	// mismatch nulled below). Unconditionally assigning the discovered
+	// value would wipe a working issuer to "" on a benign refresh,
+	// permanently bricking auth (503 + infinite recovery) until a later
+	// refresh happens to restore it (R124).
+	if discoveredIssuer == "" {
+		discoveredIssuer = t.issuerURL
+	}
+
+	// Preserve a previously-good endpoint when the discovered value is
+	// empty (a transiently-malformed discovery document on refresh, or an
+	// SSRF-sanitize blanking it). Mirror the issuer guard above (R124):
+	// unconditionally assigning the empty value would wipe a working
+	// jwks_uri (and therefore permanently break signature verification),
+	// auth, or token endpoint with no config override to recover (R151).
+	preserveGood := func(newV, cur string) string {
+		if newV == "" && cur != "" {
+			return cur
+		}
+		return newV
+	}
+	t.jwksURL = preserveGood(metadata.JWKSURL, t.jwksURL)
 	t.scopesSupported = metadata.ScopesSupported // Store supported scopes from discovery
-	t.authURL = metadata.AuthURL
-	t.tokenURL = metadata.TokenURL
+	t.authURL = preserveGood(metadata.AuthURL, t.authURL)
+	t.tokenURL = preserveGood(metadata.TokenURL, t.tokenURL)
 	t.issuerURL = discoveredIssuer
 	t.revocationURL = metadata.RevokeURL
 	t.endSessionURL = metadata.EndSessionURL
@@ -682,10 +729,42 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 		t.logger.Debugf("Dynamic client registration endpoint discovered: %s", registrationURL)
 	}
 
-	// Perform Dynamic Client Registration if enabled and ClientID is not set
-	if t.dcrConfig != nil && t.dcrConfig.Enabled && t.clientID == "" {
+	// Perform Dynamic Client Registration if enabled and ClientID is not set.
+	// dcrMu serializes the check and the registration so the concurrent
+	// metadata-refresh goroutine can't pass the same gate and register a
+	// second client (and so the clientID read here can't race the write in
+	// performDynamicClientRegistration).
+	t.dcrMu.Lock()
+	// Snapshot clientID under metadataMu: DCR writes it under
+	// metadataMu.Lock, so the dcrMu-guarded read must also snapshot under
+	// RLock to avoid a lock-mismatch data race (R137).
+	if t.dcrConfig != nil && t.dcrConfig.Enabled && t.dcrRegistrationNeeded() {
 		t.performDynamicClientRegistration()
 	}
+	t.dcrMu.Unlock()
+}
+
+// dcrRegistrationNeeded reports whether a DCR (re-)registration is needed:
+// either no client is installed yet, or the installed client's secret has
+// already expired (or is within the same 5-minute buffer used by
+// areCredentialsValid when loading persisted credentials). Without the
+// expiry branch a provider that returns a finite client_secret_expires_at
+// would have its install be a one-shot: once the secret lapsed, the
+// 2-hour metadata refresh (the only path that re-runs this gate) saw
+// clientID != "" and never re-registered, so every token exchange then
+// failed invalid_client with no self-heal (R180).
+func (t *TraefikOidc) dcrRegistrationNeeded() bool {
+	t.metadataMu.RLock()
+	hasClient := t.clientID != ""
+	exp := t.clientSecretExpiresAt
+	t.metadataMu.RUnlock()
+	if !hasClient {
+		return true
+	}
+	if exp <= 0 {
+		return false // non-expiring secret → keep the installed client
+	}
+	return time.Now().Add(5 * time.Minute).After(time.Unix(exp, 0))
 }
 
 // performDynamicClientRegistration performs automatic client registration with the OIDC provider
@@ -700,6 +779,10 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 			t.dcrConfig,
 			t.providerURL,
 		)
+		// Feed the merged runtime auth scopes so registration may advertise
+		// them (buildRegistrationRequest) for IdPs that only grant
+		// registered scopes (R124).
+		t.dynamicClientRegistrar.scopes = append([]string(nil), t.scopes...)
 
 		// Set up storage backend for credentials persistence
 		if t.dcrConfig.PersistCredentials {
@@ -715,8 +798,13 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 		}
 	}
 
-	// Get registration endpoint (from metadata or config override)
+	// Get registration endpoint (from metadata or config override). Guarded
+	// by metadataMu because updateMetadataEndpoints (refresh loop / recovery
+	// goroutine) writes registrationURL under metadataMu.Lock concurrently
+	// (R117 data race otherwise).
+	t.metadataMu.RLock()
 	registrationEndpoint := t.registrationURL
+	t.metadataMu.RUnlock()
 	if t.dcrConfig.RegistrationEndpoint != "" {
 		registrationEndpoint = t.dcrConfig.RegistrationEndpoint
 	}
@@ -735,8 +823,40 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 	t.metadataMu.Lock()
 	t.clientID = resp.ClientID
 	t.clientSecret = resp.ClientSecret
+	t.clientSecretExpiresAt = resp.ClientSecretExpiresAt
+	// The IdP provisioned this client according to the auth method requested
+	// at registration (ClientMetadata.TokenEndpointAuthMethod, RFC 7591).
+	// Point the runtime at the SAME method, or token exchanges will
+	// authenticate with a method the registered client does not support
+	// and fail silently (R157). The IdP is authoritative here, so this
+	// overrides any clientAuthMethod inherited from the static config.
+	if t.dynamicClientRegistrar != nil {
+		t.clientAuthMethod = t.dynamicClientRegistrar.EffectiveTokenEndpointAuthMethod()
+	}
 	if t.audience == "" {
 		t.audience = resp.ClientID // Default audience to client ID
+	}
+	// R162: DCR can provision a client whose method is private_key_jwt
+	// (RFC 7591 ClientMetadata.TokenEndpointAuthMethod) even when the
+	// static config did not set ClientAuthMethod=private_key_jwt. In that
+	// case no ClientAssertionSigner was built at construction and every
+	// token exchange silently fell back to client_secret (empty for a
+	// secretless private_key_jwt client) and failed invalid_client.
+	// Reconcile: if the effective method is private_key_jwt but no
+	// signer exists, build one from the static key material, and log
+	// loudly (rather than silently) if that material is missing.
+	// Written while holding metadataMu so it matches every reader of
+	// t.clientAssertion (clientCredentials) which snapshots under
+	// metadataMu.RLock — writing it after Unlock was a lock-mismatch
+	// data race with the request path (R180).
+	if t.clientAuthMethod == "private_key_jwt" && t.clientAssertion == nil {
+		if t.dcrClientAssertionBuilder == nil {
+			t.logger.Errorf("DCR registered a private_key_jwt client but no client-assertion signer builder is configured; token exchanges will fail")
+		} else if signer, err := t.dcrClientAssertionBuilder(); err != nil {
+			t.logger.Errorf("DCR registered a private_key_jwt client but no client-assertion signer could be built: %v", err)
+		} else {
+			t.clientAssertion = signer
+		}
 	}
 	t.metadataMu.Unlock()
 

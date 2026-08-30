@@ -79,8 +79,16 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 	req.Header.Set("Accept", "application/json")
 
 	// Authenticate using client credentials (per RFC 7662 Section 2.1)
-	// The introspection endpoint requires authentication
-	req.SetBasicAuth(t.clientID, t.clientSecret)
+	// The introspection endpoint requires authentication.
+	// Snapshot clientID/clientSecret under metadataMu: DCR rewrites them at
+	// runtime (R137).
+	clientID, clientSecret, _, _, _ := t.clientCredentials()
+	// RFC 7662 §2.1 authenticates the introspection call exactly like the
+	// token and revocation endpoints: form-urlencode client_id and
+	// client_secret individually before base64 (RFC 6749 §2.3.1), so the
+	// three outbound auth paths send identical wire credentials for secrets
+	// containing reserved characters (see setOAuthBasicAuth).
+	setOAuthBasicAuth(req, clientID, clientSecret)
 
 	// Send request with circuit breaker if available
 	var resp *http.Response
@@ -114,11 +122,19 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 		}
 	}()
 
-	// Check HTTP status
+	// Check HTTP status. Return a typed *HTTPError so callers can
+	// distinguish a definite client-side rejection (4xx: the presented
+	// token is unknown/revoked -> treat like active=false) from a
+	// transient provider failure (5xx / other), instead of substring-
+	// matching the message and misclassifying a revoked token as a
+	// transient error that falls through to ID-token-only auth (R156).
 	if resp.StatusCode != http.StatusOK {
 		limitReader := io.LimitReader(resp.Body, 1024*10)
 		body, _ := io.ReadAll(limitReader) // Safe to ignore: reading error body for diagnostics
-		return nil, fmt.Errorf("introspection endpoint returned status %d: %s", resp.StatusCode, string(body))
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("introspection endpoint returned status %d: %s", resp.StatusCode, string(body)),
+		}
 	}
 
 	// Parse response per RFC 7662 Section 2.2
@@ -127,8 +143,14 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 		return nil, fmt.Errorf("failed to decode introspection response: %w", err)
 	}
 
-	// Cache the result
-	if t.introspectionCache != nil {
+	// Cache the result. Only positive (active) results are cached so a
+	// revoked token's negative entry cannot poison the cache for its full TTL
+	// Cache the result. Only positive (active) results are cached so a
+	// revoked token's negative entry cannot poison the cache for its full TTL
+	// and keep rejecting a re-issued token with the same string (R104).
+	// Inactive results are re-introspected on each request, letting a
+	// re-issued valid token pass immediately.
+	if t.introspectionCache != nil && introspectionResp.Active {
 		// Cache for a short duration or until token expiry (whichever is shorter)
 		cacheDuration := 5 * time.Minute
 		// When introspection is REQUIRED, operators expect near-real-time
@@ -160,6 +182,9 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 // Returns:
 //   - error: Validation error if token is invalid, nil if valid
 func (t *TraefikOidc) validateOpaqueToken(token string) error {
+	// Snapshot clientID/audience under metadataMu: DCR rewrites them at
+	// runtime (R137).
+	clientID, _, _, audience, _ := t.clientCredentials()
 	// Check if opaque tokens are allowed
 	if !t.allowOpaqueTokens {
 		return fmt.Errorf("opaque tokens are not enabled (set allowOpaqueTokens to true)")
@@ -190,6 +215,19 @@ func (t *TraefikOidc) validateOpaqueToken(token string) error {
 		return fmt.Errorf("token is not active (revoked or expired)")
 	}
 
+	// An opaque token has no JWT header to classify it, so token_type is
+	// the only discriminator between an access token and a refresh token.
+	// An opaque refresh token introspected (or otherwise) as
+	// active=true, token_type=refresh_token must not be honored as a
+	// bearer access token (R149). RFC 7662's token_type is the RFC 6749
+	// token type, whose value for an access token is "Bearer" (RFC 6750)
+	// — accept both spellings providers use (R156). Per RFC 7662
+	// token_type may be omitted by compliant providers, so only reject on
+	// a definite non-access match.
+	if resp.TokenType != "" && resp.TokenType != "access_token" && resp.TokenType != "Bearer" {
+		return fmt.Errorf("token type %q is not a bearer access token", resp.TokenType)
+	}
+
 	// Validate expiration if present
 	if resp.Exp > 0 {
 		expTime := time.Unix(resp.Exp, 0)
@@ -212,12 +250,12 @@ func (t *TraefikOidc) validateOpaqueToken(token string) error {
 	// whose audience cannot be confirmed must not be accepted, otherwise a
 	// token minted for a different audience would pass. aud may be a single
 	// string or an array of strings (RFC 7662); verifyAudience handles both.
-	if t.audience != "" && t.audience != t.clientID {
+	if audience != "" && audience != clientID {
 		if resp.Aud == nil {
-			return fmt.Errorf("invalid audience: expected %s, introspection response has no audience", t.audience)
+			return fmt.Errorf("invalid audience: expected %s, introspection response has no audience", audience)
 		}
-		if err := verifyAudience(resp.Aud, t.audience); err != nil {
-			return fmt.Errorf("invalid audience: expected %s: %w", t.audience, err)
+		if err := verifyAudience(resp.Aud, audience); err != nil {
+			return fmt.Errorf("invalid audience: expected %s: %w", audience, err)
 		}
 	}
 

@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"hash/fnv"
+	"sort"
 	"sync"
 	"time"
 )
@@ -19,12 +20,19 @@ type ShardedCache struct {
 type cacheShard struct {
 	items map[string]*shardedCacheItem
 	mu    sync.RWMutex
+	// nextSeq is a monotonically increasing insertion counter used to evict
+	// the OLDEST entries first (FIFO). without an explicit order, Go map
+	// iteration order is random, so the old eviction could drop a just-
+	// written still-valid entry (e.g. a fresh replay-protection JTI) before
+	// its TTL had any effect.
+	nextSeq uint64
 }
 
 // shardedCacheItem represents an item in the sharded cache with expiration.
 type shardedCacheItem struct {
 	value     interface{}
 	expiresAt time.Time
+	seq       uint64 // insertion order; lower = older
 }
 
 // NewShardedCache creates a new sharded cache with the specified number of shards.
@@ -80,8 +88,17 @@ func (c *ShardedCache) Get(key string) (interface{}, bool) {
 
 	// Check expiration
 	if !item.expiresAt.IsZero() && time.Now().After(item.expiresAt) {
-		// Item expired - remove it lazily
-		c.Delete(key)
+		// Item expired — remove it lazily, but ONLY if this is still the
+		// same entry. A concurrent Set/SetIfAbsent that refreshed the key
+		// (e.g. a freshly-recorded replay JTI) since this read must not be
+		// removed, else the just-recorded JTI is lost and a duplicate token
+		// could pass (R129; matches deleteIfExpired in
+		// internal/cache/backends/memory_shard.go).
+		shard.mu.Lock()
+		if cur, ok := shard.items[key]; ok && cur == item {
+			delete(shard.items, key)
+		}
+		shard.mu.Unlock()
 		return nil, false
 	}
 
@@ -99,17 +116,63 @@ func (c *ShardedCache) Set(key string, value interface{}, ttl time.Duration) {
 	}
 
 	shard.mu.Lock()
-	// Check if we need to evict items
-	if len(shard.items) >= c.maxPerShard {
-		// Simple eviction: remove expired items first, then oldest
+	// Overwriting an existing key needs no free slot; only evict when
+	// inserting a genuinely new key at capacity, so an overwrite never
+	// drops an unrelated oldest still-valid entry and shrinks the shard
+	// by one (repeats the R57 hazard) (R153).
+	if _, present := shard.items[key]; !present && len(shard.items) >= c.maxPerShard {
 		c.evictFromShardLocked(shard)
 	}
 
 	shard.items[key] = &shardedCacheItem{
 		value:     value,
 		expiresAt: expiresAt,
+		seq:       shard.nextSeq,
 	}
+	shard.nextSeq++
 	shard.mu.Unlock()
+}
+
+// SetIfAbsent atomically inserts the item only if the key is not already
+// present and unexpired. Returns true if inserted, false if the key already
+// existed (including when a concurrent caller already inserted it). Unlike
+// the separate Exists()+Set() check-then-act, this holds the shard lock
+// across both operations, closing the double-accept race in replay
+// detection where two concurrent requests carrying the same fresh JTI could
+// both observe it absent and both be accepted.
+func (c *ShardedCache) SetIfAbsent(key string, value interface{}, ttl time.Duration) bool {
+	shard := c.getShard(key)
+
+	var expiresAt time.Time
+	if ttl > 0 {
+		expiresAt = time.Now().Add(ttl)
+	}
+
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	_, found := shard.items[key]
+	if it, exists := shard.items[key]; exists {
+		// Present and not expired -> duplicate.
+		if it.expiresAt.IsZero() || !time.Now().After(it.expiresAt) {
+			return false
+		}
+		// Present but expired -> treat as absent and replace below.
+	}
+
+	// The replace-an-expired path needs no free slot; only evict when the
+	// key is absent and the shard is at capacity (R153).
+	if !found && len(shard.items) >= c.maxPerShard {
+		c.evictFromShardLocked(shard)
+	}
+
+	shard.items[key] = &shardedCacheItem{
+		value:     value,
+		expiresAt: expiresAt,
+		seq:       shard.nextSeq,
+	}
+	shard.nextSeq++
+	return true
 }
 
 // Delete removes an item from the cache.
@@ -147,16 +210,22 @@ func (c *ShardedCache) evictFromShardLocked(shard *cacheShard) {
 		}
 	}
 
-	// If still over capacity, remove some items (FIFO approximation via map iteration)
-	// This is an approximation since Go maps don't maintain insertion order
-	remaining := len(shard.items) - c.maxPerShard + 10 // Leave some headroom
+	// If still over capacity, evict the OLDEST entries (lowest insertion seq)
+	// until we're at capacity. Evicting by insertion order keeps fresh, still-
+	// valid items (e.g. replay-protection JTIs) alive for their full TTL,
+	// unlike the previous random-over-eviction which dropped a just-written
+	// entry and left each shard ~9 slots under capacity.
+	remaining := len(shard.items) - c.maxPerShard + 1
 	if remaining > 0 {
+		oldest := make([]string, 0, len(shard.items))
 		for key := range shard.items {
+			oldest = append(oldest, key)
+		}
+		sort.Slice(oldest, func(i, j int) bool {
+			return shard.items[oldest[i]].seq < shard.items[oldest[j]].seq
+		})
+		for _, key := range oldest[:remaining] {
 			delete(shard.items, key)
-			remaining--
-			if remaining <= 0 {
-				break
-			}
 		}
 	}
 }

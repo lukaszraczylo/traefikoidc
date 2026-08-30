@@ -10,10 +10,10 @@ import (
 // TestMiddlewareContextCancellation tests request context cancellation
 func TestMiddlewareContextCancellation(t *testing.T) {
 	oidc := &TraefikOidc{
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}), // Never close to simulate waiting
-		sessionManager:         createTestSessionManager(t),
-		firstRequestStarted: 1,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}), // Never close to simulate waiting
+		sessionManager:               createTestSessionManager(t),
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
 	}
 
@@ -35,18 +35,18 @@ func TestMiddlewareContextCancellation(t *testing.T) {
 // TestMiddlewareSessionErrorRecovery tests session error recovery
 func TestMiddlewareSessionErrorRecovery(t *testing.T) {
 	oidc := &TraefikOidc{
-		next:                   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}),
-		sessionManager:         createTestSessionManager(t),
-		firstRequestStarted: 1,
+		next:                         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               createTestSessionManager(t),
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		issuerURL:              "https://provider.example.com",
-		redirURLPath:           "/callback",
-		logoutURLPath:          "/logout",
-		clientID:               "test-client",
-		audience:               "test-client",
-		authURL:                "https://provider.example.com/auth",
+		issuerURL:                    "https://provider.example.com",
+		redirURLPath:                 "/callback",
+		logoutURLPath:                "/logout",
+		clientID:                     "test-client",
+		audience:                     "test-client",
+		authURL:                      "https://provider.example.com/auth",
 	}
 	close(oidc.initComplete)
 
@@ -69,17 +69,17 @@ func TestMiddlewareSessionErrorRecovery(t *testing.T) {
 // TestMiddlewareAJAXRequestHandling tests AJAX-specific request handling
 func TestMiddlewareAJAXRequestHandling(t *testing.T) {
 	oidc := &TraefikOidc{
-		next:                   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}),
-		sessionManager:         createTestSessionManager(t),
-		firstRequestStarted: 1,
+		next:                         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}),
+		sessionManager:               createTestSessionManager(t),
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		issuerURL:              "https://provider.example.com",
-		redirURLPath:           "/callback",
-		logoutURLPath:          "/logout",
-		clientID:               "test-client",
-		audience:               "test-client",
+		issuerURL:                    "https://provider.example.com",
+		redirURLPath:                 "/callback",
+		logoutURLPath:                "/logout",
+		clientID:                     "test-client",
+		audience:                     "test-client",
 	}
 	close(oidc.initComplete)
 
@@ -99,14 +99,14 @@ func TestMiddlewareAJAXRequestHandling(t *testing.T) {
 // This is critical for allowing users to clear their session when the provider is down
 func TestLogoutWorksWithoutOIDCInitialization(t *testing.T) {
 	oidc := &TraefikOidc{
-		logger:                 NewLogger("debug"),
-		initComplete:           make(chan struct{}), // Never close to simulate provider unavailable
-		sessionManager:         createTestSessionManager(t),
-		firstRequestStarted: 1,
+		logger:                       NewLogger("debug"),
+		initComplete:                 make(chan struct{}), // Never close to simulate provider unavailable
+		sessionManager:               createTestSessionManager(t),
+		firstRequestStarted:          1,
 		metadataRefreshStartedAtomic: 1,
-		logoutURLPath:          "/logout",
-		postLogoutRedirectURI:  "/",
-		forceHTTPS:             false,
+		logoutURLPath:                "/logout",
+		postLogoutRedirectURI:        "/",
+		forceHTTPS:                   false,
 	}
 	// Note: initComplete is NOT closed, simulating OIDC provider being unavailable
 
@@ -336,27 +336,42 @@ func TestMiddlewareProcessAuthorizedRequestEdgeCases(t *testing.T) {
 	})
 
 	t.Run("security_headers_applied", func(t *testing.T) {
+		// R132: security headers are applied at the TOP of ServeHTTP so
+		// every middleware-authored response (including bypass forwards,
+		// redirects and error pages) carries them — not just the
+		// forwardAuthorized tail where they previously lived.
+		var applied http.Header
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
 		oidc := &TraefikOidc{
-			next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}),
-			logger:         NewLogger("debug"),
-			sessionManager: sessionManager,
-			extractClaimsFunc: func(token string) (map[string]interface{}, error) {
-				return map[string]interface{}{}, nil
+			next:                         next,
+			logger:                       NewLogger("debug"),
+			initComplete:                 make(chan struct{}),
+			sessionManager:               createTestSessionManager(t),
+			firstRequestStarted:          1,
+			metadataRefreshStartedAtomic: 1,
+			issuerURL:                    "https://provider.example.com",
+			excludedURLs:                 map[string]struct{}{"/api/test": {}},
+			securityHeadersApplier: func(rw http.ResponseWriter, req *http.Request) {
+				applied = rw.Header()
+				rw.Header().Set("X-Frame-Options", "DENY")
+				rw.Header().Set("X-Content-Type-Options", "nosniff")
+				rw.Header().Set("X-XSS-Protection", "1; mode=block")
 			},
 		}
+		close(oidc.initComplete)
 
+		// Serve an unauthenticated request through the real entry point.
+		// It is forwarded (bypass), yet must still get the security
+		// headers because they are applied before routing.
 		req := httptest.NewRequest("GET", "/api/test", nil)
-		session, _ := sessionManager.GetSession(req)
-		session.SetUserIdentifier("user@example.com")
-		session.SetIDToken("dummy-token")
-
 		rw := httptest.NewRecorder()
-		redirectURL := "https://example.com/callback"
-		oidc.processAuthorizedRequest(rw, req, session, redirectURL)
+		oidc.ServeHTTP(rw, req)
 
-		// Verify security headers are set
+		if applied == nil {
+			t.Fatal("security headers applier was not invoked at ServeHTTP entry")
+		}
 		if rw.Header().Get("X-Frame-Options") == "" {
 			t.Error("Expected X-Frame-Options header to be set")
 		}

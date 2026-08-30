@@ -137,8 +137,12 @@ func DetermineScheme(req *http.Request, forceHTTPS bool) string {
 		return "https"
 	}
 
-	// Check X-Forwarded-Proto header for proxy scenarios
-	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
+	// Check X-Forwarded-Proto header for proxy scenarios. Only trusted
+	// values are accepted: a malformed/junk scheme (e.g. an attacker-set
+	// "X-Forwarded-Proto: ftp") would otherwise be emitted verbatim into
+	// redirect_uri as a broken or weakened scheme. Invalid values fall
+	// through to the TLS check (R103).
+	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme == "https" || scheme == "http" {
 		return scheme
 	}
 
@@ -177,7 +181,17 @@ func sanitizeForwardedHost(v string) string {
 	if v == "" {
 		return ""
 	}
-	if strings.IndexFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f || r == ' ' }) >= 0 {
+	if strings.IndexFunc(v, func(r rune) bool {
+		// Reject control chars, whitespace, and the delimiters that would
+		// let a crafted X-Forwarded-Host smuggle a path (''/''), query
+		// (''?''), fragment (''#''), or userinfo (''@'') into the
+		// host part of a redirect URL (which is passed to the IdP as
+		// redirect_uri / post_logout_redirect_uri and matched there).
+		// Valid host characters — alphanumerics, '-', '.', ':', '[', ']'
+		// (port / IPv6) — remain allowed.
+		return r < 0x20 || r == 0x7f || r == ' ' ||
+			r == '/' || r == '?' || r == '#' || r == '@' || r == '\\'
+	}) >= 0 {
 		return ""
 	}
 	return v

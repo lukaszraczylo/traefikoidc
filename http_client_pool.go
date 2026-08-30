@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,6 +58,12 @@ func GetGlobalTransportPool() *SharedTransportPool {
 
 // GetOrCreateTransport gets or creates a shared transport with the given config
 func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *http.Transport {
+	// Apply the same zero-value defaults as CreateHTTPClient so a partially
+	// populated config never yields an unbounded client/transport, and so the
+	// pool cache key reflects normalized values (configKey). Bounded here,
+	// before the client-count gate, so both the gate and the key see
+	// normalized timeouts.
+	applyHTTPClientDefaults(&config)
 	// SECURITY FIX: Check client limit before creating new transport.
 	if atomic.LoadInt32(&p.clientCount) >= p.maxClients {
 		// At the client limit: only reuse a transport that was built for the
@@ -74,10 +81,21 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 				return shared.transport
 			}
 		}
-		// No TLS-compatible transport available; return nil so the caller falls
-		// back to a default, certificate-verifying transport rather than one
-		// with a different (possibly verification-disabled) trust store.
-		return nil
+		// No TLS-compatible transport available. Returning nil would make the
+		// caller fall back to http.DefaultTransport, silently dropping the
+		// configured RootCAs / InsecureSkipVerify — custom-CA TLS would
+		// break and self-signed skip-verify would be lost (R95). Build and
+		// return the correctly-configured transport instead; honoring TLS
+		// settings takes precedence over the soft client cap.
+		t := newSharedTransport(config)
+		p.transports[p.configKey(config)] = &sharedTransport{
+			transport: t,
+			refCount:  1,
+			lastUsed:  time.Now(),
+			tlsKey:    want,
+		}
+		atomic.AddInt32(&p.clientCount, 1)
+		return t
 	}
 
 	p.mu.Lock()
@@ -94,8 +112,26 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 	// Increment client count
 	atomic.AddInt32(&p.clientCount, 1)
 
-	// Create new transport with conservative limits
-	transport := &http.Transport{
+	transport := newSharedTransport(config)
+
+	p.transports[key] = &sharedTransport{
+		transport: transport,
+		refCount:  1,
+		lastUsed:  time.Now(),
+		tlsKey:    tlsConfigKey(config),
+	}
+
+	return transport
+}
+
+// newSharedTransport builds a properly-configured *http.Transport from the
+// given config, enforcing TLS 1.2+ and secure cipher suites. Shared by the
+// normal acquisition path and the at-cap fallback so the TLS settings are
+// NEVER silently dropped (the at-cap fallback previously returned nil,
+// making the caller fall back to http.DefaultTransport and lose the
+// configured RootCAs / InsecureSkipVerify — R95).
+func newSharedTransport(config HTTPClientConfig) *http.Transport {
+	return &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			dialer := &net.Dialer{
@@ -121,25 +157,16 @@ func (p *SharedTransportPool) GetOrCreateTransport(config HTTPClientConfig) *htt
 		ForceAttemptHTTP2:     config.ForceHTTP2,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 		ExpectContinueTimeout: config.ExpectContinueTimeout,
-		MaxIdleConns:          10,               // SECURITY FIX: Further reduced
-		MaxIdleConnsPerHost:   2,                // SECURITY FIX: Limited connections
-		IdleConnTimeout:       30 * time.Second, // Reduced from 5 minutes
+		MaxIdleConns:          config.MaxIdleConns,
+		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
+		IdleConnTimeout:       config.IdleConnTimeout,
 		DisableKeepAlives:     config.DisableKeepAlives,
-		MaxConnsPerHost:       5, // SECURITY FIX: Strict limit
+		MaxConnsPerHost:       config.MaxConnsPerHost,
 		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
 		DisableCompression:    config.DisableCompression,
 		WriteBufferSize:       config.WriteBufferSize,
 		ReadBufferSize:        config.ReadBufferSize,
 	}
-
-	p.transports[key] = &sharedTransport{
-		transport: transport,
-		refCount:  1,
-		lastUsed:  time.Now(),
-		tlsKey:    tlsConfigKey(config),
-	}
-
-	return transport
 }
 
 // ReleaseTransport decrements the reference count for a transport
@@ -219,20 +246,35 @@ func (p *SharedTransportPool) performCleanup() {
 
 // configKey generates a unique key for a config
 func (p *SharedTransportPool) configKey(config HTTPClientConfig) string {
-	// Pool transports by the parameters that change TLS or connection
-	// behavior. RootCAs and InsecureSkipVerify MUST be part of the key:
+	// Pool transports by every parameter the built *http.Transport actually
+	// consumes. RootCAs and InsecureSkipVerify MUST be part of the key:
 	// otherwise a middleware configured with a custom CA would share a
 	// transport with one using the system store, silently bypassing its
-	// CA configuration.
+	// CA configuration. The remaining fields affect connection behavior
+	// (HTTP version, compression, keep-alives, timeouts, buffer sizes,
+	// dial settings); omitting them would hand a caller a transport built
+	// with different settings than it requested (e.g. wrong compression).
 	skip := "0"
 	if config.InsecureSkipVerify {
 		skip = "1"
 	}
-	return fmt.Sprintf("%d|%d|%p|%s",
+	return fmt.Sprintf("%d|%d|%p|%s|%d|%d|%d|%v|%v|%v|%d|%d|%d|%d|%d|%d",
 		config.MaxConnsPerHost,
 		config.MaxIdleConnsPerHost,
 		config.RootCAs,
 		skip,
+		config.DialTimeout,
+		config.KeepAlive,
+		config.TLSHandshakeTimeout,
+		config.ForceHTTP2,
+		config.DisableKeepAlives,
+		config.DisableCompression,
+		config.ResponseHeaderTimeout,
+		config.ExpectContinueTimeout,
+		config.WriteBufferSize,
+		config.ReadBufferSize,
+		config.IdleConnTimeout,
+		config.MaxIdleConns,
 	)
 }
 
@@ -248,30 +290,54 @@ func tlsConfigKey(config HTTPClientConfig) string {
 	return fmt.Sprintf("%p|%s", config.RootCAs, skip)
 }
 
-// Cleanup closes all transports and stops the cleanup goroutine
+// Cleanup closes all transports, resets the pool, and restarts the cleanup
+// goroutine so the (singleton) pool remains fully usable afterwards. Prior
+// to R125, Cleanup canceled the cleanup goroutine but never restarted it
+// and left clientCount unreset: a reused singleton then had a permanently
+// dead cleaner (idle conns never pruned) and a stale count (the soft
+// maxClients cap keyed off it was wrong after reuse).
 func (p *SharedTransportPool) Cleanup() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Stop the cleanup goroutine
-	if p.cancel != nil {
-		p.cancel()
-	}
-
 	for _, shared := range p.transports {
-		shared.transport.CloseIdleConnections()
+		if shared != nil && shared.transport != nil {
+			shared.transport.CloseIdleConnections()
+		}
 	}
 	p.transports = make(map[string]*sharedTransport)
+	atomic.StoreInt32(&p.clientCount, 0)
+	oldCancel := p.cancel
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	p.cancel = cancel
+	p.mu.Unlock()
+
+	if oldCancel != nil {
+		oldCancel()
+	}
+	go p.cleanupIdleTransports(ctx)
 }
 
 // CreatePooledHTTPClient creates an HTTP client using the shared transport pool
 func CreatePooledHTTPClient(config HTTPClientConfig) *http.Client {
+	// Apply the same zero-value defaults as CreateHTTPClient so a partially
+	// populated config still gets a bounded overall request Timeout.
+	applyHTTPClientDefaults(&config)
 	pool := GetGlobalTransportPool()
 	transport := pool.GetOrCreateTransport(config)
 
 	client := &http.Client{
 		Timeout:   config.Timeout,
 		Transport: transport,
+	}
+
+	// Honor the cookie-jar option, matching CreateHTTPClient
+	// (http_client_factory.go). Without this, token/OIDC clients built
+	// through the pool would silently drop UseCookieJar (config no-effect),
+	// so cookies set by the auth server on token/refresh responses were
+	// never stored or re-sent.
+	if config.UseCookieJar {
+		jar, _ := cookiejar.New(nil) // Safe to ignore: nil options rarely fail
+		client.Jar = jar
 	}
 
 	// Configure redirect policy

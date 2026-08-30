@@ -14,7 +14,7 @@ func BuildSessionName(baseName string, index int) string {
 	sb.WriteRune('_')
 	// Efficient int to string conversion
 	if index < 10 {
-		sb.WriteRune('0' + rune(index))
+		sb.WriteRune('0' + rune(index)) //nolint:gosec // index is bounded by the short alphabet size
 	} else {
 		sb.WriteString(intToString(index))
 	}

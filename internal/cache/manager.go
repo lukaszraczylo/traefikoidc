@@ -33,6 +33,15 @@ func GetGlobalManager(logger Logger) *Manager {
 	return globalManager
 }
 
+// resetGlobalManagerForTest clears the process-global manager so the next call to
+// GetGlobalManager returns a fresh instance. The singleton is otherwise pinned
+// for the process lifetime; tests that Close() the global manager must reset it,
+// or any later test using the compat wrappers fails with "cache already closed".
+func resetGlobalManagerForTest() {
+	globalManagerOnce = sync.Once{}
+	globalManager = nil
+}
+
 // NewManager creates a new cache manager
 func NewManager(logger Logger) *Manager {
 	if logger == nil {

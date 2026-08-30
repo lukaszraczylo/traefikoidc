@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // TemplatedHeader represents a custom HTTP header with a templated value.
@@ -75,30 +77,37 @@ type Config struct {
 	// IdPs do not expose RT TTL on the wire, so this is intentionally a
 	// conservative heuristic; tune to match your provider configuration.
 	// Default 21600 (6h). Set to 0 to disable the check.
-	MaxRefreshTokenAgeSeconds int                              `json:"maxRefreshTokenAgeSeconds"`
-	SessionMaxAge             int                              `json:"sessionMaxAge"`
-	RateLimit                 int                              `json:"rateLimit"`
-	OverrideScopes            bool                             `json:"overrideScopes"`
-	DisableReplayDetection    bool                             `json:"disableReplayDetection,omitempty"`
-	RequireTokenIntrospection bool                             `json:"requireTokenIntrospection,omitempty"`
-	AllowOpaqueTokens         bool                             `json:"allowOpaqueTokens,omitempty"`
-	StrictAudienceValidation  bool                             `json:"strictAudienceValidation,omitempty"`
-	EnablePKCE                bool                             `json:"enablePKCE"`
-	ForceHTTPS                bool                             `json:"forceHTTPS"`
-	AllowPrivateIPAddresses   bool                             `json:"allowPrivateIPAddresses,omitempty"`
-	MinimalHeaders            bool                             `json:"minimalHeaders,omitempty"`
-	StripAuthCookies          bool                             `json:"stripAuthCookies,omitempty"`
+	MaxRefreshTokenAgeSeconds int `json:"maxRefreshTokenAgeSeconds"`
+	SessionMaxAge             int `json:"sessionMaxAge"`
+	RateLimit                 int `json:"rateLimit"`
+	// PerSourceLoginRateLimit throttles OIDC authentication events
+	// (authorization-code callback + login initiation) per client source IP,
+	// for external (non-internal) sources only. Internal / loopback /
+	// link-local sources (reverse proxies, in-cluster callers) are trusted
+	// and never throttled. Value = max auth events per minute per external
+	// source; 0 disables. See per_source_ratelimit.go (R185).
+	PerSourceLoginRateLimit   int    `json:"perSourceLoginRateLimit,omitempty"`
+	OverrideScopes            bool   `json:"overrideScopes"`
+	DisableReplayDetection    bool   `json:"disableReplayDetection,omitempty"`
+	RequireTokenIntrospection bool   `json:"requireTokenIntrospection,omitempty"`
+	AllowOpaqueTokens         bool   `json:"allowOpaqueTokens,omitempty"`
+	StrictAudienceValidation  bool   `json:"strictAudienceValidation,omitempty"`
+	EnablePKCE                bool   `json:"enablePKCE"`
+	ForceHTTPS                bool   `json:"forceHTTPS"`
+	AllowPrivateIPAddresses   bool   `json:"allowPrivateIPAddresses,omitempty"`
+	MinimalHeaders            bool   `json:"minimalHeaders,omitempty"`
+	StripAuthCookies          bool   `json:"stripAuthCookies,omitempty"`
 	// CookiePath restricts session cookies to a specific path prefix instead of "/".
 	// When traefikoidc protects some but not all paths on a domain, set this to the
 	// middleware's path prefix (e.g. "/app-protegido") so the browser does not send
 	// the OIDC session cookies to unprotected paths — preventing "Request Header
 	// Or Cookie Too Large" (431) errors on those paths.
 	// Default "/" (all paths, current behaviour).
-	CookiePath                string                           `json:"cookiePath,omitempty"`
-	EnableBackchannelLogout   bool                             `json:"enableBackchannelLogout,omitempty"`
-	EnableFrontchannelLogout  bool                             `json:"enableFrontchannelLogout,omitempty"`
-	BackchannelLogoutURL      string                           `json:"backchannelLogoutURL,omitempty"`
-	FrontchannelLogoutURL     string                           `json:"frontchannelLogoutURL,omitempty"`
+	CookiePath                string `json:"cookiePath,omitempty"`
+	EnableBackchannelLogout   bool   `json:"enableBackchannelLogout,omitempty"`
+	EnableFrontchannelLogout  bool   `json:"enableFrontchannelLogout,omitempty"`
+	BackchannelLogoutURL      string `json:"backchannelLogoutURL,omitempty"`
+	FrontchannelLogoutURL     string `json:"frontchannelLogoutURL,omitempty"`
 	// CACertPath is an optional filesystem path to a PEM-encoded CA bundle used
 	// to verify the OIDC provider's TLS certificate. Use this when the provider
 	// is signed by an internal/private CA that is not in the system trust store.
@@ -412,7 +421,39 @@ func createDefaultSecurityConfig() *SecurityHeadersConfig {
 // Returns:
 //   - nil if the configuration is valid.
 //   - An error describing the first validation failure encountered.
+//
+// ApplyEnvFallbacks applies environment variable values as fallbacks for
+// empty top-level OIDC config fields. Mirrors RedisConfig.ApplyEnvFallbacks:
+// the plugin dynamic configuration (Traefik) takes precedence, env vars only
+// fill empty fields. The example deployment documents OIDC_CLIENT_ID /
+// OIDC_CLIENT_SECRET / OIDC_PROVIDER_URL as optional fallbacks; previously
+// those vars were documented but never read, so an operator following the
+// docs got a silent no-op and then "providerURL is required" (R180).
+func (c *Config) ApplyEnvFallbacks() {
+	if c.ClientID == "" {
+		if v := os.Getenv("OIDC_CLIENT_ID"); v != "" {
+			c.ClientID = v
+		}
+	}
+	if c.ClientSecret == "" {
+		if v := os.Getenv("OIDC_CLIENT_SECRET"); v != "" {
+			c.ClientSecret = v
+		}
+	}
+	if c.ProviderURL == "" {
+		if v := os.Getenv("OIDC_PROVIDER_URL"); v != "" {
+			c.ProviderURL = v
+		}
+	}
+}
+
 func (c *Config) Validate() error {
+	// Apply OIDC env fallbacks BEFORE the required-field checks: an
+	// operator supplying these via env (the documented pattern) has empty
+	// fields at config load, so without this the "providerURL is
+	// required" / "clientID is required" guards would fire and reject a
+	// valid env-supplied configuration (R180).
+	c.ApplyEnvFallbacks()
 	// Validate provider URL
 	if c.ProviderURL == "" {
 		return fmt.Errorf("providerURL is required")
@@ -428,35 +469,78 @@ func (c *Config) Validate() error {
 	if !strings.HasPrefix(c.CallbackURL, "/") {
 		return fmt.Errorf("callbackURL must start with /")
 	}
+	// The callback is matched by exact request-path comparison
+	// (req.URL.Path == redirURLPath) and used verbatim as redirect_uri. A
+	// query string or fragment in the path config part never matches the
+	// request path and corrupts redirect_uri (buildFullURL), causing an
+	// endless re-auth loop. Reject it at config time.
+	if strings.ContainsAny(c.CallbackURL, "?#") {
+		return fmt.Errorf("callbackURL must not contain a query string or fragment")
+	}
 
-	// Validate client credentials
-	if c.ClientID == "" {
-		return fmt.Errorf("clientID is required")
+	// LogoutURL is matched by exact request-path comparison
+	// (logout.go handleLogout) and used to build the RP-initiated
+	// end-session URL. An empty value is allowed (defaults to
+	// CallbackURL + "/logout"), but a provided value must be a bare
+	// path: a query string or fragment, or a relative URI, silently
+	// breaks RP-initiated logout with no runtime error (R134).
+	if c.LogoutURL != "" {
+		if !strings.HasPrefix(c.LogoutURL, "/") {
+			return fmt.Errorf("logoutURL must start with /")
+		}
+		if strings.ContainsAny(c.LogoutURL, "?#") {
+			return fmt.Errorf("logoutURL must not contain a query string or fragment")
+		}
 	}
-	authMethod := c.ClientAuthMethod
-	if authMethod == "" {
-		authMethod = "client_secret_post"
+
+	// Validate client credentials. With Dynamic Client Registration (RFC 7591)
+	// enabled, clientID (and typically clientSecret) are not known at
+	// construction time — the provider provisions them at registration. Skip
+	// these checks in that case; the providerURL / callbackURL / session-key
+	// checks above and below still run.
+	dcrEnabled := c.DynamicClientRegistration != nil && c.DynamicClientRegistration.Enabled
+	if !(dcrEnabled && c.ClientID == "") {
+		if c.ClientID == "" {
+			return fmt.Errorf("clientID is required")
+		}
+		authMethod := c.ClientAuthMethod
+		if authMethod == "" {
+			authMethod = "client_secret_post"
+		}
+		switch authMethod {
+		case "client_secret_post", "client_secret_basic":
+			if c.ClientSecret == "" {
+				return fmt.Errorf("clientSecret is required when clientAuthMethod is %q", authMethod)
+			}
+		case "private_key_jwt":
+			if c.ClientAssertionPrivateKey == "" && c.ClientAssertionKeyPath == "" {
+				return fmt.Errorf("clientAssertionPrivateKey or clientAssertionKeyPath is required when clientAuthMethod is private_key_jwt")
+			}
+			if c.ClientAssertionPrivateKey != "" && c.ClientAssertionKeyPath != "" {
+				return fmt.Errorf("only one of clientAssertionPrivateKey or clientAssertionKeyPath may be set")
+			}
+			if c.ClientAssertionKeyID == "" {
+				return fmt.Errorf("clientAssertionKeyID is required when clientAuthMethod is private_key_jwt")
+			}
+			if c.ClientAssertionAlg != "" && !isSupportedClientAssertionAlg(c.ClientAssertionAlg) {
+				return fmt.Errorf("clientAssertionAlg %q is not supported (use RS256/384/512, PS256/384/512, or ES256/384/512)", c.ClientAssertionAlg)
+			}
+		default:
+			return fmt.Errorf("clientAuthMethod %q is not supported", authMethod)
+		}
 	}
-	switch authMethod {
-	case "client_secret_post", "client_secret_basic":
-		if c.ClientSecret == "" {
-			return fmt.Errorf("clientSecret is required when clientAuthMethod is %q", authMethod)
-		}
-	case "private_key_jwt":
-		if c.ClientAssertionPrivateKey == "" && c.ClientAssertionKeyPath == "" {
-			return fmt.Errorf("clientAssertionPrivateKey or clientAssertionKeyPath is required when clientAuthMethod is private_key_jwt")
-		}
-		if c.ClientAssertionPrivateKey != "" && c.ClientAssertionKeyPath != "" {
-			return fmt.Errorf("only one of clientAssertionPrivateKey or clientAssertionKeyPath may be set")
-		}
-		if c.ClientAssertionKeyID == "" {
-			return fmt.Errorf("clientAssertionKeyID is required when clientAuthMethod is private_key_jwt")
-		}
-		if c.ClientAssertionAlg != "" && !isSupportedClientAssertionAlg(c.ClientAssertionAlg) {
-			return fmt.Errorf("clientAssertionAlg %q is not supported (use RS256/384/512, PS256/384/512, or ES256/384/512)", c.ClientAssertionAlg)
-		}
-	default:
-		return fmt.Errorf("clientAuthMethod %q is not supported", authMethod)
+
+	// The token-introspection path always authenticates with client_secret_basic
+	// (token_introspection.go SetBasicAuth), regardless of clientAuthMethod.
+	// Reject the validated-but-broken config where introspection is enabled but
+	// no client secret is supplied (e.g. private_key_jwt with no secret), which
+	// would otherwise send empty Basic credentials and fail every introspection.
+	// allowOpaqueTokens also routes opaque tokens through the same
+	// client_secret_basic introspection, so it must be covered too (R117).
+	// Under DCR the secret is provisioned at runtime (main.go), so like the
+	// clientID check above it is skipped when DCR is enabled (R135).
+	if (c.RequireTokenIntrospection || c.AllowOpaqueTokens) && c.ClientSecret == "" && !(dcrEnabled && c.ClientID == "") {
+		return fmt.Errorf("clientSecret is required when requireTokenIntrospection or allowOpaqueTokens is enabled (opaque-token introspection authenticates via client_secret_basic)")
 	}
 
 	// Validate session encryption key
@@ -515,10 +599,40 @@ func (c *Config) Validate() error {
 	if c.RefreshGracePeriodSeconds < 0 {
 		return fmt.Errorf("refreshGracePeriodSeconds cannot be negative")
 	}
+	// Upper bound (mirroring the SessionMaxAge guard below): this seconds
+	// value is converted to time.Duration at startup
+	// (time.Duration(x) * time.Second). Values above ~9.22e9 seconds
+	// (~292 years) overflow int64 nanoseconds and wrap negative, pulling
+	// the refresh threshold into the past and forcing perpetual refresh /
+	// re-auth. Reject at startup rather than fail at runtime.
+	if int64(c.RefreshGracePeriodSeconds) > math.MaxInt64/int64(time.Second) {
+		return fmt.Errorf("refreshGracePeriodSeconds is too large; must be at most %d seconds", math.MaxInt64/int64(time.Second))
+	}
 
 	// Validate refresh-token max-age heuristic
 	if c.MaxRefreshTokenAgeSeconds < 0 {
 		return fmt.Errorf("maxRefreshTokenAgeSeconds cannot be negative")
+	}
+	// Upper bound (same overflow class): a wrapped-negative max-age makes
+	// every session with an issued_at look refresh-token-expired (mass
+	// re-auth). Reject at startup.
+	if int64(c.MaxRefreshTokenAgeSeconds) > math.MaxInt64/int64(time.Second) {
+		return fmt.Errorf("maxRefreshTokenAgeSeconds is too large; must be at most %d seconds", math.MaxInt64/int64(time.Second))
+	}
+
+	// Validate session max age. A negative value would make every session
+	// "older than maxAge" immediately (time-since-createdAt > negative),
+	// permanently locking users out.
+	if c.SessionMaxAge < 0 {
+		return fmt.Errorf("sessionMaxAge cannot be negative")
+	}
+	// Upper bound: sessionMaxAge is converted to a time.Duration as
+	// SessionMaxAge * time.Second (main.go). Values above ~9.22e9 seconds
+	// (~292 years) overflow int64 nanoseconds and wrap negative, which the
+	// growth comparison would then treat as "always expired": an instant
+	// mass lockout. Reject at startup rather than fail at runtime.
+	if int64(c.SessionMaxAge) > math.MaxInt64/int64(time.Second) {
+		return fmt.Errorf("sessionMaxAge is too large; must be at most %d seconds", math.MaxInt64/int64(time.Second))
 	}
 
 	// Validate audience if specified
@@ -544,11 +658,40 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// EnableBearerAuth requires an explicit Audience: it cannot default to
+	// clientID (that path accepts ID tokens, a spoofing vector for the
+	// bearer M2M path). Enforced here in Validate so a standalone call
+	// fails closed, matching the NewWithContext constructor check (R134).
+	if c.EnableBearerAuth && c.Audience == "" {
+		return fmt.Errorf("EnableBearerAuth=true requires Audience to be set explicitly (cannot default to clientID — that path accepts ID tokens)")
+	}
+
 	// Validate Redis configuration if provided
-	if c.Redis != nil && c.Redis.Enabled {
-		if err := c.Redis.Validate(); err != nil {
-			return fmt.Errorf("redis configuration error: %w", err)
+	if c.Redis != nil {
+		// Apply env fallbacks + defaults BEFORE validation: an operator
+		// enabling Redis via REDIS_ENABLED (the documented pattern) has
+		// Enabled==false at config load, so without this the guards
+		// within RedisConfig.Validate (address required, no negative
+		// fields) would be skipped, and the backend would then be built
+		// with an empty address and silently degrade to memory-only at
+		// runtime (R123).
+		c.Redis.ApplyEnvFallbacks()
+		c.Redis.ApplyDefaults()
+		if c.Redis.Enabled {
+			if err := c.Redis.Validate(); err != nil {
+				return fmt.Errorf("redis configuration error: %w", err)
+			}
 		}
+	}
+
+	// Validate HSTS max-age when HSTS is enabled. RFC 6797 s.6.1: a
+	// max-age of 0 directs the UA to REMOVE the host's HSTS policy,
+	// silently disabling the operator's intended protection; negative is
+	// invalid. The header emitter (GetSecurityHeadersApplier) uses the
+	// configured value verbatim, so a non-positive value must be
+	// rejected here rather than emitted as max-age=0 (R123).
+	if c.SecurityHeaders != nil && c.SecurityHeaders.StrictTransportSecurity && c.SecurityHeaders.StrictTransportSecurityMaxAge <= 0 {
+		return fmt.Errorf("strictTransportSecurityMaxAge must be positive when strictTransportSecurity is enabled")
 	}
 
 	// Validate headers configuration for template security. Header templates may
@@ -557,6 +700,12 @@ func (c *Config) Validate() error {
 	for _, header := range c.Headers {
 		if header.Name == "" {
 			return fmt.Errorf("header name cannot be empty")
+		}
+		// An HTTP field-name must be an RFC 7230 token; anything else
+		// (space, tab, ':', controls) would be written verbatim by Go's
+		// server into every response line, corrupting it (R148).
+		if strings.ContainsAny(header.Name, " \t:()<>@,;\\\"/[]?={}") || strings.ContainsAny(header.Name, "\r\n\x00") {
+			return fmt.Errorf("header name %q contains characters invalid in an HTTP field name", header.Name)
 		}
 		if header.Value == "" {
 			return fmt.Errorf("header value template cannot be empty")
@@ -594,6 +743,78 @@ func (c *Config) Validate() error {
 		// Validate template syntax and security
 		if err := validateTemplateSecure(header.Value, allowedClaims); err != nil {
 			return fmt.Errorf("header template '%s' failed security validation: %w", header.Value, err)
+		}
+	}
+
+	// SecurityHeader CORS lists and custom header values are emitted
+	// verbatim into response headers (GetSecurityHeadersApplier); a CR/LF
+	// would split or corrupt the header (R148). Static header template
+	// values are already checked above; guard these string lists too.
+	checkNoCRLF := func(kind, val string) error {
+		if strings.ContainsAny(val, "\r\n\x00") {
+			return fmt.Errorf("%s %q contains CR/LF/NUL, which would split the response header", kind, val)
+		}
+		return nil
+	}
+	if c.SecurityHeaders != nil {
+		for _, v := range c.SecurityHeaders.CORSAllowedMethods {
+			if err := checkNoCRLF("CORSAllowedMethods entry", v); err != nil {
+				return err
+			}
+		}
+		for _, v := range c.SecurityHeaders.CORSAllowedHeaders {
+			if err := checkNoCRLF("CORSAllowedHeaders entry", v); err != nil {
+				return err
+			}
+		}
+		for _, v := range c.SecurityHeaders.CORSAllowedOrigins {
+			if err := checkNoCRLF("CORSAllowedOrigins entry", v); err != nil {
+				return err
+			}
+		}
+		for name, value := range c.SecurityHeaders.CustomHeaders {
+			if err := checkNoCRLF("CustomHeaders value", value); err != nil {
+				return err
+			}
+			if err := checkNoCRLF("CustomHeaders name", name); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Scopes flow verbatim into the OIDC authorize request (buildAuthURL).
+	// An empty scope element (e.g. a trailing comma in a Traefik label
+	// list) or whitespace-bearing scope is rejected by strict OIDC
+	// providers, and an override that drops the mandatory "openid" scope
+	// makes every login fail at runtime (OIDC Core 3.1.2.1). Reject at
+	// startup instead (R148).
+	seenOpenID := false
+	for i, sc := range c.Scopes {
+		s := strings.TrimSpace(sc)
+		if s == "" {
+			return fmt.Errorf("scope %d must not be empty", i)
+		}
+		if strings.ContainsAny(s, " \t\r\n") {
+			return fmt.Errorf("scope %d must not contain whitespace: %q", i, sc)
+		}
+		if s == "openid" {
+			seenOpenID = true
+		}
+	}
+	if c.OverrideScopes && !seenOpenID {
+		return fmt.Errorf("overrideScopes is set but the mandatory \"openid\" scope is missing; add it to scopes")
+	}
+
+	// cookieDomain flows verbatim into the session cookie's Domain option;
+	// an invalid value (a full URL, whitespace, or characters illegal in a
+	// cookie domain) makes every browser reject the Set-Cookie, surfacing
+	// only as a login loop at runtime. Reject at startup instead.
+	if c.CookieDomain != "" {
+		if u, err := url.Parse(c.CookieDomain); err == nil && (u.Scheme != "" || u.Host != "") {
+			return fmt.Errorf("cookieDomain must be a bare host name or domain (not a full URL): %q", c.CookieDomain)
+		}
+		if strings.ContainsAny(c.CookieDomain, " \t\r\n;,") {
+			return fmt.Errorf("cookieDomain contains characters invalid in a cookie domain: %q", c.CookieDomain)
 		}
 	}
 
@@ -888,6 +1109,18 @@ func (c *Config) GetSecurityHeadersApplier() func(http.ResponseWriter, *http.Req
 		if c.SecurityHeaders.ContentSecurityPolicy != "" {
 			headers.Set("Content-Security-Policy", c.SecurityHeaders.ContentSecurityPolicy)
 		}
+		if c.SecurityHeaders.PermissionsPolicy != "" {
+			headers.Set("Permissions-Policy", c.SecurityHeaders.PermissionsPolicy)
+		}
+		if c.SecurityHeaders.CrossOriginResourcePolicy != "" {
+			headers.Set("Cross-Origin-Resource-Policy", c.SecurityHeaders.CrossOriginResourcePolicy)
+		}
+		if c.SecurityHeaders.CrossOriginOpenerPolicy != "" {
+			headers.Set("Cross-Origin-Opener-Policy", c.SecurityHeaders.CrossOriginOpenerPolicy)
+		}
+		if c.SecurityHeaders.CrossOriginEmbedderPolicy != "" {
+			headers.Set("Cross-Origin-Embedder-Policy", c.SecurityHeaders.CrossOriginEmbedderPolicy)
+		}
 
 		// HSTS for HTTPS
 		if (req.TLS != nil || req.Header.Get("X-Forwarded-Proto") == "https") && c.SecurityHeaders.StrictTransportSecurity {
@@ -1166,6 +1399,41 @@ func (rc *RedisConfig) ApplyEnvFallbacks() {
 			}
 		}
 	}
+
+	// Resilience fallbacks documented in examples/redis-config.yaml. These were
+	// previously absent: an operator following the documented env var names got
+	// no effect. Match the bool/numeric patterns used above.
+	if !rc.EnableCircuitBreaker {
+		if env := os.Getenv("REDIS_ENABLE_CIRCUIT_BREAKER"); env == "true" || env == "1" {
+			rc.EnableCircuitBreaker = true
+		}
+	}
+	if rc.CircuitBreakerThreshold == 0 {
+		if s := os.Getenv("REDIS_CIRCUIT_BREAKER_THRESHOLD"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				rc.CircuitBreakerThreshold = v
+			}
+		}
+	}
+	if rc.CircuitBreakerTimeout == 0 {
+		if s := os.Getenv("REDIS_CIRCUIT_BREAKER_TIMEOUT"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				rc.CircuitBreakerTimeout = v
+			}
+		}
+	}
+	if !rc.EnableHealthCheck {
+		if env := os.Getenv("REDIS_ENABLE_HEALTH_CHECK"); env == "true" || env == "1" {
+			rc.EnableHealthCheck = true
+		}
+	}
+	if rc.HealthCheckInterval == 0 {
+		if s := os.Getenv("REDIS_HEALTH_CHECK_INTERVAL"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				rc.HealthCheckInterval = v
+			}
+		}
+	}
 }
 
 func isOriginAllowed(origin string, allowedOrigins []string) bool {
@@ -1177,13 +1445,17 @@ func isOriginAllowed(origin string, allowedOrigins []string) bool {
 		if strings.Contains(allowed, "*") {
 			if strings.HasPrefix(allowed, "https://*.") {
 				domain := strings.TrimPrefix(allowed, "https://*.")
-				if strings.HasSuffix(origin, "."+domain) || origin == "https://"+domain {
+				// The scheme part of the wildcard must be honored: an https
+				// wildcard must not admit an http sibling (which, with
+				// AllowCredentials, would be reflected and credentialed)
+				// (R136).
+				if (strings.HasPrefix(origin, "https://") && strings.HasSuffix(origin, "."+domain)) || origin == "https://"+domain {
 					return true
 				}
 			}
 			if strings.HasPrefix(allowed, "http://*.") {
 				domain := strings.TrimPrefix(allowed, "http://*.")
-				if strings.HasSuffix(origin, "."+domain) || origin == "http://"+domain {
+				if (strings.HasPrefix(origin, "http://") && strings.HasSuffix(origin, "."+domain)) || origin == "http://"+domain {
 					return true
 				}
 			}

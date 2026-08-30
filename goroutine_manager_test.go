@@ -45,6 +45,7 @@ func TestStartGoroutine(t *testing.T) {
 
 	gm.StartGoroutine("test-goroutine", func(ctx context.Context) {
 		executed.Store(true)
+		<-ctx.Done() // keep alive so it is tracked while running
 	})
 
 	// Give goroutine time to execute
@@ -54,6 +55,7 @@ func TestStartGoroutine(t *testing.T) {
 		t.Error("Expected goroutine to execute")
 	}
 
+	// A live goroutine is tracked (R157: finished goroutines are pruned).
 	status := gm.GetStatus()
 	if len(status) != 1 {
 		t.Errorf("Expected 1 goroutine in status, got %d", len(status))
@@ -370,8 +372,9 @@ func TestGetStatus(t *testing.T) {
 
 	status := gm.GetStatus()
 
-	if len(status) != 2 {
-		t.Errorf("Expected 2 goroutines in status, got %d", len(status))
+	// R157: finished goroutines are pruned, so only the live one remains.
+	if len(status) != 1 {
+		t.Errorf("Expected 1 live goroutine in status, got %d", len(status))
 	}
 
 	if runningStatus, exists := status["running"]; exists {
@@ -394,12 +397,8 @@ func TestGetStatus(t *testing.T) {
 		t.Error("Expected 'running' goroutine in status")
 	}
 
-	if quickStatus, exists := status["quick"]; exists {
-		if quickStatus.Running {
-			t.Error("Expected 'quick' goroutine to be marked as not running")
-		}
-	} else {
-		t.Error("Expected 'quick' goroutine in status")
+	if _, exists := status["quick"]; exists {
+		t.Error("Expected finished 'quick' goroutine to be pruned from status")
 	}
 }
 
@@ -435,7 +434,7 @@ func TestConcurrentStartGoroutine(t *testing.T) {
 			name := "concurrent-" + string(rune('0'+id%10)) + string(rune('0'+id/10))
 			gm.StartGoroutine(name, func(ctx context.Context) {
 				counter.Add(1)
-				time.Sleep(50 * time.Millisecond)
+				<-ctx.Done() // stay alive so it is still tracked (R157 prunes finished ones)
 				counter.Add(-1)
 			})
 		}(i)

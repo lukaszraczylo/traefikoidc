@@ -16,11 +16,13 @@ import (
 type CacheType string
 
 const (
-	CacheTypeToken    CacheType = "token"
-	CacheTypeMetadata CacheType = "metadata"
-	CacheTypeJWK      CacheType = "jwk"
-	CacheTypeSession  CacheType = "session"
-	CacheTypeGeneral  CacheType = "general"
+	CacheTypeToken         CacheType = "token"
+	CacheTypeBlacklist     CacheType = "blacklist"
+	CacheTypeMetadata      CacheType = "metadata"
+	CacheTypeIntrospection CacheType = "introspection"
+	CacheTypeJWK           CacheType = "jwk"
+	CacheTypeSession       CacheType = "session"
+	CacheTypeGeneral       CacheType = "general"
 
 	// maxCacheEntrySize defines the maximum size for a single cache entry (64 MiB)
 	// This prevents integer overflow when allocating memory for serialization
@@ -248,7 +250,17 @@ func (c *UniversalCache) Set(key string, value interface{}, ttl time.Duration) e
 
 		if err := c.backend.Set(ctx, c.prefixKey(key), data, ttl); err != nil {
 			c.logger.Infof("Backend set error for key %s: %v", key, err)
-			// Continue with local cache even if backend fails
+			// The backend still holds an OLDER entry for this key. If we
+			// leave it in place, a subsequent Get treats the backend as
+			// authoritative and (via updateLocalCache) overwrites the
+			// just-written local value with the stale one (R162). Evict the
+			// stale backend entry so Get falls through to the fresh local
+			// value instead of resurrecting the old one.
+			dctx, dcancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			if _, derr := c.backend.Delete(dctx, c.prefixKey(key)); derr != nil {
+				c.logger.Debugf("Backend delete after failed set for key %s: %v", key, derr)
+			}
+			dcancel()
 		}
 	}
 
@@ -276,16 +288,30 @@ func (c *UniversalCache) setLocal(key string, value interface{}, ttl time.Durati
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// For an existing key the replace below frees the OLD value's size, so the
+	// memory cap should only be checked against the NET growth (new - old), not
+	// the full new size while currentMemory still holds the old size. Using the
+	// full size here over-triggers eviction and drops live entries that would
+	// have fit once the old value was released.
+	growth := size
+	if existing, exists := c.items[key]; exists {
+		growth = size - existing.Size
+	}
+
 	// Check memory limits
 	if c.config.MaxMemoryBytes > 0 {
 		// Evict items if necessary to make room
-		for c.currentMemory+size > c.config.MaxMemoryBytes && c.lruList.Len() > 0 {
+		for c.currentMemory+growth > c.config.MaxMemoryBytes && c.lruList.Len() > 0 {
 			c.evictOldest()
 		}
 	}
 
-	// Check size limits
-	if c.lruList.Len() >= c.config.MaxSize {
+	// Check size limits — only evict when inserting a NEW key. An in-place
+	// update of an existing key adds no net entry, so evicting would drop an
+	// unrelated live LRU entry and leave the cache one below capacity (cache
+	// thrashes under sustained traffic at MaxSize). Mirror of the shard
+	// backend fix (R139 F2).
+	if _, present := c.items[key]; !present && c.lruList.Len() >= c.config.MaxSize {
 		c.evictOldest()
 	}
 
@@ -340,7 +366,7 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		data, _, exists, err := c.backend.Get(ctx, c.prefixKey(key))
+		data, ttl, exists, err := c.backend.Get(ctx, c.prefixKey(key))
 		if err != nil {
 			c.logger.Debugf("Backend get error for key %s: %v", key, err)
 			// Fall through to local cache
@@ -352,11 +378,17 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 				// Fall through to local cache
 			} else {
 				atomic.AddInt64(&c.hits, 1)
-				// Update local cache with backend value synchronously.
-				// Under yaegi, goroutine spawn is 5-10x costlier than compiled Go,
-				// and this path fires per-request on cold local cache.
-				// updateLocalCache is cheap (map write under mutex).
-				_ = c.updateLocalCache(key, value, c.config.DefaultTTL)
+				// Re-populate local cache with the backend entry's REAL remaining
+				// TTL, not the federated DefaultTTL, so the in-memory copy
+				// cannot outlive the authoritative backend entry. Previously a
+				// short-TTL backend value (e.g. a 5-minute token) was cached
+				// locally for up to DefaultTTL (often 1h); if the backend then
+				// became unreachable, getLocal kept serving it well past its
+				// intended expiry.
+				if ttl <= 0 {
+					ttl = c.config.DefaultTTL
+				}
+				_ = c.updateLocalCache(key, value, ttl)
 				return value, true
 			}
 		}
@@ -381,7 +413,7 @@ func (c *UniversalCache) getLocal(key string) (interface{}, bool) {
 	// previous unconditional Lock serialized every JWT verify on a single
 	// mutex and pinned a CPU under load.
 	switch c.config.Type {
-	case CacheTypeToken, CacheTypeJWK, CacheTypeSession:
+	case CacheTypeToken, CacheTypeJWK, CacheTypeSession, CacheTypeIntrospection:
 		c.mu.RLock()
 		item, exists := c.items[key]
 		if !exists {
@@ -944,15 +976,26 @@ func (c *UniversalCache) updateLocalCache(key string, value interface{}, ttl tim
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Evict against NET growth for an existing key (the replace below frees the
+	// old size), so the memory cap isn't over-triggered and live entries aren't
+	// needlessly evicted. See setLocal.
+	growth := size
+	if existing, exists := c.items[key]; exists {
+		growth = size - existing.Size
+	}
+
 	// Check memory limits
 	if c.config.MaxMemoryBytes > 0 {
-		for c.currentMemory+size > c.config.MaxMemoryBytes && c.lruList.Len() > 0 {
+		for c.currentMemory+growth > c.config.MaxMemoryBytes && c.lruList.Len() > 0 {
 			c.evictOldest()
 		}
 	}
 
-	// Check size limits
-	if c.lruList.Len() >= c.config.MaxSize {
+	// Check size limits — only evict when inserting a NEW key. An in-place
+	// update adds no net entry (the replace below frees the old size), so
+	// evicting would drop an unrelated live LRU entry and leave the cache
+	// one below capacity. See setLocal (R141).
+	if _, present := c.items[key]; !present && c.lruList.Len() >= c.config.MaxSize {
 		c.evictOldest()
 	}
 

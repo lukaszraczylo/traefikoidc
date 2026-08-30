@@ -189,6 +189,15 @@ clientSecret: your-client-secret
 | `clientAssertionKeyPath` | string | none | Path to PEM private key on disk for `private_key_jwt`. Mutually exclusive with `clientAssertionPrivateKey`. |
 | `clientAssertionKeyID` | string | none | `kid` header for `private_key_jwt` assertions. Required when `clientAuthMethod: private_key_jwt`. |
 | `clientAssertionAlg` | string | `RS256` | Signing algorithm for `private_key_jwt`. One of `RS256/384/512`, `PS256/384/512`, `ES256/384/512`. |
+| `extraAuthParams` | map | none | Extra query parameters appended to the authorization request (e.g. re-selective prompt). |
+| `perSourceLoginRateLimit` | int | `0` (off) | Throttle OIDC auth events (callback + login initiation) per external client source, in auth events per minute. Internal/loopback sources are never throttled. |
+| `stripAuthCookies` | bool | `false` | Strip OIDC session cookies from the hop to the backend (mitigates HTTP 431). |
+| `enableBackchannelLogout` | bool | `false` | Enable OIDC back-channel logout (IdP-initiated, server-to-server). |
+| `backchannelLogoutURL` | string | derived | Back-channel logout endpoint path. |
+| `enableFrontchannelLogout` | bool | `false` | Enable OIDC front-channel logout (browser iframe logout). |
+| `frontchannelLogoutURL` | string | derived | Front-channel logout endpoint path. |
+| `caCertPath` / `caCertPEM` | string | none | Custom CA bundle for OIDC TLS verification (filesystem path, or inline PEM). Mutually exclusive with `insecureSkipVerify`. |
+| `insecureSkipVerify` | bool | `false` | Disable TLS verification for the OIDC client (load balancer / mTLS edge). Emits a loud warning at startup. |
 
 ### TLS Termination at Load Balancer
 

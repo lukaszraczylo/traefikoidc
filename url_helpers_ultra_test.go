@@ -605,3 +605,48 @@ func TestBuildAuthURLExtraAuthParams(t *testing.T) {
 		assert.Contains(t, authURL, "response_type=code")
 	})
 }
+
+func extractScopeParam(t *testing.T, authURL string) string {
+	u, err := url.Parse(authURL)
+	require.NoError(t, err)
+	return u.Query().Get("scope")
+}
+
+// Review regression: buildAuthURL must guarantee the mandatory OIDC 'openid'
+// scope even when the provider's scopes_supported omits it whilst leaving
+// other configured scopes supported (FilterSupportedScopes only restores
+// openid when EVERY scope is dropped).
+func TestBuildAuthURLGuaranteesOpenIDScope(t *testing.T) {
+	t.Run("openid omitted from scopes_supported but other scopes kept", func(t *testing.T) {
+		m := createMinimalMiddleware()
+		m.providerURL = "https://provider.example.com"
+		m.scopes = []string{"email", "profile"}          // no openid configured
+		m.scopesSupported = []string{"email", "profile"} // provider omits openid
+		m.scopeFilter = NewScopeFilter(newNoOpLogger())
+
+		scope := extractScopeParam(t, m.buildAuthURL("https://app.com/callback", "state123", "nonce456", ""))
+		assert.NotEmpty(t, scope)
+		assert.Contains(t, scope, "openid", "buildAuthURL must include the mandatory openid scope")
+	})
+
+	t.Run("openid dropped by filter when provider omits it", func(t *testing.T) {
+		m := createMinimalMiddleware()
+		m.providerURL = "https://provider.example.com"
+		m.scopes = []string{"openid", "email"}
+		m.scopesSupported = []string{"email"} // provider omits openid -> filter would drop it
+		m.scopeFilter = NewScopeFilter(newNoOpLogger())
+
+		scope := extractScopeParam(t, m.buildAuthURL("https://app.com/callback", "state123", "nonce456", ""))
+		assert.Contains(t, scope, "openid", "openid dropped by scope filter must be restored")
+	})
+
+	t.Run("openid preserved when no scope filter configured", func(t *testing.T) {
+		m := createMinimalMiddleware()
+		m.providerURL = "https://provider.example.com"
+		m.scopes = []string{"openid", "email"}
+		m.scopesSupported = []string{"email"}
+
+		scope := extractScopeParam(t, m.buildAuthURL("https://app.com/callback", "state123", "nonce456", ""))
+		assert.Contains(t, scope, "openid")
+	})
+}

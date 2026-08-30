@@ -468,12 +468,12 @@ func TestMetadataCache_Issue116_Regression(t *testing.T) {
 	// Test: Store and retrieve metadata (the scenario from issue #116)
 	providerURL := "https://example.com"
 	metadata := &ProviderMetadata{
-		Issuer:         "https://example.com",
-		AuthURL:        "https://example.com/authorize",
-		TokenURL:       "https://example.com/token",
-		JWKSURL:        "https://example.com/jwks",
-		RevokeURL:      "https://example.com/revoke",
-		EndSessionURL:  "https://example.com/logout",
+		Issuer:          "https://example.com",
+		AuthURL:         "https://example.com/authorize",
+		TokenURL:        "https://example.com/token",
+		JWKSURL:         "https://example.com/jwks",
+		RevokeURL:       "https://example.com/revoke",
+		EndSessionURL:   "https://example.com/logout",
 		RegistrationURL: "https://example.com/register",
 		ScopesSupported: []string{"openid", "profile", "email"},
 	}

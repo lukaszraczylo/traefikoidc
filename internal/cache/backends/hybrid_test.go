@@ -800,7 +800,8 @@ func TestHybridBackend_Ping_RecoverFromFallback(t *testing.T) {
 
 	ctx := context.Background()
 
-	// First ping fails L2, enters fallback
+	// Repeated L2 failures (two errors within the window) enter fallback.
+	hybrid.Ping(ctx)
 	hybrid.Ping(ctx)
 	assert.True(t, hybrid.fallbackMode.Load())
 
@@ -1184,7 +1185,13 @@ func TestHybridBackend_GetMany_BatchBackendError(t *testing.T) {
 	assert.Len(t, results, 1)
 	assert.Equal(t, []byte("value1"), results["key1"])
 
-	// Batch error should trigger fallback mode
+	// A single batch error is not enough to enter fallback (avoids a cache
+	// stampede on one transient L2 error); a second error within the window is.
+	assert.False(t, hybrid.fallbackMode.Load())
+	_, err = hybrid.GetMany(ctx, []string{"key2"})
+	assert.NoError(t, err)
+
+	// Repeated batch error should trigger fallback mode
 	time.Sleep(50 * time.Millisecond)
 	assert.True(t, hybrid.fallbackMode.Load())
 }
@@ -1487,4 +1494,26 @@ func TestHybridBackend_RecordL2Error_EntersFallbackMode(t *testing.T) {
 
 	// Should enter fallback mode
 	assert.True(t, hybrid.fallbackMode.Load())
+}
+
+func TestHybridBackend_RecordL2Error_RequiresRepeatedErrors(t *testing.T) {
+	config := &HybridConfig{
+		Primary:   newMockBackend(),
+		Secondary: newMockBackend(),
+	}
+
+	hybrid, err := NewHybridBackend(config)
+	require.NoError(t, err)
+	defer hybrid.Close()
+
+	// A SINGLE transient L2 error must NOT flip the whole cache into fallback
+	// mode (which bypasses L2 for reads and writes -> cache stampede).
+	hybrid.recordL2Error()
+	assert.False(t, hybrid.fallbackMode.Load(),
+		"a single L2 error must not enter fallback mode")
+
+	// A second error within the 1s window (repeated failures) does.
+	hybrid.recordL2Error()
+	assert.True(t, hybrid.fallbackMode.Load(),
+		"repeated L2 errors within the window must enter fallback mode")
 }

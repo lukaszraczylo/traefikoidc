@@ -104,8 +104,11 @@ func NewTokenResilienceManager(config TokenResilienceConfig, logger *Logger) *To
 	return manager
 }
 
-// ExecuteTokenOperation executes a token operation with full resilience support
-func (trm *TokenResilienceManager) ExecuteTokenOperation(ctx context.Context, operation string, fn func() error) error {
+// ExecuteTokenOperation executes a token operation with full resilience support.
+// singleUse marks operations whose request must not be re-sent after a timeout
+// (e.g. the authorization-code exchange, where the one-time code may already
+// have been consumed server-side) — only pre-send (connect) failures are retried.
+func (trm *TokenResilienceManager) ExecuteTokenOperation(ctx context.Context, operation string, singleUse bool, fn func() error) error {
 	if trm.logger != nil {
 		trm.logger.Debugf("Executing token operation %s with resilience", operation)
 	}
@@ -115,22 +118,33 @@ func (trm *TokenResilienceManager) ExecuteTokenOperation(ctx context.Context, op
 		return fn()
 	}
 
-	// Compose resilience mechanisms
+	// Compose resilience mechanisms. Retry is the INNER layer (around the
+	// operation) and the circuit breaker is the OUTER layer, so the breaker
+	// observes one aggregate result per logical operation rather than one
+	// failure per retry attempt (which would trip it prematurely — e.g.
+	// maxFailures=3 + 3 retries opening the breaker on a single brief
+	// outage, failing the very next genuine request). R106.
 	var finalOperation func() error = fn
 
-	// Wrap with circuit breaker if enabled
+	// Wrap with retry if enabled (innermost layer)
+	if trm.config.RetryEnabled && trm.retryExecutor != nil {
+		originalOp := finalOperation
+		if singleUse {
+			finalOperation = func() error {
+				return trm.retryExecutor.ExecuteSingleUseWithContext(ctx, originalOp)
+			}
+		} else {
+			finalOperation = func() error {
+				return trm.retryExecutor.ExecuteWithContext(ctx, originalOp)
+			}
+		}
+	}
+
+	// Wrap with circuit breaker if enabled (outermost layer)
 	if trm.config.CircuitBreakerEnabled && trm.circuitBreaker != nil {
 		originalOp := finalOperation
 		finalOperation = func() error {
 			return trm.circuitBreaker.ExecuteWithContext(ctx, originalOp)
-		}
-	}
-
-	// Wrap with retry if enabled
-	if trm.config.RetryEnabled && trm.retryExecutor != nil {
-		originalOp := finalOperation
-		finalOperation = func() error {
-			return trm.retryExecutor.ExecuteWithContext(ctx, originalOp)
 		}
 	}
 
@@ -152,7 +166,7 @@ func (trm *TokenResilienceManager) ExecuteTokenExchange(ctx context.Context, t *
 
 	operation := fmt.Sprintf("token_exchange_%s", grantType)
 
-	err = trm.ExecuteTokenOperation(ctx, operation, func() error {
+	err = trm.ExecuteTokenOperation(ctx, operation, grantType == "authorization_code", func() error {
 		result, err = t.exchangeTokens(ctx, grantType, codeOrToken, redirectURL, codeVerifier)
 		return err
 	})
@@ -165,7 +179,12 @@ func (trm *TokenResilienceManager) ExecuteTokenRefresh(ctx context.Context, t *T
 	var result *TokenResponse
 	var err error
 
-	err = trm.ExecuteTokenOperation(ctx, "token_refresh", func() error {
+	// Refresh is single-use (like the auth-code exchange): a client-side timeout
+	// may mean the provider already processed AND rotated the refresh token, so
+	// re-presenting it on a retry surfaces invalid_grant and the session is
+	// cleared — escalating a transient timeout into a full logout. Single-use
+	// retries only on "never sent" errors (connect/dial), never on timeout.
+	err = trm.ExecuteTokenOperation(ctx, "token_refresh", true, func() error {
 		// Call exchangeTokens directly to avoid recursion back to getNewTokenWithRefreshToken
 		// which would call ExecuteTokenRefresh again, causing infinite loop (issue #67)
 		result, err = t.exchangeTokens(ctx, "refresh_token", refreshToken, "", "")

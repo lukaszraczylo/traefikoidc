@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -52,6 +54,7 @@ type DynamicClientRegistrar struct {
 	registrationResponse *ClientRegistrationResponse
 	store                DCRCredentialsStore // Storage backend for credentials
 	providerURL          string
+	scopes               []string // Runtime auth/scopes from the operator config (merged)
 	mu                   sync.RWMutex
 }
 
@@ -103,6 +106,19 @@ func (r *DynamicClientRegistrar) SetStore(store DCRCredentialsStore) {
 	r.store = store
 }
 
+// EffectiveTokenEndpointAuthMethod returns the token-endpoint auth method that
+// was (or will be) advertised to the IdP during registration:
+// ClientMetadata.TokenEndpointAuthMethod if set, else client_secret_post
+// (RFC 7591 confidential-client default). The IdP provisions the client
+// according to this method, so the runtime must authenticate to the token
+// endpoint with the SAME method or every exchange fails (R157).
+func (r *DynamicClientRegistrar) EffectiveTokenEndpointAuthMethod() string {
+	if r.config != nil && r.config.ClientMetadata != nil && r.config.ClientMetadata.TokenEndpointAuthMethod != "" {
+		return r.config.ClientMetadata.TokenEndpointAuthMethod
+	}
+	return "client_secret_post"
+}
+
 // RegisterClient performs dynamic client registration with the OIDC provider
 // It first attempts to load existing credentials from storage if persistence is enabled,
 // then registers a new client if no valid credentials exist.
@@ -141,8 +157,10 @@ func (r *DynamicClientRegistrar) RegisterClient(ctx context.Context, registratio
 
 	// Validate the endpoint URL
 	if !strings.HasPrefix(endpoint, "https://") {
-		// Allow http only for localhost/development
-		if !strings.HasPrefix(endpoint, "http://localhost") && !strings.HasPrefix(endpoint, "http://127.0.0.1") {
+		// Allow http only for loopback/development endpoints. Use a
+		// host-boundary check (not a prefix) so e.g.
+		// http://localhost.evil.com isn't treated as localhost.
+		if !isLoopbackRegistrationEndpoint(endpoint) {
 			return nil, fmt.Errorf("registration endpoint must use HTTPS for security")
 		}
 		r.logger.Infof("Warning: using insecure HTTP for registration endpoint (development only): %s", endpoint)
@@ -203,6 +221,19 @@ func (r *DynamicClientRegistrar) RegisterClient(ctx context.Context, registratio
 		return nil, fmt.Errorf("registration response missing client_id")
 	}
 
+	// The plugin's runtime client-auth default is client_secret_post
+	// (settings.go Config.Validate); RFC 7591 registers a confidential
+	// client. For a secret-based auth method the response must carry a
+	// client_secret, otherwise every token exchange fails. Adopting a
+	// secret-less client would silently break all auth.
+	authMethod := "client_secret_post"
+	if r.config != nil && r.config.ClientMetadata != nil && r.config.ClientMetadata.TokenEndpointAuthMethod != "" {
+		authMethod = r.config.ClientMetadata.TokenEndpointAuthMethod
+	}
+	if (authMethod == "client_secret_post" || authMethod == "client_secret_basic") && regResp.ClientSecret == "" {
+		return nil, fmt.Errorf("registration response missing client_secret for auth method %q", authMethod)
+	}
+
 	r.logger.Infof("Successfully registered client with ID: %s", regResp.ClientID)
 
 	// Cache the response
@@ -233,9 +264,39 @@ func (r *DynamicClientRegistrar) buildRegistrationRequest() ([]byte, error) {
 
 	// Required: redirect_uris
 	if len(metadata.RedirectURIs) > 0 {
+		// Reject malformed or wrong-scheme entries before they reach the IdP:
+		// RFC 7591 expects absolute http/https redirect URIs, and an invalid
+		// one sent to the IdP would corrupt the registered callback.
+		for _, uri := range metadata.RedirectURIs {
+			parsed, perr := url.ParseRequestURI(uri)
+			if perr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+				return nil, fmt.Errorf("redirect_uri %q must be an absolute http(s) URL", uri)
+			}
+		}
 		reqData["redirect_uris"] = metadata.RedirectURIs
 	} else {
 		return nil, fmt.Errorf("redirect_uris is required for client registration")
+	}
+
+	// Validate the optional URI metadata fields with the same absolute
+	// http(s) rule as redirect_uris. A relative or non-http(s) value
+	// (e.g. a malformed jwks_uri on a private_key_jwt client) would be
+	// forwarded to the IdP and make the registered client unverifiable at
+	// runtime (R141).
+	for _, field := range []struct{ val, name string }{
+		{metadata.LogoURI, "logo_uri"},
+		{metadata.ClientURI, "client_uri"},
+		{metadata.PolicyURI, "policy_uri"},
+		{metadata.TOSURI, "tos_uri"},
+		{metadata.JWKSURI, "jwks_uri"},
+	} {
+		if field.val == "" {
+			continue
+		}
+		parsed, perr := url.ParseRequestURI(field.val)
+		if perr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return nil, fmt.Errorf("%s %q must be an absolute http(s) URL", field.name, field.val)
+		}
 	}
 
 	// Optional fields - only include if set
@@ -292,8 +353,10 @@ func (r *DynamicClientRegistrar) buildRegistrationRequest() ([]byte, error) {
 	if metadata.TokenEndpointAuthMethod != "" {
 		reqData["token_endpoint_auth_method"] = metadata.TokenEndpointAuthMethod
 	} else {
-		// Default to client_secret_basic for confidential clients
-		reqData["token_endpoint_auth_method"] = "client_secret_basic"
+		// Default must match the plugin's runtime client-auth default
+		// (client_secret_post, settings.go Config.Validate) so an IdP that
+		// enforces the registered method does not reject the token exchange.
+		reqData["token_endpoint_auth_method"] = "client_secret_post"
 	}
 
 	if metadata.DefaultMaxAge > 0 {
@@ -310,6 +373,13 @@ func (r *DynamicClientRegistrar) buildRegistrationRequest() ([]byte, error) {
 
 	if metadata.Scope != "" {
 		reqData["scope"] = metadata.Scope
+	} else if len(r.scopes) > 0 {
+		// Register with the union of runtime auth scopes when the operator
+		// gave no explicit registration scope. IdPs that only grant
+		// registered/advertised scopes (Keycloak offline_access, Auth0)
+		// otherwise register a client whose later token/refresh grant is
+		// rejected with invalid_scope, breaking refresh (R124).
+		reqData["scope"] = strings.Join(deduplicateScopes(r.scopes), " ")
 	}
 
 	return json.Marshal(reqData)
@@ -325,6 +395,19 @@ func (r *DynamicClientRegistrar) GetCachedResponse() *ClientRegistrationResponse
 // areCredentialsValid checks if the cached credentials are still valid
 func (r *DynamicClientRegistrar) areCredentialsValid(resp *ClientRegistrationResponse) bool {
 	if resp == nil || resp.ClientID == "" {
+		return false
+	}
+
+	// For a secret-based auth method the response must carry a client_secret,
+	// mirroring the fresh-registration check (RegisterClient). A stored
+	// record with a client_id but empty secret would otherwise be accepted
+	// and installed as t.clientSecret="", breaking every token exchange
+	// (R124).
+	authMethod := "client_secret_post"
+	if r.config != nil && r.config.ClientMetadata != nil && r.config.ClientMetadata.TokenEndpointAuthMethod != "" {
+		authMethod = r.config.ClientMetadata.TokenEndpointAuthMethod
+	}
+	if (authMethod == "client_secret_post" || authMethod == "client_secret_basic") && resp.ClientSecret == "" {
 		return false
 	}
 
@@ -374,7 +457,7 @@ func (r *DynamicClientRegistrar) saveCredentialsToStore(ctx context.Context, res
 func (r *DynamicClientRegistrar) saveCredentials(resp *ClientRegistrationResponse) error {
 	filePath := r.credentialsFilePath()
 
-	data, err := json.MarshalIndent(resp, "", "  ")
+	data, err := json.MarshalIndent(resp, "", "  ") //nolint:gosec // registration response incl. client_secret is the API output
 	if err != nil {
 		return fmt.Errorf("failed to marshal credentials: %w", err)
 	}
@@ -407,4 +490,22 @@ func (r *DynamicClientRegistrar) loadCredentials() (*ClientRegistrationResponse,
 	}
 
 	return &resp, nil
+}
+
+// isLoopbackRegistrationEndpoint reports whether the (plaintext) registration
+// endpoint targets a loopback host, matching the hostname boundary (not a
+// string prefix) so http://localhost.evil.com is not treated as localhost.
+func isLoopbackRegistrationEndpoint(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || !u.IsAbs() {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
 }

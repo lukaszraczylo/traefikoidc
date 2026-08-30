@@ -13,8 +13,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/lukaszraczylo/traefikoidc/internal/utils"
 )
 
 // newUUIDv4 returns an RFC 4122 v4 UUID string (e.g.
@@ -109,10 +107,13 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 	data := url.Values{
 		"grant_type": {grantType},
 	}
+	// Snapshot client credentials under metadataMu: DCR rewrites clientID/
+	// clientSecret/audience at runtime (R137).
+	clientID, clientSecret, clientAuthMethod, _, clientAssertion := t.clientCredentials()
 	// client_id is sent in the body for every method except client_secret_basic,
 	// where it is carried in the Authorization header per RFC 6749 §2.3.1.
-	if t.clientAuthMethod != "client_secret_basic" || t.clientAssertion != nil {
-		data.Set("client_id", t.clientID)
+	if clientAuthMethod != "client_secret_basic" || clientAssertion != nil {
+		data.Set("client_id", clientID)
 	}
 
 	if grantType == "authorization_code" {
@@ -150,29 +151,29 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 	t.metadataMu.RUnlock()
 
 	useBasicAuth := false
-	if t.clientAssertion != nil {
-		assertion, err := t.clientAssertion.Sign(tokenURL, t.clientID)
+	if clientAssertion != nil {
+		assertion, err := clientAssertion.Sign(tokenURL, clientID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sign client assertion: %w", err)
 		}
 		data.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
 		data.Set("client_assertion", assertion)
-	} else if t.clientAuthMethod == "client_secret_basic" {
+	} else if clientAuthMethod == "client_secret_basic" {
 		useBasicAuth = true
 	} else {
-		data.Set("client_secret", t.clientSecret)
+		data.Set("client_secret", clientSecret)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode())) //nolint:gosec // tokenURL is the operator-trusted discovery endpoint (metadataMu)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if useBasicAuth {
-		setOAuthBasicAuth(req, t.clientID, t.clientSecret)
+		setOAuthBasicAuth(req, clientID, clientSecret)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // req above targets the trusted tokenURL
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange tokens: %w", err)
 	}
@@ -184,12 +185,31 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 	if resp.StatusCode != http.StatusOK {
 		limitReader := io.LimitReader(resp.Body, 1024*10)
 		bodyBytes, _ := io.ReadAll(limitReader) // Safe to ignore: reading error body for diagnostics
-		return nil, fmt.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		// Return a *HTTPError so the retry executor's isRetryableError can
+		// classify transient 5xx/429 responses and actually retry (R118).
+		// A plain error here made the 5xx/429 retry branch dead in
+		// production — every token-endpoint status was treated as permanent.
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("token endpoint returned status %d: %s", resp.StatusCode, string(bodyBytes)),
+		}
 	}
 
 	var tokenResponse TokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
+	// Cap the decoded body so a corrupted or malicious oversized 200-body cannot
+	// drive an unbounded read/allocation. Token responses are small (a few KB).
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tokenResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode token response: %w", err)
+	}
+
+	// RFC 6749 §5.1: a token response MUST include an access_token. A 200
+	// that omitted it is a protocol violation, not a success — treat it as an
+	// error here so no caller authenticates with a blank token (R158).
+	// Previously this seam returned success with an empty access_token and
+	// each caller had to re-check "AccessToken == \"\"", which several
+	// paths missed.
+	if tokenResponse.AccessToken == "" {
+		return nil, fmt.Errorf("token endpoint returned 200 without an access_token (RFC 6749 §5.1)")
 	}
 
 	return &tokenResponse, nil
@@ -204,6 +224,17 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 // Returns:
 //   - *TokenResponse: New token set from the authorization server
 //   - An error if the refresh operation fails
+//
+// redactToken returns a short, stable hash of a token credential suitable for
+// debug logging without leaking the credential itself (R138).
+func redactToken(token string) string {
+	if token == "" {
+		return "(empty)"
+	}
+	sum := sha256.Sum256([]byte(token))
+	return fmt.Sprintf("%x", sum[:4])
+}
+
 func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenResponse, error) {
 	ctx := context.Background()
 
@@ -218,7 +249,8 @@ func (t *TraefikOidc) getNewTokenWithRefreshToken(refreshToken string) (*TokenRe
 		return nil, fmt.Errorf("failed to refresh token: %w", err)
 	}
 
-	t.logger.Debugf("Token response: %+v", tokenResponse)
+	t.logger.Debugf("Refresh token response: token_type=%s expires_in=%d access_token=%s",
+		tokenResponse.TokenType, tokenResponse.ExpiresIn, redactToken(tokenResponse.AccessToken))
 	return tokenResponse, nil
 }
 
@@ -380,6 +412,8 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	idToken := session.GetIDToken()
+	accessToken := session.GetAccessToken()
+	refreshToken := session.GetRefreshToken()
 
 	if err := session.Clear(req, rw); err != nil {
 		t.logger.Errorf("Error clearing session: %v", err)
@@ -387,9 +421,29 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	host := utils.DetermineHost(req)
-	scheme := utils.DetermineScheme(req, t.forceHTTPS)
-	baseURL := fmt.Sprintf("%s://%s", scheme, host)
+	// Blacklist the session's tokens so a token captured before logout (e.g. a
+	// bearer mode access token) cannot be reused until its natural expiry.
+	// RevokeToken is a no-op-safe local blacklist (guards nil) and skips
+	// empty values.
+	for _, tok := range []string{accessToken, idToken, refreshToken} {
+		if tok != "" {
+			t.RevokeToken(tok)
+		}
+	}
+
+	// Best-effort provider-side revocation (single logout): the local
+	// blacklist only stops reuse in-process, but a token captured before
+	// logout (e.g. a bearer-mode access token or the refresh token) stays
+	// valid at the IdP and a captured refresh token could keep minting new
+	// tokens. Revoke both access and refresh tokens at the provider when a
+	// revocation endpoint is available; ignore errors (the endpoint may be
+	// absent or the provider already cleaned up on the end-session call).
+	if accessToken != "" {
+		_ = t.RevokeTokenWithProvider(accessToken, "access_token")
+	}
+	if refreshToken != "" {
+		_ = t.RevokeTokenWithProvider(refreshToken, "refresh_token")
+	}
 
 	postLogoutRedirectURI := t.postLogoutRedirectURI
 	// localRedirect is used when there is no provider end-session endpoint and
@@ -397,14 +451,24 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	// derived from the request host (X-Forwarded-Host is client-controllable and
 	// would be an open redirect); use a host-relative path, or the operator's
 	// own configured absolute URL, instead.
+	//
+	// The post_logout_redirect_uri we hand to the IdP has the same constraint:
+	// deriving it from baseURL (scheme://client-controlled host) lets an
+	// attacker's X-Forwarded-Host steer the browser to an arbitrary origin
+	// after logout (open redirect through the IdP). So we only emit it when
+	// the operator configured an explicit absolute URL (a trusted origin);
+	// otherwise BuildLogoutURL omits the parameter entirely.
 	localRedirect := "/"
-	if postLogoutRedirectURI == "" {
-		postLogoutRedirectURI = fmt.Sprintf("%s/", baseURL)
-	} else if !strings.HasPrefix(postLogoutRedirectURI, "http") {
-		localRedirect = normalizeLogoutPath(postLogoutRedirectURI)
-		postLogoutRedirectURI = fmt.Sprintf("%s%s", baseURL, postLogoutRedirectURI)
-	} else {
+	if strings.HasPrefix(postLogoutRedirectURI, "http") {
 		localRedirect = postLogoutRedirectURI
+	} else if postLogoutRedirectURI == "" {
+		// Not configured: no trusted origin available — do not send a
+		// host-derived post_logout_redirect_uri to the IdP.
+	} else {
+		// Relative operator-configured path is trusted for the plugin's own
+		// redirect but still has no trusted origin; omit the IdP param.
+		localRedirect = normalizeLogoutPath(postLogoutRedirectURI)
+		postLogoutRedirectURI = ""
 	}
 
 	// Read endSessionURL with RLock
@@ -419,10 +483,15 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 			http.Error(rw, "Logout error", http.StatusInternalServerError)
 			return
 		}
+		// Logout redirects must never be cached: a heuristic-caching proxy
+		// replaying the 302 would re-trigger logout for an already
+		// logged-out session (R147 cache-directive contract).
+		rw.Header().Set("Cache-Control", "no-store")
 		http.Redirect(rw, req, logoutURL, http.StatusFound)
 		return
 	}
 
+	rw.Header().Set("Cache-Control", "no-store")
 	http.Redirect(rw, req, localRedirect, http.StatusFound)
 }
 

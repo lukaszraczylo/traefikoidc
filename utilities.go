@@ -10,6 +10,7 @@ import (
 	"html"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -136,9 +137,7 @@ func (t *TraefikOidc) isAllowedDomain(email string) bool {
 		}
 
 		domain := strings.ToLower(parts[1])
-		_, domainAllowed := t.allowedUserDomains[domain]
-
-		if domainAllowed {
+		if t.domainAllowed(domain) {
 			t.logger.Debugf("Email domain %s is allowed", domain)
 			return true
 		} else {
@@ -151,6 +150,97 @@ func (t *TraefikOidc) isAllowedDomain(email string) bool {
 	}
 
 	return false
+}
+
+// domainAllowed reports whether domain is an allowed user domain,
+// including subdomains thereof. An operator configuring
+// "example.com" intends to cover staff on corporate subdomains, so
+// "mail.example.com" (and deeper) must be accepted; exact match is
+// no longer the only path. A plain suffix lookup is avoided (would
+// also match "badexample.com"), so subdomains require a leading "."
+// separator. (R152)
+func (t *TraefikOidc) domainAllowed(domain string) bool {
+	if _, ok := t.allowedUserDomains[domain]; ok {
+		return true
+	}
+	for allowed := range t.allowedUserDomains {
+		if len(domain) > len(allowed) && strings.HasSuffix(domain, "."+allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+// emailVerifiedTrue extracts the boolean email_verified claim value,
+// claimScalarString returns the string form of a scalar claim value,
+// coercing JSON numbers (float64, json.Number, int variants) to their
+// decimal string representation so a numeric identifier claim (e.g. a
+// numeric sub from a non-conformant IdP) is preserved rather than
+// silently dropped. second is false for non-scalar values (maps,
+// slices, objects) so callers can treat them as invalid.
+func claimScalarString(raw interface{}) (s string, ok bool) {
+	switch v := raw.(type) {
+	case string:
+		return v, true
+	case json.Number:
+		return v.String(), true
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 32), true
+	case int:
+		return strconv.Itoa(v), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	default:
+		return "", false
+	}
+}
+
+// emailVerifiedTrue extracts the boolean email_verified claim value,
+// tolerating bool and string representations. present is false when the
+// claim is absent or of an uninterpretable type (the caller then decides
+// how to treat absence).
+func emailVerifiedTrue(v interface{}) (verified, present bool) {
+	switch val := v.(type) {
+	case bool:
+		return val, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(val)) {
+		case "true", "1":
+			return true, true
+		case "false", "0":
+			return false, true
+		}
+	case float64:
+		return val != 0, true
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil {
+			return false, false
+		}
+		return f != 0, true
+	}
+	return false, false
+}
+
+// emailIdentityPermitted reports whether an email-based user identifier may be
+// admitted for email/domain authorization given the ID-token claims. An email
+// is admitted unless the IdP explicitly marks it unverified
+// (email_verified == false): such an address must not satisfy an email
+// allowlist, since the user may not control it (impersonation within an
+// allowed domain). Absence is tolerated for backward compatibility (the
+// middleware and its test fixtures have long run without the claim; some IdPs
+// do not emit it). This matches the bearer-path stance that untrusted email
+// is a spoofing vector (main.go).
+func emailIdentityPermitted(userIdentifier string, claims map[string]interface{}) bool {
+	if !strings.Contains(userIdentifier, "@") {
+		return true
+	}
+	if verified, present := emailVerifiedTrue(claims["email_verified"]); present && !verified {
+		return false
+	}
+	return true
 }
 
 // keysFromMap extracts string keys from a map for logging purposes.
@@ -176,6 +266,10 @@ func keysFromMap(m map[string]struct{}) []string {
 //   - message: The error message to display.
 //   - code: The HTTP status code to set for the response.
 func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Request, message string, code int) {
+	// Auth-failure responses (401/403/429/503) must not be cached by
+	// browsers or intermediaries — a cached 401 body would persist across
+	// re-authentication (R101).
+	rw.Header().Set("Cache-Control", "no-store")
 	acceptHeader := req.Header.Get("Accept")
 
 	if strings.Contains(acceptHeader, "application/json") {
@@ -240,11 +334,17 @@ func (t *TraefikOidc) Close() error {
 		// instance. Only stop it when the LAST instance is shutting down;
 		// otherwise one instance's teardown (e.g. a single config reload) would
 		// kill chunked-session/token cleanup for all surviving instances (rank 12).
-		if unregisterLiveInstance() <= 0 {
+		lastInstance := unregisterLiveInstance() <= 0
+		if lastInstance {
 			_ = rm.StopBackgroundTask("singleton-token-cleanup") // best effort, last instance only
 		}
-		// Stop metadata refresh task using same hash-based name as startMetadataRefresh
-		if t.providerURL != "" {
+		// Stop metadata refresh task using same hash-based name as
+		// startMetadataRefresh. The name derives only from providerURL
+		// (main.go), so it is SHARED by every live instance pointing at the
+		// same provider; stopping it on one instance's Close would kill 2h
+		// metadata refresh for its surviving sibling (which never re-registers).
+		// Gate on lastInstance, matching singleton-token-cleanup above.
+		if lastInstance && t.providerURL != "" {
 			hash := sha256.Sum256([]byte(t.providerURL))
 			taskName := "singleton-metadata-refresh-" + hex.EncodeToString(hash[:])[0:6]
 			_ = rm.StopBackgroundTask(taskName) // Safe to ignore: best effort cleanup
@@ -343,10 +443,17 @@ func (t *TraefikOidc) Close() error {
 			t.safeLogDebug("Error recovery manager graceful degradation closed")
 		}
 
-		// Stop all global background tasks
-		taskRegistry := GetGlobalTaskRegistry()
-		taskRegistry.StopAllTasks()
-		t.safeLogDebug("All global background tasks stopped")
+		// Stop all process-global background tasks, but ONLY when the last
+		// instance is shutting down. The global TaskRegistry holds shared
+		// singleton tasks (singleton-token-cleanup, singleton-metadata-refresh-*,
+		// memory-monitor); stopping them on any single instance's Close (e.g. one
+		// config reload) would kill cleanup for all surviving instances — the same
+		// rationale as the targeted StopBackgroundTask above.
+		if lastInstance {
+			taskRegistry := GetGlobalTaskRegistry()
+			taskRegistry.StopAllTasks()
+			t.safeLogDebug("All global background tasks stopped")
+		}
 
 		// Note: Centralized pool in internal/pool is singleton-managed and doesn't require explicit cleanup
 		t.safeLogDebug("Memory pools managed by singleton pattern")

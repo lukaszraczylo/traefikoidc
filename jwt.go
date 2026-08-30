@@ -6,9 +6,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"fmt"
 	"math/big"
 	"strings"
@@ -28,8 +26,6 @@ var (
 	replayCache CacheInterface
 	// shardedReplayCache is the new high-performance sharded cache for replay detection
 	shardedReplayCache *ShardedCache
-	// replayCacheOnce ensures the replay cache is initialized only once
-	replayCacheOnce sync.Once
 	// replayCacheCleanupWG waits for cleanup goroutine to finish
 	replayCacheCleanupWG sync.WaitGroup
 	// replayCacheCancel cancels the cleanup context
@@ -41,21 +37,23 @@ var (
 // initReplayCache initializes the JWT replay protection cache with bounded size.
 // Uses a sharded cache design with 64 shards for reduced lock contention under high load.
 // The cache is bounded to 10,000 entries to prevent unbounded memory growth.
-// This function uses sync.Once to ensure thread-safe single initialization.
+// Lazy creation is guarded entirely by replayCacheMu (a plain sync.Once would
+// not re-arm after cleanup resets it, and the previous Once re-assignment raced
+// with init under -race). cleanupReplayCache nil's the fields under the same
+// lock, so this either creates anew (after a cleanup) or is a cheap no-op.
 func initReplayCache() {
-	replayCacheOnce.Do(func() {
-		// Hold mutex during initialization to synchronize with cleanup goroutine
-		replayCacheMu.Lock()
-		defer replayCacheMu.Unlock()
+	replayCacheMu.Lock()
+	defer replayCacheMu.Unlock()
 
-		// Create sharded cache with 64 shards for reduced contention
+	if shardedReplayCache == nil {
+		// Create sharded cache with 64 shards for reduced lock contention
 		// Under 500 req/sec, this reduces lock contention by ~64x compared to single mutex
 		shardedReplayCache = NewShardedCache(64, 10000)
 
 		// Also initialize legacy cache for backward compatibility
 		replayCache = NewCache()
 		replayCache.SetMaxSize(10000)
-	})
+	}
 }
 
 // cleanupReplayCache performs graceful shutdown of the replay cache system.
@@ -63,17 +61,12 @@ func initReplayCache() {
 // and properly closes the cache to ensure proper cleanup during shutdown.
 func cleanupReplayCache() {
 	replayCacheCleanupMu.Lock()
-	shouldWait := replayCacheCancel != nil
 	if replayCacheCancel != nil {
 		replayCacheCancel()
 		replayCacheCancel = nil
 	}
 	replayCacheCleanupMu.Unlock()
-
-	// Only wait if there was a cleanup routine running
-	if shouldWait {
-		replayCacheCleanupWG.Wait()
-	}
+	replayCacheCleanupWG.Wait()
 
 	replayCacheMu.Lock()
 	defer replayCacheMu.Unlock()
@@ -89,8 +82,16 @@ func cleanupReplayCache() {
 		replayCache.Close()
 		replayCache = nil
 	}
+}
 
-	replayCacheOnce = sync.Once{}
+// replayCacheKey namespaces a JTI by its issuer before it is stored in the
+// process-global replay cache. JTI uniqueness is guaranteed only within a
+// single issuer's namespace; many Traefik routers share this one global
+// cache across different OIDC providers, so a bare jti would let two
+// providers' legitimately-colliding JTIs map to the same entry (false
+// replay) and silently overwrite each other (R142).
+func replayCacheKey(issuer, jti string) string {
+	return issuer + "\x00" + jti
 }
 
 // getReplayCacheStats returns statistics about the replay cache state.
@@ -98,9 +99,14 @@ func cleanupReplayCache() {
 //   - size: Current number of entries in the cache
 //   - maxSize: Maximum allowed entries (10,000)
 func getReplayCacheStats() (size int, maxSize int) {
-	// Use sharded cache if available (no mutex needed due to internal sharding)
-	if shardedReplayCache != nil {
-		return shardedReplayCache.Size(), 10000
+	// Use sharded cache if available (no mutex needed due to internal sharding).
+	// Guard the singleton read because cleanupReplayCache nils it under the
+	// write lock.
+	replayCacheMu.RLock()
+	sc := shardedReplayCache
+	replayCacheMu.RUnlock()
+	if sc != nil {
+		return sc.Size(), 10000
 	}
 
 	// Fall back to legacy cache
@@ -283,13 +289,12 @@ func parseJWT(tokenString string) (*JWT, error) {
 		return nil, fmt.Errorf("invalid JWT format: failed to decode signature: %v", err)
 	}
 
-	// Reuse the signature buffer if it's large enough, otherwise allocate
-	if cap(jwtBuf.Signature) >= n {
-		jwt.Signature = jwtBuf.Signature[:n:n] // Use slice trick to prevent aliasing
-	} else {
-		jwt.Signature = make([]byte, n)
-		copy(jwt.Signature, jwtBuf.Signature[:n])
-	}
+	// Copy the signature out of the pooled buffer. Borrowing it with
+	// [:(n):(n)] still shares the backing array, which the pool recycles
+	// and truncates on the next GetJWTBuffer — mutating this caller's
+	// slice after the fact (R156).
+	jwt.Signature = make([]byte, n)
+	copy(jwt.Signature, jwtBuf.Signature[:n])
 
 	return jwt, nil
 }
@@ -344,12 +349,13 @@ func (j *JWT) Verify(issuerURL, expectedAudience string, skipReplayCheck ...bool
 		return err
 	}
 
-	iat, ok := claims["iat"].(float64)
-	if !ok {
-		return fmt.Errorf("missing or invalid 'iat' claim")
-	}
-	if err := verifyIssuedAt(iat); err != nil {
-		return err
+	// iat is OPTIONAL per RFC 7519 §4.1.6; only validate when present.
+	// Hard-requiring it here also rejected otherwise-valid access and
+	// logout tokens whose provider omits iat.
+	if iat, ok := claims["iat"].(float64); ok {
+		if err := verifyIssuedAt(iat); err != nil {
+			return err
+		}
 	}
 
 	if nbf, ok := claims["nbf"].(float64); ok {
@@ -365,54 +371,64 @@ func (j *JWT) Verify(issuerURL, expectedAudience string, skipReplayCheck ...bool
 	if jtiOk && !shouldSkipReplay && jtiValue != "" {
 		initReplayCache()
 
-		// Use sharded cache for replay detection - no global mutex needed
-		// This reduces lock contention by ~64x under high load
-		if shardedReplayCache != nil {
-			if shardedReplayCache.Exists(jtiValue) {
+		expFloat, ok := claims["exp"].(float64)
+		var expTime time.Time
+		if ok {
+			expTime = time.Unix(int64(expFloat), 0)
+		} else {
+			expTime = time.Now().Add(10 * time.Minute)
+		}
+		duration := time.Until(expTime)
+		// A token is accepted until exp + ClockSkewToleranceFuture (see
+		// verifyExpiration), so the replay entry must live that long too —
+		// otherwise in the (exp, exp+skew] window the entry has expired
+		// and been swept and the same token is re-accepted as fresh
+		// (R179).
+		duration += ClockSkewToleranceFuture
+		if duration <= 0 {
+			// Expired token: no replay window worth recording, so nothing to do.
+			goto replayDone
+		}
+
+		// Use sharded cache for replay detection - no global mutex needed.
+		// SetIfAbsent is atomic: it holds the per-shard lock across the
+		// existence check and insert, closing the double-accept race where
+		// two concurrent requests carrying the same fresh JTI could both
+		// observe it absent and both be accepted. Guard the singleton read
+		// with replayCacheMu because cleanupReplayCache can nil it under the
+		// write lock.
+		replayCacheMu.RLock()
+		sc := shardedReplayCache
+		if sc != nil {
+			if !sc.SetIfAbsent(replayCacheKey(issuerURL, jtiValue), true, duration) {
+				replayCacheMu.RUnlock()
 				return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
 			}
-
-			expFloat, ok := claims["exp"].(float64)
-			var expTime time.Time
-			if ok {
-				expTime = time.Unix(int64(expFloat), 0)
-			} else {
-				expTime = time.Now().Add(10 * time.Minute)
-			}
-
-			duration := time.Until(expTime)
-			if duration > 0 {
-				shardedReplayCache.Set(jtiValue, true, duration)
-			}
-		} else {
-			// Fall back to legacy cache with mutex (should rarely happen)
-			replayCacheMu.RLock()
-			_, exists := replayCache.Get(jtiValue)
 			replayCacheMu.RUnlock()
-
+		} else {
+			// Fall back to legacy cache (should rarely happen). Release the
+			// read lock before taking the write lock: RWMutex is not
+			// reentrant, so Lock() here while still holding RLock()
+			// self-deadlocks (R156). Guard the cache for nil — it is
+			// cleared alongside shardedReplayCache by cleanupReplayCache.
+			replayCacheMu.RUnlock()
+			replayCacheMu.Lock()
+			rk := replayCacheKey(issuerURL, jtiValue)
+			exists := false
+			if replayCache != nil {
+				_, exists = replayCache.Get(rk)
+				if !exists {
+					replayCache.Set(rk, true, duration)
+				}
+			}
+			replayCacheMu.Unlock()
 			if exists {
 				return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
-			}
-
-			expFloat, ok := claims["exp"].(float64)
-			var expTime time.Time
-			if ok {
-				expTime = time.Unix(int64(expFloat), 0)
-			} else {
-				expTime = time.Now().Add(10 * time.Minute)
-			}
-
-			duration := time.Until(expTime)
-			if duration > 0 {
-				replayCacheMu.Lock()
-				if replayCache != nil {
-					replayCache.Set(jtiValue, true, duration)
-				}
-				replayCacheMu.Unlock()
 			}
 		}
 	}
 
+replayDone:
 	sub, ok := claims["sub"].(string)
 	if !ok || sub == "" {
 		return fmt.Errorf("missing or empty 'sub' claim")
@@ -517,31 +533,9 @@ func verifyNotBefore(notBefore float64) error {
 	return verifyTimeConstraint(notBefore, "nbf", false)
 }
 
-// verifySignature verifies the JWT signature using the provided public key.
-// Supports RSA (RS256/384/512, PS256/384/512) and ECDSA (ES256/384/512) algorithms.
-// Parameters:
-//   - tokenString: The complete JWT token string
-//   - publicKeyPEM: The public key in PEM format
-//   - alg: The signing algorithm specified in the JWT header
-//
-// Returns:
-//   - An error if the key parsing fails, the algorithm is unsupported,
-//     or the signature verification fails
-func verifySignature(tokenString string, publicKeyPEM []byte, alg string) error {
-	block, _ := pem.Decode(publicKeyPEM)
-	if block == nil {
-		return fmt.Errorf("failed to parse PEM block containing the public key")
-	}
-	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse public key: %w", err)
-	}
-	return verifySignatureWithKey(tokenString, pubKey, alg)
-}
-
 // verifySignatureWithKey verifies a JWT signature using an already-parsed
-// public key, skipping the PEM-encode/decode round trip that verifySignature
-// performs. This is the hot path used by VerifyJWTSignatureAndClaims.
+// public key, skipping the PEM-encode/decode round trip. This is the hot
+// path used by VerifyJWTSignatureAndClaims and verifyLogoutTokenSignature.
 func verifySignatureWithKey(tokenString string, pubKey crypto.PublicKey, alg string) error {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
@@ -568,6 +562,13 @@ func verifySignatureWithKey(tokenString string, pubKey crypto.PublicKey, alg str
 	hashed := h.Sum(nil)
 	switch pubKey := pubKey.(type) {
 	case *rsa.PublicKey:
+		// Enforce a minimum RSA modulus size (NIST SP 800-57: ≥2048 bits).
+		// Without this, a token signed with a weak (<2048-bit) RSA key whose
+		// modulus the trusted JWKS publishes is accepted as valid. Modern
+		// providers all use ≥2048; rejecting smaller keys is safe hardening.
+		if pubKey.N.BitLen() < 2048 {
+			return fmt.Errorf("RSA key size %d bits is below the minimum 2048 bits", pubKey.N.BitLen())
+		}
 		if strings.HasPrefix(alg, "RS") {
 			return rsa.VerifyPKCS1v15(pubKey, hashFunc, hashed, signature)
 		} else if strings.HasPrefix(alg, "PS") {

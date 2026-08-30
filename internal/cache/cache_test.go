@@ -1223,6 +1223,10 @@ func TestCacheManagerCompat(t *testing.T) {
 	if err != nil {
 		t.Errorf("CacheManagerCompat Close should not error: %v", err)
 	}
+	// Close() shuts down the process-global manager. Recreate it so later
+	// tests using the compat wrappers see an open cache (order-independent;
+	// the singleton is otherwise pinned closed for the process lifetime).
+	resetGlobalManagerForTest()
 }
 
 // TestUniversalCacheManagerCompat tests UniversalCacheManagerCompat methods
@@ -1262,6 +1266,9 @@ func TestUniversalCacheManagerCompat(t *testing.T) {
 	if err != nil && err.Error() != "cache already closed" {
 		t.Errorf("UniversalCacheManagerCompat Close should not error (unless already closed): %v", err)
 	}
+	// Close() shuts down the process-global manager. Recreate it so later
+	// tests using the compat wrappers see an open cache (order-independent).
+	resetGlobalManagerForTest()
 }
 
 // TestTypedCacheWrapper tests TypedCache methods

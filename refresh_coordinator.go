@@ -37,6 +37,11 @@ type RefreshCoordinator struct {
 	stopChan               chan struct{}
 	config                 RefreshCoordinatorConfig
 	wg                     sync.WaitGroup
+	// shutdownOnce makes Shutdown idempotent: close(rc.stopChan) on an
+	// already-closed channel would panic ('close of closed channel').
+	// Repeated setup/teardown (e.g. Traefik plugin reload) can close the
+	// same Authenticator -> same coordinator more than once.
+	shutdownOnce sync.Once
 }
 
 // RefreshCoordinatorConfig configures the refresh coordinator behavior
@@ -178,7 +183,7 @@ func NewRefreshCoordinator(config RefreshCoordinatorConfig, logger *Logger) *Ref
 	rc := &RefreshCoordinator{
 		// inFlightRefreshes and sessionRefreshAttempts are both sync.Map;
 		// their zero values are ready to use.
-		config:        config,
+		config:   config,
 		metrics:  &RefreshMetrics{},
 		logger:   logger,
 		stopChan: make(chan struct{}),
@@ -220,19 +225,37 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 
 	// CRITICAL FIX: Atomically check for existing operation OR create new one
 	// This prevents the race where multiple goroutines check, find nothing, then all create
+	//
+	// R154: increment the WaitGroup BEFORE getOrCreateOperation registers
+	// the operation. Previously the Add(1) happened only after the op was
+	// registered and published as new, so a concurrent Shutdown
+	// (close(stopChan); wg.Wait) could observe the registered op, see a
+	// zero wg count, and return before this goroutine's Add landed — the
+	// just-started refresh then ran past Shutdown unreaped. Done() is
+	// balanced once per path: by the spawned goroutine, or immediately
+	// on the join/reject paths (which spawn nothing).
+	rc.wg.Add(1)
+
 	operation, isNew, err := rc.getOrCreateOperation(ctx, sessionID, tokenHash, refreshToken)
 
 	if err != nil {
 		// Operation creation was rejected (rate limit, memory pressure, concurrent limit)
+		rc.wg.Done() // no goroutine launched
 		return nil, err
 	}
 
 	if isNew {
-		// We created a new operation, so we need to execute it
-		go rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc)
+		// We created a new operation, so we need to execute it. Track the
+		// goroutine so Shutdown waits for in-flight refreshes to finish (they
+		// are aborted promptly via rc.ctx when stopChan closes).
+		go func() {
+			defer rc.wg.Done()
+			rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc) //nolint:gosec // long-lived background refresh intentionally uses a background context
+		}()
 	} else {
 		// Joined existing operation - this is a deduplicated request
 		atomic.AddInt64(&rc.metrics.deduplicatedRequests, 1)
+		rc.wg.Done() // joined an existing op; no goroutine tracked here
 	}
 
 	// Wait for the operation to complete
@@ -244,14 +267,15 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 		operation.mutex.RUnlock()
 
 		if result != nil {
-			// Record metrics based on result
+			// Per-request counters only. The circuit breaker and per-session
+			// success/failure trackers must be recorded exactly once per
+			// refresh OPERATION (in executeRefreshAsync), not once per waiter:
+			// N requests coalescing onto a single refresh would otherwise
+			// multiply one upstream result into N failure records and
+			// over-trigger the circuit breaker (MaxFailures=3).
 			if result.err != nil {
-				rc.circuitBreaker.RecordFailure()
-				rc.recordRefreshFailure(sessionID)
 				atomic.AddInt64(&rc.metrics.failedRefreshes, 1)
 			} else {
-				rc.circuitBreaker.RecordSuccess()
-				rc.recordRefreshSuccess(sessionID)
 				atomic.AddInt64(&rc.metrics.successfulRefreshes, 1)
 			}
 			return result.tokenResponse, result.err
@@ -371,7 +395,7 @@ func (rc *RefreshCoordinator) failCandidate(tokenHash string, op *refreshOperati
 // executeRefreshAsync performs the actual refresh operation asynchronously
 func (rc *RefreshCoordinator) executeRefreshAsync(
 	operation *refreshOperation,
-	_ string, // sessionID - reserved for future metrics/logging
+	sessionID string,
 	tokenHash string,
 	refreshFunc func() (*TokenResponse, error),
 ) {
@@ -425,6 +449,19 @@ func (rc *RefreshCoordinator) executeRefreshAsync(
 			fromCache:     false,
 		}
 		operation.mutex.Unlock()
+	}
+
+	// Record the circuit breaker and per-session outcome exactly once per
+	// refresh operation. This function runs once per operation regardless of
+	// how many requests coalesced onto it (see CoordinateRefresh), so a
+	// single upstream refresh yields a single CB/session record rather than
+	// N (one per waiter), which would over-trigger the circuit breaker.
+	if err := operation.result.err; err != nil {
+		rc.circuitBreaker.RecordFailure()
+		rc.recordRefreshFailure(sessionID)
+	} else {
+		rc.circuitBreaker.RecordSuccess()
+		rc.recordRefreshSuccess(sessionID)
 	}
 }
 
@@ -640,15 +677,20 @@ func refreshCoordinatorSessionID(token string) string {
 const refreshCoordinatorWaitTimeout = 35 * time.Second
 
 // isUnderMemoryPressure checks if the system is under memory pressure by
-// consulting the global memory monitor. Returns true when pressure reaches
-// High or Critical, at which point we refuse new refresh operations to
-// avoid aggravating an already-stressed heap.
+// consulting the global memory monitor. Returns true when the current heap
+// exceeds the coordinator's OWN configured MemoryPressureThresholdMB, at
+// which point we refuse new refresh operations to avoid aggravating an
+// already-stressed heap.
 func (rc *RefreshCoordinator) isUnderMemoryPressure() bool {
 	monitor := GetGlobalMemoryMonitor()
 	if monitor == nil {
 		return false
 	}
-	return monitor.GetMemoryPressure() >= MemoryPressureHigh
+	stats := monitor.GetCurrentStats()
+	if stats == nil || rc.config.MemoryPressureThresholdMB == 0 {
+		return false
+	}
+	return stats.HeapAllocBytes > rc.config.MemoryPressureThresholdMB*1024*1024
 }
 
 // cleanupRoutine periodically cleans up stale tracking entries
@@ -706,8 +748,10 @@ func (rc *RefreshCoordinator) GetMetrics() map[string]interface{} {
 // (one map LoadAndDelete) and harmless after Shutdown — sync.Map operations
 // remain safe on an unused coordinator until GC.
 func (rc *RefreshCoordinator) Shutdown() {
-	close(rc.stopChan)
-	rc.wg.Wait()
+	rc.shutdownOnce.Do(func() {
+		close(rc.stopChan)
+		rc.wg.Wait()
+	})
 }
 
 // AllowRequest reports whether the circuit breaker allows a request. Lock-free.

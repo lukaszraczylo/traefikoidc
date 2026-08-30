@@ -32,12 +32,12 @@ type requestState struct {
 	// (Save, Clear, etc.) still have access.
 	session *SessionData
 
-	authenticated     bool
-	accessToken       string
-	idToken           string
-	refreshToken      string
-	userIdentifier    string
-	createdAtUnixSec  int64
+	authenticated    bool
+	accessToken      string
+	idToken          string
+	refreshToken     string
+	userIdentifier   string
+	createdAtUnixSec int64
 
 	// Output: scheme/host/redirect path determined at top of ServeHTTP.
 	scheme      string

@@ -72,7 +72,7 @@ func (s *OIDCSuite) NewRequest(method, path string) *http.Request {
 // NewRequestWithCookie creates a request with a session cookie
 func (s *OIDCSuite) NewRequestWithCookie(method, path, cookieName, cookieValue string) *http.Request {
 	req := s.NewRequest(method, path)
-	req.AddCookie(&http.Cookie{
+	req.AddCookie(&http.Cookie{ //nolint:gosec // test cookie on an httptest request
 		Name:  cookieName,
 		Value: cookieValue,
 	})

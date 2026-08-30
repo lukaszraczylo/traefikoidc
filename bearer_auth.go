@@ -29,6 +29,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -93,6 +94,10 @@ const (
 type bearerError struct {
 	kind   bearerErrorKind
 	reason string
+	// retryAfter carries the actual remaining penalty when known (e.g. the
+	// per-IP penalty box), so writeBearerError emits the true value instead
+	// of the full configured penalty.
+	retryAfter time.Duration
 }
 
 func (e *bearerError) Error() string { return e.reason }
@@ -108,6 +113,32 @@ type joseHeader struct {
 	Alg string `json:"alg"`
 	Kid string `json:"kid"`
 	Typ string `json:"typ"`
+}
+
+// joseHeaderWellFormed reports whether token is structurally a JWT: exactly
+// two dot-separated segments whose header decodes as a JSON JOSE header.
+// It intentionally applies NO alg/kid policy (unlike parseBearerJOSEHeader)
+// so the JWT-vs-opaque routing gate classifies purely on structure: a
+// structurally-valid JWT with a disallowed alg stays on the JWT path
+// (where local policy rejects it), while an opaque token whose two dots
+// are coincidental falls through to opaque introspection (R166).
+func joseHeaderWellFormed(token string) bool {
+	dot := strings.IndexByte(token, '.')
+	if dot <= 0 {
+		return false
+	}
+	if strings.Count(token[dot+1:], ".") != 1 {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(token[:dot])
+	if err != nil {
+		raw, err = base64.URLEncoding.DecodeString(token[:dot])
+		if err != nil {
+			return false
+		}
+	}
+	var hdr joseHeader
+	return json.Unmarshal(raw, &hdr) == nil
 }
 
 // parseBearerJOSEHeader decodes the first JWT segment for early alg/kid pinning.
@@ -153,19 +184,22 @@ func parseBearerJOSEHeader(token string) *bearerError {
 // header value, or "" if the rune is acceptable. Shared core of the bearer-path
 // identifier sanitizer and the cookie-path header claim sanitizer: rejects
 // control chars (CRLF/header injection), Unicode bidi-override runes (RTL
-// spoofing of admin UI / SIEM), and the delimiters , ; = (a comma in a group
-// name would inject extra entries into a comma-joined header).
+// spoofing of admin UI / SIEM), and the delimiters , ; = plus the bracketing
+// characters " { } — each of these in a group name / identifier would break a
+// downstream comma-joined list or a naive CSV/JSON-style parser consuming the
+// header (a comma would inject extra entries into a comma-joined header).
 func headerClaimRuneReason(r rune) string {
 	if reason := headerInjectionRuneReason(r); reason != "" {
 		return reason
 	}
-	// The , ; = delimiters are only unsafe for values placed into delimited or
-	// list contexts (a comma-joined header, or an identifier downstreams may
-	// split). They are valid in arbitrary single header values, so this stricter
-	// check is used for the cookie-path identifier and the group/role list, NOT
-	// for free-form templated header output (see headerValueReason).
-	if r == ',' || r == ';' || r == '=' {
-		return "delimiter character"
+	// The , ; = delimiters and the " { } bracketing chars are only unsafe for
+	// values placed into delimited or list contexts (a comma-joined header, or
+	// an identifier downstreams may split). They are valid in arbitrary single
+	// header values, so this stricter check is used for the cookie-path
+	// identifier and the group/role list, NOT for free-form templated header
+	// output (see headerValueReason).
+	if r == ',' || r == ';' || r == '=' || r == '"' || r == '{' || r == '}' {
+		return "delimiter or bracketing character"
 	}
 	return ""
 }
@@ -270,11 +304,12 @@ func resolveBearerIdentifier(claims map[string]interface{}, claimName string) (s
 	if !ok {
 		return "", newBearerError(bearerErrInvalidIdentifier, fmt.Sprintf("missing claim %q", claimName))
 	}
-	str, ok := raw.(string)
-	if !ok {
-		return "", newBearerError(bearerErrInvalidIdentifier, fmt.Sprintf("claim %q not a string", claimName))
+	// Accept scalar numbers (e.g. a numeric sub) by stringifying them,
+	// so a numeric identifier claim doesn't 401 a valid principal.
+	if s, isScalar := claimScalarString(raw); isScalar {
+		return s, nil
 	}
-	return str, nil
+	return "", newBearerError(bearerErrInvalidIdentifier, fmt.Sprintf("claim %q is not a scalar string or number", claimName))
 }
 
 // enforceMultiAudienceAzp implements the spec hardening: when aud is a
@@ -358,6 +393,10 @@ type bearerFailureEntry struct {
 	count          int
 }
 
+// defaultBearerEntrySweepThreshold is the map size above which recordFailure
+// sweeps stale entries, bounding memory under a flood of distinct source IPs.
+const defaultBearerEntrySweepThreshold = 1024
+
 func newBearerFailureTracker(threshold int, window, penalty time.Duration) *bearerFailureTracker {
 	if threshold <= 0 {
 		threshold = 20
@@ -404,6 +443,18 @@ func (b *bearerFailureTracker) recordFailure(ip string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := time.Now()
+	// Bound per-IP map growth (R117): entries for source IPs that fail once
+	// and never return were never removed. Sweep stale entries (no active
+	// penalty box, too old to matter) once the map grows past a nominal
+	// size, keeping steady-state memory bounded.
+	if len(b.entries) > defaultBearerEntrySweepThreshold {
+		cutoff := now.Add(-(b.window + b.penalty))
+		for k, e := range b.entries {
+			if e.penaltyUntil.Before(cutoff) {
+				delete(b.entries, k)
+			}
+		}
+	}
 	e, ok := b.entries[ip]
 	if !ok || now.Sub(e.firstFailureAt) > b.window {
 		e = &bearerFailureEntry{firstFailureAt: now}
@@ -520,7 +571,10 @@ func (t *TraefikOidc) writeBearerError(rw http.ResponseWriter, req *http.Request
 	case bearerErrThrottled:
 		status = http.StatusTooManyRequests
 		body = "Too Many Requests"
-		retryAfter = t.bearerFailurePenalty
+		retryAfter = err.retryAfter
+		if retryAfter <= 0 {
+			retryAfter = t.bearerFailurePenalty
+		}
 	case bearerErrIntrospectionUnavailable:
 		status = http.StatusServiceUnavailable
 		body = "Service Unavailable"
@@ -535,6 +589,10 @@ func (t *TraefikOidc) writeBearerError(rw http.ResponseWriter, req *http.Request
 	if retryAfter > 0 {
 		rw.Header().Set("Retry-After", fmt.Sprintf("%d", int(retryAfter.Seconds())))
 	}
+	// Auth-rejection responses must never be cached (R101 contract): a
+	// cached 429/401 could be replayed to a client well after the
+	// penalty box expired or the session recovered.
+	rw.Header().Set("Cache-Control", "no-store")
 	rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	rw.WriteHeader(status)
 	_, _ = rw.Write([]byte(body)) // Safe to ignore: best-effort error body write
@@ -553,12 +611,11 @@ func (t *TraefikOidc) handleBearerRequest(rw http.ResponseWriter, req *http.Requ
 	ip := clientIPForBearer(req)
 
 	if blocked, retryAfter := t.bearerFailureTracker.blocked(ip); blocked {
+		// Carry the actual remaining penalty (diverges from the configured
+		// default on clock-skew, partial-window expiry) so writeBearerError
+		// emits the true Retry-After rather than the full penalty.
 		throttled := newBearerError(bearerErrThrottled, "ip in penalty box")
-		// Preserve the actual retry-after even if it diverged from the
-		// configured default (clock-skew, partial-window expiry).
-		if retryAfter > 0 {
-			rw.Header().Set("Retry-After", fmt.Sprintf("%d", int(retryAfter.Seconds())))
-		}
+		throttled.retryAfter = retryAfter
 		t.writeBearerError(rw, req, throttled)
 		return
 	}
@@ -574,12 +631,51 @@ func (t *TraefikOidc) handleBearerRequest(rw http.ResponseWriter, req *http.Requ
 		t.writeBearerError(rw, req, newBearerError(bearerErrInvalidToken, "token exceeds max length"))
 		return
 	}
-	if strings.Count(token, ".") != 2 {
+	// Determine whether this is genuinely a JWT. RFC 7662 token
+	// introspection covers opaque access tokens; when the operator
+	// requires live introspection (requireTokenIntrospection, whose
+	// documented purpose is exactly opaque-token support via
+	// client_secret_basic), introspect the opaque token on the bearer
+	// path instead of rejecting it — the session path already does
+	// (validateOpaqueToken). Previously the JWT-shape gate ran before
+	// the introspection branch, so every opaque token got a 401 even
+	// with introspection on (R159).
+	//
+	// A token is only treated as a JWT when it has exactly two dots AND
+	// its header actually parses as a JOSE header. Dot count alone is
+	// insufficient: an opaque token that coincidentally contains exactly
+	// two dots used to be routed onto the JWT path and rejected even
+	// under requireTokenIntrospection (header parse would fail) — it must
+	// instead be introspected like any other opaque token (R166).
+	isJWT := joseHeaderWellFormed(token)
+	if !isJWT {
+		if t.requireTokenIntrospection {
+			p, bErr := t.buildPrincipalFromOpaqueIntrospection(token)
+			if bErr != nil {
+				if bErr.kind != bearerErrIntrospectionUnavailable {
+					t.bearerFailureTracker.recordFailure(ip)
+				}
+				t.writeBearerError(rw, req, bErr)
+				return
+			}
+			t.bearerFailureTracker.recordSuccess(ip)
+			if t.logger != nil {
+				t.logger.Debugf("bearer auth success (introspected opaque): identifier_hash=%s path=%s",
+					hashIdentifierForLog(p.Identifier), req.URL.Path)
+			}
+			t.forwardAuthorized(rw, req, p)
+			return
+		}
 		t.bearerFailureTracker.recordFailure(ip)
-		t.writeBearerError(rw, req, newBearerError(bearerErrInvalidToken, "token is not a 3-segment JWT"))
+		t.writeBearerError(rw, req, newBearerError(bearerErrInvalidToken, "token is not a valid JWT"))
 		return
 	}
 
+	// Structurally a JWT: enforce the alg/kid policy EARLY (before the
+	// cached fast-path in buildPrincipalFromBearerToken can short-circuit
+	// on a prior positive verdict). Without this pin an alg=none or
+	// oversized-kid token that had been cached as verified would sail
+	// through without re-checking.
 	if bErr := parseBearerJOSEHeader(token); bErr != nil {
 		t.bearerFailureTracker.recordFailure(ip)
 		t.writeBearerError(rw, req, bErr)
@@ -588,7 +684,13 @@ func (t *TraefikOidc) handleBearerRequest(rw http.ResponseWriter, req *http.Requ
 
 	p, bErr := t.buildPrincipalFromBearerToken(token)
 	if bErr != nil {
-		t.bearerFailureTracker.recordFailure(ip)
+		// Count only authentication failures (401/403) toward the per-IP
+		// throttle. An introspection outage (503) is infrastructure, not a
+		// client failure; recording it would trip a 429 penalty that a
+		// single success can't clear even after the endpoint recovers.
+		if bErr.kind != bearerErrIntrospectionUnavailable {
+			t.bearerFailureTracker.recordFailure(ip)
+		}
 		t.writeBearerError(rw, req, bErr)
 		return
 	}
@@ -629,7 +731,9 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 		return nil, newBearerError(bearerErrInvalidToken, "token_use=id rejected")
 	}
 
-	if bErr := enforceMultiAudienceAzp(claims, t.clientID); bErr != nil {
+	// Snapshot clientID under metadataMu: DCR rewrites it at runtime (R137).
+	clientID, _, _, _, _ := t.clientCredentials()
+	if bErr := enforceMultiAudienceAzp(claims, clientID); bErr != nil {
 		return nil, bErr
 	}
 	if bErr := enforceIatAge(claims, t.maxTokenAge); bErr != nil {
@@ -642,6 +746,25 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 		}
 	}
 
+	// Honor IdP-initiated (backchannel/front-channel) logout. The cookie
+	// path re-checks sessionInvalidationCache on every request; the bearer
+	// path previously did not, so a still-cryptographically-valid access
+	// token for a logged-out subject kept returning 200 (and, with
+	// requireTokenIntrospection, a cached positive verdict extended the
+	// stale window). Reject here, mirroring the cookie path: use the
+	// token's iat as its creation time so a token issued before the
+	// logout is invalidated, while a legitimately freshly-issued token
+	// (iat after logout) still passes (R146).
+	subjectForInvalidation, _ := claims["sub"].(string)
+	sidForInvalidation, _ := claims["sid"].(string)
+	createdAt := time.Now()
+	if iat, ok := claims["iat"].(float64); ok {
+		createdAt = time.Unix(int64(iat), 0)
+	}
+	if t.isSessionInvalidated(sidForInvalidation, subjectForInvalidation, createdAt) {
+		return nil, newBearerError(bearerErrInvalidToken, "session has been invalidated (logout)")
+	}
+
 	rawIdentifier, bErr := resolveBearerIdentifier(claims, t.bearerIdentifierClaim)
 	if bErr != nil {
 		return nil, bErr
@@ -652,7 +775,7 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 	}
 
 	subject, _ := claims["sub"].(string)
-	clientID, _ := claims["azp"].(string)
+	clientID, _ = claims["azp"].(string)
 	if clientID == "" {
 		clientID, _ = claims["client_id"].(string)
 	}
@@ -667,6 +790,62 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 	}, nil
 }
 
+// buildPrincipalFromOpaqueIntrospection authenticates a bearer access
+// token that has no JWT shape by live RFC 7662 introspection, and builds
+// a principal whose identifier is the introspected subject. It mirrors
+// introspectOnBearerPath's classification (active, token_type, expiry,
+// audience) and binds the compliant subject. Only used on the bearer
+// path when requireTokenIntrospection is enabled (R159).
+func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*principal, *bearerError) {
+	resp, err := t.introspectToken(token)
+	if err != nil {
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 {
+			return nil, newBearerError(bearerErrTokenInactive, fmt.Sprintf("introspection reports token inactive (HTTP %d)", httpErr.StatusCode))
+		}
+		return nil, newBearerError(bearerErrIntrospectionUnavailable, "introspection failed: "+err.Error())
+	}
+	if !resp.Active {
+		return nil, newBearerError(bearerErrTokenInactive, "introspection reports token inactive")
+	}
+	// Mirror introspectOnBearerPath (R149): reject a definite non-access
+	// token_type (e.g. refresh_token); accept "access_token" and "Bearer".
+	if resp.TokenType != "" && resp.TokenType != "access_token" && resp.TokenType != "Bearer" {
+		return nil, newBearerError(bearerErrTokenInactive, "introspection token_type is not a bearer access token")
+	}
+	if resp.Exp > 0 && time.Now().After(time.Unix(resp.Exp, 0)) {
+		return nil, newBearerError(bearerErrTokenInactive, "introspection reports token expired")
+	}
+	// Audience gate when a distinct API audience is configured.
+	clientID, _, _, audience, _ := t.clientCredentials()
+	if audience != "" && audience != clientID {
+		if resp.Aud == nil || verifyAudience(resp.Aud, audience) != nil {
+			return nil, newBearerError(bearerErrTokenInactive, "introspection audience mismatch")
+		}
+	}
+	id := resp.Sub
+	if id == "" {
+		id = resp.Username
+	}
+	if id == "" {
+		return nil, newBearerError(bearerErrInvalidToken, "introspection response has no subject or username")
+	}
+	claims := map[string]interface{}{}
+	if resp.Sub != "" {
+		claims["sub"] = resp.Sub
+	}
+	if resp.Username != "" {
+		claims["username"] = resp.Username
+	}
+	return &principal{
+		Claims:      claims,
+		Identifier:  id,
+		Subject:     resp.Sub,
+		AccessToken: token,
+		Source:      sourceBearer,
+	}, nil
+}
+
 // introspectOnBearerPath calls the existing RFC 7662 introspector when the
 // operator demands real-time revocation. Distinguishes "token revoked" (401)
 // from "endpoint unavailable" (503) so transient infra failures don't look
@@ -674,10 +853,55 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 func (t *TraefikOidc) introspectOnBearerPath(token string) *bearerError {
 	resp, err := t.introspectToken(token)
 	if err != nil {
+		// A definitive 4xx from the introspection endpoint (e.g. 401 for
+		// an unknown/revoked token) is a credential failure, not an infra
+		// outage — don't downgrade it to "unavailable" (R156).
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 {
+			return newBearerError(bearerErrTokenInactive, fmt.Sprintf("introspection reports token inactive (HTTP %d)", httpErr.StatusCode))
+		}
 		return newBearerError(bearerErrIntrospectionUnavailable, "introspection failed: "+err.Error())
 	}
 	if !resp.Active {
 		return newBearerError(bearerErrTokenInactive, "introspection reports token inactive")
+	}
+	// Mirror the session path (validateOpaqueToken): an opaque-or-any
+	// token whose RFC 7662 token_type classifies it as a refresh token
+	// must not be honored as a bearer access token (R149). Only reject on
+	// a definite non-access match; compliant providers may omit it. RFC
+	// 7662's token_type is the RFC 6749 token type, whose value for an
+	// access token is "Bearer" (RFC 6750) — accept both spellings
+	// providers use (R156).
+	if resp.TokenType != "" && resp.TokenType != "access_token" && resp.TokenType != "Bearer" {
+		return newBearerError(bearerErrTokenInactive, "introspection token_type is not a bearer access token")
+	}
+	// Mirror the session path (validateOpaqueToken): an active but
+	// already-expired result must not pass. The positive-only cache is
+	// capped by time-until-exp when Exp is present, but a provider
+	// returning active=1 past exp would otherwise let the token pass on
+	// the bearer path while the identical token is rejected on the
+	// session path.
+	if resp.Exp > 0 {
+		expTime := time.Unix(resp.Exp, 0)
+		if time.Now().After(expTime) {
+			return newBearerError(bearerErrTokenInactive, "introspection reports token expired")
+		}
+	}
+	// Mirror the session path (validateOpaqueToken): when a distinct API
+	// audience is configured (audience != clientID), the introspection
+	// response MUST carry a matching audience. Fail closed on a missing or
+	// mismatched aud, otherwise a token minted for a different audience
+	// would pass the bearer path while the identical token is rejected on
+	// the session path. aud may be a single string or an array (RFC 7662).
+	// (R143)
+	clientID, _, _, audience, _ := t.clientCredentials()
+	if audience != "" && audience != clientID {
+		if resp.Aud == nil {
+			return newBearerError(bearerErrTokenInactive, "introspection reports no audience")
+		}
+		if err := verifyAudience(resp.Aud, audience); err != nil {
+			return newBearerError(bearerErrTokenInactive, "introspection audience mismatch")
+		}
 	}
 	return nil
 }

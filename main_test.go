@@ -232,7 +232,14 @@ func (m *MockJWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, ht
 			return nil, fmt.Errorf("unsupported key type: %s", k.Kty)
 		}
 	}
+
 	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
+}
+
+// getPublicKeyFresh mirrors GetPublicKey for the interface; the mock serves
+// the same configured key, so a signature retry yields the identical result.
+func (m *MockJWKCache) getPublicKeyFresh(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	return m.GetPublicKey(ctx, jwksURL, kid, httpClient)
 }
 
 func (m *MockJWKCache) Cleanup() {
@@ -1129,6 +1136,7 @@ func TestHandleCallback(t *testing.T) {
 			exchangeCodeForToken: func(code string, redirectURL string, codeVerifier string) (*TokenResponse, error) {
 				return &TokenResponse{
 					IDToken:      ts.token,
+					AccessToken:  "test-access-token",
 					RefreshToken: "test-refresh-token",
 				}, nil
 			},
@@ -1203,6 +1211,7 @@ func TestHandleCallback(t *testing.T) {
 				}
 				return &TokenResponse{
 					IDToken:      disallowedToken,
+					AccessToken:  "test-access-token",
 					RefreshToken: "test-refresh-token-disallowed",
 				}, nil
 			},
@@ -1862,7 +1871,7 @@ func TestHandleLogout(t *testing.T) {
 			},
 			endSessionURL:  "https://provider/end-session",
 			expectedStatus: http.StatusFound,
-			expectedURL:    "https://provider/end-session?id_token_hint=" + url.QueryEscape(ValidIDToken) + "&post_logout_redirect_uri=http%3A%2F%2Fexample.com%2F",
+			expectedURL:    "https://provider/end-session?id_token_hint=" + url.QueryEscape(ValidIDToken),
 			host:           "test-host",
 		},
 		{
@@ -2212,6 +2221,7 @@ func TestHandleExpiredToken(t *testing.T) {
 				tokenVerifier:  ts.tOidc.tokenVerifier,
 				jwtVerifier:    ts.tOidc.jwtVerifier,
 				initComplete:   make(chan struct{}),
+				issuerURL:      "https://test-issuer.com",
 				initiateAuthenticationFunc: func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 					http.Redirect(rw, req, "/login", http.StatusFound)
 				},
@@ -2300,12 +2310,24 @@ func TestExtractGroupsAndRoles(t *testing.T) {
 			expectError:  false,
 		},
 		{
-			name: "Invalid groups format",
+			name: "Single string groups and roles",
 			claims: map[string]interface{}{
-				"groups": "not-an-array",
+				"groups": "domain_users", // single string (not array)
 				"roles":  []interface{}{"role1"},
 			},
-			expectError: true,
+			expectGroups: []string{"domain_users"},
+			expectRoles:  []string{"role1"},
+			expectError:  false,
+		},
+		{
+			name: "Invalid groups format",
+			claims: map[string]interface{}{
+				"groups": 12345, // non-string, non-array scalar -> treated as empty, roles preserved
+				"roles":  []interface{}{"role1"},
+			},
+			expectGroups: []string{},
+			expectRoles:  []string{"role1"},
+			expectError:  false,
 		},
 	}
 
@@ -3747,7 +3769,7 @@ func TestAuthenticationFlowReplayDetection(t *testing.T) {
 	}
 
 	// Verify JTI is in cache (use shardedReplayCache which is the actual cache used)
-	exists := shardedReplayCache.Exists(jti)
+	exists := shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti))
 	if !exists {
 		t.Error("JTI should be added to replay cache during initial authentication")
 	}
@@ -3930,7 +3952,7 @@ func TestConcurrentTokenValidation(t *testing.T) {
 
 	// Verify all JTIs are in cache (use shardedReplayCache which is the actual cache used)
 	for i, jti := range jtis {
-		if !shardedReplayCache.Exists(jti) {
+		if !shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
 			t.Errorf("JTI %d (%s) should be in replay cache", i, jti)
 		}
 	}
@@ -3987,7 +4009,7 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 			name: "JTI exists in blacklist after verification",
 			action: func() error {
 				// Use shardedReplayCache which is the actual cache used
-				if !shardedReplayCache.Exists(jti) {
+				if !shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
 					return fmt.Errorf("JTI not found in blacklist cache")
 				}
 				return nil
@@ -4095,7 +4117,7 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 
 	// Check replay cache
 	// Use shardedReplayCache which is the actual cache used
-	inReplayCache := shardedReplayCache.Exists(jti)
+	inReplayCache := shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti))
 	if !inReplayCache {
 		t.Error("JTI should be in replay cache")
 	}

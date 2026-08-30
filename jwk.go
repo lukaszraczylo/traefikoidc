@@ -65,6 +65,29 @@ type JWKSet struct {
 type JWKCache struct {
 	cache           *UniversalCache
 	inflightFetches sync.Map // map[jwksURL string]*jwksFetch
+
+	// forceMu guards lastForceRefresh: per-URL timestamps used to bound the
+	// live refresh triggered when a kid is missing from the cached derived
+	// keyset (see forceJWKSRefresh). Without the bound, an attacker who
+	// presents many tokens with unknown kid values could amplify N requests
+	// into N upstream JWKS fetches.
+	forceMu          sync.Mutex
+	lastForceRefresh map[string]time.Time
+	// lastSignatureRefresh (guarded by forceMu) bounds how often the
+	// signature-failure path (getPublicKeyFresh) performs a live JWKS
+	// fetch per URL. Kept distinct from lastForceRefresh so the first
+	// signature failure after an in-place rotation still fetches once
+	// (R109) while repeated failures don't amplify up upstream load (R140).
+	lastSignatureRefresh map[string]time.Time
+
+	// lastUngatedPickup bounds the R124 immediate refresh (see
+	// GetPublicKey): when the gated forceJWKSRefresh serves a cached set
+	// within the cooldown, GetPublicKey does one ungated live fetch to
+	// pick up an in-place-rotated key. Without a bound that ungated fetch
+	// would run on EVERY absent-kid request within the window (re-sliding
+	// lastForceRefresh) and defeat R54's anti-amplification cooldown —
+	// N bogus-kid requests → N upstream JWKS fetch calls (R130).
+	lastUngatedPickup map[string]time.Time
 }
 
 // jwksFetch represents an in-flight JWKS fetch. Done is closed when the fetch
@@ -79,6 +102,7 @@ type jwksFetch struct {
 type JWKCacheInterface interface {
 	GetJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error)
 	GetPublicKey(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error)
+	getPublicKeyFresh(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error)
 	Cleanup()
 	Close()
 }
@@ -87,7 +111,9 @@ type JWKCacheInterface interface {
 func NewJWKCache() *JWKCache {
 	manager := GetUniversalCacheManager(nil)
 	return &JWKCache{
-		cache: manager.GetJWKCache(),
+		cache:                manager.GetJWKCache(),
+		lastForceRefresh:     make(map[string]time.Time),
+		lastSignatureRefresh: make(map[string]time.Time),
 	}
 }
 
@@ -154,6 +180,86 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 	return jwks, nil
 }
 
+// jwksForceRefreshCooldown bounds how often GetPublicKey forces a live JWKS
+// fetch when the requested kid is missing from the cached derived keyset.
+// Rotation is picked up on the first new-kid request; the cooldown
+// prevents an attacker presenting many bogus kids from amplifying a flood of
+// requests into a flood of upstream JWKS fetches.
+const jwksForceRefreshCooldown = 30 * time.Second
+
+// forceJWKSRefresh performs a live singleflighted JWKS fetch, bypassing the
+// fast-path cache, so an IdP key rotation is picked up promptly. It is
+// bounded by jwksForceRefreshCooldown per URL: within the window it falls
+// back to the (freshly refetched) cached set rather than fetching again.
+// On success the result is written to the raw cache so subsequent fast-path
+// GetJWKS calls and other replicas-benefits see the rotated keys.
+// The boolean reports whether a live fetch was performed (true) or the
+// cached set was served (false).
+// doLiveRefresh performs a singleflighted live JWKS fetch (no cooldown
+// gate) and updates the raw + parsed caches on success, recording the force
+// cooldown so the normal forced path shares this fetch. On error the raw
+// cache is left untouched. Used by forceJWKSRefresh (after its cooldown
+// gate) and by refresh-on-signature-failure.
+func (c *JWKCache) doLiveRefresh(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, error) {
+	// Singleflight a live fetch (no fast-path cache read).
+	candidate := &jwksFetch{done: make(chan struct{})}
+	if existing, loaded := c.inflightFetches.LoadOrStore(jwksURL, candidate); loaded {
+		f, _ := existing.(*jwksFetch)
+		select {
+		case <-f.done:
+			return f.jwks, f.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	defer func() {
+		c.inflightFetches.Delete(jwksURL)
+		close(candidate.done)
+	}()
+
+	jwks, err := fetchJWKS(ctx, jwksURL, httpClient)
+	if err != nil {
+		candidate.err = err
+		return nil, err
+	}
+	if len(jwks.Keys) == 0 {
+		candidate.err = fmt.Errorf("JWKS response contains no keys")
+		return nil, candidate.err
+	}
+	_ = c.cache.SetLocal(jwksURL, jwks, 1*time.Hour) // Safe to ignore: cache failures are non-critical
+	// Record the cooldown only AFTER a successful fetch. Recording it
+	// first meant a transient failure (5xx / network blip) consumed the
+	// whole cooldown window, so new-kid requests were served the stale
+	// cached keyset (missing the new kid) as 401 with no upstream retry
+	// for up to jwksForceRefreshCooldown (R100).
+	c.forceMu.Lock()
+	if c.lastForceRefresh == nil {
+		c.lastForceRefresh = make(map[string]time.Time)
+	}
+	c.lastForceRefresh[jwksURL] = time.Now()
+	c.forceMu.Unlock()
+	candidate.jwks = jwks
+	return jwks, nil
+}
+
+func (c *JWKCache) forceJWKSRefresh(ctx context.Context, jwksURL string, httpClient *http.Client) (*JWKSet, bool, error) {
+	c.forceMu.Lock()
+	if c.lastForceRefresh == nil {
+		c.lastForceRefresh = make(map[string]time.Time)
+	}
+	last := c.lastForceRefresh[jwksURL]
+	now := time.Now()
+	if now.Sub(last) < jwksForceRefreshCooldown {
+		c.forceMu.Unlock()
+		jwks, err := c.GetJWKS(ctx, jwksURL, httpClient)
+		return jwks, false, err // served cached set, not a live fetch
+	}
+	c.forceMu.Unlock()
+
+	jwks, err := c.doLiveRefresh(ctx, jwksURL, httpClient)
+	return jwks, true, err // performed a live fetch
+}
+
 // GetPublicKey returns the parsed public key for a given kid, fetching and
 // caching the JWKS plus its derived parsedJWKS on miss. The parsed entry is
 // stored alongside the raw JWKSet under a sibling cache key with the same
@@ -166,6 +272,12 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 // try to fit that into float64 and fail with UnmarshalTypeError. Under yaegi
 // the unexported parsedJWKS.keys field is exposed via an X-prefixed name on
 // Marshal, leaking the modulus into the cached payload (issue #134).
+//
+// If the requested kid is not in the cached derived keyset, GetJWKS would
+// still hand back the stale (within-TTL) cached JWKS, so a post-rotation
+// token with a NEW kid would fail "no matching public key" for up to the
+// 1-hour TTL. Instead, on a kid miss we force a bounded live refresh so
+// rotation is picked up on the first new-kid request.
 func (c *JWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
 	parsedKey := jwksURL + parsedKeysSuffix
 	if v, found := c.cache.GetLocal(parsedKey); found {
@@ -176,7 +288,7 @@ func (c *JWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, httpCl
 		}
 	}
 
-	jwks, err := c.GetJWKS(ctx, jwksURL, httpClient)
+	jwks, fresh, err := c.forceJWKSRefresh(ctx, jwksURL, httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +299,84 @@ func (c *JWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, httpCl
 	if k, ok := pj.keys[kid]; ok {
 		return k, nil
 	}
+	// If the gated refresh served a CACHED set (within the cooldown
+	// window), a provider that lagged behind its own rotation at the
+	// last live fetch would leave us serving a kid-lacking set as 401
+	// for up to the whole window. Do one ungated live refresh to pick
+	// up the now-rotated key on this request (R124). When the gated
+	// refresh JUST performed a live fetch and the kid is still missing,
+	// another immediate fetch is redundant — the kid truly is absent
+	// (e.g. an attacker's bogus kid).
+	if !fresh {
+		// Bound the immediate pick-up to once per cooldown window (in
+		// addition to the gated live refresh) so repeated absent-kid
+		// requests can't each trigger an upstream JWKS fetch, defeating
+		// R54's anti-amplification cooldown.
+		c.forceMu.Lock()
+		if c.lastUngatedPickup == nil {
+			c.lastUngatedPickup = make(map[string]time.Time)
+		}
+		if prev, had := c.lastUngatedPickup[jwksURL]; had && time.Since(prev) < jwksForceRefreshCooldown {
+			c.forceMu.Unlock()
+			return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
+		}
+		c.lastUngatedPickup[jwksURL] = time.Now()
+		c.forceMu.Unlock()
+		return c.getPublicKeyFresh(ctx, jwksURL, kid, httpClient)
+	}
 	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
+}
+
+// getPublicKeyFresh returns the parsed public key for kid from an
+// unconditional live JWKS fetch (no fast-path cache read, no cooldown
+// gate), updating both caches. Used when signature verification just
+// failed against a cached key: in-place key rotation that reuses the same
+// kid (or a stale cached keyset) otherwise yields 401s until the 1h cache
+// TTL expires, because GetPublicKey's fast path serves the cached key.
+func (c *JWKCache) getPublicKeyFresh(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	// Bound signature-failure refreshes with their own per-URL cooldown,
+	// distinct from lastForceRefresh (which the normal key-lookup path
+	// already consumes). The FIRST signature failure after an in-place key
+	// rotation still fetches once so the new key is picked up immediately
+	// (R109); subsequent signature failures within the window are served
+	// from the cached keyset instead of firing one upstream fetch per
+	// request — which an attacker holding a valid kid alongside a bogus
+	// signature could otherwise use to amplify load on the IdP's JWKS
+	// endpoint (R140).
+	c.forceMu.Lock()
+	withinCooldown := c.lastSignatureRefresh != nil &&
+		time.Since(c.lastSignatureRefresh[jwksURL]) < jwksForceRefreshCooldown
+	c.forceMu.Unlock()
+
+	if withinCooldown {
+		// Serve the cached keyset; do not fetch upstream again.
+		if cached, found := c.cache.GetLocal(jwksURL); found {
+			if jwks, ok := cached.(*JWKSet); ok {
+				if k, ok := buildParsedJWKS(jwks).keys[kid]; ok {
+					return k, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("no matching public key found for kid after forced refresh: %s", kid)
+	}
+
+	jwks, err := c.doLiveRefresh(ctx, jwksURL, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	c.forceMu.Lock()
+	if c.lastSignatureRefresh == nil {
+		c.lastSignatureRefresh = make(map[string]time.Time)
+	}
+	c.lastSignatureRefresh[jwksURL] = time.Now()
+	c.forceMu.Unlock()
+	pj := buildParsedJWKS(jwks)
+	parsedKey := jwksURL + parsedKeysSuffix
+	_ = c.cache.SetLocal(parsedKey, pj, 1*time.Hour) // Safe to ignore: cache failures are non-critical
+	if k, ok := pj.keys[kid]; ok {
+		return k, nil
+	}
+	return nil, fmt.Errorf("no matching public key found for kid after forced refresh: %s", kid)
 }
 
 // buildParsedJWKS pre-parses every JWK in the set into the matching
@@ -262,9 +451,12 @@ func fetchJWKS(ctx context.Context, jwksURL string, httpClient *http.Client) (*J
 		return nil, fmt.Errorf("JWKS fetch failed with status %d: %s", resp.StatusCode, body)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
 	if err != nil {
 		return nil, fmt.Errorf("error reading JWKS response: %w", err)
+	}
+	if len(body) > 1<<20 {
+		return nil, fmt.Errorf("JWKS response exceeds 1 MiB limit")
 	}
 
 	var jwks JWKSet

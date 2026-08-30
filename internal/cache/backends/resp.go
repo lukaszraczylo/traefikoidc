@@ -20,6 +20,11 @@ import (
 var (
 	ErrInvalidRESP = errors.New("invalid RESP response")
 	ErrNilResponse = errors.New("nil response")
+	// ErrCommandReply marks a RESP '-' (Redis command error) reply, e.g.
+	// WRONGTYPE or OOM. It is a valid protocol response — the connection
+	// is healthy and any remaining pipelined replies are still readable —
+	// as opposed to an IO/parse error which means the connection is dead.
+	ErrCommandReply = errors.New("redis command error reply")
 )
 
 // RESPWriter writes RESP protocol messages
@@ -110,7 +115,9 @@ func (r *RESPReader) readError() error {
 	if err != nil {
 		return err
 	}
-	return errors.New(line)
+	// Wrap so callers can distinguish a Redis command error reply (healthy
+	// connection) from an IO/parse error (dead connection).
+	return fmt.Errorf("%w: %s", ErrCommandReply, line)
 }
 
 // readInteger reads an integer (:1000\r\n)

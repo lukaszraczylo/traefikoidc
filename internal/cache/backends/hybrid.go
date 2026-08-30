@@ -20,6 +20,8 @@ type HybridBackend struct {
 	ctx                 context.Context
 	syncWriteCacheTypes map[string]bool
 	asyncWriteBuffer    chan *asyncWriteItem
+	asyncFlushMu        sync.Mutex
+	asyncWg             sync.WaitGroup
 	l1BackfillBuffer    chan *l1BackfillItem
 	cancel              context.CancelFunc
 	wg                  sync.WaitGroup
@@ -35,7 +37,6 @@ type HybridBackend struct {
 
 // asyncWriteItem represents an async write operation
 type asyncWriteItem struct {
-	ctx   context.Context
 	key   string
 	value []byte
 	ttl   time.Duration
@@ -184,17 +185,20 @@ func (h *HybridBackend) Set(ctx context.Context, key string, value []byte, ttl t
 		h.l2Writes.Add(1)
 		h.logger.Debugf("Synchronous write to L2 completed for critical key: %s", redactKey(key))
 	} else {
-		// Asynchronous write for non-critical cache types
+		// Asynchronous write for non-critical cache types. asyncWg tracks
+		// every queued+in-flight async write so Clear can wait for the
+		// worker to finish before wiping (no buffered write lands after).
+		h.asyncWg.Add(1)
 		select {
 		case h.asyncWriteBuffer <- &asyncWriteItem{
 			key:   key,
 			value: value,
 			ttl:   ttl,
-			ctx:   ctx,
 		}:
 			h.logger.Debugf("Queued async write to L2 for key: %s", redactKey(key))
 		default:
 			// Buffer is full, log and continue
+			h.asyncWg.Done()
 			h.logger.Warnf("Async write buffer full, dropping L2 write for key: %s", redactKey(key))
 			h.errors.Add(1)
 		}
@@ -259,14 +263,23 @@ func (h *HybridBackend) Delete(ctx context.Context, key string) (bool, error) {
 		deleted = true
 	}
 
-	// Delete from L2 if not in fallback mode
-	if !h.fallbackMode.Load() {
-		if d, err := h.secondary.Delete(ctx, key); err != nil {
-			h.logger.Debugf("Failed to delete from L2 cache: %v", err)
-			h.recordL2Error()
-		} else if d {
-			deleted = true
-		}
+	if h.fallbackMode.Load() {
+		return deleted, nil
+	}
+
+	// Drain in-flight async L2 writes before deleting L2. A Set's async
+	// write could otherwise land AFTER this DEL, resurrecting the just-
+	// deleted key with its stale value (L1/L2 divergence). Waiting for
+	// the async worker (which tracks queued + in-flight non-critical
+	// writes) ensures no pre-existing async Set lands post-DEL (R124).
+	h.asyncWg.Wait()
+
+	// Delete from L2
+	if d, err := h.secondary.Delete(ctx, key); err != nil {
+		h.logger.Debugf("Failed to delete from L2 cache: %v", err)
+		h.recordL2Error()
+	} else if d {
+		deleted = true
 	}
 
 	return deleted, nil
@@ -289,9 +302,18 @@ func (h *HybridBackend) Exists(ctx context.Context, key string) (bool, error) {
 	return false, nil
 }
 
-// Clear removes all keys from both caches
+// Clear removes all keys from both caches.
 func (h *HybridBackend) Clear(ctx context.Context) error {
 	var lastErr error
+
+	// Wait for every queued+in-flight async L2 write to land BEFORE the
+	// wipe, so a buffered write (from a Set that preceded Clear) cannot
+	// resurrect the key. The worker drains the buffer itself; asyncWg
+	// reaches 0 only once all of them are written. Holding asyncFlushMu
+	// for the wipe also blocks a racing worker write from landing during it.
+	h.asyncWg.Wait()
+	h.asyncFlushMu.Lock()
+	defer h.asyncFlushMu.Unlock()
 
 	// Clear L1
 	if err := h.primary.Clear(ctx); err != nil {
@@ -375,12 +397,14 @@ func (h *HybridBackend) Ping(ctx context.Context) error {
 
 // Close shuts down the hybrid backend
 func (h *HybridBackend) Close() error {
-	// Cancel context to stop workers
+	// Cancel context to stop workers.
 	h.cancel()
 
-	// Close async write channel
-	close(h.asyncWriteBuffer)
-	close(h.l1BackfillBuffer)
+	// Do NOT close asyncWriteBuffer / l1BackfillBuffer: the workers key off
+	// h.ctx.Done() and exit on cancel, and closing these channels creates a
+	// race where a concurrent Set's select-send (line ~193) hits a closed
+	// channel and panics ("send on closed channel"). Buffered items a late
+	// Set queues after the workers have exited are harmless at shutdown.
 
 	// Wait for workers to finish with timeout
 	done := make(chan struct{})
@@ -518,15 +542,16 @@ func (h *HybridBackend) SetMany(ctx context.Context, items map[string][]byte, tt
 				}
 			} else {
 				// Async write for non-critical types
+				h.asyncWg.Add(1)
 				select {
 				case h.asyncWriteBuffer <- &asyncWriteItem{
 					key:   key,
 					value: value,
 					ttl:   ttl,
-					ctx:   ctx,
 				}:
 					// Queued
 				default:
+					h.asyncWg.Done()
 					h.logger.Warnf("Async buffer full for batch write")
 				}
 			}
@@ -561,9 +586,11 @@ func (h *HybridBackend) l1BackfillWorker() {
 			for len(h.l1BackfillBuffer) > 0 {
 				select {
 				case item := <-h.l1BackfillBuffer:
-					writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-					_ = h.primary.Set(writeCtx, item.key, item.value, item.ttl)
-					cancel()
+					if h.keyStillInSecondary(item.key) {
+						writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+						_ = h.primary.Set(writeCtx, item.key, item.value, item.ttl)
+						cancel()
+					}
 				default:
 					return
 				}
@@ -574,15 +601,44 @@ func (h *HybridBackend) l1BackfillWorker() {
 			if !ok {
 				return
 			}
-			writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			if err := h.primary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
-				h.logger.Debugf("Failed to populate L1 cache from L2 for key %s: %v", redactKey(item.key), err)
-			} else {
-				h.logger.Debugf("Populated L1 cache from L2 for key: %s", redactKey(item.key))
+			if h.keyStillInSecondary(item.key) && !h.keyAlreadyInPrimary(item.key) {
+				writeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				if err := h.primary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
+					h.logger.Debugf("Failed to populate L1 cache from L2 for key %s: %v", redactKey(item.key), err)
+				} else {
+					h.logger.Debugf("Populated L1 cache from L2 for key: %s", redactKey(item.key))
+				}
+				cancel()
 			}
-			cancel()
 		}
 	}
+}
+
+// keyStillInSecondary reports whether the key still exists in the L2 cache.
+// Used by the L1 backfill worker: the value was captured from L2 at read
+// time, and a Delete may have run since. Writing it into L1 without this
+// check would resurrect a key the caller just removed from both tiers.
+func (h *HybridBackend) keyStillInSecondary(key string) bool {
+	if h.fallbackMode.Load() {
+		return true // No L2 available to check; keep behavior unchanged.
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	exists, err := h.secondary.Exists(ctx, key)
+	return err != nil || exists
+}
+
+// keyAlreadyInPrimary reports whether the key already exists in the L1
+// cache. The backfill worker writes an L2-resolved value into L1; if a
+// concurrent Set already placed a fresher value there, writing over it
+// would clobber the newer value with the stale L2 snapshot (R124). Skip
+// the backfill when L1 already has the key — L1 is only a cache and the
+// next L2 hit re-arms the write-through.
+func (h *HybridBackend) keyAlreadyInPrimary(key string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	exists, err := h.primary.Exists(ctx, key)
+	return err == nil && exists
 }
 
 // asyncWriteWorker processes asynchronous writes to L2
@@ -596,9 +652,12 @@ func (h *HybridBackend) asyncWriteWorker() {
 			for len(h.asyncWriteBuffer) > 0 {
 				select {
 				case item := <-h.asyncWriteBuffer:
+					h.asyncFlushMu.Lock()
 					ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 					_ = h.secondary.Set(ctx, item.key, item.value, item.ttl)
 					cancel()
+					h.asyncFlushMu.Unlock()
+					h.asyncWg.Done()
 				default:
 					return
 				}
@@ -612,11 +671,19 @@ func (h *HybridBackend) asyncWriteWorker() {
 
 			// Skip if in fallback mode
 			if h.fallbackMode.Load() {
+				h.asyncWg.Done()
 				continue
 			}
 
-			// Perform the write with a timeout
-			writeCtx, cancel := context.WithTimeout(item.ctx, 500*time.Millisecond)
+			// Perform the write with a timeout. Holding asyncFlushMu lets
+			// Clear stall us out so no buffered write can land after a
+			// clear-then-wipe.
+			h.asyncFlushMu.Lock()
+			// Use a detached context, never the originating request's ctx:
+			// this is a background write that typically runs after the
+			// request has returned, so the request ctx would be canceled
+			// and the L2 write silently dropped (R94).
+			writeCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			if err := h.secondary.Set(writeCtx, item.key, item.value, item.ttl); err != nil {
 				h.errors.Add(1)
 				h.logger.Debugf("Async write to L2 failed for key %s: %v", redactKey(item.key), err)
@@ -626,6 +693,8 @@ func (h *HybridBackend) asyncWriteWorker() {
 				h.logger.Debugf("Async write to L2 completed for key: %s", redactKey(item.key))
 			}
 			cancel()
+			h.asyncFlushMu.Unlock()
+			h.asyncWg.Done()
 		}
 	}
 }
@@ -663,18 +732,22 @@ func (h *HybridBackend) healthMonitor() {
 
 // recordL2Error records the timestamp of an L2 error
 func (h *HybridBackend) recordL2Error() {
-	h.lastL2Error.Store(time.Now())
+	now := time.Now()
 
-	// Check if we should enter fallback mode based on recent errors
+	// Enter fallback only if there was a PRIOR error within the last second —
+	// i.e. this is at least the second L2 error in quick succession.
+	// Checking a freshly-written timestamp would always be "recent" and
+	// enter fallback on a single transient L2 error (cache stampede).
 	if !h.fallbackMode.Load() {
-		// Simple heuristic: if we've had an error in the last second, consider L2 unhealthy
 		if lastErr := h.lastL2Error.Load(); lastErr != nil {
-			if t, ok := lastErr.(time.Time); ok && time.Since(t) < time.Second {
+			if t, ok := lastErr.(time.Time); ok && now.Sub(t) < time.Second {
 				h.fallbackMode.Store(true)
 				h.logger.Warnf("Multiple L2 errors detected, entering fallback mode")
 			}
 		}
 	}
+
+	h.lastL2Error.Store(now)
 }
 
 // extractCacheType attempts to determine the cache type from the key

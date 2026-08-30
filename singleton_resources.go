@@ -36,6 +36,9 @@ type ResourceManager struct {
 
 // GetResourceManager returns the global singleton ResourceManager instance
 func GetResourceManager() *ResourceManager {
+	resourceManagerMutex.Lock()
+	defer resourceManagerMutex.Unlock()
+
 	resourceManagerOnce.Do(func() {
 		globalResourceManager = &ResourceManager{
 			httpClients:  make(map[string]*http.Client),
@@ -120,16 +123,28 @@ func (rm *ResourceManager) RegisterBackgroundTask(name string, interval time.Dur
 	rm.tasksMu.Lock()
 	defer rm.tasksMu.Unlock()
 
-	// Check if task already exists
-	if _, exists := rm.tasks[name]; exists {
-		if rm.logger != nil {
-			rm.logger.Debugf("Background task %s already registered", name)
+	// If a task with this name already exists and is still running, keep it
+	// (idempotent re-registration from another middleware instance). Keep it
+	// only when it has STARTED (started==1 && stopped==0). A task whose
+	// startOnce was consumed without ever starting — e.g. Start was
+	// rejected by the circuit breaker, or Stop raced re-registration —
+	// would otherwise be kept here, then StartBackgroundTask would be a
+	// permanent no-op (Start is sync.Once-guarded) and the singleton
+	// task would never run again until process restart.
+	if existing, exists := rm.tasks[name]; exists {
+		if atomic.LoadInt32(&existing.started) == 1 && atomic.LoadInt32(&existing.stopped) == 0 {
+			if rm.logger != nil {
+				rm.logger.Debugf("Background task %s already registered", name)
+			}
+			return nil
 		}
-		// Return existing task without error for idempotency
-		return nil
+		// The existing task was either stopped or never actually started.
+		// Reusing the same BackgroundTask object would leave it permanently
+		// dead: BackgroundTask.Start is guarded by sync.Once, so once
+		// consumed it can never start again. Replace it with a fresh task
+		// so re-registration actually resumes it.
 	}
 
-	// Create new task with WaitGroup for proper cleanup
 	task := NewBackgroundTask(name, interval, taskFunc, rm.logger, &rm.wg)
 	rm.tasks[name] = task
 
@@ -166,6 +181,24 @@ func (rm *ResourceManager) StopBackgroundTask(name string) error {
 
 	task.Stop()
 	return nil
+}
+
+// StopAllTasks stops every background task registered with this ResourceManager.
+// BackgroundTask.Stop is stopOnce-guarded, so repeated calls are safe. This is
+// the terminal path for process-global singleton tasks; it must be called only
+// when the last plugin instance is shutting down, otherwise it would kill
+// cleanup for surviving instances sharing the same singletons.
+func (rm *ResourceManager) StopAllTasks() {
+	rm.tasksMu.RLock()
+	tasks := make([]*BackgroundTask, 0, len(rm.tasks))
+	for _, task := range rm.tasks {
+		tasks = append(tasks, task)
+	}
+	rm.tasksMu.RUnlock()
+
+	for _, task := range tasks {
+		task.Stop()
+	}
 }
 
 // IsTaskRunning checks if a background task is running
@@ -405,10 +438,38 @@ func (p *GoroutinePool) worker(id int) {
 				}
 			}
 		case <-p.shutdownChan:
-			if p.logger != nil {
-				p.logger.Debugf("Worker %d shutting down", id)
+			// Drain any tasks still queued before exiting. Without this, a
+			// worker that randomly selects the (now closed) shutdownChan over a
+			// ready task would exit, and once all workers have exited the
+			// remaining buffered tasks are silently dropped — and their
+			// pendingTasks count is never decremented, so a concurrent Wait()
+			// blocks forever.
+			for {
+				select {
+				case task := <-p.taskQueue:
+					if task != nil {
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+									if p.logger != nil {
+										p.logger.Errorf("Worker %d panic recovered: %v", id, r)
+									}
+								}
+							}()
+							task()
+						}()
+
+						newCount := atomic.AddInt64(&p.pendingTasks, -1)
+						if newCount == 0 {
+							p.taskCond.L.Lock()
+							p.taskCond.Broadcast()
+							p.taskCond.L.Unlock()
+						}
+					}
+				default:
+					return
+				}
 			}
-			return
 		}
 	}
 }

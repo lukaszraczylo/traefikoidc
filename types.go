@@ -116,6 +116,7 @@ type TraefikOidc struct {
 	introspectionCache           CacheInterface
 	initComplete                 chan struct{}
 	limiter                      *rate.Limiter
+	perSourceLimiter             *perSourceAuthLimiter // optional per-external-source auth throttle (R185), nil when disabled
 	headerTemplates              map[string]*template.Template
 	sessionManager               *SessionManager
 	tokenCleanupStopChan         chan struct{}
@@ -160,7 +161,20 @@ type TraefikOidc struct {
 	clientSecret                 string
 	clientAuthMethod             string
 	clientAssertion              *ClientAssertionSigner
-	registrationURL              string
+	// clientSecretExpiresAt is the RFC 7591 userinfo client_secret_expires_at
+	// (unix seconds) returned at DCR registration, or 0 when the IdP
+	// grants a non-expiring secret. Guarded by metadataMu like the other
+	// DCR-installed credential fields; used by dcrRegistrationNeeded to
+	// re-register a client whose secret has lapsed (R180).
+	clientSecretExpiresAt int64
+
+	// dcrClientAssertionBuilder lazily builds a client-assertion signer
+	// from the static config's key material. Used when DCR provisions a
+	// private_key_jwt client but no signer was built at construction
+	// (because the static ClientAuthMethod was not private_key_jwt); see
+	// R162 / updateMetadataEndpoints.
+	dcrClientAssertionBuilder func() (*ClientAssertionSigner, error)
+	registrationURL           string
 	// configRevocationURL, configEndSessionURL, and configIntrospectionURL
 	// hold operator-configured endpoint overrides (Config.RevocationURL,
 	// Config.OIDCEndSessionURL, Config.IntrospectionURL). They are set once at
@@ -179,6 +193,7 @@ type TraefikOidc struct {
 	refreshGracePeriod        time.Duration
 	maxRefreshTokenAge        time.Duration
 	metadataMu                sync.RWMutex
+	dcrMu                     sync.Mutex
 	shutdownOnce              sync.Once
 	sessionInvalidationCache  CacheInterface
 	refreshResultCache        CacheInterface

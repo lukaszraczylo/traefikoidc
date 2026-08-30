@@ -460,11 +460,15 @@ func TestRefreshCoordinatorIntegration(t *testing.T) {
 			return nil, fmt.Errorf("service unavailable")
 		}
 
-		// Trigger circuit breaker
+		// Trigger circuit breaker with genuinely distinct failing operations.
+		// The 100ms dedup delay keeps a rapid same-token call from joining
+		// the previous operation, so sleep so each iteration degrades into
+		// its own refresh operation and records one real failure.
 		for i := 0; i < 4; i++ {
 			ctx := context.Background()
 			_, _ = coordinator.CoordinateRefresh(ctx,
 				fmt.Sprintf("cb_session_%d", i), "refresh_cb", failingRefresh)
+			time.Sleep(150 * time.Millisecond)
 		}
 
 		// Next request should be blocked by circuit breaker

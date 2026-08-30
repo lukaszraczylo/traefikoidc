@@ -126,10 +126,15 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `refreshGracePeriodSeconds` | `60` | Proactively refresh tokens this many seconds before expiry. |
 | `maxRefreshTokenAgeSeconds` | `21600` | Heuristic max stored refresh-token lifetime (6h). Past this, the plugin treats the RT as expired without contacting the IdP — returns 401 to AJAX, full re-auth on navigations. Set `0` to disable. Tune to match your IdP's RT TTL. |
 | `rateLimit` | `100` | Requests/sec. Min `10`. |
+| `perSourceLoginRateLimit` | `0` (off) | Throttle OIDC auth events (authorization-code callback + login initiation) per external client source, auth events per minute. Internal/loopback sources (proxies, in-cluster) are never throttled. `0` disables. |
 | `logLevel` | `info` | `debug`, `info`, `error`. |
 | `audience` | `clientID` | Custom access-token audience (Auth0 custom APIs). |
 | `strictAudienceValidation` | `false` | Reject mismatched audiences. **Set `true` in production.** |
 | `allowOpaqueTokens` / `requireTokenIntrospection` | `false` | Accept opaque access tokens via RFC 7662. |
+| `revocationURL` / `oidcEndSessionURL` / `introspectionURL` | `""` | Override the discovered revocation / end-session / introspection endpoints; take precedence when discovery omits them. |
+| `maxIdentifierLength` | `256` | Bound the post-sanitisation length of the bearer identity header (`X-Forwarded-User`). |
+| `bearerFailureWindowSeconds` | `60` | Rolling window (s) over which per-IP bearer 401s are counted toward the throttle. |
+| `bearerFailurePenaltySeconds` | `60` | Seconds an IP is kept in the 429 penalty box after the bearer failure threshold. |
 | `disableReplayDetection` | `false` | Disable JTI cache. Use Redis instead for multi-replica. |
 | `allowPrivateIPAddresses` | `false` | Permit private-IP `providerURL` (internal Keycloak, etc.). |
 | `minimalHeaders` | `false` | Reduce forwarded headers (mitigates HTTP 431). |
