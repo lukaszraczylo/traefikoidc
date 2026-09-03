@@ -235,7 +235,8 @@ SSE / WebSocket connection.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `audience` | string | `clientID` | Expected audience for access token validation |
+| `audience` | string | `clientID`, or `resource` if set | Expected audience for access token validation |
+| `resource` | string | none | RFC 8707 resource indicator, alternative to `audience` for supporting IdPs — see [docs/RFC8707.md](RFC8707.md) |
 | `strictAudienceValidation` | bool | `false` | Reject sessions with audience mismatch |
 | `allowOpaqueTokens` | bool | `false` | Enable opaque token support via RFC 7662 |
 | `requireTokenIntrospection` | bool | `false` | Require introspection for opaque tokens |
@@ -246,6 +247,16 @@ SSE / WebSocket connection.
 audience: "https://my-api.example.com"
 strictAudienceValidation: true
 ```
+
+#### RFC 8707 Resource Indicators
+
+```yaml
+resource: "https://api.example.com"
+```
+
+Alternative to `audience` for IdPs that implement [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707).
+See [docs/RFC8707.md](RFC8707.md) for exactly what request is made, why only a single
+resource is supported, and current per-provider support.
 
 #### Opaque Token Support
 

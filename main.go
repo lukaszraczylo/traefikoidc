@@ -243,8 +243,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			if config.Audience != "" {
 				return config.Audience
 			}
+			if config.Resource != "" {
+				return config.Resource
+			}
 			return config.ClientID
 		}(),
+		explicitAudience: config.Audience,
 		roleClaimName: func() string {
 			if config.RoleClaimName != "" {
 				return config.RoleClaimName
@@ -266,6 +270,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		forceHTTPS:                config.ForceHTTPS,
 		enablePKCE:                config.EnablePKCE,
 		extraAuthParams:           config.ExtraAuthParams,
+		resource:                  config.Resource,
 		overrideScopes:            config.OverrideScopes,
 		strictAudienceValidation:  config.StrictAudienceValidation,
 		allowOpaqueTokens:         config.AllowOpaqueTokens,
@@ -384,6 +389,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		t.logger.Infof("Custom audience configured: %s", config.Audience)
 	} else {
 		t.logger.Debugf("No custom audience specified, using clientID as audience: %s", t.clientID)
+	}
+
+	// Log RFC 8707 resource indicator configuration
+	if t.resource != "" {
+		t.logger.Infof("RFC 8707 resource indicator configured: %s (effective audience: %s)", t.resource, t.audience)
 	}
 
 	// Bearer-auth startup validation. The bearer path is M2M-only and demands

@@ -407,7 +407,12 @@ func TestValidateURLEdgeCasesComprehensive(t *testing.T) {
 func TestBuildAuthURLAudienceParameter(t *testing.T) {
 	t.Run("audience added when different from client_id", func(t *testing.T) {
 		middleware := createMinimalMiddleware()
+		// buildAuthURL sources the outbound `audience` param from
+		// explicitAudience (an explicitly configured Config.Audience), not
+		// from audience (the effective validation audience, which can also
+		// carry a Resource-derived default that must never reach the wire).
 		middleware.audience = "https://api.example.com"
+		middleware.explicitAudience = "https://api.example.com"
 
 		authURL := middleware.buildAuthURL(
 			"https://app.com/callback",
@@ -422,6 +427,7 @@ func TestBuildAuthURLAudienceParameter(t *testing.T) {
 	t.Run("audience not added when empty", func(t *testing.T) {
 		middleware := createMinimalMiddleware()
 		middleware.audience = ""
+		middleware.explicitAudience = ""
 
 		authURL := middleware.buildAuthURL(
 			"https://app.com/callback",
@@ -436,6 +442,7 @@ func TestBuildAuthURLAudienceParameter(t *testing.T) {
 	t.Run("audience not added when equal to client_id", func(t *testing.T) {
 		middleware := createMinimalMiddleware()
 		middleware.audience = middleware.clientID
+		middleware.explicitAudience = middleware.clientID
 
 		authURL := middleware.buildAuthURL(
 			"https://app.com/callback",

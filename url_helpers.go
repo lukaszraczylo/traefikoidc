@@ -71,13 +71,21 @@ func (t *TraefikOidc) buildAuthURL(redirectURL, state, nonce, codeChallenge stri
 	params.Set("state", state)
 	params.Set("nonce", nonce)
 
-	// Add audience parameter for custom API audiences (e.g., Auth0 APIs)
-	// This allows access tokens to have the correct audience claim
-	// Only add if audience is configured and different from client_id
-	// ID tokens will always have aud=client_id per OIDC spec
-	if t.audience != "" && t.audience != t.clientID {
-		params.Set("audience", t.audience)
-		t.logger.Debugf("Adding audience parameter to authorize URL: %s", t.audience)
+	// Non-standard `audience` param for custom API audiences (e.g. Auth0).
+	// Keyed on explicitAudience, not audience — see TraefikOidc.explicitAudience.
+	// Only add if configured and different from client_id; ID tokens always
+	// have aud=client_id per OIDC spec.
+	if t.explicitAudience != "" && t.explicitAudience != t.clientID {
+		params.Set("audience", t.explicitAudience)
+		t.logger.Debugf("Adding audience parameter to authorize URL: %s", t.explicitAudience)
+	}
+
+	// RFC 8707 resource indicator — see Config.Resource. Runs before
+	// extraAuthParams so an operator-configured "resource" key there cannot
+	// override or duplicate it.
+	if t.resource != "" {
+		params.Set("resource", t.resource)
+		t.logger.Debugf("Adding resource parameter to authorize URL: %s", t.resource)
 	}
 
 	if t.enablePKCE && codeChallenge != "" {

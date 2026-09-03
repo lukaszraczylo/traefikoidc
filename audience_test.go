@@ -288,6 +288,10 @@ func TestAuth0Scenario1WithCustomAudience(t *testing.T) {
 
 	customAudience := "https://my-api.example.com"
 	ts.tOidc.audience = customAudience
+	// buildAuthURL sources the outbound `audience` param from
+	// explicitAudience, not audience (see url_helpers.go); an explicitly
+	// configured custom audience must set both to behave like production.
+	ts.tOidc.explicitAudience = customAudience
 
 	// Create ID token with aud = client_id (OIDC standard)
 	idToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{

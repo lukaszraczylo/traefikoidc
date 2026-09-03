@@ -64,9 +64,19 @@ type Config struct {
 	// {{.Claims.employee_id}} / {{get .Claims "employee_id"}}. Applies to both
 	// template validation and the runtime get helper. Built-in claims (email,
 	// groups, roles, realm_access, ...) need not be listed.
-	AllowedClaims             []string          `json:"allowedClaims,omitempty"`
-	ExtraAuthParams           map[string]string `json:"extraAuthParams,omitempty"`
-	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
+	AllowedClaims   []string          `json:"allowedClaims,omitempty"`
+	ExtraAuthParams map[string]string `json:"extraAuthParams,omitempty"`
+	// Resource declares an RFC 8707 resource indicator: an alternative to
+	// Audience for IdPs that support it. strictAudienceValidation applies
+	// the same way regardless of which of the two is set; only the request
+	// made to the IdP differs. Only a single resource is supported. See
+	// docs/RFC8707.md for exact request behavior, why multiple resources
+	// aren't, and current provider support. When Resource is set and
+	// Audience is unset, Audience defaults to Resource for access-token
+	// validation; this does not affect what is sent on the wire — see
+	// TraefikOidc.explicitAudience.
+	Resource                  string `json:"resource,omitempty"`
+	RefreshGracePeriodSeconds int    `json:"refreshGracePeriodSeconds"`
 	// MaxRefreshTokenAgeSeconds is a heuristic upper bound on the lifetime of
 	// a stored refresh token. Once the token has been in the session longer
 	// than this, requests treat it as expired up-front - returning 401 to
@@ -75,30 +85,30 @@ type Config struct {
 	// IdPs do not expose RT TTL on the wire, so this is intentionally a
 	// conservative heuristic; tune to match your provider configuration.
 	// Default 21600 (6h). Set to 0 to disable the check.
-	MaxRefreshTokenAgeSeconds int                              `json:"maxRefreshTokenAgeSeconds"`
-	SessionMaxAge             int                              `json:"sessionMaxAge"`
-	RateLimit                 int                              `json:"rateLimit"`
-	OverrideScopes            bool                             `json:"overrideScopes"`
-	DisableReplayDetection    bool                             `json:"disableReplayDetection,omitempty"`
-	RequireTokenIntrospection bool                             `json:"requireTokenIntrospection,omitempty"`
-	AllowOpaqueTokens         bool                             `json:"allowOpaqueTokens,omitempty"`
-	StrictAudienceValidation  bool                             `json:"strictAudienceValidation,omitempty"`
-	EnablePKCE                bool                             `json:"enablePKCE"`
-	ForceHTTPS                bool                             `json:"forceHTTPS"`
-	AllowPrivateIPAddresses   bool                             `json:"allowPrivateIPAddresses,omitempty"`
-	MinimalHeaders            bool                             `json:"minimalHeaders,omitempty"`
-	StripAuthCookies          bool                             `json:"stripAuthCookies,omitempty"`
+	MaxRefreshTokenAgeSeconds int  `json:"maxRefreshTokenAgeSeconds"`
+	SessionMaxAge             int  `json:"sessionMaxAge"`
+	RateLimit                 int  `json:"rateLimit"`
+	OverrideScopes            bool `json:"overrideScopes"`
+	DisableReplayDetection    bool `json:"disableReplayDetection,omitempty"`
+	RequireTokenIntrospection bool `json:"requireTokenIntrospection,omitempty"`
+	AllowOpaqueTokens         bool `json:"allowOpaqueTokens,omitempty"`
+	StrictAudienceValidation  bool `json:"strictAudienceValidation,omitempty"`
+	EnablePKCE                bool `json:"enablePKCE"`
+	ForceHTTPS                bool `json:"forceHTTPS"`
+	AllowPrivateIPAddresses   bool `json:"allowPrivateIPAddresses,omitempty"`
+	MinimalHeaders            bool `json:"minimalHeaders,omitempty"`
+	StripAuthCookies          bool `json:"stripAuthCookies,omitempty"`
 	// CookiePath restricts session cookies to a specific path prefix instead of "/".
 	// When traefikoidc protects some but not all paths on a domain, set this to the
 	// middleware's path prefix (e.g. "/app-protegido") so the browser does not send
 	// the OIDC session cookies to unprotected paths — preventing "Request Header
 	// Or Cookie Too Large" (431) errors on those paths.
 	// Default "/" (all paths, current behaviour).
-	CookiePath                string                           `json:"cookiePath,omitempty"`
-	EnableBackchannelLogout   bool                             `json:"enableBackchannelLogout,omitempty"`
-	EnableFrontchannelLogout  bool                             `json:"enableFrontchannelLogout,omitempty"`
-	BackchannelLogoutURL      string                           `json:"backchannelLogoutURL,omitempty"`
-	FrontchannelLogoutURL     string                           `json:"frontchannelLogoutURL,omitempty"`
+	CookiePath               string `json:"cookiePath,omitempty"`
+	EnableBackchannelLogout  bool   `json:"enableBackchannelLogout,omitempty"`
+	EnableFrontchannelLogout bool   `json:"enableFrontchannelLogout,omitempty"`
+	BackchannelLogoutURL     string `json:"backchannelLogoutURL,omitempty"`
+	FrontchannelLogoutURL    string `json:"frontchannelLogoutURL,omitempty"`
 	// CACertPath is an optional filesystem path to a PEM-encoded CA bundle used
 	// to verify the OIDC provider's TLS certificate. Use this when the provider
 	// is signed by an internal/private CA that is not in the system trust store.
@@ -541,6 +551,38 @@ func (c *Config) Validate() error {
 		// Validate that audience doesn't contain obvious injection patterns
 		if strings.ContainsAny(c.Audience, "\n\r\t\x00") {
 			return fmt.Errorf("audience contains invalid characters")
+		}
+	}
+
+	// Validate the RFC 8707 resource indicator if specified
+	if c.Resource != "" {
+		resource := c.Resource
+		if len(resource) > 256 {
+			return fmt.Errorf("resource %q must not exceed 256 characters", resource)
+		}
+		if strings.Contains(resource, "*") {
+			return fmt.Errorf("resource %q must not contain wildcards", resource)
+		}
+		if strings.ContainsAny(resource, "\n\r\t\x00") {
+			return fmt.Errorf("resource %q contains invalid characters", resource)
+		}
+
+		// RFC 8707 §2: the resource parameter MUST NOT include a fragment.
+		if strings.Contains(resource, "#") {
+			return fmt.Errorf("resource %q must not contain a fragment", resource)
+		}
+
+		u, err := url.Parse(resource)
+		if err != nil || !u.IsAbs() {
+			return fmt.Errorf("resource %q must be an absolute URI", resource)
+		}
+
+		// Enforce HTTPS (loopback HTTP permitted) for http/https resources;
+		// other absolute schemes (e.g. urn:) are accepted as-is.
+		if u.Scheme == "http" || u.Scheme == "https" {
+			if !isValidSecureURL(resource) {
+				return fmt.Errorf("resource %q must be a valid HTTPS URL", resource)
+			}
 		}
 	}
 

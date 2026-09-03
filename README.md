@@ -127,7 +127,8 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `maxRefreshTokenAgeSeconds` | `21600` | Heuristic max stored refresh-token lifetime (6h). Past this, the plugin treats the RT as expired without contacting the IdP — returns 401 to AJAX, full re-auth on navigations. Set `0` to disable. Tune to match your IdP's RT TTL. |
 | `rateLimit` | `100` | Requests/sec. Min `10`. |
 | `logLevel` | `info` | `debug`, `info`, `error`. |
-| `audience` | `clientID` | Custom access-token audience (Auth0 custom APIs). |
+| `audience` | `clientID`, or `resource` if set | Custom access-token audience (Auth0 custom APIs). |
+| `resource` | none | RFC 8707 resource indicator, alternative to `audience` for supporting IdPs (see [docs/RFC8707.md](docs/RFC8707.md)). |
 | `strictAudienceValidation` | `false` | Reject mismatched audiences. **Set `true` in production.** |
 | `allowOpaqueTokens` / `requireTokenIntrospection` | `false` | Accept opaque access tokens via RFC 7662. |
 | `disableReplayDetection` | `false` | Disable JTI cache. Use Redis instead for multi-replica. |
