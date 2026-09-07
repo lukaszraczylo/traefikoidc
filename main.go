@@ -403,9 +403,9 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	// scope for M2M), trusting email is a spoofing vector for federated IdPs.
 	// See spec §7.9 / §13.
 	if config.EnableBearerAuth {
-		if config.Audience == "" {
+		if config.Audience == "" && config.Resource == "" {
 			cancelFunc()
-			return nil, fmt.Errorf("EnableBearerAuth=true requires Audience to be set explicitly (cannot default to clientID — that path accepts ID tokens)")
+			return nil, fmt.Errorf("EnableBearerAuth=true requires Audience or Resource to be set explicitly (cannot default to clientID — that path accepts ID tokens)")
 		}
 		if t.bearerIdentifierClaim == "email" {
 			cancelFunc()
