@@ -4,37 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"sync"
 	"testing"
 	"time"
 )
-
-// mapCache is a minimal thread-safe CacheInterface for seeding caches in
-// bearer-invalidation tests.
-type mapCache struct {
-	mu sync.Mutex
-	m  map[string]any
-}
-
-func newMapCache() *mapCache { return &mapCache{m: map[string]any{}} }
-func (c *mapCache) Set(key string, value any, ttl time.Duration) {
-	c.mu.Lock()
-	c.m[key] = value
-	c.mu.Unlock()
-}
-func (c *mapCache) Get(key string) (any, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	v, ok := c.m[key]
-	return v, ok
-}
-func (c *mapCache) Delete(key string)        { c.mu.Lock(); delete(c.m, key); c.mu.Unlock() }
-func (c *mapCache) SetMaxSize(size int)      {}
-func (c *mapCache) Size() int                { return 0 }
-func (c *mapCache) Clear()                   {}
-func (c *mapCache) Cleanup()                 {}
-func (c *mapCache) Close()                   {}
-func (c *mapCache) GetStats() map[string]any { return nil }
 
 // TestBearer_LogoutInvalidatedSubjectRejected guards the R146 fix in
 // bearer_auth.go buildPrincipalFromBearerToken: IdP-initiated

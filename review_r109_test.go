@@ -2,12 +2,8 @@ package traefikoidc
 
 import (
 	"context"
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -17,21 +13,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
-
-// signRSAJWTForTest builds an RS256-signed JWT with the given kid and claims,
-// suitable for exercising real signature verification (unlike makeJWTForTest
-// which uses alg=none).
-func signRSAJWTForTest(t *testing.T, key *rsa.PrivateKey, kid string, claims map[string]any) string {
-	t.Helper()
-	header, _ := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT", "kid": kid})
-	payload, _ := json.Marshal(claims)
-	signing := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
-	hasher := sha256.New()
-	hasher.Write([]byte(signing))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, hasher.Sum(nil))
-	require.NoError(t, err)
-	return signing + "." + base64.RawURLEncoding.EncodeToString(sig)
-}
 
 // TestVerifyToken_RefreshOnSignatureFailureAfterRotation regresses the key-rotation
 // availability gap: when an IdP rotates its signing key while REUSING the same

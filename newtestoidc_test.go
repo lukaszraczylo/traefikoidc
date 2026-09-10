@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"net/http"
 	"testing"
+	"text/template"
 	"time"
 )
 
@@ -63,3 +64,16 @@ func (s *stubIntrospectionCache) Clear()                   {}
 func (s *stubIntrospectionCache) Cleanup()                 {}
 func (s *stubIntrospectionCache) Close()                   {}
 func (s *stubIntrospectionCache) GetStats() map[string]any { return nil }
+
+// mustTemplate parses src as a header template or panics. Moved here from
+// review_r73_test.go (FIX-41): review_r103_test.go also uses it, so a
+// helper declared inside one round file was a hidden cross-file
+// dependency - deleting or renaming review_r73_test.go would have broken
+// review_r103_test.go.
+func mustTemplate(src string) *template.Template {
+	tmpl, err := template.New("h").Parse(src)
+	if err != nil {
+		panic(err)
+	}
+	return tmpl
+}

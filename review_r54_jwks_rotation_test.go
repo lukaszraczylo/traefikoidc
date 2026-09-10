@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -113,16 +111,4 @@ func TestJWKSRotationBoundRefetch(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 	require.Equal(int32(2), atomic.LoadInt32(&fetches), "within the cooldown window a new bogus kid costs exactly one ungated live fetch")
-}
-
-func writeJWKS(t *testing.T, w http.ResponseWriter, kid string, pub *rsa.PublicKey) {
-	t.Helper()
-	jwk := JWK{
-		Kty: "RSA",
-		Kid: kid,
-		Alg: "RS256",
-		N:   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
-		E:   base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}),
-	}
-	_ = json.NewEncoder(w).Encode(JWKSet{Keys: []JWK{jwk}})
 }

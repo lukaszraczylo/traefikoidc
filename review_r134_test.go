@@ -80,17 +80,6 @@ func TestRevokeTokenWithProvider_NoDataRaceWithDCRCredentialWrite(t *testing.T) 
 	}
 }
 
-func r134ValidConfig() *Config {
-	return &Config{
-		ProviderURL:          "https://provider.example.com",
-		CallbackURL:          "/callback",
-		ClientID:             "test-client",
-		ClientSecret:         "test-secret",
-		SessionEncryptionKey: "0123456789abcdef0123456789abcdef",
-		RateLimit:            CreateConfig().RateLimit,
-	}
-}
-
 func TestValidate_LogoutURL_MustBeBarePath(t *testing.T) {
 	cases := []struct {
 		name      string

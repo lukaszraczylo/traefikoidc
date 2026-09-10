@@ -1,7 +1,6 @@
 package traefikoidc
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -72,12 +71,6 @@ func (r *recordingCache) Clear()                   {}
 func (r *recordingCache) Cleanup()                 {}
 func (r *recordingCache) Close()                   {}
 func (r *recordingCache) GetStats() map[string]any { return nil }
-
-func makeJWTForTest(claims map[string]any) string {
-	h, _ := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
-	p, _ := json.Marshal(claims)
-	return base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(p) + ".c2ln"
-}
 
 // TestRevokeToken_BlacklistDurationCoversTokenExp regresses RevokeToken
 // hardcoding a 24h blacklist TTL and ignoring the token's exp claim. A

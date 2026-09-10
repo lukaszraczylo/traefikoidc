@@ -60,17 +60,14 @@ func TestBackchannelLogout_RejectsReplayedJTI(t *testing.T) {
 	x := base64.RawURLEncoding.EncodeToString(priv.PublicKey.X.Bytes())
 	y := base64.RawURLEncoding.EncodeToString(priv.PublicKey.Y.Bytes())
 
-	oidc := &TraefikOidc{
-		logger:                   NewLogger("error"),
-		enableBackchannelLogout:  true,
-		backchannelLogoutPath:    "/backchannel-logout",
-		sessionInvalidationCache: &mockCacheInterface{data: map[string]interface{}{}},
-		clientID:                 "test-client",
-		issuerURL:                "https://provider.example.com",
-		jwkCache: &replayJWKCache{jwks: &JWKSet{Keys: []JWK{{
+	oidc := newTestOIDC(t, func(o *TraefikOidc) {
+		o.enableBackchannelLogout = true
+		o.backchannelLogoutPath = "/backchannel-logout"
+		o.sessionInvalidationCache = &mockCacheInterface{data: map[string]interface{}{}}
+		o.jwkCache = &replayJWKCache{jwks: &JWKSet{Keys: []JWK{{
 			Kty: "EC", Crv: "P-256", X: x, Y: y, Kid: "test-key-1", Use: "sig", Alg: "ES256",
-		}}}},
-	}
+		}}}}
+	})
 
 	token := func() string {
 		h, _ := json.Marshal(map[string]interface{}{"alg": "ES256", "typ": "logout+jwt", "kid": "test-key-1"})
@@ -154,14 +151,6 @@ func TestServeHTTP_ExpiredAjaxReturns401(t *testing.T) {
 }
 
 // ---- missing claim renders no '<no value>' ----
-
-func mustTemplate(src string) *template.Template {
-	tmpl, err := template.New("h").Parse(src)
-	if err != nil {
-		panic(err)
-	}
-	return tmpl
-}
 
 // TestHeaderTemplate_MissingClaimNoNoValue regresses optional claims
 // rendering literal "<no value>" into a downstream header when the

@@ -9,32 +9,6 @@ import (
 	"time"
 )
 
-// serializingCache simulates a UniversalCache backed by a serializing
-// store (e.g. Redis): Set JSON-round-trips the value, so Get returns a
-// generic map, never the original concrete type. This is exactly what
-// production sees on the distributed path.
-type serializingCache struct {
-	m map[string]interface{}
-}
-
-func (c *serializingCache) Set(key string, value any, ttl time.Duration) {
-	b, _ := json.Marshal(value)
-	var v interface{}
-	_ = json.Unmarshal(b, &v)
-	c.m[key] = v
-}
-func (c *serializingCache) Get(key string) (any, bool) {
-	v, ok := c.m[key]
-	return v, ok
-}
-func (c *serializingCache) Delete(key string)        { delete(c.m, key) }
-func (c *serializingCache) SetMaxSize(int)           {}
-func (c *serializingCache) Size() int                { return len(c.m) }
-func (c *serializingCache) Clear()                   { c.m = map[string]interface{}{} }
-func (c *serializingCache) Cleanup()                 {}
-func (c *serializingCache) Close()                   {}
-func (c *serializingCache) GetStats() map[string]any { return nil }
-
 // TestR159_RefreshResultDedupAcrossSerializingCache guards the
 // lookupCachedRefreshResult cross-backend decode (token_manager.go). The
 // refresh-result dedup stored a *TokenResponse but the serializing
