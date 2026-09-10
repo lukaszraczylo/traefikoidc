@@ -2,7 +2,6 @@ package traefikoidc
 
 import (
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 )
@@ -160,82 +159,4 @@ func BenchmarkLRUStrategy_EstimateSize(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		strategy.EstimateSize(item)
 	}
-}
-
-// =============================================================================
-// SHARDED CACHE BENCHMARKS
-// =============================================================================
-
-func BenchmarkShardedCache(b *testing.B) {
-	b.Run("Set", func(b *testing.B) {
-		cache := NewShardedCache(64, 100000)
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			cache.Set(fmt.Sprintf("key-%d", i), i, 5*time.Minute)
-		}
-	})
-
-	b.Run("Get", func(b *testing.B) {
-		cache := NewShardedCache(64, 100000)
-		for i := 0; i < 10000; i++ {
-			cache.Set(fmt.Sprintf("key-%d", i), i, 5*time.Minute)
-		}
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			cache.Get(fmt.Sprintf("key-%d", i%10000))
-		}
-	})
-
-	b.Run("ParallelSetGet", func(b *testing.B) {
-		cache := NewShardedCache(64, 100000)
-		b.RunParallel(func(pb *testing.PB) {
-			i := 0
-			for pb.Next() {
-				key := fmt.Sprintf("key-%d", i)
-				cache.Set(key, i, 5*time.Minute)
-				cache.Get(key)
-				i++
-			}
-		})
-	})
-}
-
-// BenchmarkShardedVsGlobalMutex compares sharded cache with global mutex approach
-func BenchmarkShardedVsGlobalMutex(b *testing.B) {
-	b.Run("ShardedCache64", func(b *testing.B) {
-		cache := NewShardedCache(64, 100000)
-		b.RunParallel(func(pb *testing.PB) {
-			i := 0
-			for pb.Next() {
-				key := fmt.Sprintf("jti-%d", i%10000)
-				if !cache.Exists(key) {
-					cache.Set(key, true, 5*time.Minute)
-				}
-				i++
-			}
-		})
-	})
-
-	b.Run("GlobalMutexCache", func(b *testing.B) {
-		var mu sync.RWMutex
-		data := make(map[string]bool)
-
-		b.RunParallel(func(pb *testing.PB) {
-			i := 0
-			for pb.Next() {
-				key := fmt.Sprintf("jti-%d", i%10000)
-
-				mu.RLock()
-				_, exists := data[key]
-				mu.RUnlock()
-
-				if !exists {
-					mu.Lock()
-					data[key] = true
-					mu.Unlock()
-				}
-				i++
-			}
-		})
-	})
 }

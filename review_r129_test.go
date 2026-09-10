@@ -96,30 +96,3 @@ func TestAzureRSUnverifiableToken_ExpiredRejected(t *testing.T) {
 		t.Fatalf("unverifiable Azure access token with missing exp must not authenticate")
 	}
 }
-
-// TestShardedCache_LazyRemovePreservesFreshCovers the Get lazy-removal path of
-// ShardedCache (the replay/JTI cache used by jwt.go). An expired entry is
-// removed on read, but only if it is still the same entry: the delete is
-// conditional under the shard lock, so a concurrent Set that refreshed the
-// key is never clobbered. Without this a freshly-recorded replay JTI could
-// be deleted, allowing a duplicate token to pass (R129).
-// The exact interleave is racy and can't be forced deterministically, so
-// this verifies the expired-removal branch runs and that a value injected
-// after expiry is returned (not deleted).
-func TestShardedCache_LazyRemovePreservesFresh(t *testing.T) {
-	c := NewShardedCache(1, 100)
-	c.Set("k", "old", 1*time.Nanosecond) // immediately expired
-	time.Sleep(time.Millisecond)
-
-	if _, ok := c.Get("k"); ok {
-		t.Fatalf("expired entry should be lazily removed on Get")
-	}
-
-	// Re-insert a fresh value after expiry; it must be retrievable and not
-	// swept away by any lingering expired-entry delete.
-	c.Set("k", "fresh", time.Hour)
-	v, ok := c.Get("k")
-	if !ok || v != "fresh" {
-		t.Fatalf("fresh value must survive lazy removal: got ok=%v v=%v", ok, v)
-	}
-}

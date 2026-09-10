@@ -1,7 +1,6 @@
 package traefikoidc
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -74,34 +73,4 @@ func TestCacheVerifiedToken_ExpiredNotCached(t *testing.T) {
 	}
 
 	ResetUniversalCacheManagerForTesting()
-}
-
-// TestShardedCache_SetOverwriteNoEvict covers the Set overwrite fix. An
-// in-place update of an existing key needs no free slot, so it must not
-// evict the shard's oldest (still-valid) entry. Fail-on-old:
-// ShardedCache.Set evicted whenever the shard was at capacity, so
-// overwriting a key at capacity dropped an unrelated oldest valid entry
-// (sharded_cache.go Set; the R57 hazard on the replay path).
-func TestShardedCache_SetOverwriteNoEvict(t *testing.T) {
-	cache := NewShardedCache(1, 100) // maxPerShard = 100, single shard
-	for i := 0; i < 100; i++ {
-		cache.Set(fmt.Sprintf("key-%d", i), i, time.Hour)
-	}
-	if got := cache.Size(); got != 100 {
-		t.Fatalf("setup: want 100 entries, got %d", got)
-	}
-
-	// Overwrite the NEWEST key (not the eviction target). On the old
-	// code this triggered an eviction that dropped the OLDEST valid
-	// entry (key-0) from the shard.
-	cache.Set("key-99", "overwritten", time.Hour)
-	if got := cache.Size(); got != 100 {
-		t.Fatalf("overwriting existing key must not shrink shard: want 100, got %d", got)
-	}
-	if _, ok := cache.Get("key-0"); !ok {
-		t.Fatal("overwrite dropped unrelated oldest entry key-0")
-	}
-	if v, ok := cache.Get("key-99"); !ok || v != "overwritten" {
-		t.Fatalf("key-99 should be overwritten, got %v ok=%v", v, ok)
-	}
 }
