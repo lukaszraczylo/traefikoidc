@@ -620,17 +620,33 @@ var singleUseRetryableErrors = []string{
 // whose body happened to mention "connection refused" was retried, re-
 // sending a consumed code or a rotated refresh token (FIX-14).
 //
-// Only a genuine dial/connect failure -- a *net.OpError, which is what
-// Go's net package returns before any request reaches the wire -- can
-// prove the request was never sent, so the fragment match is scoped to it.
+// A *net.OpError is NOT proof by itself: Go's net package uses that same
+// type for a "dial" failure before any request reaches the wire, but also
+// for a "read" or "write" failure AFTER the connection is already
+// established, when the request may already have reached the IdP. Only Op
+// "dial" (a failed connect) or "proxyconnect" (net/http's failed CONNECT to
+// an HTTP proxy) prove the request never went out, so the fragment match is
+// scoped to those two.
 func isNeverSentError(err error) bool {
-	var httpErr *HTTPError
-	if errors.As(err, &httpErr) {
+	// Plain type assertion, not errors.As: under yaegi v0.16.1 (the
+	// interpreter Traefik uses to load this plugin, pinned in Makefile:9),
+	// errors.As(err, &target) panics with "errors: *target must be
+	// interface or implement error" whenever target's pointed-to type
+	// (*HTTPError here) is itself interpreted, regardless of err's own
+	// concrete type. ExecuteSingleUseWithContext calls this on every fn()
+	// error, on the default-on authorization-code-exchange/refresh path,
+	// so that panic reaches production (FIX-14). The production error
+	// reaches here unwrapped (helpers.go returns *HTTPError directly), so
+	// a type assertion is sufficient and needs no Unwrap chain walk.
+	if _, ok := err.(*HTTPError); ok {
 		return false
 	}
 
+	// errors.As against the compiled *net.OpError type is yaegi-safe: the
+	// panic above is specific to an interpreted target type, and
+	// *net.OpError is a native stdlib type.
 	var opErr *net.OpError
-	if errors.As(err, &opErr) {
+	if errors.As(err, &opErr) && (opErr.Op == "dial" || opErr.Op == "proxyconnect") {
 		return isSubstringMatch(opErr.Error(), singleUseRetryableErrors)
 	}
 

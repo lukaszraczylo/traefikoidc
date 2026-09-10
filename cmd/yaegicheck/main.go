@@ -10,20 +10,22 @@
 // time. CreateConfig + New additionally exercise the instantiation path
 // (session manager, cookie codec, caches, key derivation) under the interpreter.
 //
-// Beyond the load/instantiate path, this also drives CircuitBreaker directly
-// (FIX-09). yaegi v0.16.1 panics on errors.As(err, &target) whenever
-// target's pointed-to type is itself interpreted ("errors: *target must be
-// interface or implement error"), a case native `go test`/`go build` cannot
-// see because there the target type is compiled, not interpreted.
-// CircuitBreaker.ExecuteWithContext ran such a check on every fn() error, on
-// the default-on token-exchange/refresh path, so this must run under the
-// real interpreter to catch it.
+// Beyond the load/instantiate path, this also drives CircuitBreaker and
+// RetryExecutor directly (FIX-09, FIX-14). yaegi v0.16.1 panics on
+// errors.As(err, &target) whenever target's pointed-to type is itself
+// interpreted ("errors: *target must be interface or implement error"), a
+// case native `go test`/`go build` cannot see because there the target type
+// is compiled, not interpreted. CircuitBreaker.ExecuteWithContext and
+// RetryExecutor.ExecuteSingleUseWithContext both ran such a check on every
+// fn() error, on the default-on token-exchange/refresh path, so this must
+// run under the real interpreter to catch it.
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -59,6 +61,8 @@ func main() {
 	runCheck("fix09-halfopen-400-stays-halfopen", checkFix09HalfOpenTerminalStaysHalfOpen)
 	runCheck("fix09-closed-400-stays-closed", checkFix09ClosedTerminalStaysClosed)
 	runCheck("fix09-429-reopens", checkFix09RateLimitReopens)
+	runCheck("fix14-httperror-once", checkFix14HTTPErrorNeverRetried)
+	runCheck("fix14-real-dial-retried", checkFix14RealDialRetried)
 
 	fmt.Println("OK: all yaegi regression checks passed")
 }
@@ -184,4 +188,73 @@ func checkFix09RateLimitReopens() (string, error) {
 		return "", fmt.Errorf("a 429 must still reopen a half-open circuit, got %s", circuitStateName(cb.GetState()))
 	}
 	return "", nil
+}
+
+// checkFix14HTTPErrorNeverRetried pins FIX-14: a *HTTPError proves a
+// response was received, so ExecuteSingleUseWithContext must never retry
+// it even when its Message (up to 10 KiB of a real IdP response body, see
+// helpers.go) happens to contain a singleUseRetryableErrors fragment such
+// as "connection refused".
+func checkFix14HTTPErrorNeverRetried() (string, error) {
+	re := oidc.NewRetryExecutor(oidc.RetryConfig{
+		MaxAttempts:   3,
+		InitialDelay:  1 * time.Millisecond,
+		MaxDelay:      1 * time.Millisecond,
+		BackoffFactor: 1,
+	}, oidc.NewLogger("error"))
+
+	calls := 0
+	err := re.ExecuteSingleUseWithContext(context.Background(), func() error {
+		calls++
+		return &oidc.HTTPError{
+			StatusCode: 500,
+			Message:    "token endpoint returned status 500: {\"error\":\"server_error\",\"detail\":\"upstream: connection refused\"}",
+		}
+	})
+	if err == nil {
+		return "", fmt.Errorf("expected the HTTPError to be returned")
+	}
+	if calls != 1 {
+		return "", fmt.Errorf("fn called %d times, want 1", calls)
+	}
+	return fmt.Sprintf(" calls=%d", calls), nil
+}
+
+// checkFix14RealDialRetried guards against over-broadening FIX-14: a real
+// client.Do dial failure (net/http wraps it as *net.OpError, reached via
+// errors.As unwrapping any %w chain) proves the request never reached the
+// server and must still be retried.
+func checkFix14RealDialRetried() (string, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("setup: %w", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	re := oidc.NewRetryExecutor(oidc.RetryConfig{
+		MaxAttempts:   3,
+		InitialDelay:  1 * time.Millisecond,
+		MaxDelay:      1 * time.Millisecond,
+		BackoffFactor: 1,
+	}, oidc.NewLogger("error"))
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	calls := 0
+	execErr := re.ExecuteSingleUseWithContext(context.Background(), func() error {
+		calls++
+		resp, derr := client.Get("http://" + addr + "/")
+		if derr != nil {
+			return fmt.Errorf("token endpoint request failed: %w", derr)
+		}
+		resp.Body.Close()
+		return nil
+	})
+	if execErr == nil {
+		return "", fmt.Errorf("expected the dial failure to be returned after exhausting retries")
+	}
+	if calls != 3 {
+		return "", fmt.Errorf("fn called %d times, want 3", calls)
+	}
+	return fmt.Sprintf(" calls=%d", calls), nil
 }

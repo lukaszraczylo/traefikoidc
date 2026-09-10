@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"syscall"
 	"testing"
 )
 
@@ -71,5 +72,33 @@ func TestExecuteSingleUseWithContextStillRetriesRealDialError(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("fn called %d times, want 2: a real dial error must still be retried", calls)
+	}
+}
+
+// TestExecuteSingleUseWithContextNeverRetriesPostSendOpError pins FIX-14's
+// minor finding: isNeverSentError must match a *net.OpError only for Op
+// "dial" or "proxyconnect" (proof the request never reached the far end).
+// A "read"/"write" OpError happens after the connection is already
+// established, when the single-use request may already have reached the
+// IdP, and must not be retried.
+func TestExecuteSingleUseWithContextNeverRetriesPostSendOpError(t *testing.T) {
+	re := NewRetryExecutor(RetryConfig{
+		MaxAttempts:   3,
+		InitialDelay:  1,
+		MaxDelay:      1,
+		BackoffFactor: 1,
+	}, NewLogger("error"))
+
+	calls := 0
+	err := re.ExecuteSingleUseWithContext(context.Background(), func() error {
+		calls++
+		return &net.OpError{Op: "read", Net: "tcp", Err: syscall.EHOSTUNREACH}
+	})
+
+	if err == nil {
+		t.Fatal("expected the OpError to be returned")
+	}
+	if calls != 1 {
+		t.Fatalf("fn called %d times, want 1: a post-send (read/write) OpError must not be retried for a single-use operation", calls)
 	}
 }
