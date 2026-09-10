@@ -208,18 +208,22 @@ also revokes the session's tokens.
    instance rejects them immediately.
 2. If `revocationURL` is set or discovered, the plugin also revokes the
    access token and the refresh token at the provider (RFC 7009). Each
-   revocation call has a 3-second timeout, so a slow or unreachable provider
-   cannot delay the logout redirect. A revocation failure does not stop the
-   redirect; it logs at error level. Deployments with no revocation endpoint
-   log nothing for this step.
-3. The plugin redirects to `oidcEndSessionURL` (RP-initiated logout) when
-   set or discovered, or to `postLogoutRedirectURI` otherwise.
-4. When `oidcEndSessionURL` is used, the plugin sends `post_logout_redirect_uri`
-   built from the origin of the redirect URI recorded at login — not from the
-   logout request's `Host` header, which a client can spoof. If no such origin
-   was recorded (for example, a logout request with no completed login),
-   `post_logout_redirect_uri` is omitted and the provider decides where to
-   send the user.
+   revocation call times out after 3 seconds. The two calls run one after
+   the other, so together they can delay the logout redirect by up to about
+   6 seconds. A revocation failure logs at error level and does not stop
+   the redirect. Deployments with no revocation endpoint log nothing for
+   this step.
+3. The plugin redirects to `oidcEndSessionURL` (RP-initiated logout) only
+   when `oidcEndSessionURL` is set or discovered and the session still
+   holds an ID token. Otherwise it redirects to `postLogoutRedirectURI`.
+4. When the plugin uses `oidcEndSessionURL`, it also sends
+   `post_logout_redirect_uri`. An absolute `postLogoutRedirectURI` value is
+   sent unchanged. A relative value, or the default `/`, is joined to the
+   origin of the redirect URI recorded at login. The plugin does not use
+   the logout request's `Host` header for this, because a client can spoof
+   it. The plugin omits the parameter only for a session created before
+   that origin was recorded. The provider then decides where to send the
+   user.
 
 ### TLS Termination at Load Balancer
 
