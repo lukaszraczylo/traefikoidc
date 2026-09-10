@@ -888,9 +888,16 @@ func TestFix36_ShutdownDeliversResultForRefreshCompletingWithinDrainCap(t *testi
 		close(shutdownDone)
 	}()
 
-	// Let Shutdown begin its bounded wait, then let the refresh finish well
-	// inside shutdownRefreshDrainTimeout.
-	time.Sleep(50 * time.Millisecond)
+	// Wait deterministically for Shutdown to have actually started (closed
+	// stopChan) before releasing the refresh, instead of a fixed sleep that
+	// could let releaseFn fire before Shutdown even begins its bounded wait —
+	// which would let this test pass even on the reverted (cancel-immediately)
+	// code, since the refresh would already be done before Shutdown ran.
+	select {
+	case <-rc.stopChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown never closed stopChan")
+	}
 	releaseFn()
 
 	select {
@@ -1004,7 +1011,15 @@ func TestFix36_CoordinateRefreshRejectedAfterShutdownStillImmediate(t *testing.T
 	}
 
 	go rc.Shutdown()
-	time.Sleep(20 * time.Millisecond) // let Shutdown close stopChan and enter its bounded wait
+	// Wait deterministically for Shutdown to close stopChan, instead of a
+	// fixed sleep: if Shutdown were scheduled late, a short sleep could let
+	// the CoordinateRefresh call below run before Shutdown even starts,
+	// which would get it wrongly accepted instead of rejected.
+	select {
+	case <-rc.stopChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown never closed stopChan")
+	}
 
 	rejectStart := time.Now()
 	var ran int32
