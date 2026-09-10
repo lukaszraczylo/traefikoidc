@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"time"
 
 	oidc "github.com/lukaszraczylo/traefikoidc"
@@ -129,6 +130,7 @@ func main() {
 	runCheck("new01-introspection-bearer-5xx-no-panic", checkNew01IntrospectionBearer5xxNoPanic)
 
 	runCheck("fix06-sse-flush-reaches-next", checkSSEFlushReachesNext)
+	runCheck("fix17-setifabsent-claims-once", checkSetIfAbsentUnderYaegi)
 	fmt.Println("OK: all yaegi regression checks passed")
 }
 
@@ -585,6 +587,109 @@ func checkSSEFlushReachesNext() (string, error) {
 	}
 	if !rec.Flushed {
 		return "", fmt.Errorf("the underlying writer was not flushed")
+	}
+	return "", nil
+}
+
+// memNXBackend is a minimal in-process CacheBackend that also implements
+// SetNX, standing in for a Redis backend. It guards FIX-17: the
+// optional-interface assertion in UniversalCache.SetIfAbsent must work
+// under yaegi, and a second claim of the same key must lose.
+type memNXBackend struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func (b *memNXBackend) Set(_ context.Context, k string, v []byte, _ time.Duration) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.data[k] = v
+	return nil
+}
+
+func (b *memNXBackend) Get(_ context.Context, k string) ([]byte, time.Duration, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	v, ok := b.data[k]
+	return v, 0, ok, nil
+}
+
+func (b *memNXBackend) Delete(_ context.Context, k string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.data[k]
+	delete(b.data, k)
+	return ok, nil
+}
+
+func (b *memNXBackend) Exists(_ context.Context, k string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.data[k]
+	return ok, nil
+}
+
+func (b *memNXBackend) Clear(_ context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.data = map[string][]byte{}
+	return nil
+}
+
+func (b *memNXBackend) GetStats() map[string]interface{} { return nil }
+func (b *memNXBackend) Close() error                     { return nil }
+func (b *memNXBackend) Ping(_ context.Context) error     { return nil }
+
+func (b *memNXBackend) SetNX(_ context.Context, k string, v []byte, _ time.Duration) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.data[k]; ok {
+		return false, nil
+	}
+	b.data[k] = v
+	return true, nil
+}
+
+// claimTwice calls SetIfAbsent twice on the same key and returns both
+// results. The first call must claim the key and the second must lose.
+func claimTwice(c *oidc.UniversalCache) (bool, bool, error) {
+	first, err := c.SetIfAbsent("yaegi-jti", true, time.Minute)
+	if err != nil {
+		return false, false, err
+	}
+	second, err := c.SetIfAbsent("yaegi-jti", true, time.Minute)
+	return first, second, err
+}
+
+// checkSetIfAbsentUnderYaegi pins FIX-17: UniversalCache.SetIfAbsent must
+// claim a key exactly once in local-only mode and through a backend that
+// implements SetNX, and must refuse a backend without SetNX instead of
+// claiming locally.
+func checkSetIfAbsentUnderYaegi() (string, error) {
+	cfg := oidc.UniversalCacheConfig{
+		Logger:          oidc.NewLogger("error"),
+		Type:            oidc.CacheTypeToken,
+		DefaultTTL:      time.Minute,
+		SkipAutoCleanup: true,
+	}
+
+	local := oidc.NewUniversalCache(cfg)
+	defer local.Close()
+	if first, second, err := claimTwice(local); err != nil || !first || second {
+		return "", fmt.Errorf("local-only: first=%v second=%v err=%v, want true false nil", first, second, err)
+	}
+
+	nx := oidc.NewUniversalCacheWithBackend(cfg, &memNXBackend{data: map[string][]byte{}})
+	defer nx.Close()
+	if first, second, err := claimTwice(nx); err != nil || !first || second {
+		return "", fmt.Errorf("SetNX backend: first=%v second=%v err=%v, want true false nil", first, second, err)
+	}
+
+	noNX := oidc.NewUniversalCacheWithBackend(cfg, failingSetBackend{})
+	defer noNX.Close()
+	claimed, err := noNX.SetIfAbsent("yaegi-jti", true, time.Minute)
+	if err == nil || claimed {
+		return "", fmt.Errorf("backend without SetNX: claimed=%v err=%v, want false and an error", claimed, err)
 	}
 	return "", nil
 }
