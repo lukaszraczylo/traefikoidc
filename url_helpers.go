@@ -4,12 +4,20 @@
 package traefikoidc
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"path"
 	"strings"
 )
+
+// ErrDiscoveredEndpointSchemeDowngrade is returned (wrapped) by
+// validateDiscoveredEndpoint when a provider served over https advertises a
+// plaintext http endpoint (R146). A named sentinel lets updateMetadataEndpoints
+// detect this specific rejection with errors.Is and escalate it beyond the
+// generic per-endpoint log line (FIX-26; see CHANGELOG.md).
+var ErrDiscoveredEndpointSchemeDowngrade = errors.New("discovered endpoint uses plaintext http while the provider is https; refusing scheme downgrade")
 
 // determineExcludedURL checks if a URL path should bypass OIDC authentication.
 // It compares the request path against configured excluded URL prefixes.
@@ -386,7 +394,7 @@ func (t *TraefikOidc) validateDiscoveredEndpoint(urlStr string, allowLoopback bo
 	// endpoint (client_secret, tokens) to plaintext HTTP would otherwise be
 	// used as-is, shipping secrets over an unauthenticated channel (R146).
 	if u.Scheme == "http" && t.providerUsesHTTPS() {
-		return fmt.Errorf("discovered endpoint uses plaintext http while the provider is https; refusing scheme downgrade")
+		return ErrDiscoveredEndpointSchemeDowngrade
 	}
 	if u.Host == "" {
 		return fmt.Errorf("missing host in URL")

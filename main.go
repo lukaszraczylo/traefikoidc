@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -617,6 +618,15 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	sanitize := func(name, raw string) string {
 		if err := t.validateDiscoveredEndpoint(raw, allowLoopback); err != nil {
 			t.logger.Errorf("Ignoring discovered %s endpoint %q: %v", name, raw, err)
+			// R146's https-pin drop gets a second, distinctly-tagged line: an
+			// operator scanning for the generic per-endpoint message above has
+			// no way to tell a scheme downgrade apart from an SSRF block or a
+			// malformed URL, and a dropped token/jwks_uri/authorization
+			// endpoint breaks every login with no other signal. There is no
+			// config override for this check (FIX-26; see CHANGELOG.md).
+			if errors.Is(err, ErrDiscoveredEndpointSchemeDowngrade) {
+				t.logger.Errorf("SECURITY: dropped the discovered %s endpoint %q: it is plaintext http while providerURL %q is https, and this check has no override; requests needing the %s endpoint will fail until the provider serves it over https", name, raw, t.providerURL, name)
+			}
 			return ""
 		}
 		return raw

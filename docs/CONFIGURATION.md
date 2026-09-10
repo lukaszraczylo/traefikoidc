@@ -302,6 +302,29 @@ strictAudienceValidation: true
 | `disableReplayDetection` | bool | `false` | Disable JTI-based replay attack detection |
 | `allowPrivateIPAddresses` | bool | `false` | Allow private IPs in provider URLs |
 
+### Discovered Endpoint Validation
+
+When `providerURL` is `https://`, the plugin drops any endpoint the
+`.well-known/openid-configuration` document advertises as plain `http://`
+(authorization, token, jwks_uri, revocation, end_session, introspection,
+registration). A dropped credential-bearing endpoint would otherwise send
+the client secret or a token over an unauthenticated channel. There is no
+configuration flag to disable this check.
+
+A dropped endpoint logs an `ERROR`-level line naming it, and a dropped
+`token`, `jwks_uri`, or `authorization` endpoint — the three logins cannot
+function without — additionally logs a `SECURITY:`-prefixed line, because a
+blank endpoint otherwise fails every login with no other signal:
+
+```
+SECURITY: dropped the discovered token endpoint "http://idp.example.com/token": it is plaintext http while providerURL "https://idp.example.com" is https, and this check has no override; requests needing the token endpoint will fail until the provider serves it over https
+```
+
+If your IdP's discovery document ever advertises an `http://` endpoint under
+an `https://` `providerURL`, fix the discovery document (for example, a
+TLS-terminating proxy in front of the IdP that does not forward
+`X-Forwarded-Proto`) rather than relying on the plugin to relax the check.
+
 ### Bearer-token (M2M) authentication
 
 Opt-in path that accepts `Authorization: Bearer <jwt>` instead of the cookie

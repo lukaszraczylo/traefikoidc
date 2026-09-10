@@ -167,6 +167,14 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
   of signing locally and failing `invalid_client` at every token exchange
   (RFC 7518 §3.3). Generate a 2048-bit-or-larger key before upgrading. No
   override exists.
+- **A discovered `http://` endpoint under an `https://` `providerURL` is now
+  dropped**, not used as-is: the plugin refuses to send a client secret or
+  token over plaintext HTTP even when the IdP's own discovery document
+  advertises it that way. A dropped `token`, `jwks_uri`, or `authorization`
+  endpoint breaks login; a `SECURITY:`-tagged log line names the endpoint.
+  See [Discovered Endpoint
+  Validation](docs/CONFIGURATION.md#discovered-endpoint-validation). No
+  override exists.
 
 ### TLS termination at a load balancer
 
