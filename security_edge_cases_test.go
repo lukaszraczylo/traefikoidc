@@ -359,24 +359,36 @@ func TestJWTReplayAttack(t *testing.T) {
 		t.Fatalf("First verification of token failed unexpectedly: %v", err)
 	}
 
-	// Replay tracking for this path lives in the shared shardedReplayCache
-	// (see verifyTokenWithOpts); the per-instance tokenBlacklist holds only
-	// external revocations and is intentionally NOT self-marked.
-	if !shardedReplayCache.Exists(replayCacheKey(tOidc.issuerURL, fixedJTI)) {
-		t.Fatalf("JTI was not recorded in the shared replay cache after first verification")
+	// FIX-17 correction: verifyTokenWithOpts (the path VerifyToken above
+	// exercises) no longer writes the JTI into the shared
+	// shardedReplayCache. That write was write-only in production -
+	// jwt.Verify's replay branch (the only reader) only runs when called
+	// with skipReplayCheck=false, and the sole production caller
+	// (VerifyJWTSignatureAndClaims) always passes true - so this test
+	// previously observed the removed write only because it also called
+	// jwt.Verify directly below with the check enabled, which is not how
+	// any production request is verified.
+	if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(tOidc.issuerURL, fixedJTI)) {
+		t.Fatalf("verifyTokenWithOpts must not write the JTI into the shared shardedReplayCache (FIX-17)")
 	}
 	if blacklisted, exists := tOidc.tokenBlacklist.Get(fixedJTI); exists && blacklisted != nil {
 		t.Errorf("per-instance tokenBlacklist must not self-record the JTI (would cause false replay after cache eviction)")
 	}
 
-	// Real replay detection still works: presenting the same token through the
-	// replay-checking path must be flagged as a replay.
+	// jwt.Verify's own replay branch (used directly, with the replay check
+	// enabled - covering the ~15 existing tests and callers that exercise
+	// it this way) still detects a replay on its own: the first direct
+	// call with skipReplayCheck=false records the JTI itself and
+	// succeeds, the second is rejected.
 	replayed, err := parseJWT(replayJWT)
 	if err != nil {
 		t.Fatalf("failed to parse replayed JWT: %v", err)
 	}
+	if err := replayed.Verify("https://test-issuer.com", "test-client-id", false); err != nil {
+		t.Fatalf("first direct Verify call with the replay check enabled should succeed, got: %v", err)
+	}
 	if err := replayed.Verify("https://test-issuer.com", "test-client-id", false); err == nil {
-		t.Error("expected replay to be detected via the shared replay cache")
+		t.Error("expected replay to be detected via jwt.Verify's own replay cache on the second direct call")
 	} else if !strings.Contains(err.Error(), "token replay detected") {
 		t.Errorf("expected 'token replay detected', got: %v", err)
 	}

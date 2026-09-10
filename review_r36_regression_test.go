@@ -102,13 +102,19 @@ func TestVerifyTokenNoSelfReplayMarkAfterCacheEviction(t *testing.T) {
 		t.Fatalf("failed to create test JWT: %v", err)
 	}
 
-	// First verification succeeds and records the JTI in the shared
-	// replay cache for cross-path replay detection.
+	// First verification succeeds.
 	if err := ts.tOidc.VerifyToken(token); err != nil {
 		t.Fatalf("first verification should succeed: %v", err)
 	}
-	if !shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
-		t.Error("JTI should be recorded in the shared shardedReplayCache for cross-path replay detection")
+	// FIX-17 correction: verifyTokenWithOpts no longer writes the JTI into
+	// the shared shardedReplayCache. That write was write-only in
+	// production - jwt.Verify's replay branch (the only reader) only runs
+	// when called with skipReplayCheck=false, and the sole production
+	// caller (VerifyJWTSignatureAndClaims) always passes true - so the
+	// "for cross-path replay detection" comment this test previously
+	// pinned was the false R36 claim FIX-17 corrects, not real behavior.
+	if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
+		t.Error("verifyTokenWithOpts must not write the JTI into the shared shardedReplayCache (FIX-17): nothing in production reads it")
 	}
 	// The per-instance tokenBlacklist must NOT be self-marked (this was the
 	// false-positive source after raw-token-cache eviction).

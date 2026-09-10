@@ -162,61 +162,21 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 
 	t.cacheVerifiedToken(token, jwt.Claims)
 
-	// Replay marking: record the JTI in the shared shardedReplayCache so
-	// cross-path replay detection (jwt.Verify) works. The bearer path
-	// suppresses this entirely (opts.skipReplayMarking=true) because bearer
-	// tokens are designed for reuse until exp; the cache-evict-then-replay
-	// scenario would otherwise trigger false replay detection. See the note
-	// below on why t.tokenBlacklist is deliberately not used.
-	if jti, ok := jwt.Claims["jti"].(string); ok && jti != "" && !t.disableReplayDetection && !opts.skipReplayMarking {
-		expiry := time.Now().Add(defaultBlacklistDuration)
-		if expClaim, expOk := jwt.Claims["exp"].(float64); expOk {
-			expTime := time.Unix(int64(expClaim), 0)
-			tokenDuration := time.Until(expTime)
-			if tokenDuration > 0 && tokenDuration < defaultBlacklistDuration {
-				// Extend by ClockSkewToleranceFuture so the replay entry
-				// covers the full acceptance window (exp + skew), closing
-				// the post-exp replay window (mirrors jwt.go, R179).
-				expiry = expTime.Add(ClockSkewToleranceFuture)
-			}
-			// else: keep default expiry for expired tokens or tokens >24h
-		}
-
-		// Deliberately do NOT add the JTI to the per-instance
-		// t.tokenBlacklist here. That store is queried on every
-		// cache-miss re-presentation (the JTI Get above), and on the
-		// cookie path the SAME still-valid token is re-presented on every
-		// request for the session. Self-marking it would mean an LRU
-		// eviction of the raw-token cache (MaxSize 1000 / 5 MiB) turns a
-		// cache miss on a legitimate token into a false "token replay
-		// detected" (token_manager.go line ~110), forcing a valid session
-		// to re-authenticate. t.tokenBlacklist therefore holds only
-		// EXTERNAL revocations (RevokeToken). Replay tracking lives in the
-		// shared shardedReplayCache below, which is the store jwt.Verify
-		// consults for genuine replay detection.
-		initReplayCache()
-		duration := time.Until(expiry)
-		if duration > 0 {
-			// Guard the singleton read with replayCacheMu because
-			// cleanupReplayCache (jwt.go) can nil shardedReplayCache under
-			// the write lock. Mirror the locked read in jwt.go
-			// SetIfAbsent so the pointer deref below cannot race a nil-out.
-			replayCacheMu.RLock()
-			sc := shardedReplayCache
-			if sc != nil {
-				sc.Set(replayCacheKey(t.issuerURL, jti), true, duration)
-				replayCacheMu.RUnlock()
-			} else {
-				replayCacheMu.RUnlock()
-				// Fall back to legacy cache (should rarely happen)
-				replayCacheMu.Lock()
-				if replayCache != nil {
-					replayCache.Set(replayCacheKey(t.issuerURL, jti), true, duration)
-				}
-				replayCacheMu.Unlock()
-			}
-		}
-	}
+	// R36 correction (FIX-17): this used to write the JTI into the shared
+	// shardedReplayCache here, with a comment claiming that cache is "the
+	// store jwt.Verify consults for genuine replay detection". That was
+	// false: the only non-test caller of jwt.Verify
+	// (VerifyJWTSignatureAndClaims, via VerifyJWTSignatureAndClaims ->
+	// jwt.go) always passes skipReplayCheck=true, so jwt.Verify's replay
+	// branch — the only reader of shardedReplayCache — never runs on any
+	// production request path. The write was therefore pure overhead: an
+	// exclusive replayCacheMu.Lock (via initReplayCache) on every
+	// cache-miss verification, for a cache nothing production reads.
+	// It has been removed rather than wired into a live check; JTI-based
+	// revocation on this path is still enforced above via
+	// t.tokenBlacklist.Get(jti). The one live JTI replay check left in the
+	// codebase is backchannel logout (logout.go), which is independent of
+	// this cache.
 
 	return nil
 }

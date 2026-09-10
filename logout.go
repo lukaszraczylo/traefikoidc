@@ -10,8 +10,16 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+// backchannelLogoutJTIMu serializes checkAndMarkLogoutJTIProcessed's
+// check-and-set below so two logout tokens sharing a jti (retried
+// delivery, or a captured token replayed by an attacker) cannot both
+// observe "not yet processed" and both proceed. The previous unguarded
+// Get-then-Set had exactly that TOCTOU gap (FIX-17, R36 correction).
+var backchannelLogoutJTIMu sync.Mutex
 
 const (
 	// logoutTokenType is the expected typ claim for logout tokens
@@ -278,18 +286,35 @@ func (t *TraefikOidc) validateLogoutToken(tokenString string) (*LogoutTokenClaim
 	// OIDC Back-Channel Logout 1.0 §2.5: the RP MUST record the logout
 	// token's jti and reject any replayed token with the same jti.
 	// Without this a captured token could be re-applied to a session the
-	// user re-established after the genuine logout. Only enforced when a
-	// cache is available; the jti is stored under its own namespace so it
-	// never collides with sid/sub invalidation entries.
-	if claims.JTI != "" && t.sessionInvalidationCache != nil {
-		key := t.buildSessionInvalidationKey("jti", claims.JTI)
-		if _, found := t.sessionInvalidationCache.Get(key); found {
-			return nil, fmt.Errorf("logout token replay: jti %s already processed", claims.JTI)
-		}
-		t.sessionInvalidationCache.Set(key, claims.IssuedAt, sessionInvalidationTTL)
+	// user re-established after the genuine logout.
+	if err := t.checkAndMarkLogoutJTIProcessed(claims.JTI, claims.IssuedAt); err != nil {
+		return nil, err
 	}
 
 	return claims, nil
+}
+
+// checkAndMarkLogoutJTIProcessed enforces OIDC Back-Channel Logout 1.0
+// §2.5's jti replay check: it records jti as processed and rejects a
+// second call with the same jti. Only enforced when a cache is available;
+// the jti is stored under its own namespace so it never collides with
+// sid/sub invalidation entries. The check-and-set is serialized by
+// backchannelLogoutJTIMu so two logout tokens sharing a jti cannot both
+// observe "not yet processed" (FIX-17).
+func (t *TraefikOidc) checkAndMarkLogoutJTIProcessed(jti string, issuedAt int64) error {
+	if jti == "" || t.sessionInvalidationCache == nil {
+		return nil
+	}
+	key := t.buildSessionInvalidationKey("jti", jti)
+
+	backchannelLogoutJTIMu.Lock()
+	defer backchannelLogoutJTIMu.Unlock()
+
+	if _, found := t.sessionInvalidationCache.Get(key); found {
+		return fmt.Errorf("logout token replay: jti %s already processed", jti)
+	}
+	t.sessionInvalidationCache.Set(key, issuedAt, sessionInvalidationTTL)
+	return nil
 }
 
 // validateLogoutTokenAudience checks if the logout token audience contains our client_id

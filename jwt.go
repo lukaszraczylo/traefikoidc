@@ -345,6 +345,15 @@ func (j *JWT) Verify(issuerURL, expectedAudience string, skipReplayCheck ...bool
 		return err
 	}
 
+	// R36 correction (FIX-17): the only non-test production caller of
+	// Verify (VerifyJWTSignatureAndClaims, token_manager.go) always passes
+	// skipReplayCheck=true, so shouldSkipReplay is always true and the
+	// block below never runs on a live request path today. It stays live
+	// code, not dead code, because ~15 existing tests across several
+	// files call Verify directly with the replay check enabled and assert
+	// on this exact behavior. Do not assume shardedReplayCache reflects
+	// anything about production traffic; token_manager.go's own
+	// verifyTokenWithOpts no longer writes to it (see its comment).
 	shouldSkipReplay := len(skipReplayCheck) > 0 && skipReplayCheck[0]
 
 	jtiValue, jtiOk := claims["jti"].(string)

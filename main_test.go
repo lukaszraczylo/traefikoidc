@@ -3768,10 +3768,13 @@ func TestAuthenticationFlowReplayDetection(t *testing.T) {
 		t.Fatalf("Initial authentication should succeed: %v", err)
 	}
 
-	// Verify JTI is in cache (use shardedReplayCache which is the actual cache used)
-	exists := shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti))
-	if !exists {
-		t.Error("JTI should be added to replay cache during initial authentication")
+	// FIX-17 correction: VerifyToken (via verifyTokenWithOpts) no longer
+	// writes the JTI into the shared shardedReplayCache - that write was
+	// write-only in production, since jwt.Verify's replay branch (the
+	// only reader) only runs when called with skipReplayCheck=false, and
+	// the sole production caller always passes true.
+	if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
+		t.Error("VerifyToken must not write the JTI into the shared shardedReplayCache (FIX-17)")
 	}
 
 	// Step 2: Subsequent requests (simulate normal request processing)
@@ -3789,6 +3792,16 @@ func TestAuthenticationFlowReplayDetection(t *testing.T) {
 		t.Fatalf("Failed to parse JWT for replay attack test: %v", err)
 	}
 
+	// jwt.Verify's own replay branch still detects a replay on its own
+	// (covering the existing tests/callers that exercise it directly):
+	// the first direct call with the replay check enabled records the
+	// JTI itself and succeeds (the cache is genuinely empty for this jti
+	// at this point, per the FIX-17 correction above); the second is
+	// rejected.
+	err = jwt.Verify("https://test-issuer.com", "test-client-id", false)
+	if err != nil {
+		t.Fatalf("first direct Verify call with the replay check enabled should succeed: %v", err)
+	}
 	err = jwt.Verify("https://test-issuer.com", "test-client-id", false) // Force replay check
 	if err == nil {
 		t.Error("Actual replay attack should be detected")
