@@ -125,9 +125,12 @@ type UniversalCache struct {
 	// (a context deadline/timeout, or a MonotonicMarkers cache) so the
 	// backend still holds whatever it had before the failed write. Get
 	// prefers the local value over the backend value for a marked key while
-	// the local entry is still live (FIX-04). Guarded by mu; cleared by
+	// the local entry is still live AND the mark has not exceeded
+	// backendStaleMarkTTL (FIX-04; time-bounded per R4 cache review round 2
+	// — see backendStaleLocalValue). The map value is when the key was
+	// marked, so the bound can be enforced. Guarded by mu; cleared by
 	// removeItem/Clear and by the next successful backend Set for the key.
-	staleBackend map[string]struct{}
+	staleBackend map[string]time.Time
 
 	// legacyBlacklistMissMu and legacyBlacklistMissUntil bound
 	// checkLegacyBlacklistMarker's Redis cost (R4 cache review): a blacklist
@@ -187,7 +190,7 @@ func createUniversalCache(config UniversalCacheConfig) *UniversalCache {
 		logger:       config.Logger,
 		ctx:          ctx,
 		cancel:       cancel,
-		staleBackend: make(map[string]struct{}),
+		staleBackend: make(map[string]time.Time),
 
 		legacyBlacklistMissUntil: make(map[string]time.Time),
 	}
@@ -771,7 +774,7 @@ func (c *UniversalCache) Clear() {
 	defer c.mu.Unlock()
 
 	c.items = make(map[string]*CacheItem)
-	c.staleBackend = make(map[string]struct{})
+	c.staleBackend = make(map[string]time.Time)
 	c.lruList.Init()
 	c.currentSize = 0
 	c.currentMemory = 0
@@ -1327,13 +1330,30 @@ func isTimeoutOrDeadlineError(err error) bool {
 	return false
 }
 
+// backendStaleMarkTTL bounds how long a backend-stale mark (markBackendStale)
+// can pin the local value over the backend one (R4 cache review round 2).
+// FIX-04 assumed the backend value could only ever be OLDER than the local
+// one — true for a same-replica write that may have landed after a timeout
+// — and originally let the mark stand for as long as the local entry stayed
+// live (up to DefaultTTL, e.g. 25h for session invalidation, 100*365 days
+// for the DCR credentials cache). That let a mark pin a stale local value
+// over a genuinely NEWER value a different replica wrote, for any value type
+// backendValueIsNewer cannot compare (strings, maps, structs — the numeric
+// newer-wins comparison only ever applies to MonotonicMarkers caches; see
+// UniversalCache.Get). Bounding the mark keeps the original timeout-race
+// protection (500ms Set timeout plus generous margin for the write to land)
+// while guaranteeing a later cross-replica write is not ignored forever.
+// A package-level var, not a const, so tests can shrink it instead of
+// sleeping for the production value.
+var backendStaleMarkTTL = 5 * time.Second
+
 // markBackendStale records that the backend entry for key may be older than
 // the local one, because Set just skipped the post-failure Delete for it
 // (FIX-04). Get consults this to avoid serving the stale backend value over
-// a live local entry.
+// a live local entry, for up to backendStaleMarkTTL.
 func (c *UniversalCache) markBackendStale(key string) {
 	c.mu.Lock()
-	c.staleBackend[key] = struct{}{}
+	c.staleBackend[key] = time.Now()
 	c.mu.Unlock()
 }
 
@@ -1347,14 +1367,24 @@ func (c *UniversalCache) clearBackendStale(key string) {
 }
 
 // backendStaleLocalValue returns the local value for key when the key is
-// marked backend-stale AND the local entry is still live. It reports found
-// only in that case, so callers fall through to the normal backend-value
-// path once the local entry itself expires.
+// marked backend-stale, the mark is still within backendStaleMarkTTL, AND
+// the local entry is still live. It reports found only in that case, so
+// callers fall through to the normal backend-value path once the local
+// entry expires OR the mark itself ages out — the latter is what lets a
+// later cross-replica write eventually win for a value type
+// backendValueIsNewer cannot compare (R4 cache review round 2). An
+// expired mark is deleted here so it does not have to be re-evaluated (or
+// pruned separately) on every subsequent Get for the same key.
 func (c *UniversalCache) backendStaleLocalValue(key string) (interface{}, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	if _, stale := c.staleBackend[key]; !stale {
+	markedAt, stale := c.staleBackend[key]
+	if !stale {
+		return nil, false
+	}
+	if time.Since(markedAt) > backendStaleMarkTTL {
+		delete(c.staleBackend, key)
 		return nil, false
 	}
 	item, exists := c.items[key]
