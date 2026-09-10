@@ -330,11 +330,13 @@ func CreatePooledHTTPClient(config HTTPClientConfig) *http.Client {
 		Transport: transport,
 	}
 
-	// Honor the cookie-jar option, matching CreateHTTPClient
-	// (http_client_factory.go). Without this, token/OIDC clients built
-	// through the pool would silently drop UseCookieJar (config no-effect),
-	// so cookies set by the auth server on token/refresh responses were
-	// never stored or re-sent.
+	// Attach a jar only for callers that opt in via UseCookieJar, matching
+	// CreateHTTPClient (http_client_factory.go). TokenHTTPClientConfig and
+	// OIDCProviderHTTPClientConfig deliberately leave UseCookieJar false:
+	// a client built through this pool from either config is one instance
+	// shared across every user, so a jar would leak one user's cookies
+	// (e.g. Set-Cookie on a token/refresh response) into another user's
+	// requests to the same host (FIX-12).
 	if config.UseCookieJar {
 		jar, _ := cookiejar.New(nil) // Safe to ignore: nil options rarely fail
 		client.Jar = jar
