@@ -23,11 +23,18 @@ import (
 // backend was removed as unreachable dead code (FIX-43); RedisBackend
 // against miniredis is the project's standard lightweight substitute (see
 // e.g. universal_cache_serialization_test.go).
-func NewMemoryBackendForTest() (backends.CacheBackend, error) {
+//
+// The miniredis server is registered against t.Cleanup so it (and its
+// listener goroutine) is closed when t ends. Callers still defer
+// backend.Close() to close the RedisBackend connection pool; that alone
+// does not stop the miniredis server.
+func NewMemoryBackendForTest(t *testing.T) (backends.CacheBackend, error) {
+	t.Helper()
 	mr, err := miniredis.Run()
 	if err != nil {
 		return nil, err
 	}
+	t.Cleanup(mr.Close)
 	return backends.NewRedisBackend(backends.DefaultRedisConfig(mr.Addr()))
 }
 
@@ -193,7 +200,7 @@ func TestGetPublicKey_RefreshesPastCooldownOnKidMiss(t *testing.T) {
 	}))
 	defer server.Close()
 
-	backend, err := NewMemoryBackendForTest()
+	backend, err := NewMemoryBackendForTest(t)
 	if err != nil {
 		t.Fatalf("backend: %v", err)
 	}

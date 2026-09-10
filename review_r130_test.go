@@ -143,7 +143,7 @@ func TestGetPublicKey_BoundsUngatedPickup(t *testing.T) {
 	}))
 	defer server.Close()
 
-	backend, err := NewMemoryBackendForTest()
+	backend, err := NewMemoryBackendForTest(t)
 	if err != nil {
 		t.Fatalf("backend: %v", err)
 	}
