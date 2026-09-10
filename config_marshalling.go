@@ -86,6 +86,8 @@ func (c Config) configToMap() map[string]interface{} {
 	result["clientAuthMethod"] = c.ClientAuthMethod
 	result["clientAssertionKeyID"] = c.ClientAssertionKeyID
 	result["clientAssertionAlg"] = c.ClientAssertionAlg
+	result["clientAssertionKeyPath"] = c.ClientAssertionKeyPath
+	result["perSourceLoginRateLimit"] = c.PerSourceLoginRateLimit
 	result["enableBearerAuth"] = c.EnableBearerAuth
 	result["bearerIdentifierClaim"] = c.BearerIdentifierClaim
 	result["stripAuthorizationHeader"] = c.StripAuthorizationHeader
