@@ -13,8 +13,15 @@ import (
 // TestR179_CallbackRateLimitReturns429 regresses auth_flow.go/how the
 // shared rate limiter is surfaced during the OIDC callback. When the
 // global token-origin limiter is exhausted, verifyTokenWithOpts returns
-// ErrRateLimitExceeded; handleCallback must answer 429 + Retry-After (a
-// rate limit), not a generic 500. Fail-on-old: 500 with no Retry-After.
+// ErrRateLimitExceeded; handleCallback must answer 429 (a rate limit), not
+// a generic 500. Fail-on-old: 500.
+//
+// FIX-32 removed the Retry-After header this 429 used to carry: by the
+// time it is sent, clearOneTimeAuthState has already destroyed the
+// csrf/nonce/code_verifier and the authorization code has already been
+// redeemed at the IdP, so a client that honors Retry-After and retries
+// this exact callback URL is guaranteed to hit "CSRF token missing in
+// session" instead of a successful retry. The user must restart login.
 func TestR179_CallbackRateLimitReturns429(t *testing.T) {
 	sessionManager, err := NewSessionManager(
 		"test-encryption-key-32-bytes-long!!",
@@ -84,8 +91,8 @@ func TestR179_CallbackRateLimitReturns429(t *testing.T) {
 	if rw2.Code != http.StatusTooManyRequests {
 		t.Fatalf("handleCallback under rate limit: got status %d, want 429", rw2.Code)
 	}
-	if got := rw2.Header().Get("Retry-After"); got == "" {
-		t.Fatal("handleCallback under rate limit must send Retry-After")
+	if got := rw2.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("handleCallback under rate limit must not send Retry-After (FIX-32), got %q", got)
 	}
 }
 

@@ -354,10 +354,15 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 		t.logger.Errorf("Failed to verify id_token during callback: %v", err)
 		t.clearOneTimeAuthState(session, req, rw)
 		if errors.Is(err, ErrRateLimitExceeded) {
-			// Rate-limit exhaustion must be a 429 + Retry-After, not a
-			// generic 500: a single source's burst currently degrades
-			// every user's callback to "server error" (R179).
-			rw.Header().Set("Retry-After", "1")
+			// Rate-limit exhaustion must be a 429, not a generic 500: a
+			// single source's burst currently degrades every user's
+			// callback to "server error" (R179). No Retry-After: by this
+			// point clearOneTimeAuthState has already destroyed the
+			// csrf/nonce/code_verifier and the authorization code has
+			// already been redeemed at the IdP, so a client that honors
+			// Retry-After and retries this exact callback URL is
+			// guaranteed to hit "CSRF token missing in session" instead
+			// of a successful retry (FIX-32). The user must restart login.
 			t.sendErrorResponse(rw, req, "Authentication failed: Too many requests, please retry", http.StatusTooManyRequests)
 			return
 		}
