@@ -308,6 +308,36 @@ func TestBearerOpaqueIntrospection_BlacklistedJtiRejected(t *testing.T) {
 	}
 }
 
+// TestBearerOpaqueIntrospection_BlacklistedJtiIgnoredWhenReplayDetectionDisabled
+// guards the disableReplayDetection escape hatch on the jti-blacklist gate
+// (bearer_auth.go:928): an operator who has turned off replay/JTI tracking
+// must not be surprised by this gate rejecting an otherwise-valid token
+// whose jti happens to collide with a blacklisted one. The raw token itself
+// is NOT blacklisted here — only its jti is — so this isolates the jti
+// branch from the raw-token blacklist check covered by
+// _RevokedTokenRejected above.
+func TestBearerOpaqueIntrospection_BlacklistedJtiIgnoredWhenReplayDetectionDisabled(t *testing.T) {
+	blacklist := NewCache()
+	defer blacklist.Close()
+	blacklist.Set("revoked-jti-1", true, time.Hour)
+
+	withJti := &IntrospectionResponse{Active: true, Sub: "user-1", ClientID: "my-client", Jti: "revoked-jti-1"}
+	tObj := &TraefikOidc{
+		logger:                    newNoOpLogger(),
+		introspectionCache:        &stubIntrospectionCache{v: withJti},
+		requireTokenIntrospection: true,
+		allowOpaqueTokens:         true,
+		clientID:                  "my-client",
+		tokenBlacklist:            blacklist,
+		disableReplayDetection:    true,
+	}
+
+	_, bErr := tObj.buildPrincipalFromOpaqueIntrospection("opaque-token")
+	if bErr != nil {
+		t.Fatalf("a blacklisted jti must be ignored when disableReplayDetection is true, got: %v", bErr)
+	}
+}
+
 // TestBearerOpaqueIntrospection_NbfFutureRejected guards the not-before
 // check the JWT path applies through verifyTimeClaims and the session path
 // applies through validateOpaqueToken (token_introspection.go:258-263): an
