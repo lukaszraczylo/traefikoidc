@@ -4,9 +4,33 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
+
+// redactAuthorizeURLForLog removes the remaining security-sensitive query
+// values from the provider authorize URL before it is logged. It builds on
+// redactCallbackURL (url_helpers.go, R153), which strips "code" and
+// "state" but was written for the callback URL and does not know about
+// the nonce or PKCE code_challenge the authorize URL also carries — so
+// logging redactCallbackURL(authURL) alone would still leak the nonce
+// (FIX-29 correction of the R153 claim).
+func redactAuthorizeURLForLog(rawURL string) string {
+	redacted := redactCallbackURL(rawURL)
+	u, err := url.Parse(redacted)
+	if err != nil {
+		return redacted
+	}
+	q := u.Query()
+	for _, k := range []string{"nonce", "code_challenge"} {
+		if q.Get(k) != "" {
+			q.Set(k, "[REDACTED]")
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
 
 // validateRedirectCount checks if redirect limit is exceeded and handles the error
 func (t *TraefikOidc) validateRedirectCount(session *SessionData, rw http.ResponseWriter, req *http.Request) error {
@@ -177,10 +201,11 @@ func (t *TraefikOidc) defaultInitiateAuthentication(rw http.ResponseWriter, req 
 		return
 	}
 
-	t.logger.Debugf("Session saved before redirect. CSRF: %s, Nonce: %s",
-		csrfToken, nonce)
+	// CSRF/state and nonce are single-use security credentials; do not log
+	// them in the clear (FIX-29 correction of the R153 redaction claim).
+	t.logger.Debug("Session saved before redirect")
 
-	t.logger.Debugf("Redirecting user to OIDC provider: %s", authURL)
+	t.logger.Debugf("Redirecting user to OIDC provider: %s", redactAuthorizeURLForLog(authURL))
 
 	// 302s into the IdP must not be heuristically cacheable (RFC 7234):
 	// a stale, cached redirect could replay the pre-re-authentication URL.
