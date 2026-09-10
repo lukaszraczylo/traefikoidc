@@ -92,8 +92,7 @@ func (c *ShardedCache) Get(key string) (interface{}, bool) {
 		// same entry. A concurrent Set/SetIfAbsent that refreshed the key
 		// (e.g. a freshly-recorded replay JTI) since this read must not be
 		// removed, else the just-recorded JTI is lost and a duplicate token
-		// could pass (R129; matches deleteIfExpired in
-		// internal/cache/backends/memory_shard.go).
+		// could pass (R129).
 		shard.mu.Lock()
 		if cur, ok := shard.items[key]; ok && cur == item {
 			delete(shard.items, key)

@@ -11,8 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCacheBackendContract defines a set of tests that all CacheBackend implementations must pass
-// This ensures Redis backends behave consistently (the Memory subtest stays a pending stub)
+// TestCacheBackendContract defines a set of tests that all CacheBackend implementations must pass.
+// Both the MemoryBackend and RedisBackend subtests are pending t.Skip stubs
+// (see setupMemoryBackend and setupRedisBackend below); no CacheBackend
+// implementation currently runs the contract suite.
 func TestCacheBackendContract(t *testing.T) {
 	// Test suite will be run against each backend type
 	t.Run("MemoryBackend", func(t *testing.T) {

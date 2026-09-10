@@ -177,4 +177,5 @@ func TestSharedHealthTaskReachesAllInstances(t *testing.T) {
 		"a health check registered on the second instance must be exercised by the shared task")
 }
 
-// TestRecordL2Error not here: lives in internal/cache/backends (hybrid test).
+// TestRecordL2Error not here: the L2/hybrid cache it covered was removed as
+// unreachable dead code (FIX-43); no replacement test exists.
