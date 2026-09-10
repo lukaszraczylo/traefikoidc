@@ -187,6 +187,33 @@ func (c *JWKCache) GetJWKS(ctx context.Context, jwksURL string, httpClient *http
 // requests into a flood of upstream JWKS fetches.
 const jwksForceRefreshCooldown = 30 * time.Second
 
+// jwksFailureCooldown bounds how soon a FAILED live JWKS fetch is retried
+// for the same URL. Kept much shorter than jwksForceRefreshCooldown: a
+// failing IdP must still be shielded from a repeat upstream call on every
+// unknown-kid bearer request or backchannel-logout token, but the plugin
+// should not wait the full 30s success-cooldown before trying again once
+// the IdP recovers (R100 recorded a cooldown on success only, so a failing
+// IdP was hit once per request with no throttling at all) (R30).
+const jwksFailureCooldown = 5 * time.Second
+
+// recordFetchFailure backdates the recorded refresh timestamps so the
+// existing jwksForceRefreshCooldown gates in forceJWKSRefresh and
+// getPublicKeyFresh treat this failure as a short jwksFailureCooldown
+// window instead of leaving repeat callers completely unbounded.
+func (c *JWKCache) recordFetchFailure(jwksURL string) {
+	backdated := time.Now().Add(jwksFailureCooldown - jwksForceRefreshCooldown)
+	c.forceMu.Lock()
+	if c.lastForceRefresh == nil {
+		c.lastForceRefresh = make(map[string]time.Time)
+	}
+	c.lastForceRefresh[jwksURL] = backdated
+	if c.lastSignatureRefresh == nil {
+		c.lastSignatureRefresh = make(map[string]time.Time)
+	}
+	c.lastSignatureRefresh[jwksURL] = backdated
+	c.forceMu.Unlock()
+}
+
 // forceJWKSRefresh performs a live singleflighted JWKS fetch, bypassing the
 // fast-path cache, so an IdP key rotation is picked up promptly. It is
 // bounded by jwksForceRefreshCooldown per URL: within the window it falls
@@ -220,10 +247,12 @@ func (c *JWKCache) doLiveRefresh(ctx context.Context, jwksURL string, httpClient
 	jwks, err := fetchJWKS(ctx, jwksURL, httpClient)
 	if err != nil {
 		candidate.err = err
+		c.recordFetchFailure(jwksURL)
 		return nil, err
 	}
 	if len(jwks.Keys) == 0 {
 		candidate.err = fmt.Errorf("JWKS response contains no keys")
+		c.recordFetchFailure(jwksURL)
 		return nil, candidate.err
 	}
 	_ = c.cache.SetLocal(jwksURL, jwks, 1*time.Hour) // Safe to ignore: cache failures are non-critical
@@ -251,8 +280,18 @@ func (c *JWKCache) forceJWKSRefresh(ctx context.Context, jwksURL string, httpCli
 	now := time.Now()
 	if now.Sub(last) < jwksForceRefreshCooldown {
 		c.forceMu.Unlock()
-		jwks, err := c.GetJWKS(ctx, jwksURL, httpClient)
-		return jwks, false, err // served cached set, not a live fetch
+		// Read the cache directly instead of calling GetJWKS: GetJWKS
+		// falls back to a live fetch on a cache miss, and a within-
+		// cooldown state can now mean a recent FAILED fetch (R30) with
+		// nothing cached, not only a recent success. Calling GetJWKS
+		// here would silently perform the very live fetch this cooldown
+		// exists to bound.
+		if cached, found := c.cache.GetLocal(jwksURL); found {
+			if jwks, ok := cached.(*JWKSet); ok {
+				return jwks, false, nil // served cached set, not a live fetch
+			}
+		}
+		return nil, false, fmt.Errorf("JWKS refresh for %s is on cooldown after a recent failure", jwksURL)
 	}
 	c.forceMu.Unlock()
 

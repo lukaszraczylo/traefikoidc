@@ -152,11 +152,17 @@ func TestEmailIdentityPermitted_NumericUnverifiedRejected(t *testing.T) {
 }
 
 // TestForceJWKSRefresh_FailedFetchDoesNotSetCooldown regresses that a
-// failed live JWKS refresh no longer consumes the per-URL cooldown
+// failed live JWKS refresh does not consume the FULL per-URL cooldown
 // window. Recording the cooldown before the fetch meant a transient
 // 5xx/network blip (during a key rotation) routed every new-kid request
 // to the stale cached keyset for the next jwksForceRefreshCooldown,
 // producing "no matching public key" 401s with no upstream retry.
+//
+// FIX-30 (R30) intentionally records a short jwksFailureCooldown after a
+// failure instead of none at all, so a burst of unknown-kid requests
+// during an IdP outage does not each hit the JWKS endpoint. This test now
+// pins the bound that matters: a retry becomes due well before the full
+// success cooldown would have elapsed, not that no cooldown is recorded.
 func TestForceJWKSRefresh_FailedFetchDoesNotSetCooldown(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -174,9 +180,15 @@ func TestForceJWKSRefresh_FailedFetchDoesNotSetCooldown(t *testing.T) {
 	}
 
 	c.forceMu.Lock()
-	_, recorded := c.lastForceRefresh[srv.URL]
+	recordedAt, recorded := c.lastForceRefresh[srv.URL]
 	c.forceMu.Unlock()
-	if recorded {
-		t.Fatalf("cooldown recorded after FAILED fetch; next new-kid request will be served the stale keyset")
+	if !recorded {
+		t.Fatal("expected a short failure cooldown to be recorded (R30)")
+	}
+	elapsedUntilRetryDue := jwksForceRefreshCooldown - time.Since(recordedAt)
+	if elapsedUntilRetryDue > jwksFailureCooldown {
+		t.Fatalf("failed fetch blocks retries for %v, want at most the short failure cooldown (%v); "+
+			"next new-kid request must not be served the stale keyset for up to the full success cooldown",
+			elapsedUntilRetryDue, jwksFailureCooldown)
 	}
 }
