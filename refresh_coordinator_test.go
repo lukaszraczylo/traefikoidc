@@ -10,6 +10,31 @@ import (
 	"time"
 )
 
+// waitForRefreshDrain polls until refreshToken's entry is gone from rc's
+// in-flight map, instead of sleeping a fixed margin (FIX-22). Even with
+// DeduplicationCleanupDelay=0, executeRefreshAsync's close(operation.done)
+// and its synchronous performCleanup call are two separate statements in the
+// same deferred closure: a waiter unblocked by close(operation.done) can run
+// concurrently with (and observe the map entry before) that same goroutine's
+// next statement. Actively polling for the entry's removal — rather than
+// guessing a sleep long enough to outrun that window — makes the next
+// CoordinateRefresh call for the same token deterministically start a new
+// operation instead of occasionally joining the one that just finished.
+func waitForRefreshDrain(t *testing.T, rc *RefreshCoordinator, refreshToken string) {
+	t.Helper()
+	tokenHash := rc.hashRefreshToken(refreshToken)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := rc.inFlightRefreshes.Load(tokenHash); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refresh operation for token %q never drained from the in-flight map", refreshToken)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // TestConcurrentRefreshDeduplication verifies that concurrent refresh attempts
 // for the same token are deduplicated and only one refresh operation occurs
 func TestConcurrentRefreshDeduplication(t *testing.T) {
@@ -203,6 +228,10 @@ func TestRefreshRateLimiting(t *testing.T) {
 func TestCircuitBreakerProtection(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
 	config := DefaultRefreshCoordinatorConfig()
+	// Immediate cleanup for deterministic test behavior (FIX-22): removes
+	// the in-flight entry synchronously before CoordinateRefresh returns,
+	// instead of racing the 100ms default cleanup timer with a fixed sleep.
+	config.DeduplicationCleanupDelay = 0
 	coordinator := NewRefreshCoordinator(config, logger)
 	defer coordinator.Shutdown()
 
@@ -216,8 +245,10 @@ func TestCircuitBreakerProtection(t *testing.T) {
 	}
 
 	// Cause circuit breaker to trip with genuinely distinct failing
-	// operations (sleep so each same-token call is not absorbed as a join
-	// on the still-in-flight previous operation).
+	// operations. DeduplicationCleanupDelay=0 (set above), combined with
+	// polling for the in-flight entry's removal below, guarantees each
+	// same-token call is not absorbed as a join on the previous operation
+	// (FIX-22: no fixed sleep).
 	var tripCount int
 	for i := 0; i < 5; i++ {
 		ctx := context.Background()
@@ -227,7 +258,7 @@ func TestCircuitBreakerProtection(t *testing.T) {
 			"refresh_token",
 			refreshFunc,
 		)
-		time.Sleep(150 * time.Millisecond)
+		waitForRefreshDrain(t, coordinator, "refresh_token")
 
 		if err != nil && err.Error() == "refresh circuit breaker is open due to repeated failures" {
 			tripCount++

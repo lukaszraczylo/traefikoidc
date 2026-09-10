@@ -63,8 +63,25 @@ func TestSingleflightCache_PanickingFetcherDoesNotDeadlock(t *testing.T) {
 		ran = true
 		return []byte("ok"), time.Minute, nil
 	}
-	// Give the deferred cleanup a moment to release the key.
-	time.Sleep(200 * time.Millisecond)
+	// Poll until the deferred cleanup goroutine (singleflight.go's
+	// time.Sleep(100ms) + delete) has released the key, instead of sleeping
+	// a fixed margin over that 100ms delay (FIX-22): a late-firing cleanup
+	// timer under load let the next GetOrFetch join the finished call and
+	// receive its stale panic error back, making the fixed-sleep version
+	// flaky on loaded CI runners.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cache.mu.Lock()
+		_, stillPresent := cache.calls[key]
+		cache.mu.Unlock()
+		if !stillPresent {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("singleflight entry for key was never released after the panicking fetcher completed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if _, err := cache.GetOrFetch(ctx, key, good); err != nil {
 		t.Fatalf("well-behaved fetcher after panic returned error: %v", err)
 	}

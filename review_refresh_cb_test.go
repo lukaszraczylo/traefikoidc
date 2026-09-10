@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // TestRefreshCoordinator_SingleCircuitBreakerRecordPerOperation guards the
@@ -87,6 +86,10 @@ func TestRefreshCoordinator_SuccessOnlyAfterCombinedOperations(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
 	config := DefaultRefreshCoordinatorConfig()
 	config.MaxRefreshAttempts = 1000
+	// Immediate cleanup for deterministic test behavior (FIX-22): removes
+	// the in-flight entry synchronously before CoordinateRefresh returns,
+	// instead of racing the 100ms default cleanup timer with a fixed sleep.
+	config.DeduplicationCleanupDelay = 0
 	coordinator := NewRefreshCoordinator(config, logger)
 	defer coordinator.Shutdown()
 
@@ -95,6 +98,9 @@ func TestRefreshCoordinator_SuccessOnlyAfterCombinedOperations(t *testing.T) {
 	}
 
 	// MaxFailures=3 -> three distinct failing operations must open it.
+	// DeduplicationCleanupDelay=0 (set above), combined with polling for the
+	// in-flight entry's removal below, guarantees each attempt is a
+	// deterministically new operation, not a join (FIX-22: no fixed sleep).
 	for range 3 {
 		_, err := coordinator.CoordinateRefresh(
 			context.Background(),
@@ -105,9 +111,7 @@ func TestRefreshCoordinator_SuccessOnlyAfterCombinedOperations(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected refresh to fail")
 		}
-		// Let the op drain from the in-flight map so the next attempt is a
-		// new operation (not a join on the same one).
-		time.Sleep(150 * time.Millisecond)
+		waitForRefreshDrain(t, coordinator, "target_token")
 	}
 
 	if got := coordinator.circuitBreaker.GetState(); got != "open" {

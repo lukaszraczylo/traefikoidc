@@ -433,6 +433,15 @@ func TestRefreshCoordinatorIntegration(t *testing.T) {
 	config.RefreshCooldownPeriod = 2 * time.Second
 	config.MaxConcurrentRefreshes = 3
 	config.CleanupInterval = 500 * time.Millisecond
+	// Immediate cleanup for deterministic test behavior (FIX-22): the
+	// CircuitBreaker and RateLimiting subtests below need each loop
+	// iteration to become its own refresh operation rather than joining the
+	// previous one on the same token. A fixed sleep raced the 100ms default
+	// cleanup timer with only a 50ms margin and failed on loaded CI
+	// runners; DeduplicationCleanupDelay=0 removes the in-flight entry
+	// synchronously before CoordinateRefresh returns, so no sleep is
+	// needed.
+	config.DeduplicationCleanupDelay = 0
 
 	coordinator := NewRefreshCoordinator(config, logger)
 	defer coordinator.Shutdown()
@@ -461,14 +470,15 @@ func TestRefreshCoordinatorIntegration(t *testing.T) {
 		}
 
 		// Trigger circuit breaker with genuinely distinct failing operations.
-		// The 100ms dedup delay keeps a rapid same-token call from joining
-		// the previous operation, so sleep so each iteration degrades into
-		// its own refresh operation and records one real failure.
+		// DeduplicationCleanupDelay=0 (set above), combined with polling for
+		// the in-flight entry's removal below, guarantees each iteration
+		// deterministically becomes its own refresh operation and records
+		// one real failure (FIX-22: no fixed sleep).
 		for i := 0; i < 4; i++ {
 			ctx := context.Background()
 			_, _ = coordinator.CoordinateRefresh(ctx,
 				fmt.Sprintf("cb_session_%d", i), "refresh_cb", failingRefresh)
-			time.Sleep(150 * time.Millisecond)
+			waitForRefreshDrain(t, coordinator, "refresh_cb")
 		}
 
 		// Next request should be blocked by circuit breaker
@@ -500,12 +510,13 @@ func TestRefreshCoordinatorIntegration(t *testing.T) {
 
 		sessionID := "rate_limit_session"
 
-		// Exhaust attempts
+		// Exhaust attempts. DeduplicationCleanupDelay=0 (set above), combined
+		// with polling for the in-flight entry's removal below, guarantees
+		// every iteration is a distinct operation (FIX-22: no fixed sleep).
 		for i := 0; i < config.MaxRefreshAttempts+1; i++ {
 			ctx := context.Background()
 			_, _ = coordinator.CoordinateRefresh(ctx, sessionID, "refresh_rl", failingRefresh)
-			// Add delay to ensure operations complete and aren't deduplicated
-			time.Sleep(150 * time.Millisecond)
+			waitForRefreshDrain(t, coordinator, "refresh_rl")
 		}
 
 		// Should be in cooldown
