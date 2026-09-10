@@ -23,10 +23,26 @@ import (
 // Close itself stays green even if the production fix (utilities.go's fresh,
 // lock-guarded re-check; main.go's registerLiveInstance-before-adoption
 // ordering) is reverted, which is a much weaker regression pin.
+// TestFix35_ConcurrentNewKeepsSingletonAliveAcrossOldClose drives the REAL
+// (*TraefikOidc).Close() through this exact window via closeTestHook, rather
+// than re-implementing Close's stop decision inline: a test that never calls
+// Close itself stays green even if the production fix (utilities.go's fresh,
+// lock-guarded re-check; main.go's registerLiveInstance-before-adoption
+// ordering) is reverted, which is a much weaker regression pin.
+//
+// It establishes its own liveInstanceCount baseline (save, zero, restore via
+// t.Cleanup) instead of assuming the package-global counter is already 0.
+// Without that, a live instance left registered by an earlier test in the
+// same run (any order under -shuffle) makes the pre-FIX-35 stale "was last"
+// decision already false on its own, so this test cannot tell a reverted fix
+// from a working one — it passes either way.
 func TestFix35_ConcurrentNewKeepsSingletonAliveAcrossOldClose(t *testing.T) {
 	ResetGlobalMemoryMonitor()
 	t.Cleanup(ResetGlobalMemoryMonitor)
 	t.Cleanup(func() { closeTestHook = nil })
+
+	baseline := resetLiveInstanceCountForTest()
+	t.Cleanup(func() { restoreLiveInstanceCountForTest(baseline) })
 
 	// --- Old instance: already live, has adopted the memory-monitor singleton
 	// (mirrors main.go's registerLiveInstance() followed by
@@ -50,6 +66,14 @@ func TestFix35_ConcurrentNewKeepsSingletonAliveAcrossOldClose(t *testing.T) {
 		registerLiveInstance()
 		mm.StartMonitoring(newCtx, time.Second) // adopts: already running, so this is a no-op start.
 	}
+	// Undo the hook's registerLiveInstance for the new instance and actually
+	// stop the task so it does not outlive this test. Runs via t.Cleanup
+	// (LIFO, before the baseline restore above) so it still executes even if
+	// an assertion below fails the test early.
+	t.Cleanup(func() {
+		unregisterLiveInstance()
+		_ = GetResourceManager().StopBackgroundTask("memory-monitor")
+	})
 
 	// --- Drive the real Close() on an instance built the same way New()
 	// builds one for this purpose: registered live, nothing else set (every
@@ -62,13 +86,6 @@ func TestFix35_ConcurrentNewKeepsSingletonAliveAcrossOldClose(t *testing.T) {
 	if !GetResourceManager().IsTaskRunning("memory-monitor") {
 		t.Fatal("memory-monitor must keep running: a new instance registered and adopted it before Close's last-instance decision")
 	}
-
-	// Cleanup: bring liveInstanceCount back to its baseline (Close's own
-	// unregisterLiveInstance already accounted for the old instance; the
-	// hook's registerLiveInstance for the new one is undone here) and
-	// actually stop the task so it does not outlive this test.
-	unregisterLiveInstance()
-	_ = GetResourceManager().StopBackgroundTask("memory-monitor")
 }
 
 // TestFix35_StopIfLastInstanceHoldsLockAcrossCheckAndStop pins the FIX-35
@@ -85,8 +102,8 @@ func TestFix35_ConcurrentNewKeepsSingletonAliveAcrossOldClose(t *testing.T) {
 // held for the stop's full duration: while a slow stop callback is running,
 // a concurrent registerLiveInstance() must not be able to complete.
 func TestFix35_StopIfLastInstanceHoldsLockAcrossCheckAndStop(t *testing.T) {
-	resetLiveInstanceCountForTest()
-	t.Cleanup(resetLiveInstanceCountForTest)
+	baseline := resetLiveInstanceCountForTest()
+	t.Cleanup(func() { restoreLiveInstanceCountForTest(baseline) })
 
 	stopStarted := make(chan struct{})
 	releaseStop := make(chan struct{})
@@ -134,9 +151,22 @@ func TestFix35_StopIfLastInstanceHoldsLockAcrossCheckAndStop(t *testing.T) {
 // resetLiveInstanceCountForTest establishes a clean baseline (0) for the
 // package-level liveInstanceCount so a test's last-instance decisions are not
 // skewed by instances registered-and-never-unregistered by earlier tests in
-// the same process. Test-only; mirrors resetGdInstancesForTest.
-func resetLiveInstanceCountForTest() {
+// the same process. Test-only; mirrors resetGdInstancesForTest. Returns the
+// value liveInstanceCount held before the reset so the caller can restore it
+// via t.Cleanup (restoreLiveInstanceCountForTest) instead of permanently
+// clobbering a nonzero baseline left by another test in the same run.
+func resetLiveInstanceCountForTest() int32 {
 	liveInstanceMu.Lock()
 	defer liveInstanceMu.Unlock()
+	previous := liveInstanceCount
 	liveInstanceCount = 0
+	return previous
+}
+
+// restoreLiveInstanceCountForTest sets the package-level liveInstanceCount
+// back to a value captured by resetLiveInstanceCountForTest. Test-only.
+func restoreLiveInstanceCountForTest(previous int32) {
+	liveInstanceMu.Lock()
+	defer liveInstanceMu.Unlock()
+	liveInstanceCount = previous
 }

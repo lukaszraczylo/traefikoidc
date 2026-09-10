@@ -115,7 +115,7 @@ func TestFix18_TraefikOidcCloseEmptiesGDInstances(t *testing.T) {
 // re-registering an already-closed instance and restarting the shared
 // health-check task for it with nothing left able to ever stop it again.
 func TestFix18_CloseImmediatelyAfterNewDoesNotReRegister(t *testing.T) {
-	resetGdInstancesForTest()
+	t.Cleanup(snapshotAndClearGdInstancesForTest())
 
 	cfg := DefaultGracefulDegradationConfig()
 	gd := NewGracefulDegradation(cfg, GetSingletonNoOpLogger())
@@ -192,4 +192,25 @@ func gdInstancesLen() int {
 	gdInstances.RLock()
 	defer gdInstances.RUnlock()
 	return len(gdInstances.set)
+}
+
+// snapshotAndClearGdInstancesForTest captures the current contents of the
+// package-level gdInstances registry and replaces it with a fresh empty set,
+// mirroring resetGdInstancesForTest (review_r34_regression_test.go). Unlike
+// that helper, it returns a restore func the caller registers with
+// t.Cleanup: a bare reset with no restore permanently discards whatever
+// GracefulDegradation instances other tests in the same binary had
+// registered before this test ran, instead of only clearing for the
+// duration of this test.
+func snapshotAndClearGdInstancesForTest() func() {
+	gdInstances.Lock()
+	saved := gdInstances.set
+	gdInstances.set = make(map[*GracefulDegradation]struct{})
+	gdInstances.Unlock()
+
+	return func() {
+		gdInstances.Lock()
+		gdInstances.set = saved
+		gdInstances.Unlock()
+	}
 }

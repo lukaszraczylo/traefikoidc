@@ -72,7 +72,12 @@ func TestFix19_RegisterBackgroundTaskKeepsPendingTaskNoOrphan(t *testing.T) {
 	// times before stopping.
 	time.Sleep(60 * time.Millisecond)
 
-	rm.StopAllTasks()
+	// Stop only the named task this test created, not rm.StopAllTasks(): the
+	// ResourceManager is a process-global singleton, and StopAllTasks stops
+	// every task registered on it, including unrelated singletons (e.g.
+	// memory-monitor, singleton-token-cleanup) that other tests in the same
+	// binary may have started and still expect running.
+	_ = rm.StopBackgroundTask(name)
 
 	// Snapshot count1 right after the stop, then again after another window
 	// long enough for several more ticks. A well-stopped task's counter must
