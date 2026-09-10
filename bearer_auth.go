@@ -910,10 +910,12 @@ func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*prin
 	if resp.Exp > 0 && time.Now().After(time.Unix(resp.Exp, 0)) {
 		return nil, newBearerError(bearerErrTokenInactive, "introspection reports token expired")
 	}
-	// Same not-before check the JWT path applies through verifyTimeClaims
-	// and the session path applies through validateOpaqueToken
-	// (token_introspection.go:258-263). RFC 7662 s2.2 defines nbf with the
-	// same semantics as RFC 7519's nbf claim.
+	// Mirrors the session path's strict nbf comparison in
+	// validateOpaqueToken (token_introspection.go:258-263): no clock-skew
+	// tolerance. This is NOT the same check the JWT path applies — its
+	// verifyNotBefore (jwt.go:281, via verifyTimeConstraint) allows
+	// ClockSkewTolerancePast (jwt.go:23, 10s) before failing. RFC 7662
+	// s2.2 defines nbf with the same semantics as RFC 7519's nbf claim.
 	if resp.Nbf > 0 && time.Now().Before(time.Unix(resp.Nbf, 0)) {
 		return nil, newBearerError(bearerErrTokenInactive, "introspection reports token not yet valid (nbf)")
 	}
