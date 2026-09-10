@@ -37,6 +37,14 @@ type RefreshCoordinator struct {
 	stopChan               chan struct{}
 	config                 RefreshCoordinatorConfig
 	wg                     sync.WaitGroup
+	// lifecycleMu (FIX-36) makes "check stopChan, then wg.Add" atomic with
+	// respect to Shutdown closing stopChan. CoordinateRefresh takes RLock
+	// around its check-then-Add; Shutdown takes Lock() before closing
+	// stopChan, which cannot succeed while any CoordinateRefresh call holds
+	// RLock. This guarantees every wg.Add(1) that will ever happen has
+	// already completed by the time Shutdown calls wg.Wait(), satisfying the
+	// WaitGroup contract (Add must not race a Wait that could observe zero).
+	lifecycleMu sync.RWMutex
 	// shutdownOnce makes Shutdown idempotent: close(rc.stopChan) on an
 	// already-closed channel would panic ('close of closed channel').
 	// Repeated setup/teardown (e.g. Traefik plugin reload) can close the
@@ -234,7 +242,20 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 	// just-started refresh then ran past Shutdown unreaped. Done() is
 	// balanced once per path: by the spawned goroutine, or immediately
 	// on the join/reject paths (which spawn nothing).
+	//
+	// FIX-36: reject the operation instead of calling Add once stopChan is
+	// closed. lifecycleMu makes "check stopChan, then Add" atomic with
+	// respect to Shutdown's Lock()+close(stopChan) (see the struct field
+	// comment), so no Add can ever race a Wait that could observe zero.
+	rc.lifecycleMu.RLock()
+	select {
+	case <-rc.stopChan:
+		rc.lifecycleMu.RUnlock()
+		return nil, fmt.Errorf("refresh coordinator is shutting down")
+	default:
+	}
 	rc.wg.Add(1)
+	rc.lifecycleMu.RUnlock()
 
 	operation, isNew, err := rc.getOrCreateOperation(ctx, sessionID, tokenHash, refreshToken)
 
@@ -246,8 +267,10 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 
 	if isNew {
 		// We created a new operation, so we need to execute it. Track the
-		// goroutine so Shutdown waits for in-flight refreshes to finish (they
-		// are aborted promptly via rc.ctx when stopChan closes).
+		// goroutine so Shutdown genuinely waits for this refresh to finish
+		// (FIX-36 corrected this comment: there is no rc.ctx, and Shutdown
+		// does not abort an in-flight refresh — it waits for it, bounded by
+		// the operation's own RefreshTimeout; see executeRefreshAsync).
 		go func() {
 			defer rc.wg.Done()
 			rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc) //nolint:gosec // long-lived background refresh intentionally uses a background context
@@ -408,7 +431,13 @@ func (rc *RefreshCoordinator) executeRefreshAsync(
 		rc.scheduleDelayedCleanup(tokenHash)
 	}()
 
-	// Create timeout context
+	// Create timeout context. Deliberately derived from context.Background(),
+	// NOT a context Shutdown cancels: Shutdown's wg.Wait() must keep waiting
+	// for a genuinely in-flight refresh to actually finish rather than
+	// abandon it (TestRefreshCoordinatorShutdownWaitsForInflight,
+	// TestRefreshCoordinator_ShutdownWaitsForInFlight). RefreshTimeout alone
+	// is the upper bound on how long any single refresh — and so Shutdown —
+	// can be made to wait.
 	refreshCtx, cancel := context.WithTimeout(context.Background(), rc.config.RefreshTimeout)
 	defer cancel()
 
@@ -749,7 +778,18 @@ func (rc *RefreshCoordinator) GetMetrics() map[string]interface{} {
 // remain safe on an unused coordinator until GC.
 func (rc *RefreshCoordinator) Shutdown() {
 	rc.shutdownOnce.Do(func() {
+		// Close stopChan under lifecycleMu's write lock (FIX-36): this
+		// cannot proceed while any CoordinateRefresh call holds the read
+		// lock around its own check-then-Add, so every Add that will ever
+		// happen has already completed by the time this returns.
+		rc.lifecycleMu.Lock()
 		close(rc.stopChan)
+		rc.lifecycleMu.Unlock()
+
+		// Deliberately no ctx cancellation here: wg.Wait() must block until
+		// a genuinely in-flight refresh actually finishes (see
+		// executeRefreshAsync's comment). RefreshTimeout is the only bound
+		// on how long that wait can take.
 		rc.wg.Wait()
 	})
 }

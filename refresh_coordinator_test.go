@@ -763,3 +763,37 @@ func TestNoGoroutineExplosionWithTimers(t *testing.T) {
 			initialGoroutines, finalGoroutines, finalIncrease)
 	}
 }
+
+// TestFix36_CoordinateRefreshRejectedAfterShutdown guards the FIX-36 fix:
+// CoordinateRefresh called wg.Add(1) unconditionally, with no check on
+// rc.stopChan, so a call arriving after Shutdown still registered and ran a
+// brand-new refresh operation instead of being rejected.
+func TestFix36_CoordinateRefreshRejectedAfterShutdown(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	coordinator := NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), logger)
+	coordinator.Shutdown()
+
+	var ran int32
+	_, err := coordinator.CoordinateRefresh(context.Background(), "fix36-session", "fix36-token", func() (*TokenResponse, error) {
+		atomic.StoreInt32(&ran, 1)
+		return &TokenResponse{AccessToken: "should-not-run"}, nil
+	})
+
+	if err == nil {
+		t.Fatal("CoordinateRefresh called after Shutdown must return an error instead of running a new refresh")
+	}
+	if atomic.LoadInt32(&ran) == 1 {
+		t.Fatal("refreshFunc must not run for a CoordinateRefresh call rejected after Shutdown")
+	}
+}
+
+// Note: an earlier draft of this FIX-36 pin asserted Shutdown returns
+// promptly by canceling a per-refresh context. That directly regressed two
+// existing, deliberately-tested invariants —
+// TestRefreshCoordinator_ShutdownWaitsForInFlight (review_r154) and
+// TestRefreshCoordinatorShutdownWaitsForInflight (review_r63) — which pin
+// that Shutdown must WAIT for a genuinely in-flight refresh to finish
+// naturally, not abandon it (avoiding a leaked/orphaned refresh goroutine).
+// FIX-36 therefore does not change that behavior; see the corrected
+// comments on executeRefreshAsync's timeout-context construction and on
+// Shutdown for the reasoning kept in refresh_coordinator.go.
