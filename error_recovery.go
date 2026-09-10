@@ -286,12 +286,16 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 }
 
 // isTerminalClientError reports whether err is an HTTPError whose status
-// code is a client error (4xx) other than 429 Too Many Requests. Such
-// errors indicate the request itself was rejected by the far end (for
-// example a replayed authorization code), not that the far end is
-// unhealthy, so the circuit breaker's failure-counting state machine
-// ignores them (FIX-09). 429 is excluded because it is the service
-// signaling it is overloaded, a genuine health signal.
+// code is a client error (4xx) other than 429 Too Many Requests or 408
+// Request Timeout. Such errors indicate the request itself was rejected by
+// the far end (for example a replayed authorization code), not that the far
+// end is unhealthy, so the circuit breaker's failure-counting state machine
+// ignores them (FIX-09). 429 and 408 are excluded because they are the
+// service itself signaling it is overloaded or slow, a genuine health
+// signal, not a per-request rejection — the same classification FIX-13
+// applies in token_validation_rs.go and bearer_auth.go, and that
+// internal/recovery/base.go and metrics.go apply via their retryable-status
+// checks.
 //
 // This uses a plain type assertion, not errors.As. Under yaegi v0.16.1 (the
 // interpreter Traefik uses to load this plugin, pinned in Makefile:9),
@@ -308,7 +312,8 @@ func isTerminalClientError(err error) bool {
 	if !ok {
 		return false
 	}
-	return httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 && httpErr.StatusCode != 429
+	return httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 &&
+		httpErr.StatusCode != 429 && httpErr.StatusCode != 408
 }
 
 // Execute executes a function through the circuit breaker without context.
