@@ -14,19 +14,18 @@ import (
 	"time"
 )
 
-// backchannelLogoutJTIMu serializes checkAndMarkLogoutJTIProcessed's
-// check-and-set below so two logout tokens sharing a jti (retried
-// delivery, or a captured token replayed by an attacker) cannot both
-// observe "not yet processed" and both proceed within THIS PROCESS. The
-// previous unguarded Get-then-Set had exactly that TOCTOU gap (FIX-17, R36
-// correction). This mutex is process-local: it does not coordinate across
-// Traefik replicas. When sessionInvalidationCache is Redis-backed (multiple
-// replicas, per README.md's back-channel logout requirement), two replicas
-// can each pass their own local check-and-set for the same jti at the same
-// time, so both accept it. Closing that gap needs an atomic primitive on the
-// cache backend itself (e.g. Redis SET NX), which is out of this fix's scope
-// (backends.CacheBackend has no such primitive and is owned by unrelated
-// cache-layer work) — flagged for the maintainer rather than added here.
+// backchannelLogoutJTIMu serializes the FALLBACK check-and-set inside
+// checkAndMarkLogoutJTIProcessed, used only when sessionInvalidationCache
+// does not implement AtomicSetIfAbsentCache. It guards against two logout
+// tokens sharing a jti (retried delivery, or a captured token replayed by
+// an attacker) both observing "not yet processed" within THIS PROCESS. This
+// mutex is process-local: it does not coordinate across Traefik replicas.
+// The primary path (a cache that implements AtomicSetIfAbsentCache, which
+// CacheInterfaceWrapper — what sessionInvalidationCache actually is at
+// runtime — does) does not use this mutex at all: SetIfAbsent's own
+// atomicity, backed by Redis SET NX PX when the cache is Redis-backed,
+// closes the cross-replica gap this mutex could never cover (FIX-17, R36
+// correction).
 var backchannelLogoutJTIMu sync.Mutex
 
 const (
@@ -306,17 +305,35 @@ func (t *TraefikOidc) validateLogoutToken(tokenString string) (*LogoutTokenClaim
 // §2.5's jti replay check: it records jti as processed and rejects a
 // second call with the same jti. Only enforced when a cache is available;
 // the jti is stored under its own namespace so it never collides with
-// sid/sub invalidation entries. The check-and-set is serialized by
-// backchannelLogoutJTIMu, so two logout tokens sharing a jti cannot both
-// observe "not yet processed" WITHIN ONE PROCESS (FIX-17). See
-// backchannelLogoutJTIMu's comment: across multiple Traefik replicas
-// sharing a Redis-backed sessionInvalidationCache, this check is not
-// atomic, and two replicas can each accept the same jti concurrently.
+// sid/sub invalidation entries.
+//
+// The check-and-set is one atomic operation, not a separate Get followed
+// by a Set (FIX-17, R36 correction): when sessionInvalidationCache
+// implements AtomicSetIfAbsentCache (CacheInterfaceWrapper, what it
+// actually is at runtime, does), SetIfAbsent is the sole check, and its own
+// atomicity — backed by Redis SET NX PX when the cache is Redis-backed —
+// holds across every Traefik replica sharing that cache, not just within
+// this process. A cache that does not provide the atomic primitive falls
+// back to a backchannelLogoutJTIMu-guarded Get then Set, correct only
+// within this process; see that mutex's comment.
 func (t *TraefikOidc) checkAndMarkLogoutJTIProcessed(jti string, issuedAt int64) error {
 	if jti == "" || t.sessionInvalidationCache == nil {
 		return nil
 	}
 	key := t.buildSessionInvalidationKey("jti", jti)
+
+	if atomicCache, ok := t.sessionInvalidationCache.(AtomicSetIfAbsentCache); ok {
+		claimed, err := atomicCache.SetIfAbsent(key, issuedAt, sessionInvalidationTTL)
+		if err == nil {
+			if !claimed {
+				return fmt.Errorf("logout token replay: jti %s already processed", jti)
+			}
+			return nil
+		}
+		// SetIfAbsent already logged the backend failure itself. Fall
+		// through to the mutex-guarded Get+Set below rather than reject an
+		// otherwise-valid logout token outright on a transient cache error.
+	}
 
 	backchannelLogoutJTIMu.Lock()
 	defer backchannelLogoutJTIMu.Unlock()
