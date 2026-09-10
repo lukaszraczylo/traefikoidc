@@ -862,10 +862,25 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 // verification at all; introspection is the only gate. So this function
 // re-applies every JWT-path gate the introspection branch used to skip
 // (R159 gap): allowOpaqueTokens, client binding, bearerIdentifierClaim +
-// sanitizeBearerIdentifier, maxTokenAge and isSessionInvalidated.
+// sanitizeBearerIdentifier, maxTokenAge, isSessionInvalidated, the local
+// tokenBlacklist (raw token and jti) and nbf.
 func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*principal, *bearerError) {
 	if !t.allowOpaqueTokens {
 		return nil, newBearerError(bearerErrInvalidToken, "opaque tokens are not enabled (set allowOpaqueTokens to true)")
+	}
+
+	// Same local-revocation gate the JWT path applies first
+	// (verifyTokenWithOpts, token_manager.go:71-75): handleLogout calls
+	// RevokeToken on the session's access token specifically so a token
+	// captured before logout cannot be reused (helpers.go). Without this
+	// check here, a captured opaque bearer token kept authenticating as the
+	// revoked subject for as long as the IdP still reported it active —
+	// provider-side revocation is best-effort (RevokeTokenWithProvider logs
+	// and continues on failure) and is not configured for most deployments.
+	if t.tokenBlacklist != nil {
+		if b, exists := t.tokenBlacklist.Get(token); exists && b != nil {
+			return nil, newBearerError(bearerErrTokenInactive, "token has been revoked")
+		}
 	}
 
 	resp, err := t.introspectToken(token)
@@ -887,6 +902,24 @@ func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*prin
 	}
 	if resp.Exp > 0 && time.Now().After(time.Unix(resp.Exp, 0)) {
 		return nil, newBearerError(bearerErrTokenInactive, "introspection reports token expired")
+	}
+	// Same not-before check the JWT path applies through verifyTimeClaims
+	// and the session path applies through validateOpaqueToken
+	// (token_introspection.go:258-263). RFC 7662 s2.2 defines nbf with the
+	// same semantics as RFC 7519's nbf claim.
+	if resp.Nbf > 0 && time.Now().Before(time.Unix(resp.Nbf, 0)) {
+		return nil, newBearerError(bearerErrTokenInactive, "introspection reports token not yet valid (nbf)")
+	}
+	// Same jti-blacklist gate the JWT path applies on a cached-token hit
+	// (token_manager.go:90-96): RevokeToken blacklists a JWT's jti too, and
+	// an IdP may echo that same jti in an opaque token's introspection
+	// response (e.g. a rotated token sharing the revoked JTI). Gated on
+	// disableReplayDetection like the JWT path, so an operator who has
+	// disabled replay/JTI tracking is not surprised by this new check.
+	if resp.Jti != "" && !t.disableReplayDetection && t.tokenBlacklist != nil {
+		if b, exists := t.tokenBlacklist.Get(resp.Jti); exists && b != nil {
+			return nil, newBearerError(bearerErrTokenInactive, "token replay detected (jti blacklisted)")
+		}
 	}
 	clientID, _, _, audience, _ := t.clientCredentials()
 	if audience != "" && audience != clientID {

@@ -242,6 +242,91 @@ func TestBearerOpaqueIntrospection_SidOnlyLogoutRejected(t *testing.T) {
 	}
 }
 
+// TestBearerOpaqueIntrospection_RevokedTokenRejected guards the local
+// revocation blacklist: the JWT bearer path rejects a raw token that
+// RevokeToken blacklisted (verifyTokenWithOpts, token_manager.go:71-75), and
+// handleLogout calls RevokeToken on the session's access token specifically
+// so "a token captured before logout ... cannot be reused" (helpers.go).
+// buildPrincipalFromOpaqueIntrospection never consulted t.tokenBlacklist, so
+// a captured opaque bearer token kept authenticating as the victim after
+// logout for as long as the IdP still reported it active.
+func TestBearerOpaqueIntrospection_RevokedTokenRejected(t *testing.T) {
+	blacklist := NewCache()
+	defer blacklist.Close()
+
+	active := &IntrospectionResponse{Active: true, Sub: "victim", ClientID: "my-client"}
+	tObj := &TraefikOidc{
+		logger:                    newNoOpLogger(),
+		introspectionCache:        &stubIntrospectionCache{v: active},
+		requireTokenIntrospection: true,
+		allowOpaqueTokens:         true,
+		clientID:                  "my-client",
+		tokenBlacklist:            blacklist,
+		tokenCache:                NewTokenCache(),
+	}
+	defer tObj.tokenCache.Close()
+
+	const token = "opaque-victim-token"
+	tObj.RevokeToken(token)
+
+	_, bErr := tObj.buildPrincipalFromOpaqueIntrospection(token)
+	if bErr == nil {
+		t.Fatal("an opaque bearer token blacklisted by RevokeToken (logout) must be rejected, even though introspection still reports it active")
+	}
+}
+
+// TestBearerOpaqueIntrospection_BlacklistedJtiRejected guards the jti side
+// of the same gate: when the introspection response carries a jti and that
+// jti is blacklisted (e.g. the IdP echoes the same jti it minted for a JWT
+// RevokeToken already blacklisted by jti), the opaque path must reject it
+// too, unless disableReplayDetection is set — mirroring the JWT path's
+// tokenCache-hit jti check (token_manager.go:90-96).
+func TestBearerOpaqueIntrospection_BlacklistedJtiRejected(t *testing.T) {
+	blacklist := NewCache()
+	defer blacklist.Close()
+	blacklist.Set("revoked-jti-1", true, time.Hour)
+
+	withJti := &IntrospectionResponse{Active: true, Sub: "victim", ClientID: "my-client", Jti: "revoked-jti-1"}
+	tObj := &TraefikOidc{
+		logger:                    newNoOpLogger(),
+		introspectionCache:        &stubIntrospectionCache{v: withJti},
+		requireTokenIntrospection: true,
+		allowOpaqueTokens:         true,
+		clientID:                  "my-client",
+		tokenBlacklist:            blacklist,
+	}
+
+	_, bErr := tObj.buildPrincipalFromOpaqueIntrospection("opaque-token")
+	if bErr == nil {
+		t.Fatal("an opaque bearer token whose introspection jti is blacklisted must be rejected")
+	}
+}
+
+// TestBearerOpaqueIntrospection_NbfFutureRejected guards the not-before
+// check the JWT path applies through verifyTimeClaims and the session path
+// applies through validateOpaqueToken (token_introspection.go:258-263): an
+// introspection response reporting a future nbf must be rejected on the
+// bearer path too.
+func TestBearerOpaqueIntrospection_NbfFutureRejected(t *testing.T) {
+	notYetValid := &IntrospectionResponse{
+		Active:   true,
+		Sub:      "user-1",
+		ClientID: "my-client",
+		Nbf:      time.Now().Add(time.Hour).Unix(),
+	}
+	tObj := &TraefikOidc{
+		logger:                    newNoOpLogger(),
+		introspectionCache:        &stubIntrospectionCache{v: notYetValid},
+		requireTokenIntrospection: true,
+		allowOpaqueTokens:         true,
+		clientID:                  "my-client",
+	}
+	_, bErr := tObj.buildPrincipalFromOpaqueIntrospection("opaque-token")
+	if bErr == nil {
+		t.Fatal("an introspected token with nbf in the future must be rejected")
+	}
+}
+
 // TestBearerOpaqueIntrospection_UsesClientIDClaim guards that
 // bearerIdentifierClaim can resolve against any IntrospectionResponse
 // member, not just sub/username — client_id, scope, iss, jti and aud must
