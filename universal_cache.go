@@ -467,9 +467,13 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 			// miss on the new namespace also checks the legacy "token:"
 			// namespace so revocations written before the upgrade (TTL up
 			// to 24h, see token_manager.go blacklistDuration) keep denying
-			// already-issued tokens, and mixed-version replicas during a
-			// rolling deploy still share revocations (FIX-16). Writes stay
-			// on the new namespace only (see Set/prefixKey).
+			// already-issued tokens (FIX-16). This shim works in ONE
+			// direction only: an upgraded replica keeps honoring
+			// revocations a pre-upgrade replica wrote under "token:". A
+			// pre-upgrade replica has no knowledge of "blacklist:" and so
+			// does NOT see revocations an upgraded replica writes during
+			// the same rolling deploy. Writes stay on the new namespace
+			// only (see Set/prefixKey).
 			if blacklisted, ok := c.checkLegacyBlacklistMarker(ctx, key); ok {
 				atomic.AddInt64(&c.hits, 1)
 				_ = c.updateLocalCache(key, blacklisted, c.config.DefaultTTL)
