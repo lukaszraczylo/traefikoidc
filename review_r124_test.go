@@ -126,8 +126,9 @@ func TestShouldBypassAuth_PassesOptions(t *testing.T) {
 		// The released behavior requires auth for OPTIONS by default
 		// (FIX-02 maintainer decision); this test pins the opt-in bypass
 		// path, so it must set the flag explicitly. See
-		// TestShouldBypassAuth_DefaultDoesNotBypassOptions in
-		// fix02_options_bypass_test.go for the default-off case.
+		// TestServeHTTP_DefaultConfigGenuinePreflightRequiresAuth in
+		// fix02b_allow_unauthenticated_preflight_test.go for the
+		// default-off case.
 		allowUnauthenticatedPreflight: true,
 	}
 	req := httptest.NewRequest(http.MethodOptions, "/api/resource", nil)
