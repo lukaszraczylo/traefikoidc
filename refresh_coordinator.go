@@ -286,7 +286,7 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 		// refreshFunc's natural completion (FIX-36; see executeRefreshAsync).
 		go func() {
 			defer rc.wg.Done()
-			rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc) //nolint:gosec // long-lived background refresh intentionally uses a background context
+			rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc) //nolint:gosec // detached from the request ctx on purpose; bounded by rc.ctx (canceled by Shutdown) and RefreshTimeout
 		}()
 	} else {
 		// Joined existing operation - this is a deduplicated request
