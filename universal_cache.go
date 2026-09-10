@@ -561,7 +561,7 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 			if err := c.deserialize(data, &value); err != nil {
 				c.logger.Errorf("Failed to deserialize value for key %s: %v", key, err)
 				// Fall through to local cache
-			} else if localValue, stale := c.backendStaleLocalValue(key); stale && !backendValueIsNewer(value, localValue) {
+			} else if localValue, stale := c.backendStaleLocalValue(key); stale && !(c.config.MonotonicMarkers && backendValueIsNewer(value, localValue)) {
 				// A prior Set skipped the Delete for this key (FIX-04) and
 				// the backend entry may be older than the local one — for a
 				// MonotonicMarkers cache (session invalidation) it can be a
@@ -571,16 +571,23 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 				// backend one.
 				//
 				// backendValueIsNewer guards the other direction (R4 cache
-				// review): the mark only records "this replica's own write
-				// may not have landed", not "the backend can never be
-				// ahead". A DIFFERENT replica can write a genuinely newer
-				// value to the same key (e.g. a later cross-replica
-				// backchannel logout) while this key is still marked stale
-				// here. When both values decode to a comparable
-				// timestamp/number and the backend's is not older, trust it
-				// instead of pinning this replica's stale local one — for
-				// values it cannot compare (e.g. the blacklist cache's bool
-				// markers) it reports false, so behavior there is unchanged.
+				// review) for a MonotonicMarkers cache ONLY (R4 cache review
+				// round 2, minor, universal_cache.go:546): the mark only
+				// records "this replica's own write may not have landed",
+				// not "the backend can never be ahead". A DIFFERENT replica
+				// can write a genuinely newer value to the same key (e.g. a
+				// later cross-replica backchannel logout) while this key is
+				// still marked stale here. For a MonotonicMarkers cache,
+				// when both values decode to a comparable timestamp and the
+				// backend's is not older, trust it instead of pinning this
+				// replica's stale local one. Gated on MonotonicMarkers
+				// because a plain numeric cache has no such guarantee that
+				// "larger" means "newer" — trusting it there risks the exact
+				// clobber FIX-04 exists to prevent. Every other cache (and
+				// every value backendValueIsNewer cannot compare, e.g. the
+				// blacklist cache's bool markers or a string/map/struct
+				// value) instead recovers once the mark itself ages out —
+				// see backendStaleLocalValue's backendStaleMarkTTL bound.
 				atomic.AddInt64(&c.hits, 1)
 				return localValue, true
 			} else {
@@ -1402,6 +1409,12 @@ func (c *UniversalCache) backendStaleLocalValue(key string) (interface{}, bool) 
 // comparable number — including the blacklist cache's bool markers — so
 // Get's backend-stale branch keeps its original FIX-04 behavior (always
 // prefer local) for anything this comparison cannot make sense of.
+//
+// Callers MUST gate this on c.config.MonotonicMarkers (see Get) before
+// trusting the result: for a cache that is not MonotonicMarkers, a larger
+// number is not necessarily a newer write, so calling this at all (let
+// alone trusting a "newer" result) risks the exact clobber FIX-04 exists to
+// prevent (R4 cache review round 2, minor, universal_cache.go:546).
 func backendValueIsNewer(backendValue, localValue interface{}) bool {
 	backendNum, backendOK := comparableTimestamp(backendValue)
 	localNum, localOK := comparableTimestamp(localValue)

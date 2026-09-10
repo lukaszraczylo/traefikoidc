@@ -75,14 +75,29 @@ func (b *r4SharedBackend) Close() error                     { return nil }
 func (b *r4SharedBackend) Ping(_ context.Context) error     { return nil }
 
 // TestR4_BackendStale_CrossReplicaNewerValue_PrefersNewerBackend guards
-// Get() (universal_cache.go, around the backendStaleLocalValue branch): once
-// a plain (non-MonotonicMarkers) cache's Set fails on a context deadline —
-// FIX-04's original case, "the write may have landed" — and a DIFFERENT
-// replica then writes a genuinely NEWER value to the shared backend, Get
-// must serve that newer backend value, not keep pinning the older local one
-// forever.
-// Fail-on-old: Get returns the local 2000 instead of the backend's 3000.
+// Get() (universal_cache.go, around the backendStaleLocalValue branch) for a
+// plain (non-MonotonicMarkers) cache. R4 cache review round 2 (minor,
+// universal_cache.go:546) found this test's ORIGINAL premise wrong: it
+// expected the numeric "larger value wins" comparison (backendValueIsNewer)
+// to resolve a cross-replica race on a cache that never set
+// MonotonicMarkers. That comparison is meaningful ONLY for a MonotonicMarkers
+// cache's timestamp markers — for any other numeric cache, a larger number
+// is not necessarily a newer write, so trusting it risks exactly the
+// clobber FIX-04 exists to prevent (see
+// TestR4_BackendStale_NonMonotonicNumeric_OlderLargerBackendDoesNotClobber).
+// Get() now gates the numeric comparison on c.config.MonotonicMarkers, so a
+// plain cache like this one recovers from a stale mark only once
+// backendStaleMarkTTL elapses — the same time-bounded mechanism that
+// recovers a non-numeric value (see
+// review_r4_backendstale_timebound_test.go), not numeric order.
+// Fail-on-old (pre-gate code): immediately after replica B's write, Get
+// already returns 3000 via the numeric comparison, so the "still local"
+// assertion below fails.
 func TestR4_BackendStale_CrossReplicaNewerValue_PrefersNewerBackend(t *testing.T) {
+	orig := backendStaleMarkTTL
+	backendStaleMarkTTL = 50 * time.Millisecond
+	t.Cleanup(func() { backendStaleMarkTTL = orig })
+
 	shared := &r4SharedBackend{m: map[string][]byte{}}
 	logger := NewLogger("error")
 
@@ -102,7 +117,7 @@ func TestR4_BackendStale_CrossReplicaNewerValue_PrefersNewerBackend(t *testing.T
 	}
 
 	// Replica B's later write reaches the SAME shared backend directly with
-	// a newer value.
+	// a numerically larger value.
 	data, err := replicaA.serialize(int64(3000))
 	if err != nil {
 		t.Fatalf("serialize: %v", err)
@@ -111,13 +126,77 @@ func TestR4_BackendStale_CrossReplicaNewerValue_PrefersNewerBackend(t *testing.T
 		t.Fatalf("simulated replica B write failed: %v", err)
 	}
 
+	// Immediately after B's write, this non-MonotonicMarkers cache must NOT
+	// resolve the race by numeric order: the mark is still fresh, so A keeps
+	// serving its own local value.
 	value, ok := replicaA.Get("k1")
+	if !ok {
+		t.Fatal("Get: key not found")
+	}
+	if got, numeric := sessionInvalidationTime(value); !numeric || got != 2000 {
+		t.Fatalf("Get returned %v (%T), want the local 2000 — a non-MonotonicMarkers cache must not let a larger backend number win while the stale mark is still fresh", value, value)
+	}
+
+	// Once the mark's bound elapses, the (now current) backend value is
+	// trusted again — recovery via the time bound, not numeric order.
+	time.Sleep(backendStaleMarkTTL + 150*time.Millisecond)
+
+	value, ok = replicaA.Get("k1")
 	if !ok {
 		t.Fatal("Get: key not found")
 	}
 	got, numeric := sessionInvalidationTime(value)
 	if !numeric || got != 3000 {
-		t.Fatalf("Get returned %v (%T), want 3000 — replica A must not keep serving its own older local value once the backend holds a genuinely newer one written by another replica", value, value)
+		t.Fatalf("Get returned %v (%T), want 3000 — once the backend-stale mark's bound has elapsed, replica A must serve the backend's current value", value, value)
+	}
+}
+
+// TestR4_BackendStale_NonMonotonicNumeric_OlderLargerBackendDoesNotClobber
+// guards the direction TestR4_BackendStale_CrossReplicaNewerValue_
+// PrefersNewerBackend used to get backwards (R4 cache review round 2, minor,
+// universal_cache.go:546): backendValueIsNewer's "larger number wins"
+// comparison must apply ONLY to a MonotonicMarkers cache. On any other
+// numeric cache, a larger backend value is not necessarily newer — here the
+// backend holds an OLD but numerically LARGER value from before a fresh,
+// smaller write times out. The gate must keep serving the fresh local write
+// while the mark is still within backendStaleMarkTTL, exactly as it already
+// does for a value type backendValueIsNewer cannot compare at all.
+// Fail-on-old (pre-gate code): Get returns the backend's stale 100 instead
+// of the fresh local 5, because backendValueIsNewer(100, 5) reports 100 as
+// "newer" purely by numeric size.
+func TestR4_BackendStale_NonMonotonicNumeric_OlderLargerBackendDoesNotClobber(t *testing.T) {
+	shared := &r4SharedBackend{m: map[string][]byte{}}
+	logger := NewLogger("error")
+
+	replicaA := NewUniversalCacheWithBackend(UniversalCacheConfig{
+		Logger:          logger,
+		Type:            CacheTypeGeneral,
+		DefaultTTL:      time.Minute,
+		SkipAutoCleanup: true,
+	}, shared)
+	defer replicaA.Close()
+
+	// Seed the backend with an old value that happens to be numerically
+	// larger than the fresh write about to be made. This cache is not
+	// MonotonicMarkers, so "larger" carries no meaning at all.
+	if err := replicaA.Set("k1", int64(100), time.Minute); err != nil {
+		t.Fatalf("seed Set returned error: %v", err)
+	}
+
+	// A fresh, smaller write times out. FIX-04 must keep 5 locally rather
+	// than let Get resurrect the backend's stale (but larger) 100.
+	shared.failOnce = context.DeadlineExceeded
+	if err := replicaA.Set("k1", int64(5), time.Minute); err != nil {
+		t.Fatalf("Set returned error: %v", err)
+	}
+
+	value, ok := replicaA.Get("k1")
+	if !ok {
+		t.Fatal("Get: key not found")
+	}
+	got, numeric := sessionInvalidationTime(value)
+	if !numeric || got != 5 {
+		t.Fatalf("Get returned %v (%T), want the fresh local write 5 — backendValueIsNewer's numeric \"larger wins\" comparison must not apply to a non-MonotonicMarkers cache", value, value)
 	}
 }
 
