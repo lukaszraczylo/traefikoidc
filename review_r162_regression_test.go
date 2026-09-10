@@ -119,7 +119,7 @@ func TestR162_TestKeyIdHeaderHonorsRevokedJti(t *testing.T) {
 	// External revocation of this jti.
 	oidc.tokenBlacklist.Set(jti, true, 5*time.Minute)
 
-	if err := oidc.verifyTokenWithOpts(token, verifyOpts{}); err == nil {
+	if err := oidc.verifyTokenWithOpts(token); err == nil {
 		t.Fatal("a token whose jti was revoked must be rejected even when its header is test-key-id")
 	}
 }

@@ -37,7 +37,7 @@ var ErrRateLimitExceeded = errors.New("request rate limit exceeded")
 //
 //nolint:gocognit,gocyclo // Complex token verification logic requires multiple security checks
 func (t *TraefikOidc) VerifyToken(token string) error {
-	return t.verifyTokenWithOpts(token, verifyOpts{})
+	return t.verifyTokenWithOpts(token)
 }
 
 // clientCredentials returns a consistent snapshot of the client credential
@@ -51,27 +51,11 @@ func (t *TraefikOidc) clientCredentials() (clientID, clientSecret, clientAuthMet
 	return t.clientID, t.clientSecret, t.clientAuthMethod, t.audience, t.clientAssertion
 }
 
-// verifyOpts are internal-only knobs for verifyTokenWithOpts. Kept unexported
-// because they expose subtle replay-protection semantics that are dangerous
-// to misuse.
-type verifyOpts struct {
-	// skipReplayMarking is dead: nothing in verifyTokenWithOpts reads it.
-	// The field once suppressed a JTI -> blacklist Set that verifyTokenWithOpts
-	// no longer contains (an earlier FIX-17 pass removed the Set without
-	// updating this comment or its one caller). The Get-based blacklist
-	// check below stays active either way. Flagged for maintainer approval
-	// to delete the field and its sole write (bearer_auth.go:710); see
-	// FIX-17's verifier report.
-	skipReplayMarking bool
-}
-
 // verifyTokenWithOpts runs the full token verification pipeline used by both
-// the cookie path and the bearer path. The cookie path uses the zero-value
-// opts; the bearer path sets skipReplayMarking=true, which currently has no
-// effect here (see the field comment above).
+// the cookie path and the bearer path.
 //
 //nolint:gocognit,gocyclo // Complex token verification logic requires multiple security checks
-func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
+func (t *TraefikOidc) verifyTokenWithOpts(token string) error {
 	if token == "" {
 		return fmt.Errorf("invalid JWT format: token is empty")
 	}
@@ -135,8 +119,7 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 
 	// Only check JTI blacklist for tokens that aren't already in the cache
 	// This is for FIRST-TIME validation to detect replay attacks. This Get
-	// is ALWAYS active, on both the cookie and bearer paths; opts has no
-	// effect on it (see verifyOpts.skipReplayMarking's comment).
+	// is ALWAYS active, on both the cookie and bearer paths.
 	if jti, ok := parsedJWT.Claims["jti"].(string); ok && jti != "" {
 		// Skip JTI blacklist check if replay detection is disabled
 		if !t.disableReplayDetection {

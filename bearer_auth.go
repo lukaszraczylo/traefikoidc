@@ -13,8 +13,7 @@
 //   - Multi-audience tokens require matching azp.
 //   - Per-IP 401 throttle returns 429 + Retry-After after a threshold.
 //   - JTI Get stays active — revoked tokens (RevokeToken adds to blacklist)
-//     are still rejected. skipReplayMarking is passed but currently has no
-//     effect (see verifyOpts.skipReplayMarking's comment, token_manager.go).
+//     are still rejected.
 //   - Identifier is read from BearerIdentifierClaim (default "sub"), never
 //     from UserIdentifierClaim, to avoid the unverified-email spoofing path.
 //   - Identifier is sanitized: length cap, control chars, bidi-override,
@@ -754,7 +753,7 @@ func (t *TraefikOidc) handleBearerRequest(rw http.ResponseWriter, req *http.Requ
 // described in spec §7.3 and returns a principal ready for forwardAuthorized.
 // Returns a typed *bearerError on failure so the caller can map to status.
 func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *bearerError) {
-	if err := t.verifyTokenWithOpts(token, verifyOpts{skipReplayMarking: true}); err != nil {
+	if err := t.verifyTokenWithOpts(token); err != nil {
 		return nil, newBearerError(bearerErrInvalidToken, "token verification failed: "+err.Error())
 	}
 

@@ -104,7 +104,7 @@ func TestVerify_JTIBlacklistPiercesCache(t *testing.T) {
 	seedVerified(t, oidc, token, map[string]interface{}{"sub": "u", "jti": "shared-jti"})
 	oidc.tokenBlacklist.Set("shared-jti", time.Now().Unix(), time.Minute)
 
-	if err := oidc.verifyTokenWithOpts(token, verifyOpts{}); err == nil {
+	if err := oidc.verifyTokenWithOpts(token); err == nil {
 		t.Fatal("cached token whose JTI is blacklisted must be rejected (fast path must pierce jti)")
 	}
 }
