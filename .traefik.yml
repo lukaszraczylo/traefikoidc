@@ -107,3 +107,8 @@ testData:
   # bearerFailureWindowSeconds: 60        # rolling window over which 401s are counted
   # bearerFailurePenaltySeconds: 60       # 429 + Retry-After duration after threshold trips
 
+  # Optional: RFC 8707 resource indicator, alternative to `audience` for
+  # supporting IdPs. See docs/RFC8707.md for exact request behavior and
+  # provider support.
+  # resource: https://api.example.com
+
