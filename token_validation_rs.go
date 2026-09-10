@@ -15,7 +15,6 @@ package traefikoidc
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"strings"
 	"time"
 )
@@ -197,19 +196,18 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 					}
 					return false, false, true
 				}
-				// A definitive 4xx from the introspection endpoint (e.g. 401
-				// for an unknown/revoked token) means the token itself is bad,
-				// not that the endpoint transiently failed. Treat it as
-				// invalid (refresh) rather than falling through to
-				// ID-token-only auth, which would authenticate a revoked
-				// opaque token (R156).
-				var httpErr *HTTPError
-				if errors.As(err, &httpErr) && httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 {
-					if rs.refreshToken != "" {
-						return false, true, false
-					}
-					return false, false, true
-				}
+				// Any other introspection error — a network failure, or a
+				// 4xx from the introspection endpoint itself — is not a
+				// statement about the presented token. RFC 7662 s2.2 defines
+				// only a 200 response with active=false as "not active";
+				// s2.3 defines a 401 as the RESOURCE's (this plugin's) own
+				// client credentials being rejected, not the token, and a
+				// 408/429 as the endpoint throttling or timing out (FIX-13,
+				// supersedes R156's blanket 4xx-as-revoked classification).
+				// requireTokenIntrospection keeps the fail-closed behavior
+				// below; otherwise fall through to ID-token validation
+				// rather than forcing a refresh for a token that may still
+				// be perfectly valid.
 				if t.requireTokenIntrospection {
 					if rs.refreshToken != "" {
 						return false, true, false

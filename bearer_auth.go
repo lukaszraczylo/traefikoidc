@@ -29,7 +29,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -811,10 +810,11 @@ func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*prin
 
 	resp, err := t.introspectToken(token)
 	if err != nil {
-		var httpErr *HTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 {
-			return nil, newBearerError(bearerErrTokenInactive, fmt.Sprintf("introspection reports token inactive (HTTP %d)", httpErr.StatusCode))
-		}
+		// Any introspection transport/HTTP error — including a 4xx, which
+		// per RFC 7662 s2.3 means OUR OWN client credentials were rejected,
+		// not that the presented token is bad — is an availability problem,
+		// not a verdict on the token. Only a 200 response with active=false
+		// is (FIX-13, supersedes R156's blanket 4xx-as-invalid mapping).
 		return nil, newBearerError(bearerErrIntrospectionUnavailable, "introspection failed: "+err.Error())
 	}
 	if !resp.Active {
@@ -903,13 +903,15 @@ func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*prin
 func (t *TraefikOidc) introspectOnBearerPath(token string) *bearerError {
 	resp, err := t.introspectToken(token)
 	if err != nil {
-		// A definitive 4xx from the introspection endpoint (e.g. 401 for
-		// an unknown/revoked token) is a credential failure, not an infra
-		// outage — don't downgrade it to "unavailable" (R156).
-		var httpErr *HTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 {
-			return newBearerError(bearerErrTokenInactive, fmt.Sprintf("introspection reports token inactive (HTTP %d)", httpErr.StatusCode))
-		}
+		// Any introspection transport/HTTP error is an availability
+		// problem, never a verdict on the token: RFC 7662 s2.3 defines a
+		// 401/403 from the introspection endpoint as OUR OWN client
+		// credentials being rejected (e.g. a rotated client_secret), and
+		// 408/429 as the endpoint throttling or timing out. Only a 200
+		// response with active=false is a definite "not active" (s2.2).
+		// (FIX-13, supersedes R156's blanket 4xx-as-invalid mapping — a
+		// misconfigured or throttled endpoint must not turn every valid
+		// token into a 401.)
 		return newBearerError(bearerErrIntrospectionUnavailable, "introspection failed: "+err.Error())
 	}
 	if !resp.Active {

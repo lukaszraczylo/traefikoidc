@@ -147,7 +147,7 @@ treats every one of these as a first-class concern.
 | `Authorization` strip | `stripAuthorizationHeader=true` by default. | Keeps the raw token out of downstream services and their logs. |
 | Excluded URLs | `Authorization` is stripped on excluded paths when `enableBearerAuth=true`. | Prevents bearer leakage into public health/metrics endpoint logs and prevents recon via excluded paths. |
 | Per-IP throttle | After `bearerFailureThreshold` consecutive 401s from one source IP within `bearerFailureWindowSeconds`, further bearer requests from that IP return `429 Too Many Requests` + `Retry-After` for `bearerFailurePenaltySeconds`. | Limits offline-guessing-style attacks and protects the shared rate-limiter / JWKS endpoint. |
-| Optional introspection | `requireTokenIntrospection=true` calls RFC 7662 introspection on every cache miss. Introspection result is cached briefly. Endpoint failure returns `503` (distinguishes infra outage from credential rejection). | Real-time revocation for high-assurance environments. Adds per-request IdP latency. |
+| Optional introspection | `requireTokenIntrospection=true` calls RFC 7662 introspection on every cache miss. Introspection result is cached briefly. Only an HTTP 200 response with `active=false` returns `401`; any other endpoint failure (network error, or any other status including 401/403/408/429) returns `503`. | RFC 7662 §2.3 defines a 401/403 from the introspection endpoint as the resource's own client credentials being rejected, not a statement about the presented token, so it must never be read as "token revoked". |
 | Response shape | `401 Unauthorized` with generic body. `WWW-Authenticate: Bearer error="invalid_token"` per RFC 6750 §3 (toggleable via `bearerEmitWWWAuthenticate`). `403` for roles/groups denial. `429` for throttle. `503` for introspection-endpoint outage. | Auditable from spec to code; reason categories never leak into the response body. |
 | Logging | Failure reason + identifier hash (SHA-256 truncated to 8 hex chars) logged at debug. Raw tokens are never logged. | Audit trail without secrets-in-logs. |
 
@@ -232,8 +232,8 @@ treats every one of these as a first-class concern.
 | Multi-audience token without matching `azp` | 401 | `Unauthorized` | `Bearer error="invalid_token"` |
 | Detected as ID token | 401 | `Unauthorized` | `Bearer error="invalid_token"` |
 | JTI blacklisted (revoked) | 401 | `Unauthorized` | `Bearer error="invalid_token"` |
-| Introspection reports `active=false` | 401 | `Unauthorized` | `Bearer error="invalid_token"` |
-| Introspection endpoint failure | 503 | `Service Unavailable` | (none) |
+| Introspection returns HTTP 200 with `active=false` | 401 | `Unauthorized` | `Bearer error="invalid_token"` |
+| Introspection endpoint HTTP failure (network error, or any non-200 status including 401/403/408/429) | 503 | `Service Unavailable` | (none) |
 | Identifier claim missing / empty | 401 | `Unauthorized` | `Bearer error="invalid_token"` |
 | Identifier fails sanitisation | 401 | `Unauthorized` | `Bearer error="invalid_token"` |
 | Per-IP failure threshold tripped | 429 | `Too Many Requests` | (none); `Retry-After: <bearerFailurePenaltySeconds>` |

@@ -15,31 +15,41 @@ import (
 
 // R156 review-round regressions.
 
-// TestR156_Introspection4xxForcesRefresh guards the introspection status
-// fix (token_introspection.go + token_validation_rs.go). A definitive
-// 4xx from the introspection endpoint (e.g. 401 for an unknown or
-// revoked opaque access token) used to be flattened into a plain error,
-// so validateStandardTokensRS substring-matching ("token is not
-// active"/"revoked"/"token has expired") treated it as a TRANSIENT
-// failure and — with requireTokenIntrospection off — fell through to
-// ID-token-only auth, authenticating a revoked opaque access token
-// instead of refreshing. The fix carries the HTTP status in a typed
-// *HTTPError and treats 4xx as token-invalid.
-// Fail-on-old: the 4xx is classed as transient, so with a valid
-// idToken present the fall-through ID-token validation returns no
-// refresh (shouldRefresh=false); the fixed code returns shouldRefresh.
-func TestR156_Introspection4xxForcesRefresh(t *testing.T) {
+// TestR156_Introspection4xxNoLongerForcesRefresh guards the introspection
+// status classification in token_validation_rs.go, superseded since by
+// FIX-13. R156 originally flattened a definitive 4xx from the introspection
+// endpoint into a plain error, so substring-matching treated it as
+// TRANSIENT and — with requireTokenIntrospection off — fell through to
+// ID-token-only auth, authenticating a revoked opaque access token instead
+// of refreshing. 8640451 fixed that by carrying the HTTP status in a typed
+// *HTTPError and treating any 4xx as definitely token-invalid. That
+// over-corrected: RFC 7662 s2.3 defines a 401/403 from the introspection
+// endpoint as the RESOURCE's (this plugin's) own client credentials being
+// rejected — a misconfiguration, not a statement about the presented
+// token — and s2.2 defines only a 200 response with active=false as "not
+// active". FIX-13 restores the R156-era fall-through for a 401, so a
+// misconfigured or throttled introspection endpoint no longer turns every
+// valid token into a forced refresh.
+// See TestIntrospectionStatus_SessionPath_401FallsThroughNoForcedRefresh
+// (introspection_status_classification_test.go) for the full FIX-13
+// coverage, including the 429 and active=false cases this test used to pin
+// the opposite way.
+func TestR156_Introspection4xxNoLongerForcesRefresh(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
-		w.WriteHeader(http.StatusUnauthorized) // definite: token unknown/revoked
+		w.WriteHeader(http.StatusUnauthorized) // our own client credentials rejected, not the token
 	}))
 	defer ts.Close()
 
 	// A non-empty idToken that the fall-through ID-token validation sees as
-	// valid (unexpired) — so OLD code authenticates instead of refreshing.
+	// valid (unexpired), so the fixed code authenticates via it instead of
+	// forcing a refresh.
 	const idToken = "dummy-but-cached-id-token"
 	tc := NewTokenCache()
 	tc.Set(idToken, map[string]interface{}{"exp": float64(time.Now().Add(time.Hour).Unix())}, time.Hour)
+
+	verifier := NewUnifiedMockTokenVerifier()
+	verifier.SetTokenValid(idToken, true)
 
 	tObj := &TraefikOidc{
 		logger:                    GetSingletonNoOpLogger(),
@@ -48,6 +58,7 @@ func TestR156_Introspection4xxForcesRefresh(t *testing.T) {
 		allowOpaqueTokens:         true,
 		requireTokenIntrospection: false,
 		tokenCache:                tc,
+		tokenVerifier:             verifier,
 		clientID:                  "test-client",
 		clientSecret:              "test-secret",
 	}
@@ -60,8 +71,8 @@ func TestR156_Introspection4xxForcesRefresh(t *testing.T) {
 	}
 
 	_, shouldRefresh, _ := tObj.validateStandardTokensRS(rs)
-	if !shouldRefresh {
-		t.Error("4xx from introspection must be treated as token-invalid and trigger refresh; got no refresh (authenticated via ID-token fall-through)")
+	if shouldRefresh {
+		t.Error("a 401 from the introspection endpoint (our own credentials rejected) must fall through to ID-token validation, not force a refresh (FIX-13)")
 	}
 }
 
