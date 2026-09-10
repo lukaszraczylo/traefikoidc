@@ -598,26 +598,46 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.safeLogError("Received nil metadata during initialization")
 }
 
-// Discovered-endpoint names that have no operator-configured source. Unlike
-// revocation, end_session and introspection (config.RevocationURL,
-// config.OIDCEndSessionURL, config.IntrospectionURL — settings.go), the
-// plugin has no config field that can supply jwks_uri, authorization or
-// token, so a dropped instance of one of these three leaves login broken
-// with no way to recover it (FIX-26).
+// Discovered-endpoint names. jwks_uri, authorization and token have no
+// operator-configured source at all (the plugin has no config field that
+// can supply them), so a dropped instance of one of those three leaves
+// login broken with no way to recover it (FIX-26). revocation, end_session
+// and introspection DO each have a config override (config.RevocationURL,
+// config.OIDCEndSessionURL, config.IntrospectionURL — settings.go), but
+// only when the operator actually sets it.
 const (
 	discoveredEndpointNameJWKSURI       = "jwks_uri"
 	discoveredEndpointNameAuthorization = "authorization"
 	discoveredEndpointNameToken         = "token"
+	discoveredEndpointNameRevocation    = "revocation"
+	discoveredEndpointNameEndSession    = "end_session"
+	discoveredEndpointNameIntrospection = "introspection"
 )
 
-// discoveredEndpointHasNoOverride reports whether name is one of the three
-// discovered endpoints (jwks_uri, authorization, token) that the plugin has
-// no operator-configured override for, and for which a scheme-downgrade drop
-// therefore has no recovery path other than the provider serving https.
-func discoveredEndpointHasNoOverride(name string) bool {
+// discoveredEndpointHasNoOverride reports whether a scheme-downgrade drop of
+// the named discovered endpoint has no operator-configured override to fall
+// back on, and therefore genuinely breaks whatever depends on that endpoint
+// until the provider serves it over https.
+//
+// jwks_uri, authorization and token have no config field at all, so a
+// dropped instance always qualifies. revocation, end_session and
+// introspection each have one (configRevocationURL, configEndSessionURL,
+// configIntrospectionURL) that replaces the endpoint right after sanitize
+// runs (see updateMetadataEndpoints) -- but only once the operator has set
+// it. With no override configured, the drop is exactly as terminal as it is
+// for the three endpoints with no override at all, so it must qualify too
+// (re-review finding at main.go:658: the previous static answer ignored
+// whether an override was actually configured).
+func (t *TraefikOidc) discoveredEndpointHasNoOverride(name string) bool {
 	switch name {
 	case discoveredEndpointNameJWKSURI, discoveredEndpointNameAuthorization, discoveredEndpointNameToken:
 		return true
+	case discoveredEndpointNameRevocation:
+		return t.configRevocationURL == ""
+	case discoveredEndpointNameEndSession:
+		return t.configEndSessionURL == ""
+	case discoveredEndpointNameIntrospection:
+		return t.configIntrospectionURL == ""
 	default:
 		return false
 	}
@@ -644,18 +664,18 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	sanitize := func(name, raw string) string {
 		if err := t.validateDiscoveredEndpoint(raw, allowLoopback); err != nil {
 			t.logger.Errorf("Ignoring discovered %s endpoint %q: %v", name, raw, err)
-			// R146's https-pin drop gets a second, distinctly-tagged line, but
-			// only for the three endpoints that have no operator override
-			// (discoveredEndpointHasNoOverride): revocationURL,
-			// oidcEndSessionURL and introspectionURL each replace their
-			// endpoint right after sanitize runs (see below), so nothing
-			// actually fails for revocation/end_session/introspection, and
-			// logging "this check has no override; requests ... will fail"
-			// for them would be false. jwks_uri, authorization and token have
-			// no config source, so a dropped instance of one of those three
-			// really does break every login with no other signal and no way
-			// to recover it (FIX-26; see CHANGELOG.md).
-			if errors.Is(err, ErrDiscoveredEndpointSchemeDowngrade) && discoveredEndpointHasNoOverride(name) {
+			// R146's https-pin drop gets a second, distinctly-tagged line
+			// whenever this endpoint has no operator override actually
+			// configured right now (discoveredEndpointHasNoOverride):
+			// jwks_uri, authorization and token never have one. revocation,
+			// end_session and introspection do have one each
+			// (configRevocationURL/configEndSessionURL/
+			// configIntrospectionURL), which replaces the endpoint right
+			// after sanitize runs (see below) -- but only when the operator
+			// has actually set it. With no override set, the drop is just as
+			// terminal for these three as it is for the other three, so it
+			// gets the same loud line (FIX-26; re-review at main.go:658).
+			if errors.Is(err, ErrDiscoveredEndpointSchemeDowngrade) && t.discoveredEndpointHasNoOverride(name) {
 				t.logger.Errorf("SECURITY: dropped the discovered %s endpoint %q: it is plaintext http while providerURL %q is https, and this check has no override; requests needing the %s endpoint will fail until the provider serves it over https", name, raw, t.providerURL, name)
 			}
 			return ""
@@ -665,10 +685,10 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	metadata.JWKSURL = sanitize(discoveredEndpointNameJWKSURI, metadata.JWKSURL)
 	metadata.AuthURL = sanitize(discoveredEndpointNameAuthorization, metadata.AuthURL)
 	metadata.TokenURL = sanitize(discoveredEndpointNameToken, metadata.TokenURL)
-	metadata.RevokeURL = sanitize("revocation", metadata.RevokeURL)
-	metadata.EndSessionURL = sanitize("end_session", metadata.EndSessionURL)
+	metadata.RevokeURL = sanitize(discoveredEndpointNameRevocation, metadata.RevokeURL)
+	metadata.EndSessionURL = sanitize(discoveredEndpointNameEndSession, metadata.EndSessionURL)
 	metadata.RegistrationURL = sanitize("registration", metadata.RegistrationURL)
-	metadata.IntrospectionURL = sanitize("introspection", metadata.IntrospectionURL)
+	metadata.IntrospectionURL = sanitize(discoveredEndpointNameIntrospection, metadata.IntrospectionURL)
 	// The introspection request authenticates with the client secret via HTTP
 	// Basic, so the endpoint must live on the same host as the operator-
 	// configured provider; otherwise a poisoned discovery document could

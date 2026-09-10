@@ -322,13 +322,24 @@ SECURITY: dropped the discovered token endpoint "http://idp.example.com/token": 
 ```
 
 The `revocationURL`, `oidcEndSessionURL` and `introspectionURL` config
-fields can supply those three endpoints directly. A drop from the
-plaintext-`http://` check does not break login for them, because the
-override replaces the endpoint right after sanitize runs.
+fields can supply those three endpoints directly, and when you set one of
+them, a plaintext-`http://` drop of the matching discovered endpoint does
+not break anything — the override replaces the endpoint right after
+sanitize runs and the `SECURITY:` line does not fire for it.
 
-Only `token`, `jwks_uri` and `authorization` log the `SECURITY:` line.
-These three have no config field that can supply them, so a drop always
-breaks login.
+Leave the override unset, though, and a drop is exactly as terminal as it is
+for `token`, `jwks_uri` and `authorization`: RP-initiated logout falls back
+to a local-only redirect (the IdP session stays alive), provider-side
+revocation is skipped, or `requireTokenIntrospection` breaks — all with no
+signal beyond the generic `ERROR` line. So `revocation`, `end_session` and
+`introspection` log the same `SECURITY:` line too, whenever the matching
+override is not set. `registration` never logs it: Dynamic Client
+Registration reads its own override (`registrationEndpoint` under
+`dynamicClientRegistration`) independently of this discovery step.
+
+`token`, `jwks_uri` and `authorization` log the `SECURITY:` line
+unconditionally — these three have no config field that can supply them at
+all, so a drop always breaks login regardless of any other setting.
 
 If your IdP's discovery document ever advertises an `http://` endpoint under
 an `https://` `providerURL`, fix the discovery document (for example, a

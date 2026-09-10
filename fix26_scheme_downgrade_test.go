@@ -126,15 +126,47 @@ func TestUpdateMetadataEndpoints_HTTPJWKSAndAuthEndpointsFailLoudly(t *testing.T
 	}
 }
 
-// TestUpdateMetadataEndpoints_NonCriticalHTTPEndpointsNoSecurityLog pins the
-// documented scope of the SECURITY line: docs/CONFIGURATION.md, CHANGELOG.md
-// and README.md all say it fires only for jwks_uri, authorization and token.
-// end_session, revocation, introspection and registration must still be
-// dropped (generic "Ignoring discovered" ERROR line only) but must never
-// trip the SECURITY-tagged line — three of the four have a config override
-// (revocationURL, oidcEndSessionURL, introspectionURL) that replaces the
-// endpoint right after sanitize runs, so nothing actually fails for them.
-func TestUpdateMetadataEndpoints_NonCriticalHTTPEndpointsNoSecurityLog(t *testing.T) {
+// TestUpdateMetadataEndpoints_RegistrationNeverLogsSecurityLine pins that
+// the registration endpoint never trips the SECURITY-tagged line. It is the
+// one discovered endpoint of the four (end_session, revocation,
+// introspection, registration) with no config*URL field checked inside
+// updateMetadataEndpoints at all: RegisterClient reads dcrConfig.
+// RegistrationEndpoint directly (main.go, outside this function) whenever
+// it is set, so a dropped discovered value here is orthogonal to whether
+// that separate override exists.
+func TestUpdateMetadataEndpoints_RegistrationNeverLogsSecurityLine(t *testing.T) {
+	var buf bytes.Buffer
+	tObj := &TraefikOidc{
+		logger:      fix26CapturingLogger(&buf),
+		providerURL: "https://provider.example.com",
+	}
+
+	tObj.updateMetadataEndpoints(&ProviderMetadata{
+		RegistrationURL: "http://provider.example.com/register",
+	})
+
+	logged := buf.String()
+	if !strings.Contains(logged, "Ignoring discovered registration") {
+		t.Fatalf("registration must still be dropped with the generic line, got:\n%s", logged)
+	}
+	if strings.Contains(logged, "SECURITY:") {
+		t.Fatalf("registration must never log a SECURITY line, got:\n%s", logged)
+	}
+}
+
+// TestUpdateMetadataEndpoints_NonCriticalEndpointsWithoutOverrideLogSecurityLine
+// pins the re-review fix at main.go:658 (low severity): a scheme-downgrade
+// drop of end_session, revocation or introspection is exactly as terminal
+// as a drop of jwks_uri/authorization/token WHEN the operator has not set
+// the matching override (oidcEndSessionURL / revocationURL /
+// introspectionURL) -- logout falls back to a local-only redirect, provider
+// revocation is skipped, or requireTokenIntrospection breaks, all silently
+// except for the generic "Ignoring discovered" line. The old
+// discoveredEndpointHasNoOverride was static and always answered false for
+// these three regardless of whether an override was actually configured, so
+// the SECURITY line never fired for them even with no override at all. It
+// must now fire exactly when the corresponding override is empty.
+func TestUpdateMetadataEndpoints_NonCriticalEndpointsWithoutOverrideLogSecurityLine(t *testing.T) {
 	for _, tc := range []struct {
 		field    string
 		endpoint string
@@ -142,10 +174,12 @@ func TestUpdateMetadataEndpoints_NonCriticalHTTPEndpointsNoSecurityLog(t *testin
 		{field: "end_session", endpoint: "http://provider.example.com/logout"},
 		{field: "revocation", endpoint: "http://provider.example.com/revoke"},
 		{field: "introspection", endpoint: "http://provider.example.com/introspect"},
-		{field: "registration", endpoint: "http://provider.example.com/register"},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			var buf bytes.Buffer
+			// Deliberately no configEndSessionURL/configRevocationURL/
+			// configIntrospectionURL set: the operator configured no
+			// override for any of these three.
 			tObj := &TraefikOidc{
 				logger:      fix26CapturingLogger(&buf),
 				providerURL: "https://provider.example.com",
@@ -158,8 +192,6 @@ func TestUpdateMetadataEndpoints_NonCriticalHTTPEndpointsNoSecurityLog(t *testin
 				md.RevokeURL = tc.endpoint
 			case "introspection":
 				md.IntrospectionURL = tc.endpoint
-			case "registration":
-				md.RegistrationURL = tc.endpoint
 			}
 			tObj.updateMetadataEndpoints(md)
 
@@ -167,8 +199,11 @@ func TestUpdateMetadataEndpoints_NonCriticalHTTPEndpointsNoSecurityLog(t *testin
 			if !strings.Contains(logged, "Ignoring discovered "+tc.field) {
 				t.Fatalf("%s: the endpoint must still be dropped with the generic line, got:\n%s", tc.field, logged)
 			}
-			if strings.Contains(logged, "SECURITY:") {
-				t.Fatalf("%s: only jwks_uri/authorization/token may log a SECURITY line, got:\n%s", tc.field, logged)
+			if !strings.Contains(logged, "SECURITY:") {
+				t.Fatalf("%s: dropping it with no configured override must log a SECURITY-tagged line, got:\n%s", tc.field, logged)
+			}
+			if !strings.Contains(logged, "no override") {
+				t.Fatalf("%s: the SECURITY line must state that this check has no override, got:\n%s", tc.field, logged)
 			}
 		})
 	}
