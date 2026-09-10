@@ -15,6 +15,7 @@ package traefikoidc
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 )
@@ -164,10 +165,24 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 	if isOpaqueToken {
 		if t.allowOpaqueTokens {
 			if err := t.validateOpaqueToken(rs.accessToken); err != nil {
+				// validateOpaqueToken wraps introspectToken's *HTTPError
+				// (a non-200 response from the introspection endpoint) with
+				// %w, and HTTPError.Message embeds up to 10 KiB of the IdP's
+				// own response body. That body is attacker/IdP-controlled
+				// text, not a verdict on the presented token — a 401/403/429
+				// whose body happens to contain "revoked" or similar must
+				// not be read as "token is not active" (FIX-13). Detect an
+				// *HTTPError specifically and route it straight to the
+				// requireTokenIntrospection/transient handling below,
+				// BEFORE the substring match runs. Only validateOpaqueToken's
+				// own generated messages (active=false, expired, nbf — never
+				// an *HTTPError) may still reach the substring classification.
+				var httpErr *HTTPError
+				isHTTPError := errors.As(err, &httpErr)
 				errMsg := err.Error()
-				isTokenInvalid := strings.Contains(errMsg, "token is not active") ||
+				isTokenInvalid := !isHTTPError && (strings.Contains(errMsg, "token is not active") ||
 					strings.Contains(errMsg, "revoked") ||
-					strings.Contains(errMsg, "token has expired")
+					strings.Contains(errMsg, "token has expired"))
 				if isTokenInvalid {
 					if rs.refreshToken != "" {
 						return false, true, false

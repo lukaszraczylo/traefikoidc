@@ -189,6 +189,54 @@ func TestIntrospectionStatus_SessionPath_429FallsThroughNoForcedRefresh(t *testi
 	}
 }
 
+// TestIntrospectionStatus_SessionPath_401BodyTextNoLongerForcesRefresh
+// guards the FIX-13 minor gap: validateOpaqueToken wraps introspectToken's
+// *HTTPError in a plain error whose message embeds up to 10 KiB of the IdP's
+// own response body (token_introspection.go). validateStandardTokensRS used
+// to classify that error by substring-matching "token is not active",
+// "revoked" or "token has expired" in the message BEFORE reaching the
+// transient/fail-closed branch — so a 401/403/429 whose body happened to
+// contain one of those words (e.g. a client_secret-revoked error from the
+// IdP's OWN client-credential check, RFC 7662 s2.3) still forced a refresh,
+// even though only a 200 response with active=false may reject the token.
+// Fail-on-old: a 401 with "revoked" in the body forces a refresh.
+func TestIntrospectionStatus_SessionPath_401BodyTextNoLongerForcesRefresh(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_client","error_description":"client secret has been revoked"}`))
+	}))
+	defer ts.Close()
+
+	const idToken = "dummy-but-cached-id-token"
+	tc := NewTokenCache()
+	tc.Set(idToken, map[string]interface{}{"exp": float64(time.Now().Add(time.Hour).Unix())}, time.Hour)
+
+	verifier := NewUnifiedMockTokenVerifier()
+	verifier.SetTokenValid(idToken, true)
+
+	tObj := &TraefikOidc{
+		logger:                    newNoOpLogger(),
+		introspectionURL:          ts.URL,
+		httpClient:                ts.Client(),
+		allowOpaqueTokens:         true,
+		requireTokenIntrospection: false,
+		tokenCache:                tc,
+		tokenVerifier:             verifier,
+		clientID:                  "test-client",
+		clientSecret:              "test-secret",
+	}
+	rs := &requestState{
+		authenticated: true,
+		accessToken:   "OpaqueNotARealJwt-1234567890",
+		refreshToken:  "refresh-token-value",
+		idToken:       idToken,
+	}
+	_, shouldRefresh, _ := tObj.validateStandardTokensRS(rs)
+	if shouldRefresh {
+		t.Error("a 401 whose body contains 'revoked' is our own client credentials being rejected (RFC 7662 s2.3), not a verdict on the presented token; it must not force a refresh")
+	}
+}
+
 func TestIntrospectionStatus_SessionPath_ActiveFalseStillForcesRefresh(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
