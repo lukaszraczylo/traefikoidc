@@ -1768,6 +1768,15 @@ func (sd *SessionData) clearAllSessionData(r *http.Request, expire bool) {
 	}
 }
 
+// sessionClearReleaseHook, when non-nil, runs synchronously right after
+// Clear has released its SessionData back to the object pool (but before
+// Clear returns to its caller). Tests use it to deterministically let a
+// concurrent acquirer claim the freed object before the caller's own
+// deferred pool-return (see ServeHTTP, middleware.go:700-701) runs --
+// reproducing the ABA window FIX-10 closes without depending on
+// sync.Pool's unspecified reuse timing. Always nil outside tests.
+var sessionClearReleaseHook func(*SessionData)
+
 // Clear completely clears all session data and safely returns the session to the pool.
 // It removes all authentication data, expires cookies, and handles panic recovery.
 // This method ensures the SessionData object is always returned to the pool.
@@ -1780,6 +1789,9 @@ func (sd *SessionData) clearAllSessionData(r *http.Request, expire bool) {
 func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	defer func() {
 		sd.returnToPoolSafely()
+		if sessionClearReleaseHook != nil {
+			sessionClearReleaseHook(sd)
+		}
 	}()
 
 	sd.sessionMutex.Lock()
