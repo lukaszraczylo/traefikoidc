@@ -31,6 +31,19 @@ import (
 // decision already false on its own, so this test cannot tell a reverted fix
 // from a working one — it passes either way.
 func TestFix35_ConcurrentNewKeepsSingletonAliveAcrossOldClose(t *testing.T) {
+	// Save whether memory-monitor was already running before ResetGlobalMemoryMonitor
+	// below stops it, and restore that state afterward (registered first, so
+	// it runs LAST among this function's cleanups, after ResetGlobalMemoryMonitor
+	// has already torn the singleton down) — otherwise this test permanently
+	// destroys memory-monitor for every other test that runs afterward in the
+	// same binary, regardless of what state it found the process in.
+	wasMemoryMonitorRunning := GetResourceManager().IsTaskRunning("memory-monitor")
+	t.Cleanup(func() {
+		if wasMemoryMonitorRunning {
+			GetGlobalMemoryMonitor().StartMonitoring(context.Background(), time.Second)
+		}
+	})
+
 	ResetGlobalMemoryMonitor()
 	t.Cleanup(ResetGlobalMemoryMonitor)
 	t.Cleanup(func() { closeTestHook = nil })

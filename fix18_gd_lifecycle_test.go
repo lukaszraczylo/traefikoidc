@@ -88,6 +88,16 @@ func TestFix18_TraefikOidcCloseEmptiesGDInstances(t *testing.T) {
 	waitForHealthRoutineSettled(t, oidc.errorRecoveryManager.gracefulDegradation)
 	waitForHealthRoutineSettled(t, oidc.tokenResilienceManager.errorRecoveryManager.gracefulDegradation)
 
+	// Keep a sentinel instance alive across Close() so this test's Close()
+	// call is never the last live instance: this test only asserts on
+	// gdInstances, but Close()'s "am I last" decision (stopIfLastInstance)
+	// also stops process-global singleton tasks — singleton-token-cleanup
+	// and, via GetGlobalTaskRegistry().StopAllTasks(), every other
+	// registered singleton (e.g. memory-monitor) — that this test does not
+	// own and must not stop out from under the rest of the suite.
+	registerLiveInstance()
+	t.Cleanup(func() { unregisterLiveInstance() })
+
 	// Balance Close()'s own unregisterLiveInstance() call: New() always
 	// registers before it returns an instance for Close() to eventually
 	// unregister, and this test's synthetic instance must too, or it skews
