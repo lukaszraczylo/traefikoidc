@@ -136,6 +136,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `bearerFailurePenaltySeconds` | `60` | Seconds an IP is kept in the 429 penalty box after the bearer failure threshold. |
 | `disableReplayDetection` | `false` | Disable JTI cache. Use Redis instead for multi-replica. |
 | `allowPrivateIPAddresses` | `false` | Permit private-IP `providerURL` (internal Keycloak, etc.). |
+| `allowUnauthenticatedPreflight` | `false` | Bypass auth for a genuine CORS preflight (`OPTIONS` + `Origin` + `Access-Control-Request-Method`); the response body is still discarded. Default requires auth for every `OPTIONS` request, preflight or not. |
 | `minimalHeaders` | `false` | Reduce forwarded headers (mitigates HTTP 431). |
 | `stripAuthCookies` | `false` | Strip OIDC cookies from backend hop (mitigates HTTP 431). |
 | `caCertPath` / `caCertPEM` | none | Trust an internal CA for the provider's TLS. |

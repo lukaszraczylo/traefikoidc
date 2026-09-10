@@ -301,6 +301,7 @@ strictAudienceValidation: true
 |-----------|------|---------|-------------|
 | `disableReplayDetection` | bool | `false` | Disable JTI-based replay attack detection |
 | `allowPrivateIPAddresses` | bool | `false` | Allow private IPs in provider URLs |
+| `allowUnauthenticatedPreflight` | bool | `false` | Bypass auth for a genuine CORS preflight (`OPTIONS` with `Origin` + `Access-Control-Request-Method`); response body is still discarded. Default requires auth for every `OPTIONS` request. |
 
 ### Discovered Endpoint Validation
 
