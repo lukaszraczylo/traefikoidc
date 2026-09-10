@@ -317,6 +317,13 @@ func (t *TraefikOidc) sendErrorResponse(rw http.ResponseWriter, req *http.Reques
 	_, _ = rw.Write([]byte(htmlBody)) // Safe to ignore: error response write
 }
 
+// closeTestHook, when non-nil, is invoked once inside Close() (see below).
+// Always nil in production. FIX-35 regression tests set it to drive the
+// REAL Close() through the exact concurrent-registration window the fix
+// closes, instead of re-implementing Close's stop decision inline (which
+// previously let a reverted fix still pass).
+var closeTestHook func()
+
 // Close gracefully shuts down the TraefikOidc middleware instance.
 // It cancels contexts, stops background goroutines, closes HTTP connections,
 // cleans up caches, and releases all resources. Safe to call multiple times.
@@ -331,32 +338,50 @@ func (t *TraefikOidc) Close() error {
 		rm := GetResourceManager()
 
 		// Record this instance's shutdown. FIX-35: the boolean this returns
-		// is NOT reused below for the stop decisions — each one re-reads
-		// isLastInstanceNow() fresh, under the same liveInstanceMu as
-		// registerLiveInstance, immediately before it acts. A stale "was
-		// last instance" decision made once here and reused minutes later
-		// (after session/cache teardown) could stop a singleton a
-		// concurrently-created new instance has since registered for and
-		// adopted.
+		// is NOT reused below for the stop decisions — each one goes through
+		// stopIfLastInstance, which re-checks the live count and performs the
+		// stop under the same liveInstanceMu registerLiveInstance takes. A
+		// stale "was last instance" decision made once here and reused
+		// minutes later (after session/cache teardown), or a check released
+		// before its stop ran, could stop a singleton a concurrently-created
+		// new instance has since registered for and adopted.
 		unregisterLiveInstance()
+
+		// closeTestHook, when non-nil, runs once here — immediately after
+		// unregisterLiveInstance and before every gated singleton stop below.
+		// Nil in production. Tests use it to simulate a concurrent New()
+		// registering and adopting a process-global singleton in the exact
+		// window FIX-35 closes, so the regression test drives this real
+		// Close() instead of re-implementing its decision inline.
+		if closeTestHook != nil {
+			closeTestHook()
+		}
 
 		// singleton-token-cleanup is a process-global task shared by every plugin
 		// instance. Only stop it when the LAST instance is shutting down;
 		// otherwise one instance's teardown (e.g. a single config reload) would
 		// kill chunked-session/token cleanup for all surviving instances (rank 12).
-		if isLastInstanceNow() {
+		//
+		// stopIfLastInstance (FIX-35) holds liveInstanceMu across the check AND
+		// the stop, unlike a plain isLastInstanceNow() check followed by an
+		// unguarded call — that would release the mutex before the stop ran,
+		// leaving a window for a concurrent New() to register and adopt this
+		// same task in between.
+		stopIfLastInstance(func() {
 			_ = rm.StopBackgroundTask("singleton-token-cleanup") // best effort, last instance only
-		}
+		})
 		// Stop metadata refresh task using same hash-based name as
 		// startMetadataRefresh. The name derives only from providerURL
 		// (main.go), so it is SHARED by every live instance pointing at the
 		// same provider; stopping it on one instance's Close would kill 2h
 		// metadata refresh for its surviving sibling (which never re-registers).
-		// Gate on a fresh isLastInstanceNow(), matching singleton-token-cleanup above.
-		if t.providerURL != "" && isLastInstanceNow() {
-			hash := sha256.Sum256([]byte(t.providerURL))
-			taskName := "singleton-metadata-refresh-" + hex.EncodeToString(hash[:])[0:6]
-			_ = rm.StopBackgroundTask(taskName) // Safe to ignore: best effort cleanup
+		// Gate on stopIfLastInstance, matching singleton-token-cleanup above.
+		if t.providerURL != "" {
+			stopIfLastInstance(func() {
+				hash := sha256.Sum256([]byte(t.providerURL))
+				taskName := "singleton-metadata-refresh-" + hex.EncodeToString(hash[:])[0:6]
+				_ = rm.StopBackgroundTask(taskName) // Safe to ignore: best effort cleanup
+			})
 		}
 
 		// Remove reference for this instance
@@ -467,15 +492,18 @@ func (t *TraefikOidc) Close() error {
 		// config reload) would kill cleanup for all surviving instances — the same
 		// rationale as the targeted StopBackgroundTask above.
 		//
-		// FIX-35: re-check isLastInstanceNow() immediately before the stop,
-		// under the same liveInstanceMu registerLiveInstance takes, rather
-		// than the decision made earlier in this function. Everything above
-		// (session shutdown, cache closes) takes real time, during which a
-		// concurrently-created new instance (an overlapping Traefik reload)
-		// can have registered and adopted these same singletons.
-		if isLastInstanceNow() {
+		// FIX-35: gate this on stopIfLastInstance rather than the decision
+		// made earlier in this function. Everything above (session shutdown,
+		// cache closes) takes real time, during which a concurrently-created
+		// new instance (an overlapping Traefik reload) can have registered
+		// and adopted these same singletons — stopIfLastInstance holds
+		// liveInstanceMu across its own check and this stop, so such a
+		// registration cannot land inside the check-then-stop window.
+		stopped := stopIfLastInstance(func() {
 			taskRegistry := GetGlobalTaskRegistry()
 			taskRegistry.StopAllTasks()
+		})
+		if stopped {
 			t.safeLogDebug("All global background tasks stopped")
 		} else {
 			t.safeLogDebug("Skipped stopping global background tasks: another instance registered during shutdown")

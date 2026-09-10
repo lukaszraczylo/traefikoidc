@@ -363,6 +363,37 @@ func isLastInstanceNow() bool {
 	return atomic.LoadInt32(&liveInstanceCount) <= 0
 }
 
+// stopIfLastInstance holds liveInstanceMu across BOTH the "is this the last
+// live instance" check and the stop action itself, and runs stop only when
+// the check passes.
+//
+// isLastInstanceNow alone still leaves a check-then-stop window open: it
+// releases liveInstanceMu as soon as it returns, before the caller's stop
+// actually runs. The singleton stops this guards (StopBackgroundTask,
+// StopAllTasks) can take real wall-clock time — BackgroundTask.Stop waits up
+// to 5s per task — during which a concurrent New() can register and adopt
+// the very singleton about to be stopped. stopIfLastInstance closes that
+// window: registerLiveInstance cannot complete while a stop triggered by
+// this function is still running, because both take the same liveInstanceMu.
+//
+// registerLiveInstance is the only other caller of liveInstanceMu besides
+// unregisterLiveInstance/isLastInstanceNow, and none of them call back into
+// stopIfLastInstance (main.go's New is the sole registerLiveInstance
+// caller, and no BackgroundTask taskFunc calls it), so this cannot deadlock.
+//
+// Returns whether stop was invoked.
+func stopIfLastInstance(stop func()) bool {
+	liveInstanceMu.Lock()
+	defer liveInstanceMu.Unlock()
+
+	if atomic.LoadInt32(&liveInstanceCount) > 0 {
+		return false
+	}
+
+	stop()
+	return true
+}
+
 // Shutdown gracefully shuts down all managed resources
 func (rm *ResourceManager) Shutdown(ctx context.Context) error {
 	var err error
