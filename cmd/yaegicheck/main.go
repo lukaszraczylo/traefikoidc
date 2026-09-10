@@ -33,6 +33,7 @@ import (
 	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	oidc "github.com/lukaszraczylo/traefikoidc"
@@ -585,7 +586,17 @@ func checkNew01OpaqueSessionIntrospectionClassification() (string, error) {
 	discovery := servers.NewOIDCServer(nil)
 	defer discovery.Close()
 
+	// introspectionRequests counts requests that actually reach the
+	// introspection endpoint. A 302 alone does not prove ServeHTTP got as
+	// far as introspectToken/validateOpaqueToken (commit d7686c3's fix
+	// site) -- an unauthenticated request with no session at all also ends
+	// in a 302, to the same provider, without ever calling introspection.
+	// If the cookie rebuilt through the second SessionManager below ever
+	// stops decoding, this check would otherwise still print PASS while
+	// exercising nothing.
+	var introspectionRequests int32
 	introspect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&introspectionRequests, 1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer introspect.Close()
@@ -655,6 +666,14 @@ func checkNew01OpaqueSessionIntrospectionClassification() (string, error) {
 	// silently-swallowed panic could otherwise produce.
 	if rw.Code != http.StatusFound {
 		return "", fmt.Errorf("expected response_status=%d (re-authentication redirect) for a 5xx introspection response on the session path, got %d", http.StatusFound, rw.Code)
+	}
+	// A 302 alone is not proof this check reached the session-path
+	// classification: an unauthenticated request with no cookie at all
+	// also redirects with 302, without ever calling introspectToken. Only
+	// a non-zero introspection hit count proves the request got as far as
+	// validateOpaqueToken.
+	if got := atomic.LoadInt32(&introspectionRequests); got < 1 {
+		return "", fmt.Errorf("expected at least one request to reach the introspection endpoint (proving the check reached validateOpaqueToken/introspectToken), got %d -- a %d response alone does not prove this, since an unauthenticated request with no session also redirects with %d", got, rw.Code, http.StatusFound)
 	}
 	return fmt.Sprintf(" response_status=%d", rw.Code), nil
 }
