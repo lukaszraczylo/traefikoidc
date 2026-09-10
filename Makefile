@@ -37,8 +37,8 @@ staticcheck: ## Run staticcheck (matches the CI "Static Analysis" job; catches U
 	@GOFLAGS=-buildvcs=false $$(command -v staticcheck || echo "$(GOPATH)/bin/staticcheck") ./...
 
 .PHONY: test
-test: ## Run the test suite
-	$(GO) test ./... -count=1 -timeout $(TEST_TIMEOUT)
+test: ## Run the test suite (race detector on: several regression pins, e.g. R44/R77/R111, only fail under -race)
+	$(GO) test -race ./... -count=1 -timeout $(TEST_TIMEOUT)
 
 .PHONY: vendor
 vendor: ## Refresh and vendor dependencies
