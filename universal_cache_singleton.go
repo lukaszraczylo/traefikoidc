@@ -103,11 +103,12 @@ func GetUniversalCacheManagerWithConfig(logger *Logger, redisConfig *RedisConfig
 // and letting token caching clobber a real blacklist marker (R128).
 func newBlacklistCacheConfig(logger *Logger) UniversalCacheConfig {
 	return UniversalCacheConfig{
-		Type:            CacheTypeBlacklist,
-		MaxSize:         1000,
-		DefaultTTL:      24 * time.Hour,
-		Logger:          logger,
-		SkipAutoCleanup: true, // Managed cleanup
+		Type:             CacheTypeBlacklist,
+		MaxSize:          1000,
+		DefaultTTL:       24 * time.Hour,
+		Logger:           logger,
+		SkipAutoCleanup:  true, // Managed cleanup
+		MonotonicMarkers: true, // revocation markers are never stale (FIX-04)
 	}
 }
 
@@ -196,11 +197,12 @@ func initializeDefaultCaches(manager *UniversalCacheManager, logger *Logger) {
 	// Initialize session invalidation cache for backchannel/front-channel logout
 	// This cache stores invalidated session IDs and subjects to revoke sessions
 	manager.sessionInvalidationCache = NewUniversalCache(UniversalCacheConfig{
-		Type:            CacheTypeSession,
-		MaxSize:         5000,           // Support many concurrent invalidations
-		DefaultTTL:      25 * time.Hour, // Slightly longer than session max age (24h)
-		Logger:          logger,
-		SkipAutoCleanup: true, // Managed cleanup
+		Type:             CacheTypeSession,
+		MaxSize:          5000,           // Support many concurrent invalidations
+		DefaultTTL:       25 * time.Hour, // Slightly longer than session max age (24h)
+		Logger:           logger,
+		SkipAutoCleanup:  true, // Managed cleanup
+		MonotonicMarkers: true, // invalidation markers are never stale (FIX-04)
 	})
 
 	// Refresh-result cache: short-lived store keyed by sha256(refreshToken).
@@ -413,11 +415,12 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 	// Uses Redis backend to share session invalidations across all Traefik replicas
 	manager.sessionInvalidationCache = NewUniversalCacheWithBackend(
 		UniversalCacheConfig{
-			Type:            CacheTypeSession,
-			MaxSize:         5000,           // Support many concurrent invalidations
-			DefaultTTL:      25 * time.Hour, // Slightly longer than session max age (24h)
-			Logger:          logger,
-			SkipAutoCleanup: true, // Managed cleanup
+			Type:             CacheTypeSession,
+			MaxSize:          5000,           // Support many concurrent invalidations
+			DefaultTTL:       25 * time.Hour, // Slightly longer than session max age (24h)
+			Logger:           logger,
+			SkipAutoCleanup:  true, // Managed cleanup
+			MonotonicMarkers: true, // invalidation markers are never stale (FIX-04)
 		},
 		createBackend("session_invalidation"),
 	)

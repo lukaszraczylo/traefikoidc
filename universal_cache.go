@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -46,6 +47,12 @@ type UniversalCacheConfig struct {
 	EnableMetrics     bool
 	EnableCompression bool
 	SkipAutoCleanup   bool
+
+	// MonotonicMarkers marks a cache whose values are revocation markers
+	// (blacklist, session invalidation): once written, an entry is never
+	// stale, so a failed Set must never Delete a pre-existing backend
+	// entry for the same key regardless of the error (FIX-04).
+	MonotonicMarkers bool
 }
 
 // TokenCacheConfig provides token-specific cache configuration
@@ -256,11 +263,22 @@ func (c *UniversalCache) Set(key string, value interface{}, ttl time.Duration) e
 			// just-written local value with the stale one (R162). Evict the
 			// stale backend entry so Get falls through to the fresh local
 			// value instead of resurrecting the old one.
-			dctx, dcancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			if _, derr := c.backend.Delete(dctx, c.prefixKey(key)); derr != nil {
-				c.logger.Debugf("Backend delete after failed set for key %s: %v", key, derr)
+			//
+			// Two cases must NOT evict (FIX-04):
+			//   - A context deadline/timeout error: the SET may have reached
+			//     Redis and applied after the client gave up waiting for the
+			//     reply. Deleting here would erase a write that actually
+			//     landed.
+			//   - MonotonicMarkers caches (blacklist, session invalidation):
+			//     an existing entry is itself a revocation, never stale, so
+			//     it must never be evicted on a failed Set of any kind.
+			if !c.config.MonotonicMarkers && !isTimeoutOrDeadlineError(err) {
+				dctx, dcancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				if _, derr := c.backend.Delete(dctx, c.prefixKey(key)); derr != nil {
+					c.logger.Debugf("Backend delete after failed set for key %s: %v", key, derr)
+				}
+				dcancel()
 			}
-			dcancel()
 		}
 	}
 
@@ -967,6 +985,25 @@ func (c *UniversalCache) deserialize(data []byte, value interface{}) error {
 // prefixKey adds a cache type prefix to the key for backend storage
 func (c *UniversalCache) prefixKey(key string) string {
 	return fmt.Sprintf("%s:%s", c.config.Type, key)
+}
+
+// isTimeoutOrDeadlineError reports whether err indicates the backend
+// operation's outcome is unknown because the caller's context expired or a
+// network timeout fired, rather than the operation genuinely failing. In
+// that case the write may have reached the backend and applied after the
+// client gave up waiting for the reply (FIX-04).
+func isTimeoutOrDeadlineError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var timeoutErr interface{ Timeout() bool }
+	if errors.As(err, &timeoutErr) {
+		return timeoutErr.Timeout()
+	}
+	return false
 }
 
 // updateLocalCache updates the local cache with a value from the backend

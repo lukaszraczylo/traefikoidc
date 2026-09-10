@@ -393,14 +393,19 @@ func (r *RedisBackend) executeWithRetry(ctx context.Context, operation func(*Red
 			err = operation(conn)
 		}()
 
+		// Check err == nil BEFORE ctx.Err(): the operation already completed
+		// against the connection (op returned), so a nil error means Redis
+		// applied it. Reporting ctx.Err() first would tell the caller (e.g.
+		// UniversalCache.Set) that a write failed when it actually landed,
+		// which previously triggered a Delete that erased the just-applied
+		// value (FIX-04).
+		if err == nil {
+			return nil
+		}
+
 		// Check context after operation - if canceled, don't bother retrying
 		if ctx.Err() != nil {
 			return ctx.Err()
-		}
-
-		// If successful, return
-		if err == nil {
-			return nil
 		}
 
 		// If error is not retryable or last attempt, fail
