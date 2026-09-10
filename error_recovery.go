@@ -1059,6 +1059,17 @@ func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *G
 	}
 
 	gd.stopChan = make(chan struct{})
+
+	// Register synchronously, before the health-check goroutine starts
+	// (FIX-18). Registration used to happen inside startHealthCheckRoutine,
+	// which runs in its own goroutine, so a Close() called immediately after
+	// NewGracefulDegradation returned could race ahead of it: Close's
+	// gdInstances.delete would find nothing to remove, and the goroutine's
+	// later add would then register an already-closed gd permanently.
+	gdInstances.Lock()
+	gdInstances.set[gd] = struct{}{}
+	gdInstances.Unlock()
+
 	go gd.startHealthCheckRoutine()
 
 	return gd
@@ -1328,6 +1339,21 @@ func NewErrorRecoveryManager(logger *Logger) *ErrorRecoveryManager {
 		retryExecutor:       NewRetryExecutor(DefaultRetryConfig(), logger),
 		gracefulDegradation: NewGracefulDegradation(DefaultGracefulDegradationConfig(), logger),
 		logger:              logger,
+	}
+}
+
+// Close shuts down the resources owned by this ErrorRecoveryManager,
+// currently its GracefulDegradation instance (which unregisters from
+// gdInstances and, if this was the last live instance, stops the shared
+// health-check task). Safe to call multiple times; safe on a nil receiver.
+// FIX-18: every caller that constructs an ErrorRecoveryManager must call
+// Close, or its GracefulDegradation leaks in gdInstances forever.
+func (erm *ErrorRecoveryManager) Close() {
+	if erm == nil {
+		return
+	}
+	if erm.gracefulDegradation != nil {
+		erm.gracefulDegradation.Close()
 	}
 }
 

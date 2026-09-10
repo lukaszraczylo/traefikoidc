@@ -104,6 +104,25 @@ func NewTokenResilienceManager(config TokenResilienceConfig, logger *Logger) *To
 	return manager
 }
 
+// Close shuts down the resources owned by this TokenResilienceManager,
+// currently its internal ErrorRecoveryManager. Safe to call multiple times;
+// safe on a nil receiver.
+//
+// FIX-18: NewTokenResilienceManager creates its OWN ErrorRecoveryManager
+// (and therefore its own GracefulDegradation instance), separate from the
+// plugin instance's t.errorRecoveryManager. Before this method existed,
+// nothing ever closed it, so it leaked permanently in the package-level
+// gdInstances registry and the "stop the shared health-check task once the
+// last instance closes" gate never fired.
+func (trm *TokenResilienceManager) Close() {
+	if trm == nil {
+		return
+	}
+	if trm.errorRecoveryManager != nil {
+		trm.errorRecoveryManager.Close()
+	}
+}
+
 // ExecuteTokenOperation executes a token operation with full resilience support.
 // singleUse marks operations whose request must not be re-sent after a timeout
 // (e.g. the authorization-code exchange, where the one-time code may already

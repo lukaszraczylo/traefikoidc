@@ -437,10 +437,18 @@ func (t *TraefikOidc) Close() error {
 			}
 		}
 
-		// Clean up error recovery manager
-		if t.errorRecoveryManager != nil && t.errorRecoveryManager.gracefulDegradation != nil {
-			t.errorRecoveryManager.gracefulDegradation.Close()
-			t.safeLogDebug("Error recovery manager graceful degradation closed")
+		// Clean up error recovery manager. NewTokenResilienceManager creates
+		// its own separate ErrorRecoveryManager (and therefore its own
+		// GracefulDegradation instance) from t.errorRecoveryManager, so both
+		// must be closed or the resilience manager's gd leaks in gdInstances
+		// forever and the shared health-check task never stops (FIX-18).
+		if t.errorRecoveryManager != nil {
+			t.errorRecoveryManager.Close()
+			t.safeLogDebug("Error recovery manager closed")
+		}
+		if t.tokenResilienceManager != nil {
+			t.tokenResilienceManager.Close()
+			t.safeLogDebug("Token resilience manager closed")
 		}
 
 		// Stop all process-global background tasks, but ONLY when the last
