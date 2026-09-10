@@ -450,10 +450,19 @@ func (b *bearerFailureTracker) recordFailure(ip string) {
 	// and never return were never removed. Sweep stale entries (no active
 	// penalty box, too old to matter) once the map grows past a nominal
 	// size, keeping steady-state memory bounded.
+	//
+	// An entry that has not tripped the penalty box yet has a ZERO
+	// penaltyUntil, which is always Before(cutoff) — so checking only
+	// e.penaltyUntil.Before(cutoff) discarded every in-progress (not yet
+	// tripped) counter on every sweep, regardless of how recently it
+	// started. Once the map passed the threshold, a source whose failures
+	// interleaved with sweeps could never accumulate enough to trip (FIX-28).
+	// Only remove an entry once it is BOTH untripped-or-expired AND outside
+	// the counting window, so a fresh, still-accumulating counter survives.
 	if len(b.entries) > defaultBearerEntrySweepThreshold {
 		cutoff := now.Add(-(b.window + b.penalty))
 		for k, e := range b.entries {
-			if e.penaltyUntil.Before(cutoff) {
+			if e.penaltyUntil.Before(cutoff) && now.Sub(e.firstFailureAt) > b.window {
 				delete(b.entries, k)
 			}
 		}
