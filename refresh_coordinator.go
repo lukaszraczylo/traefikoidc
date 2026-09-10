@@ -38,11 +38,12 @@ type RefreshCoordinator struct {
 	config                 RefreshCoordinatorConfig
 	wg                     sync.WaitGroup
 	// ctx is the coordinator-owned parent for every in-flight refresh's
-	// timeout context (see executeRefreshAsync). Shutdown cancels it via
-	// cancel so a refresh that is still running when Shutdown is called
-	// unblocks immediately instead of running to RefreshTimeout or to the
-	// refreshFunc's own natural completion (FIX-36). This is what lets
-	// Shutdown's wg.Wait() return promptly.
+	// timeout context (see executeRefreshAsync). Shutdown waits for
+	// in-flight refreshes to finish naturally, up to
+	// shutdownRefreshDrainTimeout, before canceling this via cancel — so a
+	// refresh still running once that cap elapses unblocks instead of
+	// running to RefreshTimeout or to refreshFunc's own natural completion
+	// (FIX-36). This bounds how long Shutdown itself can block.
 	ctx    context.Context
 	cancel context.CancelFunc
 	// lifecycleMu (FIX-36) makes "check stopChan, then wg.Add" atomic with
@@ -743,6 +744,19 @@ func refreshCoordinatorSessionID(token string) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// shutdownRefreshDrainTimeout bounds how long Shutdown waits for in-flight
+// refresh operations (and cleanupRoutine) to finish before giving up.
+//
+// DECIDED (FIX-36 follow-up): a refresh whose refreshFunc call already
+// reached the IdP may complete and deliver its result to its waiters —
+// discarding it would lose the token response and, for a rotating IdP,
+// consume a one-time-use refresh token for nothing (see Shutdown). Refreshes
+// that finish within this cap succeed or fail normally; a refresh still
+// running once the cap elapses is abandoned the same way Shutdown always
+// abandoned every in-flight refresh, so Shutdown itself never blocks longer
+// than this.
+const shutdownRefreshDrainTimeout = 5 * time.Second
+
 // refreshCoordinatorWaitTimeout caps how long a request may wait for a
 // coordinated refresh result. It is wider than RefreshTimeout so a follower
 // always sees the leader's result instead of timing out independently.
@@ -819,6 +833,19 @@ func (rc *RefreshCoordinator) GetMetrics() map[string]interface{} {
 // timers are NOT canceled explicitly: time.AfterFunc callbacks are tiny
 // (one map LoadAndDelete) and harmless after Shutdown — sync.Map operations
 // remain safe on an unused coordinator until GC.
+//
+// DECIDED (FIX-36 follow-up): Shutdown no longer cancels rc.ctx up front.
+// canceling immediately aborted every in-flight refresh unconditionally,
+// including one whose refreshFunc call had already reached the IdP and
+// would complete on its own — discarding a token response the IdP already
+// issued, and for a rotating refresh token, consuming a one-time-use grant
+// whose result nobody read (see the caller-side comment in
+// executeRefreshAsync). Shutdown now waits for in-flight refreshes to drain
+// naturally, up to shutdownRefreshDrainTimeout; only once that cap elapses
+// does it cancel rc.ctx to unblock whatever is still running, exactly like
+// before. CoordinateRefresh's own stopChan check (still gated by
+// lifecycleMu) continues to reject any call arriving after Shutdown starts,
+// before wg.Add — that half of FIX-36 is unchanged.
 func (rc *RefreshCoordinator) Shutdown() {
 	rc.shutdownOnce.Do(func() {
 		// Close stopChan under lifecycleMu's write lock (FIX-36): this
@@ -829,18 +856,40 @@ func (rc *RefreshCoordinator) Shutdown() {
 		close(rc.stopChan)
 		rc.lifecycleMu.Unlock()
 
-		// Cancel the coordinator-owned context (FIX-36): every in-flight
-		// refresh's timeout context is derived from rc.ctx
-		// (executeRefreshAsync), so this unblocks each of them immediately
-		// instead of leaving wg.Wait() below to block for up to
-		// RefreshTimeout, or for the refreshFunc's own natural completion,
-		// per in-flight refresh. The refreshFunc calls themselves keep
-		// running in their own untracked goroutines (see
+		// Wait for every tracked goroutine (cleanupRoutine, plus each
+		// in-flight executeRefreshAsync) to finish on its own, bounded by
+		// shutdownRefreshDrainTimeout. cleanupRoutine returns immediately
+		// once stopChan is closed; a refresh completes on its own if
+		// refreshFunc returns before the cap.
+		waitDone := make(chan struct{})
+		go func() {
+			rc.wg.Wait()
+			close(waitDone)
+		}()
+
+		select {
+		case <-waitDone:
+			return
+		case <-time.After(shutdownRefreshDrainTimeout):
+		}
+
+		// The drain cap elapsed with something still running. Cancel the
+		// coordinator-owned context: every in-flight refresh's timeout
+		// context is derived from rc.ctx (executeRefreshAsync), so this
+		// unblocks it instead of leaving it bounded only by RefreshTimeout or
+		// by refreshFunc's own natural completion. The refreshFunc calls
+		// themselves keep running in their own untracked goroutines (see
 		// executeRefreshAsync) — this cancels waiting for them, not the
 		// calls in progress.
 		rc.cancel()
 
-		rc.wg.Wait()
+		// Wait for cancellation to actually land: each aborted
+		// executeRefreshAsync goroutine still has to take the
+		// refreshCtx.Done() branch, record the circuit-breaker/session
+		// outcome, and call wg.Done() before it is safe to say Shutdown is
+		// complete (R63/R154 wg-tracking contract). cancel() makes this
+		// return promptly.
+		<-waitDone
 	})
 }
 

@@ -115,11 +115,18 @@ func TestSetRefreshToken_ChunkedCommitted(t *testing.T) {
 //
 // FIX-36 replaced the "Shutdown blocks until it finishes naturally" contract
 // with "Shutdown cancels a coordinator-owned context so it returns promptly,
-// and the waiter gets an error instead of hanging" (refresh_coordinator.go,
-// Shutdown / executeRefreshAsync). This test now asserts that contract.
+// and the waiter gets an error instead of hanging". DECIDED follow-up:
+// canceling immediately discarded a refresh the IdP had already completed.
+// Shutdown now waits up to shutdownRefreshDrainTimeout for an in-flight
+// refresh to finish naturally before giving up (refresh_coordinator.go,
+// Shutdown / executeRefreshAsync). This test's refreshFunc never releases on
+// its own, so it exercises the "Shutdown gives up after the drain cap"
+// half of that contract.
 func TestRefreshCoordinator_ShutdownWaitsForInFlight(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
-	rc := NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), logger)
+	cfg := DefaultRefreshCoordinatorConfig()
+	cfg.RefreshTimeout = shutdownRefreshDrainTimeout + 10*time.Second // keep RefreshTimeout out of the way; only the drain cap should bound Shutdown
+	rc := NewRefreshCoordinator(cfg, logger)
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -141,14 +148,19 @@ func TestRefreshCoordinator_ShutdownWaitsForInFlight(t *testing.T) {
 	defer close(release) // let the leaked refreshFunc goroutine finish
 
 	shutdownDone := make(chan struct{})
+	shutdownStart := time.Now()
 	go func() { rc.Shutdown(); close(shutdownDone) }()
 
 	select {
 	case <-shutdownDone:
-		// Expected: Shutdown cancels rc.ctx and returns without waiting for
-		// the still-blocked refreshFunc.
-	case <-time.After(1 * time.Second):
-		t.Fatal("Shutdown did not return promptly while an in-flight refresh was still running")
+		// Expected: Shutdown waits out the drain cap, then cancels rc.ctx and
+		// returns without waiting any longer for the still-blocked
+		// refreshFunc.
+	case <-time.After(shutdownRefreshDrainTimeout + 2*time.Second):
+		t.Fatal("Shutdown did not return after the shutdown drain cap elapsed")
+	}
+	if elapsed := time.Since(shutdownStart); elapsed < shutdownRefreshDrainTimeout {
+		t.Fatalf("Shutdown returned after %v, want at least the %v drain cap since the refresh never completed on its own", elapsed, shutdownRefreshDrainTimeout)
 	}
 
 	// R63/R154 wg tracking: Shutdown's wg.Wait must not return before the

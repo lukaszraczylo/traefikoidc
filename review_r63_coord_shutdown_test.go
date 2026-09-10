@@ -8,22 +8,27 @@ import (
 )
 
 // TestRefreshCoordinatorShutdownReleasesWaiterOnInflight verifies that
-// Shutdown does not hang while a refresh operation is in flight, and that the
-// caller waiting on that operation gets an error rather than blocking
-// forever.
+// Shutdown does not hang forever while a refresh operation is in flight, and
+// that the caller waiting on an operation Shutdown gives up on gets an error
+// rather than blocking forever.
 //
-// This test originally pinned the opposite contract (Shutdown blocks until
-// the in-flight refresh finishes naturally), fixed for a goroutine-tracking
-// bug where in-flight refresh goroutines were not tracked at all and
-// Shutdown returned immediately with no wait and no error to the waiter.
-// FIX-36 replaced that "wait for it" contract: Shutdown now cancels a
-// coordinator-owned context so it returns promptly instead, and the waiter
-// observes an error instead of a silently dropped goroutine. See
+// This test originally pinned the "Shutdown blocks until the in-flight
+// refresh finishes naturally" contract, fixed for a goroutine-tracking bug
+// where in-flight refresh goroutines were not tracked at all and Shutdown
+// returned immediately with no wait and no error to the waiter. FIX-36 then
+// replaced that with "Shutdown cancels immediately, waiter always gets an
+// error". DECIDED follow-up: canceling immediately discarded a refresh the
+// IdP had already completed, losing its (possibly one-time-use, rotated)
+// tokens. Shutdown now waits up to shutdownRefreshDrainTimeout for an
+// in-flight refresh to finish naturally before giving up — this test's
+// refreshFunc never releases on its own, so it still exercises the
+// "Shutdown eventually gives up and the waiter gets an error" path, just
+// bounded by the drain cap instead of returning immediately. See
 // refresh_coordinator.go's Shutdown and executeRefreshAsync comments.
 func TestRefreshCoordinatorShutdownReleasesWaiterOnInflight(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
 	cfg := DefaultRefreshCoordinatorConfig()
-	cfg.RefreshTimeout = 10 * time.Second
+	cfg.RefreshTimeout = shutdownRefreshDrainTimeout + 10*time.Second // keep RefreshTimeout out of the way; only the drain cap should bound Shutdown
 	rc := NewRefreshCoordinator(cfg, logger)
 
 	started := make(chan struct{})
@@ -47,12 +52,16 @@ func TestRefreshCoordinatorShutdownReleasesWaiterOnInflight(t *testing.T) {
 	defer close(release) // let the leaked refreshFunc goroutine finish
 
 	shutDone := make(chan struct{})
+	shutdownStart := time.Now()
 	go func() { rc.Shutdown(); close(shutDone) }()
 
 	select {
 	case <-shutDone:
-	case <-time.After(1 * time.Second):
-		t.Fatal("Shutdown did not return promptly while a refresh was still in flight")
+	case <-time.After(shutdownRefreshDrainTimeout + 2*time.Second):
+		t.Fatal("Shutdown did not return after the shutdown drain cap elapsed")
+	}
+	if elapsed := time.Since(shutdownStart); elapsed < shutdownRefreshDrainTimeout {
+		t.Fatalf("Shutdown returned after %v, want at least the %v drain cap since the refresh never completed on its own", elapsed, shutdownRefreshDrainTimeout)
 	}
 
 	// R63/R154 wg tracking: Shutdown's wg.Wait must not return before the
