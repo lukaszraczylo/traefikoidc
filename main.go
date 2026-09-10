@@ -426,6 +426,21 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	tokenResilienceConfig := DefaultTokenResilienceConfig()
 	t.tokenResilienceManager = NewTokenResilienceManager(tokenResilienceConfig, t.logger)
 
+	// FIX-18 (minor): every error return below this point previously left
+	// both managers' GracefulDegradation instances registered in gdInstances
+	// forever — nothing closes them before the pluginCtx.Done() cleanup
+	// goroutine is wired up further down, and that goroutine never runs when
+	// this function itself returns an error. initSucceeded is set true only
+	// immediately before the final successful return, so any earlier return
+	// runs this cleanup instead.
+	initSucceeded := false
+	defer func() {
+		if !initSucceeded {
+			t.errorRecoveryManager.Close()
+			t.tokenResilienceManager.Close()
+		}
+	}()
+
 	// Coalesces concurrent refresh-token grants per refresh_token to one upstream
 	// call, preventing the thundering herd that yields invalid_grant when the IdP
 	// rotates refresh tokens (Zitadel/Authentik default).
@@ -539,6 +554,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		}()
 	}
 
+	initSucceeded = true
 	return t, nil
 }
 

@@ -1061,11 +1061,14 @@ func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *G
 	gd.stopChan = make(chan struct{})
 
 	// Register synchronously, before the health-check goroutine starts
-	// (FIX-18). Registration used to happen inside startHealthCheckRoutine,
+	// (FIX-18). Registration used to happen only inside startHealthCheckRoutine,
 	// which runs in its own goroutine, so a Close() called immediately after
 	// NewGracefulDegradation returned could race ahead of it: Close's
 	// gdInstances.delete would find nothing to remove, and the goroutine's
 	// later add would then register an already-closed gd permanently.
+	// startHealthCheckRoutine no longer touches gdInstances at all — this is
+	// now the ONLY place a GracefulDegradation is added to the set, so there
+	// is no second, racing registration left to worry about.
 	gdInstances.Lock()
 	gdInstances.set[gd] = struct{}{}
 	gdInstances.Unlock()
@@ -1174,18 +1177,38 @@ func (gd *GracefulDegradation) executeFallback(serviceName string) (interface{},
 	return fallback()
 }
 
-// startHealthCheckRoutine starts the background health check routine
+// startHealthCheckRoutine starts the background health check routine.
+//
+// FIX-18: this runs in its own goroutine, started by NewGracefulDegradation
+// right after it registers gd in gdInstances. A Close() called immediately
+// after NewGracefulDegradation returns can race ahead of this goroutine
+// getting scheduled at all. Take gd.mutex up front and re-check gd.stopChan
+// before doing anything else: if Close() already closed it, this goroutine
+// must not create (or adopt) the shared health-check task for an
+// already-closed instance — that would leak the process-global task
+// forever, since nothing would ever be left registered to stop it.
 func (gd *GracefulDegradation) startHealthCheckRoutine() {
-	// Register this instance so the shared task's health pass reaches it even
-	// when it was not the first instance created.
-	gdInstances.Lock()
-	gdInstances.set[gd] = struct{}{}
-	gdInstances.Unlock()
+	gd.mutex.Lock()
+
+	select {
+	case <-gd.stopChan:
+		// Close() already ran before this goroutine got scheduled. Do not
+		// register or start the shared task on behalf of a closed instance.
+		gd.mutex.Unlock()
+		return
+	default:
+	}
 
 	// Use the singleton task registry so multiple GracefulDegradation
 	// instances share one health-check goroutine. The task function is the
 	// global pass over every live instance, not this instance's own health
 	// checks — otherwise only the first instance's checks would run.
+	//
+	// gd.mutex stays held through CreateSingletonTask and the healthCheckTask
+	// assignment below: CreateSingletonTask only touches the global task
+	// registry (a different lock), never gd.mutex, so this cannot deadlock,
+	// and it keeps the stopChan check and the assignment atomic with respect
+	// to a concurrent Close().
 	registry := GetGlobalTaskRegistry()
 
 	task, err := registry.CreateSingletonTask(
@@ -1197,15 +1220,38 @@ func (gd *GracefulDegradation) startHealthCheckRoutine() {
 	)
 
 	if err != nil {
+		gd.mutex.Unlock()
 		gd.BaseRecoveryMechanism.logger.Errorf("Failed to create health check task: %v", err)
 		return
 	}
 
-	gd.mutex.Lock()
 	gd.healthCheckTask = task
 	gd.mutex.Unlock()
 
 	task.Start()
+}
+
+// healthRoutineSettled reports whether startHealthCheckRoutine has finished
+// making its one-time decision for this instance: either it assigned a
+// health-check task, or it observed stopChan already closed and returned
+// without assigning one (in which case it never will, since it runs at most
+// once). Tests use this to wait for the async goroutine NewGracefulDegradation
+// starts to settle before asserting on shared state, instead of depending on
+// goroutine-scheduling timing.
+func (gd *GracefulDegradation) healthRoutineSettled() bool {
+	gd.mutex.RLock()
+	defer gd.mutex.RUnlock()
+
+	if gd.healthCheckTask != nil {
+		return true
+	}
+
+	select {
+	case <-gd.stopChan:
+		return true
+	default:
+		return false
+	}
 }
 
 // performHealthChecks runs health checks for all registered services
@@ -1253,7 +1299,7 @@ func (gd *GracefulDegradation) Reset() {
 	gd.LogInfo("Graceful degradation state has been reset")
 }
 
-// Close shuts down the graceful degradation system and cleans up resources
+// Close shuts down the graceful degradation system and cleans up resources.
 func (gd *GracefulDegradation) Close() {
 	gd.shutdownOnce.Do(func() {
 		// Signal shutdown
@@ -1264,25 +1310,29 @@ func (gd *GracefulDegradation) Close() {
 			close(gd.stopChan)
 		}
 
-		// Stop health check task only when this was the last live instance.
-		// The task is process-global and shared by every GracefulDegradation
-		// instance; stopping it on any one instance's close would kill
-		// health checks / recovery for all surviving instances (mirror of the
-		// singleton-token-cleanup lastInstance gate).
+		// Stop the shared health-check task only when this was the last live
+		// instance. The task is process-global and shared by every
+		// GracefulDegradation instance; stopping it on any one instance's
+		// close would kill health checks / recovery for all surviving
+		// instances (mirror of the singleton-token-cleanup lastInstance gate).
 		gdInstances.Lock()
 		delete(gdInstances.set, gd)
 		lastInstance := len(gdInstances.set) == 0
 		gdInstances.Unlock()
 
 		if lastInstance {
-			gd.mutex.Lock()
-			task := gd.healthCheckTask
-			gd.mutex.Unlock()
-
-			if task != nil {
-				task.Stop()
-				// Don't set to nil to avoid race conditions
-			}
+			// Stop by name through the resource manager rather than reading
+			// this instance's own gd.healthCheckTask field: with two or more
+			// GracefulDegradation instances, the shared task can already be
+			// running — created by a SIBLING instance's startHealthCheckRoutine
+			// goroutine — while THIS instance's own goroutine has not yet run
+			// and populated its local healthCheckTask field. Reading that
+			// still-nil local field here would skip the stop and leak the
+			// task forever even though this genuinely is the last instance.
+			// StopBackgroundTask looks up the registry's current entry
+			// directly, so it is correct regardless of which instance's
+			// goroutine happened to create the task (FIX-18).
+			_ = GetResourceManager().StopBackgroundTask("graceful-degradation-health-check")
 		}
 
 		gd.logger.Debug("GracefulDegradation shut down successfully")
