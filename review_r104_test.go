@@ -1,12 +1,14 @@
 package traefikoidc
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -280,21 +282,74 @@ func TestStringListFromClaim_NumericItemsStringified(t *testing.T) {
 	}
 }
 
+// base64URLAlphabetRun returns a deterministic n-byte string over the
+// base64url alphabet (A-Z a-z 0-9 - _) with no two consecutive characters
+// equal and a near-uniform character distribution, so it never trips
+// detectRepeatedCharacters' repeated-run or frequency checks regardless of
+// length. Used to build realistic, large JWT-shaped test fixtures.
+func base64URLAlphabetRun(n int) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alphabet[i%len(alphabet)]
+	}
+	return string(b)
+}
+
+// gzipBase64 gzip-compresses and base64-(standard)-encodes s, matching the
+// format decompressTokenInternal (session.go) expects: this is the on-disk
+// shape of a "compressed" cookie value, independent of compressToken's own
+// input-size gate (which refuses to compress anything over 50KiB and so
+// cannot itself produce a fixture this large).
+func gzipBase64(t *testing.T, s string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write([]byte(s)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
 // TestValidateChunkingEfficiency_NoRejectOnDecompressed regresses R104: the
-// read path runs validateChunkingEfficiency on the *decompressed* token,
-// and its hard chunk-count rejection (> MaxChunks) permanently rejected a
-// large access token that was legitimately stored compressed (whose
-// decompressed length exceeds MaxChunks*MaxChunkSize), forcing re-auth on
-// every request. The read-side check is now advisory only; the actual
-// budget is enforced at write time on the stored (compressed) form.
+// read path runs validateChunkingEfficiency on the *decompressed* token, and
+// its hard chunk-count rejection (> MaxChunks) permanently rejected a large
+// access token that was legitimately stored compressed (whose decompressed
+// length exceeds MaxChunks*MaxChunkSize), forcing re-auth on every request.
+// The read-side check is now advisory only; the actual budget is enforced at
+// write time on the stored (compressed) form.
+//
+// This drives the actual read path (ChunkManager.GetToken, compressed=true)
+// rather than calling validateChunkingEfficiency directly and discarding its
+// result: that discarded-return-value shape let the test compile and pass on
+// both the pre-R104 rejecting code and the fixed code, so it pinned nothing.
 func TestValidateChunkingEfficiency_NoRejectOnDecompressed(t *testing.T) {
-	cm := &ChunkManager{logger: NewLogger("")}
-	config := TokenConfig{Type: "access", MaxChunks: 50, MaxChunkSize: 1400}
-	// 71001 bytes > 50*1400 (throws the old >MaxChunks rejection) yet is a
-	// valid decompressed length the size-aware validator would accept. It no
-	// longer returns an error (only logs an optimization hint), so a
-	// large-but-safely-stored token must assemble on the read path rather
-	// than being hard-rejected.
-	big := strings.Repeat("a", 71001)
-	cm.validateChunkingEfficiency(big, config) // must not reject / must not panic
+	cm := NewChunkManager(NewLogger(""))
+	defer cm.Shutdown()
+	config := AccessTokenConfig // MaxChunks 50, MaxChunkSize maxCookieSize (1400): budget 70000 bytes
+
+	// header(20) + "." + payload(70980) + "." + signature(20) = 71022 bytes,
+	// decompressed length > MaxChunks*MaxChunkSize (70000). JWT-shaped (2
+	// dots) so decompressTokenInternal's dot-count guard lets it through, and
+	// within validateTokenSize's per-part and MaxLength (100KiB) bounds.
+	header := base64URLAlphabetRun(20)
+	payload := base64URLAlphabetRun(70980)
+	signature := base64URLAlphabetRun(20)
+	original := header + "." + payload + "." + signature
+	if got := len(original); got <= config.MaxChunks*config.MaxChunkSize {
+		t.Fatalf("fixture too small: %d bytes, want > %d", got, config.MaxChunks*config.MaxChunkSize)
+	}
+
+	compressed := gzipBase64(t, original)
+
+	result := cm.GetToken(compressed, true, nil, config)
+	if result.Error != nil {
+		t.Fatalf("GetToken rejected a large legitimately-compressed token: %v", result.Error)
+	}
+	if result.Token != original {
+		t.Fatalf("GetToken did not reassemble the token unchanged: got %d bytes, want %d bytes", len(result.Token), len(original))
+	}
 }
