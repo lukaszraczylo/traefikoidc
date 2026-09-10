@@ -1073,8 +1073,9 @@ func (sm *SessionManager) newSession(r *http.Request) *SessionData {
 	}
 	sessionData.Reset() // clear any stale state from a previous pooled user
 	sessionData.request = r
+	newGeneration := sessionData.generation.Add(1)
+	sessionData.sessionOwner.Store(newGeneration)
 	sessionData.inUse.Store(true)
-	sessionData.generation.Add(1)
 	sessionData.dirty = false
 	atomic.AddInt64(&sm.poolHits, 1)
 	atomic.AddInt64(&sm.activeSessions, 1)
@@ -1104,13 +1105,15 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	atomic.AddInt64(&sm.poolHits, 1)
 	atomic.AddInt64(&sm.activeSessions, 1)
 
+	newGeneration := sessionData.generation.Add(1)
+	sessionData.sessionOwner.Store(newGeneration)
 	sessionData.inUse.Store(true)
-	sessionData.generation.Add(1)
 	sessionData.request = r
 	sessionData.dirty = false
 
 	handleError := func(err error, message string) (*SessionData, error) {
 		if sessionData != nil {
+			sessionData.sessionOwner.Store(0)
 			sessionData.inUse.Store(false)
 			sessionData.Reset()
 			sm.sessionPool.Put(sessionData)
@@ -1362,15 +1365,38 @@ type SessionData struct {
 	// the full session lifetime instead of expiring it (R101).
 	expireCookie bool
 
+	// inUse is a best-effort, observational "is this object currently
+	// checked out" flag kept for callers that only need a snapshot (e.g.
+	// token_manager.go's refreshToken abort check). It is updated in
+	// lockstep with sessionOwner but is NOT itself the ownership gate --
+	// see sessionOwner below. FIX-10 follow-up: it used to be, paired with
+	// generation, but two independent atomics left a TOCTOU gap (session.go
+	// re-review finding at line 1829): a stale returnToPoolIfOwner could
+	// read a matching generation and then CompareAndSwap this exact flag
+	// after a NEW owner had already set it true, releasing a session that
+	// owner was actively using.
 	inUse atomic.Bool
 
 	// generation counts every handout of this pooled object (bumped by
-	// GetSession and newSession, once each, right after inUse is set).
-	// A caller that must defer a pool-return across a call chain that
-	// might itself Clear() and reacquire the same object captures this
-	// value at acquire time and passes it to returnToPoolIfOwner instead
-	// of deferring returnToPoolSafely directly -- see FIX-10.
+	// GetSession and newSession, once each). It is the value ownerGeneration
+	// reports and the value returnToPoolIfOwner is asked to match; it never
+	// resets to zero (not even when the object is pooled), so it uniquely
+	// identifies one particular acquisition for the lifetime of the process.
 	generation atomic.Uint64
+
+	// sessionOwner is the single atomic word that decides ownership: 0 means
+	// free (in the pool, nobody owns it); any nonzero value is the
+	// generation of whoever currently owns it. A handout claims the object
+	// with sessionOwner.Store(newGeneration); a release claims it back with
+	// a CompareAndSwap that checks the expected generation and clears
+	// ownership in the SAME atomic step. Packing the "is this still owned by
+	// generation G" check and the "release it" mutation into one
+	// CompareAndSwap (instead of a separate Load-then-act on inUse) is what
+	// closes the TOCTOU: generation is monotonic and never reused, so once a
+	// new owner's Store overwrites sessionOwner, no later CAS naming an
+	// older generation can ever match again, regardless of how the CAS is
+	// timed against the new owner's own writes.
+	sessionOwner atomic.Uint64
 
 	// cachedClaimsToken is the ID token string whose claims were last parsed and
 	// cached. A lazy, per-request cache to avoid re-parsing the JWT on every
@@ -1779,24 +1805,56 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	return err
 }
 
-// returnToPoolSafely safely returns the session to the object pool.
-// Add thread-safe helper method to return session to pool.
-// It ensures the session is marked as not in use and properly reset before pooling.
+// releaseToPool performs the bookkeeping shared by every pool-return path,
+// once a caller has already won exclusive ownership via a sessionOwner
+// compare-and-swap. It must never run except immediately after such a CAS
+// succeeds -- callers hold no other synchronization, so sd must be provably
+// unreachable from anyone else by the time this runs.
+func (sd *SessionData) releaseToPool() {
+	sd.inUse.Store(false)
+	sd.Reset()
+	sd.manager.sessionPool.Put(sd)
+	atomic.AddInt64(&sd.manager.activeSessions, -1)
+}
+
+// returnToPoolSafely safely returns the session to the object pool
+// regardless of which generation currently owns it (an unconditional
+// release). Add thread-safe helper method to return session to pool. It
+// ensures the session is marked as not in use and properly reset before
+// pooling.
+//
+// Use this only from a call site that is provably still the CURRENT owner
+// at the time it runs (no Clear()+reacquire could have happened on this
+// exact pointer in between) -- e.g. a plain deferred return registered
+// right after acquiring the session, with no session.Clear() call anywhere
+// in between. A call site that cannot make that guarantee (see ServeHTTP)
+// must capture ownerGeneration() at acquire time and use
+// returnToPoolIfOwner instead: unlike that method, returnToPoolSafely does
+// not check WHICH generation currently owns sd, only THAT one does, so it
+// will happily release a different (newer) owner's live session.
 func (sd *SessionData) returnToPoolSafely() {
-	if sd != nil && sd.manager != nil {
-		// Exactly-once return: only the goroutine that flips inUse with a
-		// compare-and-swap claims the object. Without the CAS, two
-		// concurrent calls (e.g. request path + a goroutine cleanup) can
-		// both observe inUse and both Put the same SessionData back into
-		// the pool, leaving it present twice — which later yields two
-		// concurrent holders of one session (double side-effects) plus an
-		// extra activeSessions decrement.
-		if sd.inUse.CompareAndSwap(true, false) {
-			sd.Reset()
-			sd.manager.sessionPool.Put(sd)
-			atomic.AddInt64(&sd.manager.activeSessions, -1)
+	if sd == nil || sd.manager == nil {
+		return
+	}
+	// Exactly-once return: the ownership check ("does anyone currently own
+	// this object?") and claiming it back ("mark it free") happen as a
+	// single sessionOwner CompareAndSwap per attempt, retried only while a
+	// concurrent releaser is racing the SAME transition. Without this, two
+	// concurrent calls (e.g. request path + a goroutine cleanup) could both
+	// observe ownership and both Put the same SessionData back into the
+	// pool, leaving it present twice — which later yields two concurrent
+	// holders of one session (double side-effects) plus an extra
+	// activeSessions decrement.
+	for {
+		cur := sd.sessionOwner.Load()
+		if cur == 0 {
+			return // already free
+		}
+		if sd.sessionOwner.CompareAndSwap(cur, 0) {
+			break
 		}
 	}
+	sd.releaseToPool()
 }
 
 // ownerGeneration returns sd's current ownership generation. GetSession and
@@ -1813,23 +1871,31 @@ func (sd *SessionData) ownerGeneration() uint64 {
 	return sd.generation.Load()
 }
 
-// returnToPoolIfOwner returns sd to the pool only if its generation still
-// matches gen, the value ownerGeneration reported when the caller acquired
-// it. If sd.Clear() already returned this object to the pool and a
-// GetSession/newSession call handed it to a new owner (bumping the
-// generation) before this call runs, this is a stale deferred return from
-// a PREVIOUS owner and is a deliberate no-op: acting on it would flip
-// inUse on the new owner's live session and let a third caller pop the
-// same object concurrently (ABA on the pool-return CAS in
-// returnToPoolSafely; FIX-10).
+// returnToPoolIfOwner returns sd to the pool only if gen (the value
+// ownerGeneration reported when the caller acquired it) still names the
+// CURRENT owner. If sd.Clear() already returned this object to the pool and
+// a GetSession/newSession call handed it to a new owner before this call
+// runs, this is a stale deferred return from a PREVIOUS owner and is a
+// deliberate no-op.
+//
+// The "is gen still the owner" check and the release both happen inside one
+// sessionOwner.CompareAndSwap(gen, 0): there is no separate load-then-act
+// step for a concurrent handout to land inside. This closes a TOCTOU that a
+// two-field design (a bool "in use" flag plus a separate generation
+// counter) could not: GetSession/newSession write those two fields with
+// unavoidable daylight between them, so a stale caller could read a
+// matching generation, then have its release's compare-and-swap land AFTER
+// a new owner had already flipped the bool -- releasing a session that new
+// owner was actively using (re-review finding at session.go:1829, a
+// follow-up to FIX-10).
 func (sd *SessionData) returnToPoolIfOwner(gen uint64) {
 	if sd == nil || sd.manager == nil {
 		return
 	}
-	if sd.generation.Load() != gen {
+	if !sd.sessionOwner.CompareAndSwap(gen, 0) {
 		return
 	}
-	sd.returnToPoolSafely()
+	sd.releaseToPool()
 }
 
 // clearTokenChunks clears and expires all token chunk sessions.
@@ -1986,6 +2052,7 @@ func (sd *SessionData) Reset() {
 	}
 
 	sd.dirty = false
+	sd.sessionOwner.Store(0)
 	sd.inUse.Store(false)
 	sd.request = nil
 	sd.useCombinedStorage = true // Reset to use combined storage by default
@@ -2002,18 +2069,13 @@ func (sd *SessionData) Reset() {
 }
 
 // ReturnToPool manually returns the session to the object pool.
-// This is used in cleanup paths where Clear() is not called, to prevent memory leaks.
-// It returns the session only if it is currently in use, using an atomic
-// compare-and-swap so exactly one concurrent caller claims and returns the
-// object (mirrors returnToPoolSafely).
+// This is used in cleanup paths where Clear() is not called, to prevent
+// memory leaks. It is the unconditional release (see returnToPoolSafely for
+// the exactly-once contract and when NOT to use it): both share the same
+// sessionOwner-based gate so a caller cannot pick whichever of the two
+// leaves the object in an inconsistent, doubly-released state.
 func (sd *SessionData) ReturnToPool() {
-	if sd != nil && sd.manager != nil {
-		if sd.inUse.CompareAndSwap(true, false) {
-			sd.Reset()
-			sd.manager.sessionPool.Put(sd)
-			atomic.AddInt64(&sd.manager.activeSessions, -1)
-		}
-	}
+	sd.returnToPoolSafely()
 }
 
 // GetAccessToken retrieves the user's access token from session storage.
