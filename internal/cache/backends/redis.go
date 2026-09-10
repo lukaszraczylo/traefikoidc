@@ -17,6 +17,15 @@ var (
 	ErrPoolExhausted = errors.New("connection pool exhausted")
 )
 
+// NoExpiryTTL is the sentinel RedisBackend.Get reports for a key that has
+// no associated expiry (Redis PTTL -2/-1). It is distinct from a returned
+// ttl of 0, which means the key has under a millisecond left (or vanished
+// between GET and PTTL): the caller must not treat those two cases the
+// same way — folding "no expiry" into 0 made a caller that repopulates a
+// local copy on ttl<=0 re-cache a dying entry for its full DefaultTTL
+// (FIX-31).
+const NoExpiryTTL time.Duration = -1
+
 // RedisBackend implements a Redis-based cache backend using pure Go
 type RedisBackend struct {
 	config        *Config
@@ -157,10 +166,14 @@ func (r *RedisBackend) Get(ctx context.Context, key string) ([]byte, time.Durati
 			return err
 		}
 
-		// Get TTL
-		ttlResp, err := conn.Do("TTL", prefixedKey)
+		// Get TTL with millisecond precision (PTTL, not TTL). TTL's second
+		// precision maps both "no expiry" (-1) and "under one second left"
+		// to a reported ttl of 0 once truncated to whole seconds, so a
+		// caller cannot tell them apart (FIX-31). PTTL keeps "no expiry"
+		// distinct via NoExpiryTTL.
+		ttlResp, err := conn.Do("PTTL", prefixedKey)
 		if err != nil {
-			// If TTL fails, still return the value
+			// If PTTL fails, still return the value; report no TTL info.
 			r.hits.Add(1)
 			resultValue = []byte(value)
 			resultTTL = 0
@@ -168,10 +181,18 @@ func (r *RedisBackend) Get(ctx context.Context, key string) ([]byte, time.Durati
 			return nil
 		}
 
-		ttlSeconds, _ := RESPInt(ttlResp)
+		ttlMillis, _ := RESPInt(ttlResp)
 		var ttl time.Duration
-		if ttlSeconds > 0 {
-			ttl = time.Duration(ttlSeconds) * time.Second
+		switch {
+		case ttlMillis == -1:
+			// Key exists with no associated expiry.
+			ttl = NoExpiryTTL
+		case ttlMillis > 0:
+			ttl = time.Duration(ttlMillis) * time.Millisecond
+		default:
+			// -2 (key vanished between GET and PTTL) or 0 (under 1ms
+			// left): report "expire now", not "no expiry".
+			ttl = 0
 		}
 
 		r.hits.Add(1)

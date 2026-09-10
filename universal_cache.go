@@ -403,10 +403,21 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 				// locally for up to DefaultTTL (often 1h); if the backend then
 				// became unreachable, getLocal kept serving it well past its
 				// intended expiry.
-				if ttl <= 0 {
-					ttl = c.config.DefaultTTL
+				//
+				// ttl==backends.NoExpiryTTL means the backend key genuinely has
+				// no expiry (Redis PTTL -1): federate DefaultTTL, same as
+				// before. Any other non-positive ttl means the backend key is
+				// expiring now or already gone (FIX-31) — serve this read, but
+				// do not repopulate the local copy: caching it for DefaultTTL
+				// would keep serving the value locally long after the backend
+				// expires it (R59), up to 25h for the session-invalidation
+				// cache.
+				switch {
+				case ttl == backends.NoExpiryTTL:
+					_ = c.updateLocalCache(key, value, c.config.DefaultTTL)
+				case ttl > 0:
+					_ = c.updateLocalCache(key, value, ttl)
 				}
-				_ = c.updateLocalCache(key, value, ttl)
 				return value, true
 			}
 		} else if c.config.Type == CacheTypeBlacklist {
