@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"container/list"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,9 +142,16 @@ type UniversalCache struct {
 	// marker) is remembered here per key until the deadline, so a repeat
 	// blacklist check for the SAME key inside that window skips the legacy
 	// lookup entirely. Only meaningful for CacheTypeBlacklist; empty and
-	// unused otherwise. Pruned opportunistically by cleanup().
+	// unused otherwise. Pruned opportunistically by cleanup(), and bounded
+	// at c.config.MaxSize by recordLegacyBlacklistMiss (R4 cache review
+	// round 2, major, universal_cache.go:1193): checkLegacyBlacklistMarker
+	// runs on the raw bearer token before signature verification, a
+	// caller-controlled input, and the 5-minute cleanup tick alone left this
+	// map unbounded between ticks. Keyed by a fixed-size sha256 digest of
+	// the lookup key, not the raw string, so an entry's size does not grow
+	// with token length.
 	legacyBlacklistMissMu    sync.Mutex
-	legacyBlacklistMissUntil map[string]time.Time
+	legacyBlacklistMissUntil map[[sha256.Size]byte]time.Time
 }
 
 // NewUniversalCache creates a new universal cache instance
@@ -192,7 +200,7 @@ func createUniversalCache(config UniversalCacheConfig) *UniversalCache {
 		cancel:       cancel,
 		staleBackend: make(map[string]time.Time),
 
-		legacyBlacklistMissUntil: make(map[string]time.Time),
+		legacyBlacklistMissUntil: make(map[[sha256.Size]byte]time.Time),
 	}
 
 	// Start cleanup routine only if not skipped
@@ -1284,12 +1292,21 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
+// legacyBlacklistMissDigest reduces a lookup key to a fixed-size digest for
+// legacyBlacklistMissUntil, so an entry's size does not grow with the raw
+// key's length — the lookup key is a raw bearer token, which can be up to
+// AccessTokenConfig.MaxLength (100 KiB), and is fully caller-controlled
+// (R4 cache review round 2, major, universal_cache.go:1193).
+func legacyBlacklistMissDigest(key string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(key))
+}
+
 // legacyBlacklistRecentlyMissed reports whether key's legacy-namespace
 // lookup is still inside its remembered miss window.
 func (c *UniversalCache) legacyBlacklistRecentlyMissed(key string) bool {
 	c.legacyBlacklistMissMu.Lock()
 	defer c.legacyBlacklistMissMu.Unlock()
-	until, ok := c.legacyBlacklistMissUntil[key]
+	until, ok := c.legacyBlacklistMissUntil[legacyBlacklistMissDigest(key)]
 	return ok && time.Now().Before(until)
 }
 
@@ -1297,10 +1314,38 @@ func (c *UniversalCache) legacyBlacklistRecentlyMissed(key string) bool {
 // just missed (or found something other than the boolean marker), so the
 // next checkLegacyBlacklistMarker call for it skips Redis until the window
 // elapses.
+//
+// The map is capped at c.config.MaxSize (always >0, see createUniversalCache)
+// — the same cap already enforced on the blacklist's local LRU — because
+// checkLegacyBlacklistMarker runs on the raw bearer token before signature
+// verification, so a caller who can send unique tokens fully controls how
+// many distinct keys arrive here. When the map is at the cap, expired
+// entries are pruned inline first (cleanup()'s 5-minute tick alone is too
+// infrequent to bound this between ticks); if it is still full afterward,
+// the miss is simply not recorded. The only cost of not recording it is one
+// extra legacy lookup on the next check for this key — exactly what every
+// check paid before this bound existed (R4 cache review round 2, major,
+// universal_cache.go:1193).
 func (c *UniversalCache) recordLegacyBlacklistMiss(key string) {
+	digest := legacyBlacklistMissDigest(key)
+	now := time.Now()
+
 	c.legacyBlacklistMissMu.Lock()
-	c.legacyBlacklistMissUntil[key] = time.Now().Add(legacyBlacklistMissCacheTTL)
-	c.legacyBlacklistMissMu.Unlock()
+	defer c.legacyBlacklistMissMu.Unlock()
+
+	if _, exists := c.legacyBlacklistMissUntil[digest]; !exists && len(c.legacyBlacklistMissUntil) >= c.config.MaxSize {
+		for k, until := range c.legacyBlacklistMissUntil {
+			if !now.Before(until) {
+				delete(c.legacyBlacklistMissUntil, k)
+			}
+		}
+	}
+
+	if _, exists := c.legacyBlacklistMissUntil[digest]; !exists && len(c.legacyBlacklistMissUntil) >= c.config.MaxSize {
+		return
+	}
+
+	c.legacyBlacklistMissUntil[digest] = now.Add(legacyBlacklistMissCacheTTL)
 }
 
 // pruneLegacyBlacklistMisses drops expired entries so
@@ -1311,9 +1356,9 @@ func (c *UniversalCache) recordLegacyBlacklistMiss(key string) {
 func (c *UniversalCache) pruneLegacyBlacklistMisses(now time.Time) {
 	c.legacyBlacklistMissMu.Lock()
 	defer c.legacyBlacklistMissMu.Unlock()
-	for key, until := range c.legacyBlacklistMissUntil {
+	for digest, until := range c.legacyBlacklistMissUntil {
 		if !now.Before(until) {
-			delete(c.legacyBlacklistMissUntil, key)
+			delete(c.legacyBlacklistMissUntil, digest)
 		}
 	}
 }
