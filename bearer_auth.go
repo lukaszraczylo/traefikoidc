@@ -12,8 +12,11 @@
 //   - iat upper-age cap bounds clock-skew / forever-token abuse.
 //   - Multi-audience tokens require matching azp.
 //   - Per-IP 401 throttle returns 429 + Retry-After after a threshold.
-//   - JTI Get stays active — revoked tokens (RevokeToken adds to blacklist)
-//     are still rejected.
+//   - No path writes a JTI to a replay cache (FIX-17 removed the last
+//     writer). RevokeToken (called from logout) still blacklists the raw
+//     token and, for a JWT, its jti; both the JWT and opaque-introspection
+//     bearer paths check that blacklist before accepting a token, so
+//     revocation stays effective without replay-detection overhead.
 //   - Identifier is read from BearerIdentifierClaim (default "sub"), never
 //     from UserIdentifierClaim, to avoid the unverified-email spoofing path.
 //   - Identifier is sanitized: length cap, control chars, bidi-override,
