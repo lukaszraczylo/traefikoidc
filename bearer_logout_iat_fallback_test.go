@@ -24,9 +24,15 @@ func TestBearerLogoutInvalidation_NoIatFallsClosedNotOpen(t *testing.T) {
 
 	oidc := makeBearerOIDC(t, nil)
 	oidc.sessionInvalidationCache = cache
-	// Disable the unrelated maxTokenAge/enforceIatAge bound (a DIFFERENT,
-	// operator-opt-in check that also requires iat when configured) so this
-	// test isolates the isSessionInvalidated createdAt fallback under test.
+	// Disable the unrelated maxTokenAge/enforceIatAge bound (a DIFFERENT
+	// check that also rejects a missing iat, and that New() always turns on
+	// in production — 0/unset becomes 24h, main.go:357-362 — this override
+	// only exists because this test constructs *TraefikOidc directly,
+	// bypassing New()) so this test isolates the isSessionInvalidated
+	// createdAt fallback under test. That fallback is what actually matters
+	// once maxTokenAge is 0: with maxTokenAge > 0 (the production default),
+	// enforceIatAge rejects an iat-less token before this logout check is
+	// even reached.
 	oidc.maxTokenAge = 0
 
 	claims := defaultBearerClaims()

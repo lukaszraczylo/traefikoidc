@@ -350,10 +350,13 @@ func enforceIatAge(claims map[string]interface{}, maxAge time.Duration) *bearerE
 	iatRaw, ok := claims["iat"].(float64)
 	if !ok {
 		// iat is OPTIONAL per RFC 7519 §4.1.6, and jwt.Verify validates it
-		// only when present (R126) — this branch IS reachable. maxAge>0
-		// means the operator explicitly opted into bounding token age by
-		// iat; a token with no iat has nothing to bound it against, so fail
-		// closed rather than silently skip the check the operator asked for.
+		// only when present (R126) — this branch IS reachable. maxAge is NOT
+		// an operator opt-in: New() (main.go's config-default closure) always
+		// sets maxTokenAge > 0 — 0/unset becomes 24h — so this branch rejects
+		// every iat-less bearer JWT in production, not just when an operator
+		// has explicitly configured maxTokenAgeSeconds. A token with no iat
+		// has nothing to bound its age against, so fail closed rather than
+		// silently skip the check.
 		return newBearerError(bearerErrInvalidToken, "missing iat claim")
 	}
 	iat := time.Unix(int64(iatRaw), 0)
@@ -803,7 +806,14 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 	// token always look newer than any logout, so IdP-initiated logout
 	// never revoked it — reintroducing the R98 defect the cookie path's
 	// own fallback (sessionCreatedAtForInvalidation) avoids by using the
-	// zero time instead: fail closed rather than open (FIX-24).
+	// zero time instead: fail closed rather than open (FIX-24). In
+	// production this branch is mostly defense in depth: enforceIatAge
+	// above already rejects an iat-less token before reaching here whenever
+	// maxTokenAge > 0, which New() always sets (0/unset becomes 24h,
+	// main.go:357-362). This fallback is what actually protects an iat-less
+	// token's logout check when an operator has explicitly set
+	// maxTokenAgeSeconds: 0 (or in a test that constructs maxTokenAge=0
+	// directly, bypassing New()).
 	subjectForInvalidation, _ := claims["sub"].(string)
 	sidForInvalidation, _ := claims["sid"].(string)
 	var createdAt time.Time
