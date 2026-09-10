@@ -543,7 +543,7 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 			if err := c.deserialize(data, &value); err != nil {
 				c.logger.Errorf("Failed to deserialize value for key %s: %v", key, err)
 				// Fall through to local cache
-			} else if localValue, ok := c.backendStaleLocalValue(key); ok {
+			} else if localValue, stale := c.backendStaleLocalValue(key); stale && !backendValueIsNewer(value, localValue) {
 				// A prior Set skipped the Delete for this key (FIX-04) and
 				// the backend entry may be older than the local one — for a
 				// MonotonicMarkers cache (session invalidation) it can be a
@@ -551,6 +551,18 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 				// survived write. Serve the fresher local value instead and
 				// do not let updateLocalCache overwrite it with the stale
 				// backend one.
+				//
+				// backendValueIsNewer guards the other direction (R4 cache
+				// review): the mark only records "this replica's own write
+				// may not have landed", not "the backend can never be
+				// ahead". A DIFFERENT replica can write a genuinely newer
+				// value to the same key (e.g. a later cross-replica
+				// backchannel logout) while this key is still marked stale
+				// here. When both values decode to a comparable
+				// timestamp/number and the backend's is not older, trust it
+				// instead of pinning this replica's stale local one — for
+				// values it cannot compare (e.g. the blacklist cache's bool
+				// markers) it reports false, so behavior there is unchanged.
 				atomic.AddInt64(&c.hits, 1)
 				return localValue, true
 			} else {
@@ -1261,6 +1273,45 @@ func (c *UniversalCache) backendStaleLocalValue(key string) (interface{}, bool) 
 		return nil, false
 	}
 	return item.Value, true
+}
+
+// backendValueIsNewer reports whether backendValue is not older than
+// localValue, for the narrow set of marker values a MonotonicMarkers cache
+// actually stores: Unix timestamps (session invalidation) written as the
+// native int64 locally and read back as float64 after a backend's JSON
+// round-trip. It returns false whenever either value does not decode to a
+// comparable number — including the blacklist cache's bool markers — so
+// Get's backend-stale branch keeps its original FIX-04 behavior (always
+// prefer local) for anything this comparison cannot make sense of.
+func backendValueIsNewer(backendValue, localValue interface{}) bool {
+	backendNum, backendOK := comparableTimestamp(backendValue)
+	localNum, localOK := comparableTimestamp(localValue)
+	if !backendOK || !localOK {
+		return false
+	}
+	return backendNum >= localNum
+}
+
+// comparableTimestamp converts a cache marker value into an int64 for
+// backendValueIsNewer's comparison, regardless of which representation
+// produced it (a native Go int64 from a local write, or a float64/
+// json.Number from decoding backend JSON).
+func comparableTimestamp(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	}
+	return 0, false
 }
 
 // updateLocalCache updates the local cache with a value from the backend
