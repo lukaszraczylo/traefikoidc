@@ -1251,6 +1251,18 @@ const legacyBlacklistMissCacheTTL = 30 * time.Second
 // review: that decode ran on the verify hot path for every cached token).
 var legacyBlacklistTrueMarker = []byte{0x01, 't', 'r', 'u', 'e'}
 
+// legacyBlacklistTrueMarkerNoTypeByte is legacyBlacklistTrueMarker with the
+// 0x01 type-marker byte stripped: the encoding serialize wrote before #117
+// (commit 775de2a, 2026-01-08; every tag up to and including v0.8.17) —
+// plain json.Marshal(true) with no type marker at all. deserialize's
+// "Legacy data without marker" fallback still accepts this encoding, so the
+// pre-byte-compare checkLegacyBlacklistMarker (which deserialized instead of
+// comparing bytes) honored these markers too. The byte compare must keep
+// doing so: a Redis-mode upgrade straight from v0.8.17 or earlier can still
+// have markers in this exact shape, live for up to the blacklist's TTL
+// after the upgrade (R4 cache review round 2, minor, universal_cache.go:1193).
+var legacyBlacklistTrueMarkerNoTypeByte = legacyBlacklistTrueMarker[1:]
+
 // checkLegacyBlacklistMarker reads a blacklist marker under the pre-R128
 // "token:" namespace. Only a stored boolean true counts as blacklisted — a
 // CacheTypeToken entry for the same raw token is a cached claims map, never
@@ -1266,7 +1278,7 @@ func (c *UniversalCache) checkLegacyBlacklistMarker(ctx context.Context, key str
 		return false, false
 	}
 
-	if bytesEqual(data, legacyBlacklistTrueMarker) {
+	if bytesEqual(data, legacyBlacklistTrueMarker) || bytesEqual(data, legacyBlacklistTrueMarkerNoTypeByte) {
 		return true, true
 	}
 
