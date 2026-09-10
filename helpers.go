@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -442,13 +443,21 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	// logout (e.g. a bearer-mode access token or the refresh token) stays
 	// valid at the IdP and a captured refresh token could keep minting new
 	// tokens. Revoke both access and refresh tokens at the provider when a
-	// revocation endpoint is available; ignore errors (the endpoint may be
-	// absent or the provider already cleaned up on the end-session call).
+	// revocation endpoint is available. Each call is bounded by
+	// revocationRequestTimeout so a slow or unreachable provider cannot
+	// hold the logout redirect open indefinitely (FIX-33). A genuine
+	// failure is logged at error level; the expected "no revocation
+	// endpoint configured" case (most deployments) stays silent so it
+	// doesn't log on every logout.
 	if accessToken != "" {
-		_ = t.RevokeTokenWithProvider(accessToken, "access_token")
+		if err := t.RevokeTokenWithProvider(accessToken, "access_token"); err != nil && !errors.Is(err, ErrRevocationEndpointNotConfigured) {
+			t.logger.Errorf("Provider-side revocation failed for access_token: %v", err)
+		}
 	}
 	if refreshToken != "" {
-		_ = t.RevokeTokenWithProvider(refreshToken, "refresh_token")
+		if err := t.RevokeTokenWithProvider(refreshToken, "refresh_token"); err != nil && !errors.Is(err, ErrRevocationEndpointNotConfigured) {
+			t.logger.Errorf("Provider-side revocation failed for refresh_token: %v", err)
+		}
 	}
 
 	postLogoutRedirectURI := t.postLogoutRedirectURI

@@ -179,7 +179,7 @@ clientSecret: your-client-secret
 | `forceHTTPS` | bool | `true` | Force HTTPS for redirect URIs (set `false` only for plaintext HTTP local dev) |
 | `rateLimit` | int | `100` | Maximum requests per second |
 | `excludedURLs` | []string | none | Paths that bypass authentication, matched at a path-segment or file-extension boundary |
-| `revocationURL` | string | auto-discovered | Token revocation endpoint. Takes precedence over the discovered value. |
+| `revocationURL` | string | auto-discovered | Token revocation endpoint. Takes precedence over the discovered value. See [Logout Behavior](#logout-behavior) for what happens at logout when this is set. |
 | `oidcEndSessionURL` | string | auto-discovered | Provider's end session endpoint. Takes precedence over the discovered value. |
 | `introspectionURL` | string | auto-discovered | RFC 7662 token introspection endpoint. Set this when your IdP omits `introspection_endpoint` from discovery. Takes precedence over the discovered value. |
 | `enablePKCE` | bool | `false` | Enable PKCE for authorization code flow |
@@ -198,6 +198,28 @@ clientSecret: your-client-secret
 | `frontchannelLogoutURL` | string | derived | Front-channel logout endpoint path. |
 | `caCertPath` / `caCertPEM` | string | none | Custom CA bundle for OIDC TLS verification (filesystem path, or inline PEM). Mutually exclusive with `insecureSkipVerify`. |
 | `insecureSkipVerify` | bool | `false` | Disable TLS verification for the OIDC client (load balancer / mTLS edge). Emits a loud warning at startup. |
+
+### Logout Behavior
+
+A request to `logoutURL` clears the session, redirects the browser, and
+also revokes the session's tokens.
+
+1. The plugin blacklists the access, ID, and refresh tokens locally, so this
+   instance rejects them immediately.
+2. If `revocationURL` is set or discovered, the plugin also revokes the
+   access token and the refresh token at the provider (RFC 7009). Each
+   revocation call has a 3-second timeout, so a slow or unreachable provider
+   cannot delay the logout redirect. A revocation failure does not stop the
+   redirect; it logs at error level. Deployments with no revocation endpoint
+   log nothing for this step.
+3. The plugin redirects to `oidcEndSessionURL` (RP-initiated logout) when
+   set or discovered, or to `postLogoutRedirectURI` otherwise.
+4. When `oidcEndSessionURL` is used, the plugin sends `post_logout_redirect_uri`
+   built from the origin of the redirect URI recorded at login — not from the
+   logout request's `Host` header, which a client can spoof. If no such origin
+   was recorded (for example, a logout request with no completed login),
+   `post_logout_redirect_uri` is omitted and the provider decides where to
+   send the user.
 
 ### TLS Termination at Load Balancer
 

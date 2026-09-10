@@ -932,6 +932,21 @@ func blacklistDuration(token string) time.Duration {
 	return minTTL
 }
 
+// revocationRequestTimeout bounds each provider-side revocation call made
+// synchronously from handleLogout (access token, then refresh token). Before
+// FIX-33 the request used context.Background() with no deadline of its own,
+// so an unreachable or hanging revocation_endpoint could hold the user's
+// logout redirect open indefinitely (bounded only by the shared HTTP
+// client's own Timeout, if any was configured).
+const revocationRequestTimeout = 3 * time.Second
+
+// ErrRevocationEndpointNotConfigured is returned by RevokeTokenWithProvider
+// when the provider has no revocation_endpoint (via discovery or the
+// revocationURL config). It is the expected, silent case for most
+// deployments: callers that log genuine revocation failures (FIX-33) check
+// for it with errors.Is and skip it, rather than logging on every logout.
+var ErrRevocationEndpointNotConfigured = errors.New("token revocation endpoint is not configured or discovered")
+
 // RevokeTokenWithProvider revokes a token with the OIDC provider.
 // It sends a revocation request to the provider's revocation endpoint
 // with proper authentication and error recovery if available.
@@ -948,7 +963,7 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	t.metadataMu.RUnlock()
 
 	if revocationURL == "" {
-		return fmt.Errorf("token revocation endpoint is not configured or discovered")
+		return ErrRevocationEndpointNotConfigured
 	}
 	t.logger.Debugf("Attempting to revoke token (type: %s) with provider at %s", tokenType, revocationURL)
 
@@ -993,7 +1008,10 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 		data.Set("client_secret", clientSecret)
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), "POST", revocationURL, strings.NewReader(data.Encode()))
+	ctx, cancel := context.WithTimeout(context.Background(), revocationRequestTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", revocationURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to create token revocation request: %w", err)
 	}
@@ -1008,7 +1026,7 @@ func (t *TraefikOidc) RevokeTokenWithProvider(token, tokenType string) error {
 	var resp *http.Response
 	if t.errorRecoveryManager != nil {
 		serviceName := fmt.Sprintf("token-revocation-%s", issuerURL)
-		err = t.errorRecoveryManager.ExecuteWithRecovery(context.Background(), serviceName, func() error {
+		err = t.errorRecoveryManager.ExecuteWithRecovery(ctx, serviceName, func() error {
 			var reqErr error
 			resp, reqErr = t.httpClient.Do(req) //nolint:bodyclose // Body is closed in defer after error check
 			if reqErr != nil && resp != nil && resp.Body != nil {
