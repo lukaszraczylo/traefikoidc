@@ -796,7 +796,19 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 // introspectOnBearerPath's classification (active, token_type, expiry,
 // audience) and binds the compliant subject. Only used on the bearer
 // path when requireTokenIntrospection is enabled (R159).
+//
+// Unlike a JWT bearer token — whose signature, aud and azp are already
+// bound to this client by jwt.Verify/enforceMultiAudienceAzp before this
+// function's counterpart ever runs — an opaque token has no local
+// verification at all; introspection is the only gate. So this function
+// re-applies every JWT-path gate the introspection branch used to skip
+// (R159 gap): allowOpaqueTokens, client binding, bearerIdentifierClaim +
+// sanitizeBearerIdentifier, maxTokenAge and isSessionInvalidated.
 func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*principal, *bearerError) {
+	if !t.allowOpaqueTokens {
+		return nil, newBearerError(bearerErrInvalidToken, "opaque tokens are not enabled (set allowOpaqueTokens to true)")
+	}
+
 	resp, err := t.introspectToken(token)
 	if err != nil {
 		var httpErr *HTTPError
@@ -816,20 +828,50 @@ func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*prin
 	if resp.Exp > 0 && time.Now().After(time.Unix(resp.Exp, 0)) {
 		return nil, newBearerError(bearerErrTokenInactive, "introspection reports token expired")
 	}
-	// Audience gate when a distinct API audience is configured.
 	clientID, _, _, audience, _ := t.clientCredentials()
 	if audience != "" && audience != clientID {
+		// A distinct API audience is configured: the introspection response
+		// MUST carry a matching audience.
 		if resp.Aud == nil || verifyAudience(resp.Aud, audience) != nil {
 			return nil, newBearerError(bearerErrTokenInactive, "introspection audience mismatch")
 		}
+	} else {
+		// audience == clientID (the common single-app default): RFC 7662
+		// s2.2 leaves client scoping to the authorization server's own
+		// policy, so without an explicit check here an opaque token issued
+		// to a completely different client at the same IdP would still
+		// report active=true and pass. Bind it to this client via either
+		// client_id or aud (client_id is RFC-optional).
+		clientBound := resp.ClientID == clientID ||
+			(resp.Aud != nil && verifyAudience(resp.Aud, clientID) == nil)
+		if !clientBound {
+			return nil, newBearerError(bearerErrTokenInactive, "introspection client_id/audience does not match this client")
+		}
 	}
-	id := resp.Sub
-	if id == "" {
-		id = resp.Username
+
+	// maxTokenAge bound on iat, mirroring enforceIatAge on the JWT path.
+	// RFC 7662 iat is optional; only enforce when the AS actually returned
+	// one, consistent with the iat-optional contract (R126/FIX-27).
+	if t.maxTokenAge > 0 && resp.Iat > 0 {
+		if time.Since(time.Unix(resp.Iat, 0)) > t.maxTokenAge {
+			return nil, newBearerError(bearerErrInvalidToken, "token iat outside age bound")
+		}
 	}
-	if id == "" {
-		return nil, newBearerError(bearerErrInvalidToken, "introspection response has no subject or username")
+
+	// Honor IdP-initiated (backchannel/front-channel) logout, mirroring the
+	// JWT bearer path (R146). The introspection response carries no sid
+	// (RFC 7662 does not define one), so this checks by subject only; iat
+	// absent -> zero time (fail closed, same as the JWT path's FIX-24
+	// contract), so a token whose age cannot be bounded is treated as
+	// pre-dating any logout rather than as freshly issued.
+	var createdAt time.Time
+	if resp.Iat > 0 {
+		createdAt = time.Unix(resp.Iat, 0)
 	}
+	if t.isSessionInvalidated("", resp.Sub, createdAt) {
+		return nil, newBearerError(bearerErrInvalidToken, "session has been invalidated (logout)")
+	}
+
 	claims := map[string]interface{}{}
 	if resp.Sub != "" {
 		claims["sub"] = resp.Sub
@@ -837,9 +879,17 @@ func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*prin
 	if resp.Username != "" {
 		claims["username"] = resp.Username
 	}
+	rawIdentifier, bErr := resolveBearerIdentifier(claims, t.bearerIdentifierClaim)
+	if bErr != nil {
+		return nil, bErr
+	}
+	identifier, bErr := sanitizeBearerIdentifier(rawIdentifier, t.maxIdentifierLength)
+	if bErr != nil {
+		return nil, bErr
+	}
 	return &principal{
 		Claims:      claims,
-		Identifier:  id,
+		Identifier:  identifier,
 		Subject:     resp.Sub,
 		AccessToken: token,
 		Source:      sourceBearer,

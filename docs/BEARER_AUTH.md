@@ -133,7 +133,8 @@ treats every one of these as a first-class concern.
 |---|---|---|
 | Default state | `enableBearerAuth=false` | Bearer is opt-in; existing deployments observe no change. |
 | Audience | **Mandatory.** Startup fails if `audience` is empty when bearer is enabled. | Eliminates the "token issued for service B accepted by service A" confusion attack. |
-| Token format | JWT only (3 segments, JOSE-encoded). Opaque tokens are not accepted on the bearer path. | Matches the validation pipeline; opaque tokens require introspection only and bypass JWT-specific defences. |
+| Token format | JWT by default. An opaque (non-JWT) token is accepted only when both `requireTokenIntrospection=true` and `allowOpaqueTokens=true`. | JWTs carry their own signature, audience and issuer; an opaque token has no local verification, so introspection must be turned on explicitly for both purposes before one is trusted. |
+| Opaque token client binding | When `audience` equals `clientID` (the common single-app case), the introspection response must carry a matching `client_id`, or an `aud` that contains `clientID`. | RFC 7662 §2.2 leaves client scoping to the authorization server's own policy. Without this check, any active token from the same IdP — including one issued to a different client — would authenticate. |
 | `alg` allowlist | Hard-pinned asymmetric: `RS256/384/512`, `PS256/384/512`, `ES256/384/512`. Checked **before** any JWKS fetch. | Denies `alg=none` and `alg=HS*` probes; prevents attacker noise from amplifying into JWKS round-trips. |
 | `kid` hardening | Max 256 bytes; charset `[A-Za-z0-9._\-=]`. Checked **before** JWKS fetch. | Prevents cache-key explosion / pathological-`kid` JWKS amplification. |
 | Token type | ID tokens are explicitly rejected (`nonce` claim, `typ: at+jwt`, `token_use=id`, scope/aud heuristics — reuses the existing `detectTokenType` helper). | ID tokens are not API credentials; treating them as such is classic token confusion. |
@@ -166,6 +167,7 @@ treats every one of these as a first-class concern.
 | `bearerFailureWindowSeconds` | `60` | Rolling window over which 401s are counted. |
 | `bearerFailurePenaltySeconds` | `60` | Duration of the 429 penalty box after the threshold trips. |
 | `requireTokenIntrospection` | `false` | Call RFC 7662 introspection on every cache miss. Adds per-request IdP latency. |
+| `allowOpaqueTokens` | `false` | Accept an opaque (non-JWT) bearer token, introspected via `requireTokenIntrospection`. Both flags are required together; this flag alone has no effect on the bearer path. |
 
 ## What the bearer path does NOT do
 
@@ -173,8 +175,11 @@ treats every one of these as a first-class concern.
   iteration. Browser SPAs that want to attach a bearer to fetch calls work
   if your backend treats them as machine clients, but the spec defaults are
   tuned for service-to-service traffic.
-- **Opaque access tokens.** Tokens must be JWTs. Introspection is a
-  revocation overlay on top of JWT verification, not a substitute for it.
+- **Opaque access tokens by default.** Tokens must be JWTs unless both
+  `requireTokenIntrospection=true` and `allowOpaqueTokens=true` are set. For a
+  JWT, introspection stays a revocation overlay on top of local verification,
+  not a substitute for it; an opaque token has no local verification, so
+  introspection is its only check.
 - **`email_verified` enforcement.** The bearer path rejects `email` as the
   identifier claim at startup precisely because `email_verified` is not
   enforced in this iteration. Adding human-user bearer support is a
@@ -196,6 +201,11 @@ treats every one of these as a first-class concern.
 - **Enable `requireTokenIntrospection`** if your IdP supports it and
   revocation latency matters. Bearer-path introspection caches results for
   a short window per token.
+- **Also set `allowOpaqueTokens=true`** if your clients present opaque
+  (non-JWT) access tokens. `requireTokenIntrospection` alone does not admit
+  an opaque token; both flags are required together. Confirm your IdP's
+  introspection response carries `client_id` or `aud` so the client-binding
+  check above can pass.
 - **Monitor 429s.** Sustained 429 traffic indicates either a buggy client
   loop or an active credential-stuffing attempt. The throttle is your
   primary signal for both.

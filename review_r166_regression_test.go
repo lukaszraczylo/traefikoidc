@@ -26,6 +26,10 @@ func TestR166_BearerOpaqueWithTwoDotsIntrospected(t *testing.T) {
 			"active":     true,
 			"sub":        "opaque-two-dots",
 			"token_type": "Bearer",
+			// client_id binds the introspected token to this client
+			// (FIX-03): audience==clientID here, so buildPrincipalFromOpaqueIntrospection
+			// requires a matching client_id or aud.
+			"client_id": "https://api.example.com",
 		})
 	}))
 	defer ts.Close()
@@ -38,6 +42,8 @@ func TestR166_BearerOpaqueWithTwoDotsIntrospected(t *testing.T) {
 
 	oidc := makeBearerOIDC(t, next)
 	oidc.requireTokenIntrospection = true
+	// FIX-03: opaque bearer tokens additionally require allowOpaqueTokens.
+	oidc.allowOpaqueTokens = true
 	oidc.introspectionURL = ts.URL
 	oidc.httpClient = ts.Client()
 	oidc.clientSecret = "secret"
