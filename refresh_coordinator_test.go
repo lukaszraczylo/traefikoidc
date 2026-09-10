@@ -155,6 +155,11 @@ func TestRefreshRateLimiting(t *testing.T) {
 	config.MaxRefreshAttempts = 3
 	config.RefreshAttemptWindow = 1 * time.Second
 	config.RefreshCooldownPeriod = 2 * time.Second
+	// Immediate cleanup for deterministic test behavior (FIX-22 pattern,
+	// matching TestCircuitBreakerProtection below): removes the in-flight
+	// entry synchronously before CoordinateRefresh returns, instead of
+	// racing the default 100ms cleanup timer with a fixed sleep margin.
+	config.DeduplicationCleanupDelay = 0
 
 	coordinator := NewRefreshCoordinator(config, logger)
 	defer coordinator.Shutdown()
@@ -186,8 +191,13 @@ func TestRefreshRateLimiting(t *testing.T) {
 			}
 		}
 		attempts++
-		// Add delay to ensure operations complete and aren't deduplicated
-		time.Sleep(150 * time.Millisecond)
+		// Wait for the operation to actually drain from the in-flight map
+		// (FIX-22 pattern) instead of sleeping a fixed margin against the
+		// dedup cleanup timer: with DeduplicationCleanupDelay=0 the timer is
+		// gone, but performCleanup still runs after close(operation.done) in
+		// the same deferred closure, so a fixed sleep could still race it
+		// under load.
+		waitForRefreshDrain(t, coordinator, refreshToken)
 	}
 
 	// Verify that cooldown was triggered after max attempts.
