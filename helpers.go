@@ -414,6 +414,12 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	idToken := session.GetIDToken()
 	accessToken := session.GetAccessToken()
 	refreshToken := session.GetRefreshToken()
+	// Capture the trusted origin BEFORE Clear wipes the session. redirect_url
+	// was persisted at authentication-initiate time (R136) and is therefore
+	// the exact scheme+host the IdP already accepted as this deployment's
+	// redirect_uri — unlike the current request's Host/X-Forwarded-Host,
+	// the browser cannot spoof it on this logout request (FIX-07).
+	trustedOrigin := trustedOriginFromRedirectURL(session.GetRedirectURL())
 
 	if err := session.Clear(req, rw); err != nil {
 		t.logger.Errorf("Error clearing session: %v", err)
@@ -455,20 +461,32 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 	// The post_logout_redirect_uri we hand to the IdP has the same constraint:
 	// deriving it from baseURL (scheme://client-controlled host) lets an
 	// attacker's X-Forwarded-Host steer the browser to an arbitrary origin
-	// after logout (open redirect through the IdP). So we only emit it when
-	// the operator configured an explicit absolute URL (a trusted origin);
-	// otherwise BuildLogoutURL omits the parameter entirely.
+	// after logout (open redirect through the IdP). So we build it from
+	// trustedOrigin (the redirect_uri origin the IdP already accepted at
+	// login, R136) instead; when no trusted origin was recorded (pre-R136
+	// session, or logout without a completed login), BuildLogoutURL omits
+	// the parameter entirely rather than guessing (FIX-07 corrects R68,
+	// which dropped the parameter unconditionally for every non-absolute
+	// config value, including the documented default of '/').
 	localRedirect := "/"
-	if strings.HasPrefix(postLogoutRedirectURI, "http") {
+	switch {
+	case strings.HasPrefix(postLogoutRedirectURI, "http"):
+		// Operator configured an explicit absolute URL: already a trusted
+		// origin on its own, independent of trustedOrigin.
 		localRedirect = postLogoutRedirectURI
-	} else if postLogoutRedirectURI == "" {
-		// Not configured: no trusted origin available — do not send a
-		// host-derived post_logout_redirect_uri to the IdP.
-	} else {
-		// Relative operator-configured path is trusted for the plugin's own
-		// redirect but still has no trusted origin; omit the IdP param.
+	case postLogoutRedirectURI == "":
+		postLogoutRedirectURI = "" // no trusted origin below leaves it empty
+		if trustedOrigin != "" {
+			postLogoutRedirectURI = trustedOrigin + "/"
+		}
+	default:
+		// Relative operator-configured path: trusted for the plugin's own
+		// redirect, rebuilt against the trusted origin for the IdP.
 		localRedirect = normalizeLogoutPath(postLogoutRedirectURI)
 		postLogoutRedirectURI = ""
+		if trustedOrigin != "" {
+			postLogoutRedirectURI = trustedOrigin + localRedirect
+		}
 	}
 
 	// Read endSessionURL with RLock
@@ -493,6 +511,24 @@ func (t *TraefikOidc) handleLogout(rw http.ResponseWriter, req *http.Request) {
 
 	rw.Header().Set("Cache-Control", "no-store")
 	http.Redirect(rw, req, localRedirect, http.StatusFound)
+}
+
+// trustedOriginFromRedirectURL extracts "scheme://host" from the redirect_uri
+// persisted at authentication-initiate time (R136), for reuse as the trusted
+// origin when building post_logout_redirect_uri (FIX-07). That redirect_uri
+// was already accepted by the IdP as this deployment's own callback, so its
+// origin is safe to reuse — unlike the current request's Host/
+// X-Forwarded-Host, which the browser controls. Returns "" when redirectURL
+// is empty or is not an absolute http(s) URL.
+func trustedOriginFromRedirectURL(redirectURL string) string {
+	if redirectURL == "" {
+		return ""
+	}
+	u, err := url.Parse(redirectURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // BuildLogoutURL constructs a logout URL for the OIDC provider's end session endpoint.
