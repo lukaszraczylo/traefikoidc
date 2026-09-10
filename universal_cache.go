@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,10 +50,17 @@ type UniversalCacheConfig struct {
 	EnableCompression bool
 	SkipAutoCleanup   bool
 
-	// MonotonicMarkers marks a cache whose values are revocation markers
-	// (blacklist, session invalidation): once written, an entry is never
-	// stale, so a failed Set must never Delete a pre-existing backend
-	// entry for the same key regardless of the error (FIX-04).
+	// MonotonicMarkers marks a cache whose failed Set must never Delete a
+	// pre-existing backend entry for the same key, regardless of the error
+	// (FIX-04). Two different caches share this flag, and it does NOT mean
+	// their entries are never stale:
+	//   - blacklist: a revocation marker is idempotent, so an existing
+	//     entry is never stale.
+	//   - session invalidation: entries are Unix timestamps compared by
+	//     value, so an existing (older) backend entry CAN be stale next
+	//     to a newer logout whose Set failed. UniversalCache.Get guards
+	//     this by preferring the local value while the key is marked
+	//     backend-stale (see UniversalCache.staleBackend).
 	MonotonicMarkers bool
 }
 
@@ -110,6 +119,15 @@ type UniversalCache struct {
 	evictions     int64
 	mu            sync.RWMutex
 	ownsBackend   bool
+
+	// staleBackend marks keys whose backend entry is known to be older than
+	// the local one: Set skipped the post-failure Delete for this key
+	// (a context deadline/timeout, or a MonotonicMarkers cache) so the
+	// backend still holds whatever it had before the failed write. Get
+	// prefers the local value over the backend value for a marked key while
+	// the local entry is still live (FIX-04). Guarded by mu; cleared by
+	// removeItem/Clear and by the next successful backend Set for the key.
+	staleBackend map[string]struct{}
 }
 
 // NewUniversalCache creates a new universal cache instance
@@ -150,12 +168,13 @@ func createUniversalCache(config UniversalCacheConfig) *UniversalCache {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cache := &UniversalCache{
-		items:   make(map[string]*CacheItem),
-		lruList: list.New(),
-		config:  config,
-		logger:  config.Logger,
-		ctx:     ctx,
-		cancel:  cancel,
+		items:        make(map[string]*CacheItem),
+		lruList:      list.New(),
+		config:       config,
+		logger:       config.Logger,
+		ctx:          ctx,
+		cancel:       cancel,
+		staleBackend: make(map[string]struct{}),
 	}
 
 	// Start cleanup routine only if not skipped
@@ -270,15 +289,26 @@ func (c *UniversalCache) Set(key string, value interface{}, ttl time.Duration) e
 			//     reply. Deleting here would erase a write that actually
 			//     landed.
 			//   - MonotonicMarkers caches (blacklist, session invalidation):
-			//     an existing entry is itself a revocation, never stale, so
-			//     it must never be evicted on a failed Set of any kind.
+			//     deleting a pre-existing entry on any failed Set risks
+			//     erasing a marker another replica still needs.
+			//
+			// Either way, the backend entry the next Get sees for this key
+			// may be older than the local write just made (skipping the
+			// Delete does not make the old entry disappear, and for
+			// MonotonicMarkers it can be a genuinely older value, not only
+			// a survived write). Mark the key backend-stale so Get prefers
+			// the fresh local value instead of resurrecting the old one.
 			if !c.config.MonotonicMarkers && !isTimeoutOrDeadlineError(err) {
 				dctx, dcancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 				if _, derr := c.backend.Delete(dctx, c.prefixKey(key)); derr != nil {
 					c.logger.Debugf("Backend delete after failed set for key %s: %v", key, derr)
 				}
 				dcancel()
+			} else {
+				c.markBackendStale(key)
 			}
+		} else {
+			c.clearBackendStale(key)
 		}
 	}
 
@@ -394,6 +424,16 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 			if err := c.deserialize(data, &value); err != nil {
 				c.logger.Errorf("Failed to deserialize value for key %s: %v", key, err)
 				// Fall through to local cache
+			} else if localValue, ok := c.backendStaleLocalValue(key); ok {
+				// A prior Set skipped the Delete for this key (FIX-04) and
+				// the backend entry may be older than the local one — for a
+				// MonotonicMarkers cache (session invalidation) it can be a
+				// genuinely older, meaningfully different value, not only a
+				// survived write. Serve the fresher local value instead and
+				// do not let updateLocalCache overwrite it with the stale
+				// backend one.
+				atomic.AddInt64(&c.hits, 1)
+				return localValue, true
 			} else {
 				atomic.AddInt64(&c.hits, 1)
 				// Re-populate local cache with the backend entry's REAL remaining
@@ -581,6 +621,7 @@ func (c *UniversalCache) Clear() {
 	defer c.mu.Unlock()
 
 	c.items = make(map[string]*CacheItem)
+	c.staleBackend = make(map[string]struct{})
 	c.lruList.Init()
 	c.currentSize = 0
 	c.currentMemory = 0
@@ -673,6 +714,7 @@ func (c *UniversalCache) Close() error {
 // removeItem removes an item from the cache (must be called with lock held)
 func (c *UniversalCache) removeItem(key string, item *CacheItem) {
 	delete(c.items, key)
+	delete(c.staleBackend, key)
 	c.lruList.Remove(item.element)
 	c.currentSize--
 	c.currentMemory -= item.Size
@@ -1051,14 +1093,51 @@ func isTimeoutOrDeadlineError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
 	}
-	var timeoutErr interface{ Timeout() bool }
-	if errors.As(err, &timeoutErr) {
-		return timeoutErr.Timeout()
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
 	}
 	return false
+}
+
+// markBackendStale records that the backend entry for key may be older than
+// the local one, because Set just skipped the post-failure Delete for it
+// (FIX-04). Get consults this to avoid serving the stale backend value over
+// a live local entry.
+func (c *UniversalCache) markBackendStale(key string) {
+	c.mu.Lock()
+	c.staleBackend[key] = struct{}{}
+	c.mu.Unlock()
+}
+
+// clearBackendStale removes the backend-stale mark for key, called after a
+// backend Set for it succeeds: the backend now holds the latest value, so
+// Get can trust it again.
+func (c *UniversalCache) clearBackendStale(key string) {
+	c.mu.Lock()
+	delete(c.staleBackend, key)
+	c.mu.Unlock()
+}
+
+// backendStaleLocalValue returns the local value for key when the key is
+// marked backend-stale AND the local entry is still live. It reports found
+// only in that case, so callers fall through to the normal backend-value
+// path once the local entry itself expires.
+func (c *UniversalCache) backendStaleLocalValue(key string) (interface{}, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if _, stale := c.staleBackend[key]; !stale {
+		return nil, false
+	}
+	item, exists := c.items[key]
+	if !exists || time.Now().After(item.ExpiresAt) {
+		return nil, false
+	}
+	return item.Value, true
 }
 
 // updateLocalCache updates the local cache with a value from the backend

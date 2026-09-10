@@ -33,6 +33,52 @@ import (
 	oidc "github.com/lukaszraczylo/traefikoidc"
 )
 
+// failingSetBackend is a minimal CacheBackend whose Set always fails with a
+// plain (non-timeout) error. It guards FIX-04: UniversalCache.Set must not
+// panic when isTimeoutOrDeadlineError inspects a non-timeout backend Set
+// error under the yaegi interpreter.
+type failingSetBackend struct{}
+
+func (failingSetBackend) Set(_ context.Context, _ string, _ []byte, _ time.Duration) error {
+	return errors.New("x")
+}
+func (failingSetBackend) Get(_ context.Context, _ string) ([]byte, time.Duration, bool, error) {
+	return nil, 0, false, nil
+}
+func (failingSetBackend) Delete(_ context.Context, _ string) (bool, error) { return false, nil }
+func (failingSetBackend) Exists(_ context.Context, _ string) (bool, error) { return false, nil }
+func (failingSetBackend) Clear(_ context.Context) error                    { return nil }
+func (failingSetBackend) GetStats() map[string]interface{}                 { return nil }
+func (failingSetBackend) Close() error                                     { return nil }
+func (failingSetBackend) Ping(_ context.Context) error                     { return nil }
+
+// checkUniversalCacheSetDoesNotPanicOnBackendError guards FIX-04: in Redis
+// mode, UniversalCache.Set must degrade to the local write on any
+// non-timeout backend Set error instead of panicking. errors.As against an
+// anonymous interface target panics under yaegi v0.16.1, so a native `go
+// test` run cannot see this; only the interpreter can.
+func checkUniversalCacheSetDoesNotPanicOnBackendError() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("FAIL: UniversalCache.Set panicked on a non-timeout backend Set error:", r)
+			os.Exit(1)
+		}
+	}()
+
+	cache := oidc.NewUniversalCacheWithBackend(oidc.UniversalCacheConfig{
+		Logger:     oidc.NewLogger("error"),
+		Type:       oidc.CacheTypeToken,
+		DefaultTTL: time.Minute,
+	}, failingSetBackend{})
+	defer cache.Close()
+
+	if err := cache.Set("yaegi-check-key", "v", time.Minute); err != nil {
+		fmt.Println("FAIL: UniversalCache.Set returned an unexpected error:", err)
+		os.Exit(1)
+	}
+	fmt.Println("OK: UniversalCache.Set did not panic on a non-timeout backend Set error under yaegi")
+}
+
 func main() {
 	cfg := oidc.CreateConfig()
 	cfg.ProviderURL = "https://accounts.google.com"
@@ -56,6 +102,8 @@ func main() {
 		_ = closer.Close()
 	}
 	fmt.Println("OK: traefikoidc imported + CreateConfig + New succeeded under yaegi")
+
+	checkUniversalCacheSetDoesNotPanicOnBackendError()
 
 	runCheck("fix09-plain-error", checkFix09PlainError)
 	runCheck("fix09-halfopen-400-stays-halfopen", checkFix09HalfOpenTerminalStaysHalfOpen)

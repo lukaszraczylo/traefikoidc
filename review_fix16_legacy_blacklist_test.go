@@ -54,6 +54,7 @@ func TestFIX16_LegacyTokenNamespaceBlacklistMarkerHonored(t *testing.T) {
 	defer cache.Close()
 
 	legacy := NewUniversalCache(UniversalCacheConfig{Type: CacheTypeToken, Logger: logger, DefaultTTL: time.Hour})
+	defer legacy.Close()
 	data, err := legacy.serialize(true)
 	if err != nil {
 		t.Fatalf("serialize: %v", err)
@@ -83,6 +84,7 @@ func TestFIX16_LegacyTokenNamespaceClaimsMapNotBlacklisted(t *testing.T) {
 	defer cache.Close()
 
 	legacy := NewUniversalCache(UniversalCacheConfig{Type: CacheTypeToken, Logger: logger, DefaultTTL: time.Hour})
+	defer legacy.Close()
 	data, err := legacy.serialize(map[string]interface{}{"sub": "user-123", "jti": "jti-claims"})
 	if err != nil {
 		t.Fatalf("serialize: %v", err)
@@ -121,6 +123,7 @@ func TestFIX16_NonBlacklistCacheDoesNotConsultLegacyNamespace(t *testing.T) {
 	logger := NewLogger("error")
 
 	legacy := NewUniversalCache(UniversalCacheConfig{Type: CacheTypeToken, Logger: logger, DefaultTTL: time.Hour})
+	defer legacy.Close()
 	data, err := legacy.serialize(true)
 	if err != nil {
 		t.Fatalf("serialize: %v", err)

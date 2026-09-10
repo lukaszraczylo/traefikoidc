@@ -202,7 +202,7 @@ func initializeDefaultCaches(manager *UniversalCacheManager, logger *Logger) {
 		DefaultTTL:       25 * time.Hour, // Slightly longer than session max age (24h)
 		Logger:           logger,
 		SkipAutoCleanup:  true, // Managed cleanup
-		MonotonicMarkers: true, // invalidation markers are never stale (FIX-04)
+		MonotonicMarkers: true, // a failed Set must not Delete an existing invalidation marker (FIX-04)
 	})
 
 	// Refresh-result cache: short-lived store keyed by sha256(refreshToken).
@@ -420,7 +420,7 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 			DefaultTTL:       25 * time.Hour, // Slightly longer than session max age (24h)
 			Logger:           logger,
 			SkipAutoCleanup:  true, // Managed cleanup
-			MonotonicMarkers: true, // invalidation markers are never stale (FIX-04)
+			MonotonicMarkers: true, // a failed Set must not Delete an existing invalidation marker (FIX-04)
 		},
 		createBackend("session_invalidation"),
 	)
