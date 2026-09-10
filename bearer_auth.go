@@ -809,11 +809,13 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 	// zero time instead: fail closed rather than open (FIX-24). In
 	// production this branch is mostly defense in depth: enforceIatAge
 	// above already rejects an iat-less token before reaching here whenever
-	// maxTokenAge > 0, which New() always sets (0/unset becomes 24h,
-	// main.go:357-362). This fallback is what actually protects an iat-less
-	// token's logout check when an operator has explicitly set
-	// maxTokenAgeSeconds: 0 (or in a test that constructs maxTokenAge=0
-	// directly, bypassing New()).
+	// maxTokenAge > 0. New() always sets it so: config.MaxTokenAgeSeconds
+	// <= 0 (unset, or an operator explicitly configuring 0) maps to a 24h
+	// default (main.go:359-364), it is never mapped to "disabled" — there
+	// is no config value that makes maxTokenAge 0. This fallback protects
+	// an iat-less token's logout check only in the case New()'s mapping
+	// doesn't reach: a test that constructs TraefikOidc with maxTokenAge=0
+	// directly, bypassing New().
 	subjectForInvalidation, _ := claims["sub"].(string)
 	sidForInvalidation, _ := claims["sid"].(string)
 	var createdAt time.Time
