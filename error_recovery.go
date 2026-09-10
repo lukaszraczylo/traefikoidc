@@ -201,6 +201,13 @@ type CircuitBreaker struct {
 	// halfOpenSince is when the circuit entered half-open; used to enforce
 	// resetTimeout before a success can fully close it
 	halfOpenSince time.Time
+	// openedAt is when the circuit last transitioned into the Open state
+	// (Closed->Open or HalfOpen->Open, set in recordFailure). allowRequest
+	// and IsAvailable gate the Open->HalfOpen transition on openedAt instead
+	// of the promoted lastFailureTime, so a request rejected while already
+	// open cannot re-arm the open timer and keep the circuit open forever
+	// under steady traffic (FIX-01).
+	openedAt time.Time
 }
 
 // CircuitBreakerConfig holds configuration parameters for circuit breakers.
@@ -244,13 +251,16 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 
 	if !cb.allowRequest() {
 		// A request rejected while the circuit is open is an admission
-		// outcome, not a never-started request: count it as a failure so
-		// GetBaseMetrics' success_rate (successes/total_requests) and
-		// total_failures reflect actual admission, matching the
-		// internal/recovery circuit breaker. Previously open-rejects only
-		// incremented total_requests, understating failures and
-		// deflating the reported success rate (R180).
-		cb.RecordFailure()
+		// outcome, not a never-started request: count it in total_failures
+		// so GetBaseMetrics' success_rate (successes/total_requests)
+		// reflects actual admission (R180). This intentionally bypasses the
+		// promoted BaseRecoveryMechanism.RecordFailure(), which also sets
+		// lastFailureTime -- allowRequest's Open->HalfOpen timer used to
+		// read that same field, so every rejection re-armed it and the
+		// circuit never left Open under steady traffic (FIX-01). The open
+		// timer now runs off cb.openedAt instead, set only on a genuine
+		// Closed->Open or HalfOpen->Open transition in recordFailure.
+		atomic.AddInt64(&cb.totalFailures, 1)
 		return fmt.Errorf("circuit breaker is open")
 	}
 
@@ -285,7 +295,7 @@ func (cb *CircuitBreaker) allowRequest() bool {
 		return true
 
 	case CircuitBreakerOpen:
-		if now.Sub(cb.lastFailureTime) > cb.timeout {
+		if now.Sub(cb.openedAt) > cb.timeout {
 			cb.state = CircuitBreakerHalfOpen
 			cb.halfOpenSince = now
 			cb.logger.Infof("Circuit breaker transitioning to half-open state")
@@ -313,11 +323,13 @@ func (cb *CircuitBreaker) recordFailure() {
 	case CircuitBreakerClosed:
 		if cb.failures >= int64(cb.maxFailures) {
 			cb.state = CircuitBreakerOpen
+			cb.openedAt = time.Now()
 			cb.LogError("Circuit breaker opened after %d failures", cb.failures)
 		}
 
 	case CircuitBreakerHalfOpen:
 		cb.state = CircuitBreakerOpen
+		cb.openedAt = time.Now()
 		cb.LogError("Circuit breaker returned to open state after failure in half-open")
 	}
 }
@@ -384,7 +396,7 @@ func (cb *CircuitBreaker) IsAvailable() bool {
 		// transition to half-open — IsAvailable must not take a permit or
 		// mutate circuit state. Real traffic admission is gated by
 		// allowRequest (triggerRequest) which performs the transition.
-		return time.Since(cb.lastFailureTime) > cb.timeout
+		return time.Since(cb.openedAt) > cb.timeout
 	default:
 		return false
 	}

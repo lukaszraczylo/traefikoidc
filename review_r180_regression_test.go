@@ -80,10 +80,11 @@ func TestR180_OIDCEnvFallback_ConfigTakesPrecedence(t *testing.T) {
 // Fail-on-old: total_failures stays 0 after an open-reject.
 func TestR180_CircuitBreakerOpenRejectionCountedAsFailure(t *testing.T) {
 	cb := NewCircuitBreaker(DefaultCircuitBreakerConfig(), NewLogger("error"))
-	// Force the circuit open and keep it open (lastFailureTime now, so the
-	// open→half-open timer has not elapsed).
+	// Force the circuit open and keep it open (openedAt now, so the
+	// open→half-open timer has not elapsed; see FIX-01, which moved the
+	// open timer off the promoted lastFailureTime field).
 	cb.state = CircuitBreakerOpen
-	cb.lastFailureTime = time.Now()
+	cb.openedAt = time.Now()
 
 	err := cb.ExecuteWithContext(context.Background(), func() error {
 		return errors.New("should not be called")
