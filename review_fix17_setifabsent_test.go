@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/lukaszraczylo/traefikoidc/internal/cache/backends"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -120,6 +122,52 @@ func TestFIX17_UniversalCacheSetIfAbsent_RedisBackendConcurrentExactlyOneWinner(
 		}
 	}
 	assert.Equal(t, 1, wins, "exactly one of %d concurrent Redis-backed SetIfAbsent calls on the same key must win", n)
+}
+
+// TestFIX17R2_UniversalCacheSetIfAbsent_TwoReplicasShareRawRedisBackend_ExactlyOneWinner
+// is the round-2 verifier's mutation-resistant version of
+// TestFIX17_UniversalCacheSetIfAbsent_RedisBackendConcurrentExactlyOneWinner
+// above: that test drives 20 concurrent calls through a SINGLE
+// UniversalCache instance, so c.mu's own single-process atomicity produces
+// exactly one winner even if the c.backend.(backendSetNXer) branch were
+// dead code — it does not, by itself, prove the winning claim crossed into
+// Redis rather than staying in that one instance's local map. This test
+// uses two SEPARATE UniversalCache instances (simulated Traefik replicas)
+// sharing one miniredis-backed RedisBackend and asserts both properties
+// together: the second instance's call is rejected, AND the key is
+// actually present in the shared miniredis (mr.Keys()), which only the
+// SetNX branch, not two independent local maps, can produce.
+func TestFIX17R2_UniversalCacheSetIfAbsent_TwoReplicasShareRawRedisBackend_ExactlyOneWinner(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	t.Cleanup(mr.Close)
+
+	backend, err := backends.NewRedisBackend(backends.DefaultRedisConfig(mr.Addr()))
+	require.NoError(t, err)
+	defer func() { _ = backend.Close() }()
+
+	replicaA := NewUniversalCacheWithBackend(UniversalCacheConfig{
+		Type:            CacheTypeSession,
+		DefaultTTL:      time.Minute,
+		SkipAutoCleanup: true,
+	}, backend)
+	defer func() { _ = replicaA.Close() }()
+
+	replicaB := NewUniversalCacheWithBackend(UniversalCacheConfig{
+		Type:            CacheTypeSession,
+		DefaultTTL:      time.Minute,
+		SkipAutoCleanup: true,
+	}, backend)
+	defer func() { _ = replicaB.Close() }()
+
+	claimedA, errA := replicaA.SetIfAbsent("two-replica-raw-redis-key", "replica-a", time.Minute)
+	require.NoError(t, errA)
+	claimedB, errB := replicaB.SetIfAbsent("two-replica-raw-redis-key", "replica-b", time.Minute)
+	require.NoError(t, errB)
+
+	assert.True(t, claimedA, "the first replica must claim the key")
+	assert.False(t, claimedB, "a second replica sharing the same raw Redis backend must not also claim the key")
+	assert.NotEmpty(t, mr.Keys(), "the winning claim must be written to the shared Redis backend, not kept process-local")
 }
 
 // TestFIX17_CacheInterfaceWrapperSetIfAbsent_SatisfiesOptionalInterface
