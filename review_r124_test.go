@@ -121,12 +121,20 @@ func TestValidateTokenExpiryRS_AppliesClockSkewLeeway(t *testing.T) {
 // TestShouldBypassAuth_PassesOptions guards the R124 fix to middleware.go
 // shouldBypassAuth: CORS preflights carry no session cookie and were
 // 401'd (with no Access-Control-Allow-* headers), so the browser blocked
-// cross-origin SPA->API calls. OPTIONS must be passed through.
+// cross-origin SPA->API calls. A genuine preflight (Origin +
+// Access-Control-Request-Method, the shape every browser actually sends)
+// must be passed through. FIX-02 narrowed the original R124 bypass, which
+// matched on the OPTIONS method alone regardless of these headers; see
+// TestShouldBypassAuth_BareOptionsDoesNotBypass in
+// fix02_options_bypass_test.go for the negative case that guards against
+// that regression.
 func TestShouldBypassAuth_PassesOptions(t *testing.T) {
 	tObj := &TraefikOidc{
 		logger: GetSingletonNoOpLogger(),
 	}
 	req := httptest.NewRequest(http.MethodOptions, "/api/resource", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
 	bypass, reason := tObj.shouldBypassAuth(req)
 	if !bypass {
 		t.Fatal("OPTIONS preflight must bypass auth")

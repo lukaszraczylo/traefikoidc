@@ -102,7 +102,16 @@ func (t *TraefikOidc) shouldBypassAuth(req *http.Request) (bool, string) {
 	// (with no ACAO headers, since the security applier only runs on the
 	// authenticated path) makes the browser block the cross-origin
 	// request entirely and the real request never proceeds (R124).
-	if req.Method == http.MethodOptions {
+	//
+	// A genuine preflight (RFC "Fetch" CORS protocol) always carries BOTH
+	// an Origin header and an Access-Control-Request-Method header - the
+	// browser sends no other OPTIONS request shaped like this. Gating on
+	// the method alone bypassed auth for ANY unauthenticated
+	// "OPTIONS <protected-path>", forwarding it to the backend with no
+	// session check (FIX-02).
+	if req.Method == http.MethodOptions &&
+		req.Header.Get("Origin") != "" &&
+		req.Header.Get("Access-Control-Request-Method") != "" {
 		return true, bypassReasonOptions
 	}
 	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
