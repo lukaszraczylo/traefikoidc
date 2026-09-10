@@ -190,7 +190,7 @@ clientSecret: your-client-secret
 | `clientAssertionKeyID` | string | none | `kid` header for `private_key_jwt` assertions. Required when `clientAuthMethod: private_key_jwt`. |
 | `clientAssertionAlg` | string | `RS256` | Signing algorithm for `private_key_jwt`. One of `RS256/384/512`, `PS256/384/512`, `ES256/384/512`. |
 | `extraAuthParams` | map | none | Extra query parameters appended to the authorization request (e.g. re-selective prompt). |
-| `perSourceLoginRateLimit` | int | `0` (off) | Throttle OIDC auth events (callback + login initiation) per external client source, in auth events per minute. Internal/loopback sources are never throttled. |
+| `perSourceLoginRateLimit` | int | `0` (off) | Throttle OIDC auth events (callback + login initiation) per external client source, in auth events per minute. Keys and classifies the source by RemoteAddr only, never `X-Forwarded-For`, so a client cannot spoof it. Internal/loopback sources are never throttled. |
 | `stripAuthCookies` | bool | `false` | Strip OIDC session cookies from the hop to the backend (mitigates HTTP 431). |
 | `enableBackchannelLogout` | bool | `false` | Enable OIDC back-channel logout (IdP-initiated, server-to-server). |
 | `backchannelLogoutURL` | string | derived | Back-channel logout endpoint path. |

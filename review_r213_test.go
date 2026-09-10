@@ -8,19 +8,21 @@ import (
 
 // TestR185_PerSourceLimiterSweepEvictsIdle guards the memory-bounding of the
 // per-source limiter (R185): entries for sources that stop returning must
-// be evicted by the sweep, otherwise an attacker rotating spoofed
-// X-Forwarded-For values would grow the map unboundedly. Forces the sweep
-// (lastSweep in the past) and asserts an idle-over-threshold entry is gone.
+// be evicted by the sweep, otherwise many distinct RemoteAddr sources seen
+// over time would grow the map unboundedly. Sources are keyed by RemoteAddr,
+// not the attacker-controlled X-Forwarded-For header (FIX-11). Forces the
+// sweep (lastSweep in the past) and asserts an idle-over-threshold entry is
+// gone.
 func TestR185_PerSourceLimiterSweepEvictsIdle(t *testing.T) {
 	l := newPerSourceAuthLimiter(100)
 
-	// Register two external sources.
+	// Register two external sources. Distinguished by RemoteAddr (FIX-11:
+	// X-Forwarded-For is attacker-controlled and no longer affects keying).
 	if !l.allow(httptest.NewRequest("GET", "/", nil)) {
 		t.Fatal("first request should be allowed")
 	}
-	// (override) second source via direct allow with a different XFF.
 	r2 := httptest.NewRequest("GET", "/", nil)
-	r2.Header.Set("X-Forwarded-For", "9.9.9.9")
+	r2.RemoteAddr = "9.9.9.9:1234"
 	if !l.allow(r2) {
 		t.Fatal("second source should be allowed")
 	}
@@ -49,7 +51,7 @@ func TestR185_PerSourceLimiterSweepEvictsIdle(t *testing.T) {
 	// A source that returns (re-)registers and is throttled fresh, not
 	// carried over from before the sweep.
 	r3 := httptest.NewRequest("GET", "/", nil)
-	r3.Header.Set("X-Forwarded-For", "9.9.9.9")
+	r3.RemoteAddr = "9.9.9.9:1234"
 	_ = l.allow(r3)
 	l.mu.Lock()
 	hasNew := false

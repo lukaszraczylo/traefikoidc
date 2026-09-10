@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -81,7 +82,15 @@ func TestR185_InternalSourceNeverThrottled(t *testing.T) {
 			rw := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/callback?state=s&code=c", nil)
 			req.Header.Set("Accept", "text/html")
-			req.Header.Set("X-Forwarded-For", src)
+			// RemoteAddr, not X-Forwarded-For, is what PerSourceLoginRateLimit
+			// keys and classifies on (FIX-11): X-Forwarded-For is
+			// attacker-controlled and must never decide "internal". IPv6
+			// RemoteAddr needs bracketing for SplitHostPort.
+			if strings.Contains(src, ":") {
+				req.RemoteAddr = "[" + src + "]:54321"
+			} else {
+				req.RemoteAddr = src + ":54321"
+			}
 			oidc.ServeHTTP(rw, req)
 			if rw.Code == http.StatusTooManyRequests {
 				t.Fatalf("internal source %s must not be throttled; got 429", src)

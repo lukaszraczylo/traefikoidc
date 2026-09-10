@@ -11,8 +11,8 @@ import (
 )
 
 // perSourceAuthEntry is one source's throttling state, retained briefly
-// after last use then evicted so a handful of spoofed X-Forwarded-For
-// values can't grow the map unboundedly.
+// after last use then evicted so distinct RemoteAddr values seen over time
+// can't grow the map unboundedly.
 type perSourceAuthEntry struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
@@ -81,20 +81,17 @@ func (l *perSourceAuthLimiter) sweep(now time.Time) {
 	l.lastSweep = now
 }
 
-// sourceIP returns the client source IP, preferring the first
-// X-Forwarded-For value (original client in a proxy chain behind Traefik)
-// with RemoteAddr as fallback. Returns "" if none is parseable.
+// sourceIP returns the client source IP from RemoteAddr only, matching
+// clientIPForBearer (bearer_auth.go). RemoteAddr is the TCP peer address
+// net/http records itself, so a client cannot forge it; X-Forwarded-For is
+// attacker-controlled and must never be trusted here (FIX-11) - honoring it
+// let an external attacker spoof a loopback/private address to be classified
+// internal by isInternalSource and skip PerSourceLoginRateLimit entirely, or
+// rotate it to spoof a victim's key or grow the entries map. Returns "" if
+// RemoteAddr is not parseable.
 func sourceIP(req *http.Request) string {
 	if req == nil {
 		return ""
-	}
-	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			xff = xff[:i]
-		}
-		if ip := net.ParseIP(strings.TrimSpace(xff)); ip != nil {
-			return ip.String()
-		}
 	}
 	if req.RemoteAddr != "" {
 		host, _, err := net.SplitHostPort(req.RemoteAddr)
