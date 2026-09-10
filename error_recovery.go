@@ -266,7 +266,16 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 
 	err := fn()
 	if err != nil {
-		cb.recordFailure()
+		// A terminal client error (HTTPError 4xx other than 429) reflects a
+		// per-user problem such as invalid_grant, not a downstream-service
+		// failure. It must not trip the state machine: in particular it
+		// must not reopen a half-open circuit, or the 15s/30s half-open
+		// hold (resetTimeout) extends an outage on any single per-user
+		// error (FIX-09). It is still recorded in the base metrics below,
+		// since it is a real error returned to the caller.
+		if !isTerminalClientError(err) {
+			cb.recordFailure()
+		}
 		cb.RecordFailure()
 		return err
 	}
@@ -274,6 +283,21 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 	cb.recordSuccess()
 	cb.RecordSuccess()
 	return nil
+}
+
+// isTerminalClientError reports whether err is an HTTPError whose status
+// code is a client error (4xx) other than 429 Too Many Requests. Such
+// errors indicate the request itself was rejected by the far end (for
+// example a replayed authorization code), not that the far end is
+// unhealthy, so the circuit breaker's failure-counting state machine
+// ignores them (FIX-09). 429 is excluded because it is the service
+// signaling it is overloaded, a genuine health signal.
+func isTerminalClientError(err error) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 && httpErr.StatusCode != 429
 }
 
 // Execute executes a function through the circuit breaker without context.
