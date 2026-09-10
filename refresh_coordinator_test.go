@@ -890,3 +890,39 @@ func TestFix36_ShutdownReturnsPromptlyDuringInFlightRefresh(t *testing.T) {
 	// documented FIX-36 tradeoff: in production that goroutine is bounded by
 	// refreshFunc's own HTTP client timeout, not by RefreshCoordinator.
 }
+
+// TestFix36_ExecuteRefreshAsyncSkipsRefreshFuncWhenAlreadyCanceled pins the
+// case where rc.ctx is already canceled (Shutdown ran, or raced ahead of
+// CoordinateRefresh's own stopChan check) before executeRefreshAsync's inner
+// goroutine starts. That goroutine must not call refreshFunc at all: the
+// result would only be discarded (the outer select already took the
+// refreshCtx.Done() branch), and for a rotating IdP refresh-token grant,
+// discarding a successful response still consumes the one-time-use refresh
+// token, leaving the caller and the IdP out of sync.
+//
+// Calling rc.cancel() directly (rather than rc.Shutdown()) isolates this
+// from the stopChan-reject path added by FIX-36: it exercises the case
+// where CoordinateRefresh's own stopChan check has already passed and the
+// operation is genuinely running under an already-canceled rc.ctx.
+func TestFix36_ExecuteRefreshAsyncSkipsRefreshFuncWhenAlreadyCanceled(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	rc := NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), logger)
+	rc.cancel()
+
+	var called int32
+	_, err := rc.CoordinateRefresh(context.Background(), "fix36-precanceled-session", "fix36-precanceled-token",
+		func() (*TokenResponse, error) {
+			atomic.StoreInt32(&called, 1)
+			return &TokenResponse{AccessToken: "should-be-discarded"}, nil
+		})
+	if err == nil {
+		t.Fatal("waiter of an operation whose context was already canceled must get an error, not a nil result")
+	}
+
+	// Give the untracked inner goroutine time to run refreshFunc if the fix
+	// is absent, before asserting it never did.
+	time.Sleep(200 * time.Millisecond)
+	if atomic.LoadInt32(&called) != 0 {
+		t.Fatal("refreshFunc must not be called when rc.ctx is already canceled before the refresh starts")
+	}
+}

@@ -472,6 +472,16 @@ func (rc *RefreshCoordinator) executeRefreshAsync(
 	// lands in the unread buffer or loses the select race, either way with
 	// no reader left listening.
 	go func() {
+		// FIX-36: rc.ctx may already be canceled (Shutdown ran, or raced
+		// ahead of CoordinateRefresh's own stopChan check) by the time this
+		// goroutine starts. In that case refreshCtx is already Done, so the
+		// outer select below will not use whatever this call returns — but
+		// refreshFunc is the IdP refresh-token grant, and calling it anyway
+		// still spends the request against a rotating refresh token whose
+		// result nobody reads. Skip the call outright.
+		if rc.ctx.Err() != nil {
+			return
+		}
 		resp, err := refreshFunc()
 		select {
 		case resultChan <- struct {
