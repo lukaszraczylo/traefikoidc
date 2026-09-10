@@ -415,13 +415,33 @@ func (c *UniversalCache) setLocalLocked(key string, value interface{}, ttl time.
 
 // backendSetNXer is the optional distributed check-and-set primitive a
 // CacheBackend can provide: RedisBackend implements it via Redis SET key
-// value NX PX <ttl-ms>. CacheBackend itself is not widened to require it —
+// value NX PX <ttl-ms>, and resilience.CircuitBreakerBackend /
+// resilience.HealthCheckBackend forward to it when the backend they wrap
+// does (FIX-17 round-2). CacheBackend itself is not widened to require it —
 // every other implementer and test double would need a method only
 // SetIfAbsent needs — so SetIfAbsent reaches it through this type
 // assertion instead (FIX-17).
 type backendSetNXer interface {
 	SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
 }
+
+// errSetIfAbsentUnsupported is returned by SetIfAbsent when a distributed
+// backend is attached but does not (even transitively, through a wrapper)
+// implement backendSetNXer. Round-2 correction: this used to silently fall
+// back to setIfAbsentLocal instead, which is safe only when every caller
+// sharing the key is in this same process. For a distributed cache — the
+// whole point of attaching a backend — two replicas each taking the
+// local-only path both observe "absent" and both claim, exactly the
+// double-accept FIX-17 exists to close (this is what happened before
+// resilience.CircuitBreakerBackend/HealthCheckBackend gained a SetNX
+// passthrough). Erroring loudly instead lets a caller like
+// checkAndMarkLogoutJTIProcessed fall through to its own shared-backend
+// Get+Set fallback rather than get a false "claimed" from either replica.
+//
+// Compared with == only: no errors.As, no fmt.Errorf %w — an interpreted
+// value wrapped with %w loses its type under yaegi v0.16.1, and errors.As
+// with an interpreted target type panics there.
+var errSetIfAbsentUnsupported = errors.New("cache backend does not support atomic SetIfAbsent")
 
 // SetIfAbsent atomically stores value under key only if key is not already
 // present, and reports whether THIS call performed the store. It replaces
@@ -433,27 +453,32 @@ type backendSetNXer interface {
 // racing the same key in this process can never both observe "absent".
 //
 // With a backend attached that implements the optional backendSetNXer
-// primitive (RedisBackend does), that call is the sole source of truth for
-// "did this claim the key", so the check is atomic across every replica
-// sharing that backend too — closing the gap backchannelLogoutJTIMu's
-// process-local mutex could never cover. A successful backend claim is then
-// mirrored into the local cache as a best-effort read-through; a failure to
-// mirror it does not change the (already-correct) return value.
+// primitive (RedisBackend does, and so do the circuit-breaker/health-check
+// wrappers when the backend underneath does), that call is the sole source
+// of truth for "did this claim the key", so the check is atomic across
+// every replica sharing that backend too — closing the gap
+// backchannelLogoutJTIMu's process-local mutex could never cover. A
+// successful backend claim is then mirrored into the local cache as a
+// best-effort read-through; a failure to mirror it does not change the
+// (already-correct) return value.
 //
-// A backend that does not implement backendSetNXer (for example one
-// wrapped by the circuit-breaker or health-check decorator, which pass
-// through Get/Set/Delete but do not add SetNX) falls back to the local-only
-// path, so this call is then atomic within this process only — the same
-// guarantee callers previously had to provide for themselves.
+// A backend that does not implement backendSetNXer at all returns
+// errSetIfAbsentUnsupported instead of falling back to the local-only path
+// (FIX-17 round-2): the local-only path is correct only within this
+// process, and silently taking it for an attached distributed backend lets
+// two replicas both observe "absent" and both claim.
 func (c *UniversalCache) SetIfAbsent(key string, value interface{}, ttl time.Duration) (bool, error) {
 	if ttl == 0 {
 		ttl = c.config.DefaultTTL
 	}
 
 	if c.backend != nil {
-		if nx, ok := c.backend.(backendSetNXer); ok {
-			return c.setIfAbsentBackend(nx, key, value, ttl)
+		nx, ok := c.backend.(backendSetNXer)
+		if !ok {
+			c.logger.Debugf("SetIfAbsent: backend for key %s does not support atomic SetNX; caller must use its own shared-backend fallback", key)
+			return false, errSetIfAbsentUnsupported
 		}
+		return c.setIfAbsentBackend(nx, key, value, ttl)
 	}
 
 	return c.setIfAbsentLocal(key, value, ttl)

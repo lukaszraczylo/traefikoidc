@@ -15,17 +15,26 @@ import (
 )
 
 // backchannelLogoutJTIMu serializes the FALLBACK check-and-set inside
-// checkAndMarkLogoutJTIProcessed, used only when sessionInvalidationCache
-// does not implement AtomicSetIfAbsentCache. It guards against two logout
-// tokens sharing a jti (retried delivery, or a captured token replayed by
-// an attacker) both observing "not yet processed" within THIS PROCESS. This
-// mutex is process-local: it does not coordinate across Traefik replicas.
+// checkAndMarkLogoutJTIProcessed: used when sessionInvalidationCache does
+// not implement AtomicSetIfAbsentCache, AND when it does but SetIfAbsent
+// itself returns an error — including errSetIfAbsentUnsupported, which
+// UniversalCache.SetIfAbsent now reports rather than silently degrading to
+// a process-local check when its distributed backend does not implement
+// the atomic SetNX primitive (FIX-17 round-2; this closed the gap where a
+// Redis backend wrapped by the circuit-breaker or health-check decorator
+// made every SetIfAbsent call silently local-only). It guards against two
+// logout tokens sharing a jti (retried delivery, or a captured token
+// replayed by an attacker) both observing "not yet processed" within THIS
+// PROCESS. This mutex is process-local: it does not coordinate across
+// Traefik replicas — so this fallback path itself gives only a
+// per-process guarantee, same as before FIX-17.
 // The primary path (a cache that implements AtomicSetIfAbsentCache, which
 // CacheInterfaceWrapper — what sessionInvalidationCache actually is at
-// runtime — does) does not use this mutex at all: SetIfAbsent's own
-// atomicity, backed by Redis SET NX PX when the cache is Redis-backed,
-// closes the cross-replica gap this mutex could never cover (FIX-17, R36
-// correction).
+// runtime — does, and whose SetIfAbsent call succeeds) does not use this
+// mutex at all: SetIfAbsent's own atomicity, backed by Redis SET NX PX
+// (directly, or forwarded through the circuit-breaker/health-check
+// wrapper) when the cache is Redis-backed, closes the cross-replica gap
+// this mutex could never cover (FIX-17, R36 correction).
 var backchannelLogoutJTIMu sync.Mutex
 
 const (
@@ -310,12 +319,17 @@ func (t *TraefikOidc) validateLogoutToken(tokenString string) (*LogoutTokenClaim
 // The check-and-set is one atomic operation, not a separate Get followed
 // by a Set (FIX-17, R36 correction): when sessionInvalidationCache
 // implements AtomicSetIfAbsentCache (CacheInterfaceWrapper, what it
-// actually is at runtime, does), SetIfAbsent is the sole check, and its own
-// atomicity — backed by Redis SET NX PX when the cache is Redis-backed —
-// holds across every Traefik replica sharing that cache, not just within
-// this process. A cache that does not provide the atomic primitive falls
-// back to a backchannelLogoutJTIMu-guarded Get then Set, correct only
-// within this process; see that mutex's comment.
+// actually is at runtime, does) AND its SetIfAbsent call succeeds, that
+// call is the sole check, and its own atomicity — backed by Redis SET NX
+// PX when the cache is Redis-backed, including through the
+// circuit-breaker/health-check wrapper's SetNX passthrough (FIX-17
+// round-2) — holds across every Traefik replica sharing that cache, not
+// just within this process. A cache that does not provide the atomic
+// primitive at all, or whose SetIfAbsent call errors (including
+// errSetIfAbsentUnsupported for a distributed backend that itself lacks
+// the atomic SetNX primitive), falls back to a
+// backchannelLogoutJTIMu-guarded Get then Set, correct only within this
+// process; see that mutex's comment.
 func (t *TraefikOidc) checkAndMarkLogoutJTIProcessed(jti string, issuedAt int64) error {
 	if jti == "" || t.sessionInvalidationCache == nil {
 		return nil
