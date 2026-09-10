@@ -349,7 +349,11 @@ func enforceIatAge(claims map[string]interface{}, maxAge time.Duration) *bearerE
 	}
 	iatRaw, ok := claims["iat"].(float64)
 	if !ok {
-		// jwt.Verify already requires iat; this branch shouldn't be reached.
+		// iat is OPTIONAL per RFC 7519 §4.1.6, and jwt.Verify validates it
+		// only when present (R126) — this branch IS reachable. maxAge>0
+		// means the operator explicitly opted into bounding token age by
+		// iat; a token with no iat has nothing to bound it against, so fail
+		// closed rather than silently skip the check the operator asked for.
 		return newBearerError(bearerErrInvalidToken, "missing iat claim")
 	}
 	iat := time.Unix(int64(iatRaw), 0)
@@ -753,10 +757,16 @@ func (t *TraefikOidc) buildPrincipalFromBearerToken(token string) (*principal, *
 	// stale window). Reject here, mirroring the cookie path: use the
 	// token's iat as its creation time so a token issued before the
 	// logout is invalidated, while a legitimately freshly-issued token
-	// (iat after logout) still passes (R146).
+	// (iat after logout) still passes (R146). iat is OPTIONAL per RFC 7519
+	// §4.1.6 and jwt.Verify no longer requires it (R126), so an iat-less
+	// token DOES reach here now. Falling back to time.Now() made such a
+	// token always look newer than any logout, so IdP-initiated logout
+	// never revoked it — reintroducing the R98 defect the cookie path's
+	// own fallback (sessionCreatedAtForInvalidation) avoids by using the
+	// zero time instead: fail closed rather than open (FIX-24).
 	subjectForInvalidation, _ := claims["sub"].(string)
 	sidForInvalidation, _ := claims["sid"].(string)
-	createdAt := time.Now()
+	var createdAt time.Time
 	if iat, ok := claims["iat"].(float64); ok {
 		createdAt = time.Unix(int64(iat), 0)
 	}
