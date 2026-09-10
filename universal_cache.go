@@ -128,6 +128,19 @@ type UniversalCache struct {
 	// the local entry is still live (FIX-04). Guarded by mu; cleared by
 	// removeItem/Clear and by the next successful backend Set for the key.
 	staleBackend map[string]struct{}
+
+	// legacyBlacklistMissMu and legacyBlacklistMissUntil bound
+	// checkLegacyBlacklistMarker's Redis cost (R4 cache review): a blacklist
+	// Get almost always misses, and every miss used to pay for a full
+	// legacy-namespace GET (plus PTTL when something happened to be cached
+	// there) with no memory of the last attempt. A miss (or a legacy hit
+	// that turned out to be a CacheTypeToken claims map, not the boolean
+	// marker) is remembered here per key until the deadline, so a repeat
+	// blacklist check for the SAME key inside that window skips the legacy
+	// lookup entirely. Only meaningful for CacheTypeBlacklist; empty and
+	// unused otherwise. Pruned opportunistically by cleanup().
+	legacyBlacklistMissMu    sync.Mutex
+	legacyBlacklistMissUntil map[string]time.Time
 }
 
 // NewUniversalCache creates a new universal cache instance
@@ -175,6 +188,8 @@ func createUniversalCache(config UniversalCacheConfig) *UniversalCache {
 		ctx:          ctx,
 		cancel:       cancel,
 		staleBackend: make(map[string]struct{}),
+
+		legacyBlacklistMissUntil: make(map[string]time.Time),
 	}
 
 	// Start cleanup routine only if not skipped
@@ -932,10 +947,12 @@ func (c *UniversalCache) startCleanup() {
 
 // cleanup removes expired items from the cache
 func (c *UniversalCache) cleanup() {
+	now := time.Now()
+	c.pruneLegacyBlacklistMisses(now)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
 	var toRemove []string
 
 	for key, item := range c.items {
@@ -1197,26 +1214,98 @@ func (c *UniversalCache) prefixKey(key string) string {
 // by checkLegacyBlacklistMarker (FIX-16).
 const legacyBlacklistPrefix = "token:"
 
+// legacyBlacklistMissCacheTTL bounds how long checkLegacyBlacklistMarker
+// remembers that a key missed the legacy namespace before it will ask Redis
+// about that same key again (R4 cache review). A blacklist Get almost
+// always misses — most tokens are never revoked — so without this bound
+// every single blacklist check paid for an extra Redis round trip, forever,
+// on the verify hot path. A legacy marker still present in Redis when the
+// window ends is honored on the next check; this only stops re-asking for
+// the SAME key more than once per window while nothing has changed.
+const legacyBlacklistMissCacheTTL = 30 * time.Second
+
+// legacyBlacklistTrueMarker is the exact byte encoding UniversalCache.
+// serialize(true) produces: marker byte 0x01 (JSON-encoded) followed by
+// json.Marshal(true). checkLegacyBlacklistMarker compares the raw legacy
+// value against this directly so it can reject the common case — a
+// CacheTypeToken claims map cached under the same raw token — without
+// JSON-decoding the whole map just to learn it isn't a bool (R4 cache
+// review: that decode ran on the verify hot path for every cached token).
+var legacyBlacklistTrueMarker = []byte{0x01, 't', 'r', 'u', 'e'}
+
 // checkLegacyBlacklistMarker reads a blacklist marker under the pre-R128
 // "token:" namespace. Only a stored boolean true counts as blacklisted — a
 // CacheTypeToken entry for the same raw token is a cached claims map, never
 // the boolean revocation marker, and must not be misread as one (FIX-16).
 func (c *UniversalCache) checkLegacyBlacklistMarker(ctx context.Context, key string) (bool, bool) {
+	if c.legacyBlacklistRecentlyMissed(key) {
+		return false, false
+	}
+
 	data, _, exists, err := c.backend.Get(ctx, legacyBlacklistPrefix+key)
 	if err != nil || !exists {
+		c.recordLegacyBlacklistMiss(key)
 		return false, false
 	}
 
-	var value interface{}
-	if err := c.deserialize(data, &value); err != nil {
-		return false, false
+	if bytesEqual(data, legacyBlacklistTrueMarker) {
+		return true, true
 	}
 
-	blacklisted, ok := value.(bool)
-	if !ok || !blacklisted {
-		return false, false
+	// Anything else is not the boolean marker — most commonly a
+	// CacheTypeToken claims map for this same raw token, always larger than
+	// the 5-byte marker could ever be. Remember the miss either way so the
+	// next check for this key skips the round trip too.
+	c.recordLegacyBlacklistMiss(key)
+	return false, false
+}
+
+// bytesEqual reports whether a and b hold the same bytes. A small local
+// helper rather than importing "bytes" for one comparison.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	return true, true
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// legacyBlacklistRecentlyMissed reports whether key's legacy-namespace
+// lookup is still inside its remembered miss window.
+func (c *UniversalCache) legacyBlacklistRecentlyMissed(key string) bool {
+	c.legacyBlacklistMissMu.Lock()
+	defer c.legacyBlacklistMissMu.Unlock()
+	until, ok := c.legacyBlacklistMissUntil[key]
+	return ok && time.Now().Before(until)
+}
+
+// recordLegacyBlacklistMiss remembers that key's legacy-namespace lookup
+// just missed (or found something other than the boolean marker), so the
+// next checkLegacyBlacklistMarker call for it skips Redis until the window
+// elapses.
+func (c *UniversalCache) recordLegacyBlacklistMiss(key string) {
+	c.legacyBlacklistMissMu.Lock()
+	c.legacyBlacklistMissUntil[key] = time.Now().Add(legacyBlacklistMissCacheTTL)
+	c.legacyBlacklistMissMu.Unlock()
+}
+
+// pruneLegacyBlacklistMisses drops expired entries so
+// legacyBlacklistMissUntil does not grow without bound over the life of the
+// process. Called from cleanup(), which already runs on a timer for every
+// cache (including CacheTypeBlacklist, whose cleanup is externally managed
+// but still periodically invoked — see UniversalCacheManager).
+func (c *UniversalCache) pruneLegacyBlacklistMisses(now time.Time) {
+	c.legacyBlacklistMissMu.Lock()
+	defer c.legacyBlacklistMissMu.Unlock()
+	for key, until := range c.legacyBlacklistMissUntil {
+		if !now.Before(until) {
+			delete(c.legacyBlacklistMissUntil, key)
+		}
+	}
 }
 
 // isTimeoutOrDeadlineError reports whether err indicates the backend
