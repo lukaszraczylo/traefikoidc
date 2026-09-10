@@ -818,13 +818,75 @@ func TestFix36_CoordinateRefreshRejectedAfterShutdown(t *testing.T) {
 	}
 }
 
-// Note: an earlier draft of this FIX-36 pin asserted Shutdown returns
-// promptly by canceling a per-refresh context. That directly regressed two
-// existing, deliberately-tested invariants —
-// TestRefreshCoordinator_ShutdownWaitsForInFlight (review_r154) and
-// TestRefreshCoordinatorShutdownWaitsForInflight (review_r63) — which pin
-// that Shutdown must WAIT for a genuinely in-flight refresh to finish
-// naturally, not abandon it (avoiding a leaked/orphaned refresh goroutine).
-// FIX-36 therefore does not change that behavior; see the corrected
-// comments on executeRefreshAsync's timeout-context construction and on
-// Shutdown for the reasoning kept in refresh_coordinator.go.
+// TestFix36_ShutdownReturnsPromptlyDuringInFlightRefresh pins the completed
+// FIX-36 contract: each refresh's context now derives from a coordinator-
+// owned context that Shutdown cancels, so Shutdown returns promptly instead
+// of blocking for the refreshFunc's own duration (previously bounded only by
+// RefreshTimeout, 30s by default) — and the waiter of the aborted operation
+// gets an error rather than hanging.
+//
+// This supersedes the "Shutdown must wait" contract that
+// TestRefreshCoordinatorShutdownWaitsForInflight (review_r63) and
+// TestRefreshCoordinator_ShutdownWaitsForInFlight (review_r154) used to pin;
+// both were rewritten alongside this test to assert the prompt-return
+// contract instead. Fails on pre-fix code: Shutdown blocks until the
+// refreshFunc call returns (here, 3s), not under 1s.
+func TestFix36_ShutdownReturnsPromptlyDuringInFlightRefresh(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	cfg := DefaultRefreshCoordinatorConfig()
+	// Larger than both the refreshFunc's own 3s block and the test's 1s
+	// deadline below, so a prompt Shutdown return proves cancellation, not
+	// RefreshTimeout, unblocked it.
+	cfg.RefreshTimeout = 30 * time.Second
+	rc := NewRefreshCoordinator(cfg, logger)
+
+	started := make(chan struct{})
+	waiterErrCh := make(chan error, 1)
+	go func() {
+		_, err := rc.CoordinateRefresh(context.Background(), "fix36-shutdown-session", "fix36-shutdown-token",
+			func() (*TokenResponse, error) {
+				close(started)
+				time.Sleep(3 * time.Second)
+				return &TokenResponse{AccessToken: "late"}, nil
+			})
+		waiterErrCh <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh never started")
+	}
+
+	shutdownStart := time.Now()
+	shutdownDone := make(chan struct{})
+	go func() {
+		rc.Shutdown()
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Shutdown did not return within 1s while a refresh was in flight")
+	}
+	if elapsed := time.Since(shutdownStart); elapsed >= time.Second {
+		t.Fatalf("Shutdown took %v, want under 1s", elapsed)
+	}
+
+	select {
+	case err := <-waiterErrCh:
+		if err == nil {
+			t.Fatal("waiter of an operation aborted by Shutdown must get an error, not a nil result")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("waiter did not get a result within 1s of Shutdown returning — looks like a hang")
+	}
+
+	// The refreshFunc's own goroutine (executeRefreshAsync's inner `go
+	// func`) is untracked by rc.wg and is not forcibly stopped by
+	// cancellation — it keeps running past Shutdown until it returns
+	// naturally (here, the remaining part of its 3s sleep). This is the
+	// documented FIX-36 tradeoff: in production that goroutine is bounded by
+	// refreshFunc's own HTTP client timeout, not by RefreshCoordinator.
+}

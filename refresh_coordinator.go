@@ -37,6 +37,14 @@ type RefreshCoordinator struct {
 	stopChan               chan struct{}
 	config                 RefreshCoordinatorConfig
 	wg                     sync.WaitGroup
+	// ctx is the coordinator-owned parent for every in-flight refresh's
+	// timeout context (see executeRefreshAsync). Shutdown cancels it via
+	// cancel so a refresh that is still running when Shutdown is called
+	// unblocks immediately instead of running to RefreshTimeout or to the
+	// refreshFunc's own natural completion (FIX-36). This is what lets
+	// Shutdown's wg.Wait() return promptly.
+	ctx    context.Context
+	cancel context.CancelFunc
 	// lifecycleMu (FIX-36) makes "check stopChan, then wg.Add" atomic with
 	// respect to Shutdown closing stopChan. CoordinateRefresh takes RLock
 	// around its check-then-Add; Shutdown takes Lock() before closing
@@ -188,6 +196,8 @@ func NewRefreshCoordinator(config RefreshCoordinatorConfig, logger *Logger) *Ref
 		logger = GetSingletonNoOpLogger()
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	rc := &RefreshCoordinator{
 		// inFlightRefreshes and sessionRefreshAttempts are both sync.Map;
 		// their zero values are ready to use.
@@ -195,6 +205,8 @@ func NewRefreshCoordinator(config RefreshCoordinatorConfig, logger *Logger) *Ref
 		metrics:  &RefreshMetrics{},
 		logger:   logger,
 		stopChan: make(chan struct{}),
+		ctx:      ctx,
+		cancel:   cancel,
 		circuitBreaker: &RefreshCircuitBreaker{
 			config: RefreshCircuitBreakerConfig{
 				MaxFailures:      3,
@@ -267,10 +279,11 @@ func (rc *RefreshCoordinator) CoordinateRefresh(
 
 	if isNew {
 		// We created a new operation, so we need to execute it. Track the
-		// goroutine so Shutdown genuinely waits for this refresh to finish
-		// (FIX-36 corrected this comment: there is no rc.ctx, and Shutdown
-		// does not abort an in-flight refresh — it waits for it, bounded by
-		// the operation's own RefreshTimeout; see executeRefreshAsync).
+		// goroutine with wg so Shutdown's wg.Wait() covers it: executeRefreshAsync
+		// derives its timeout context from rc.ctx, which Shutdown cancels, so
+		// this goroutine returns promptly once Shutdown runs rather than
+		// blocking wg.Wait() for the operation's own RefreshTimeout or the
+		// refreshFunc's natural completion (FIX-36; see executeRefreshAsync).
 		go func() {
 			defer rc.wg.Done()
 			rc.executeRefreshAsync(operation, sessionID, tokenHash, refreshFunc) //nolint:gosec // long-lived background refresh intentionally uses a background context
@@ -431,14 +444,14 @@ func (rc *RefreshCoordinator) executeRefreshAsync(
 		rc.scheduleDelayedCleanup(tokenHash)
 	}()
 
-	// Create timeout context. Deliberately derived from context.Background(),
-	// NOT a context Shutdown cancels: Shutdown's wg.Wait() must keep waiting
-	// for a genuinely in-flight refresh to actually finish rather than
-	// abandon it (TestRefreshCoordinatorShutdownWaitsForInflight,
-	// TestRefreshCoordinator_ShutdownWaitsForInFlight). RefreshTimeout alone
-	// is the upper bound on how long any single refresh — and so Shutdown —
-	// can be made to wait.
-	refreshCtx, cancel := context.WithTimeout(context.Background(), rc.config.RefreshTimeout)
+	// Create timeout context derived from rc.ctx (FIX-36), not
+	// context.Background(): rc.ctx is the coordinator-owned context Shutdown
+	// cancels, so this operation is bounded by whichever comes first —
+	// RefreshTimeout, or Shutdown being called. Deriving from rc.ctx is what
+	// lets Shutdown's wg.Wait() return promptly instead of blocking for up
+	// to RefreshTimeout (or the refreshFunc's own natural completion) on
+	// every in-flight refresh.
+	refreshCtx, cancel := context.WithTimeout(rc.ctx, rc.config.RefreshTimeout)
 	defer cancel()
 
 	// Execute refresh in goroutine to respect timeout
@@ -447,6 +460,17 @@ func (rc *RefreshCoordinator) executeRefreshAsync(
 		err  error
 	}, 1)
 
+	// This inner goroutine calls refreshFunc directly and is NOT tracked by
+	// rc.wg. When refreshCtx.Done() fires (RefreshTimeout, or Shutdown
+	// canceling rc.ctx) the outer select below moves on immediately and
+	// executeRefreshAsync returns, but this goroutine keeps running
+	// refreshFunc to completion — it has no way to abort an in-progress
+	// call given the func() (*TokenResponse, error) signature. In
+	// production refreshFunc makes an HTTP call, so this goroutine is
+	// bounded by that call's own client timeout, not by RefreshCoordinator.
+	// Its result is simply discarded: the buffered resultChan send either
+	// lands in the unread buffer or loses the select race, either way with
+	// no reader left listening.
 	go func() {
 		resp, err := refreshFunc()
 		select {
@@ -469,12 +493,21 @@ func (rc *RefreshCoordinator) executeRefreshAsync(
 		}
 		operation.mutex.Unlock()
 	case <-refreshCtx.Done():
-		// Timeout occurred
-		timeoutErr := fmt.Errorf("refresh operation timed out after %v", rc.config.RefreshTimeout)
+		// refreshCtx ended either because RefreshTimeout elapsed or because
+		// Shutdown canceled rc.ctx (FIX-36). Report which one: a waiter
+		// blocked in CoordinateRefresh's own select on operation.done needs
+		// an accurate error, not a blanket "timed out" that is wrong for
+		// the Shutdown case.
+		var opErr error
+		if rc.ctx.Err() != nil {
+			opErr = fmt.Errorf("refresh coordinator is shutting down: %w", rc.ctx.Err())
+		} else {
+			opErr = fmt.Errorf("refresh operation timed out after %v", rc.config.RefreshTimeout)
+		}
 		operation.mutex.Lock()
 		operation.result = &refreshResult{
 			tokenResponse: nil,
-			err:           timeoutErr,
+			err:           opErr,
 			fromCache:     false,
 		}
 		operation.mutex.Unlock()
@@ -786,10 +819,17 @@ func (rc *RefreshCoordinator) Shutdown() {
 		close(rc.stopChan)
 		rc.lifecycleMu.Unlock()
 
-		// Deliberately no ctx cancellation here: wg.Wait() must block until
-		// a genuinely in-flight refresh actually finishes (see
-		// executeRefreshAsync's comment). RefreshTimeout is the only bound
-		// on how long that wait can take.
+		// Cancel the coordinator-owned context (FIX-36): every in-flight
+		// refresh's timeout context is derived from rc.ctx
+		// (executeRefreshAsync), so this unblocks each of them immediately
+		// instead of leaving wg.Wait() below to block for up to
+		// RefreshTimeout, or for the refreshFunc's own natural completion,
+		// per in-flight refresh. The refreshFunc calls themselves keep
+		// running in their own untracked goroutines (see
+		// executeRefreshAsync) — this cancels waiting for them, not the
+		// calls in progress.
+		rc.cancel()
+
 		rc.wg.Wait()
 	})
 }

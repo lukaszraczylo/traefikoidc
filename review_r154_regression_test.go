@@ -106,12 +106,16 @@ func TestSetRefreshToken_ChunkedCommitted(t *testing.T) {
 	}
 }
 
-// TestRefreshCoordinator_ShutdownWaitsForInFlight verifies the documented
-// Shutdown contract on RefreshCoordinator: Shutdown must block until an
-// in-flight refresh completes rather than return while it still runs. The
-// corresponding fix (refresh_coordinator.go) moved the WaitGroup Add to
-// before the operation is registered so a concurrent Shutdown can never
-// observe a registered-but-untracked new operation and miss it.
+// TestRefreshCoordinator_ShutdownWaitsForInFlight originally verified that
+// Shutdown blocks until an in-flight refresh completes. The WaitGroup part
+// of that fix — moving Add before the operation is registered so a
+// concurrent Shutdown can never miss a registered-but-untracked new
+// operation — is unchanged and still covered here via wg tracking.
+//
+// FIX-36 replaced the "Shutdown blocks until it finishes naturally" contract
+// with "Shutdown cancels a coordinator-owned context so it returns promptly,
+// and the waiter gets an error instead of hanging" (refresh_coordinator.go,
+// Shutdown / executeRefreshAsync). This test now asserts that contract.
 func TestRefreshCoordinator_ShutdownWaitsForInFlight(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
 	rc := NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), logger)
@@ -120,9 +124,10 @@ func TestRefreshCoordinator_ShutdownWaitsForInFlight(t *testing.T) {
 	release := make(chan struct{})
 	var startedOnce sync.Once
 	refreshDone := make(chan struct{})
+	var refreshErr error
 
 	go func() {
-		rc.CoordinateRefresh(context.Background(), "sid", "rt",
+		_, refreshErr = rc.CoordinateRefresh(context.Background(), "sid", "rt",
 			func() (*TokenResponse, error) {
 				startedOnce.Do(func() { close(started) })
 				<-release
@@ -132,23 +137,25 @@ func TestRefreshCoordinator_ShutdownWaitsForInFlight(t *testing.T) {
 	}()
 
 	<-started
+	defer close(release) // let the leaked refreshFunc goroutine finish
 
 	shutdownDone := make(chan struct{})
 	go func() { rc.Shutdown(); close(shutdownDone) }()
 
 	select {
 	case <-shutdownDone:
-		t.Fatal("Shutdown returned while an in-flight refresh was still running")
-	case <-time.After(200 * time.Millisecond):
-		// Expected: Shutdown is blocked on wg.Wait until the refresh ends.
+		// Expected: Shutdown cancels rc.ctx and returns without waiting for
+		// the still-blocked refreshFunc.
+	case <-time.After(1 * time.Second):
+		t.Fatal("Shutdown did not return promptly while an in-flight refresh was still running")
 	}
 
-	close(release)
-	<-refreshDone
-
 	select {
-	case <-shutdownDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Shutdown did not return after the in-flight refresh completed")
+	case <-refreshDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("waiter did not get a result within 1s of Shutdown returning — looks like a hang")
+	}
+	if refreshErr == nil {
+		t.Fatal("waiter of an operation aborted by Shutdown must get an error, not a nil result")
 	}
 }
