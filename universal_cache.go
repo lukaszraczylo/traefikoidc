@@ -409,6 +409,21 @@ func (c *UniversalCache) Get(key string) (interface{}, bool) {
 				_ = c.updateLocalCache(key, value, ttl)
 				return value, true
 			}
+		} else if c.config.Type == CacheTypeBlacklist {
+			// R128 renamed the blacklist backend namespace from
+			// CacheTypeToken's "token:" prefix to CacheTypeBlacklist's
+			// "blacklist:" prefix with no migration. For one release, a
+			// miss on the new namespace also checks the legacy "token:"
+			// namespace so revocations written before the upgrade (TTL up
+			// to 24h, see token_manager.go blacklistDuration) keep denying
+			// already-issued tokens, and mixed-version replicas during a
+			// rolling deploy still share revocations (FIX-16). Writes stay
+			// on the new namespace only (see Set/prefixKey).
+			if blacklisted, ok := c.checkLegacyBlacklistMarker(ctx, key); ok {
+				atomic.AddInt64(&c.hits, 1)
+				_ = c.updateLocalCache(key, blacklisted, c.config.DefaultTTL)
+				return blacklisted, true
+			}
 		}
 	}
 
@@ -986,6 +1001,34 @@ func (c *UniversalCache) deserialize(data []byte, value interface{}) error {
 // prefixKey adds a cache type prefix to the key for backend storage
 func (c *UniversalCache) prefixKey(key string) string {
 	return fmt.Sprintf("%s:%s", c.config.Type, key)
+}
+
+// legacyBlacklistPrefix is the backend key prefix blacklist entries were
+// written under before the R128 rename (CacheTypeToken's "token:" prefix;
+// see newBlacklistCacheConfig in universal_cache_singleton.go). Used only
+// by checkLegacyBlacklistMarker (FIX-16).
+const legacyBlacklistPrefix = "token:"
+
+// checkLegacyBlacklistMarker reads a blacklist marker under the pre-R128
+// "token:" namespace. Only a stored boolean true counts as blacklisted — a
+// CacheTypeToken entry for the same raw token is a cached claims map, never
+// the boolean revocation marker, and must not be misread as one (FIX-16).
+func (c *UniversalCache) checkLegacyBlacklistMarker(ctx context.Context, key string) (bool, bool) {
+	data, _, exists, err := c.backend.Get(ctx, legacyBlacklistPrefix+key)
+	if err != nil || !exists {
+		return false, false
+	}
+
+	var value interface{}
+	if err := c.deserialize(data, &value); err != nil {
+		return false, false
+	}
+
+	blacklisted, ok := value.(bool)
+	if !ok || !blacklisted {
+		return false, false
+	}
+	return true, true
 }
 
 // isTimeoutOrDeadlineError reports whether err indicates the backend
