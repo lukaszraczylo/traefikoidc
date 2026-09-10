@@ -177,20 +177,24 @@ func (r *RESPReader) readArray() (interface{}, error) {
 		return nil, ErrNilResponse
 	}
 
-	// Read each element. A nested "-ERR" reply is a valid protocol value,
-	// not a connection-level failure: store it as the element and keep
-	// reading so every element is drained off the wire. Leaving unread
-	// elements on the connection would let the next command's reader pick
-	// up this array's leftover bytes as its own reply (response desync)
-	// once Do returns the connection to the pool. Any other error (IO or
-	// protocol) still aborts the array, since the connection is no longer
-	// trustworthy.
+	// Read each element. A nested "-ERR" reply and a nested nil value
+	// ("$-1" or "*-1") are both valid protocol values, not connection-level
+	// failures: store the element (the error, or nil) and keep reading so
+	// every element is drained off the wire. Leaving unread elements on the
+	// connection would let the next command's reader pick up this array's
+	// leftover bytes as its own reply (response desync) once Do returns the
+	// connection to the pool. Any other error (IO or protocol) still aborts
+	// the array, since the connection is no longer trustworthy.
 	result := make([]interface{}, length)
 	for i := 0; i < length; i++ {
 		elem, err := r.ReadResponse()
 		if err != nil {
 			if errors.Is(err, ErrCommandReply) {
 				result[i] = err
+				continue
+			}
+			if errors.Is(err, ErrNilResponse) {
+				result[i] = nil
 				continue
 			}
 			return nil, err
