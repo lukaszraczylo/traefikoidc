@@ -253,9 +253,10 @@ Hardening built in by default:
   `Authorization: Bearer` header arrive on the same request, the cookie path
   runs (safer against browser/extension/proxy bearer injection). Set
   `bearerOverridesCookie: true` for the AWS/GCP/Kubernetes convention.
-- **Replay protection preserved.** The bearer path skips the JTI **Set**
-  (so the same token can be reused) but the **Get** stays active —
-  `RevokeToken` still terminates a bearer token immediately.
+- **Revocation enforced.** No access-token JTI is recorded for replay;
+  `RevokeToken` (called from logout) blacklists the raw token (and a JWT's
+  `jti`), and both the JWT and the opaque bearer path reject a blacklisted
+  token.
 - **Excluded URLs strip Authorization.** When `enableBearerAuth=true`,
   excluded paths (e.g. `/health`, `/metrics`) get the `Authorization` header
   removed before forwarding so the token can't leak into public endpoint
