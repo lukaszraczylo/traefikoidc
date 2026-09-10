@@ -18,32 +18,69 @@ package traefikoidc
 // (processAuthorizedRequestRS's backchannel/front-channel-logout
 // invalidation check, middleware.go:901-926): session.Clear() releases the
 // original session object back to the pool, then the SAME goroutine
-// reacquires a fresh one for the re-auth challenge and returns. ServeHTTP's
-// own outer deferred pool-return only fires afterward, when the function
-// itself returns.
+// reacquires a fresh one (ns) for the re-auth challenge and returns.
+// ServeHTTP's own outer deferred pool-return only fires afterward, when the
+// function itself returns.
 //
-// To land a concurrent claim on the freed object inside that window
-// deterministically -- rather than depend on scheduler luck, or on
-// sync.Pool's unspecified reuse timing lining up under a real race -- it
-// uses sessionClearReleaseHook (session.go) to pause the invalidated
-// request's goroutine the instant Clear() frees its session, steals that
-// exact object with a direct, sequential GetSession call (it is the only
-// object in the pool at that point, so this reacquire is not itself part of
-// any race), marks it as a different user's live session, then lets the
-// invalidated request run to completion -- including its outer ServeHTTP
-// defer.
+// The concurrent claim on the freed object needs two things to be
+// deterministic: (1) the SessionData pointer itself, and (2) a guarantee
+// that request A's own reacquire (ns := GetSession(req), which runs before
+// ServeHTTP returns) does not ALSO end up mutating it -- if it did, its
+// legitimate GetSession/re-auth bookkeeping would silently corrupt whatever
+// the "concurrent owner" set, invalidating the test for the wrong reason.
+//
+// (1) comes for free: sessionClearReleaseHook (session.go) is called
+// synchronously on request A's own goroutine right after Clear() frees the
+// session, with that exact pointer as its argument.
+//
+// (2) has two layers, one for the SessionData pointer and one for the
+// gorilla session underneath it:
+//
+//   - Pointer identity: racing a second real GetSession call against
+//     request A's own reacquire -- even from the very same goroutine
+//     immediately after the Put -- was tried first, and a standalone
+//     same-goroutine Put-then-Get repeated in a tight loop (no other
+//     goroutines, GOMAXPROCS(1), GC disabled) still missed the just-freed
+//     object roughly a quarter of the time; sync.Pool's exact per-P reuse
+//     behavior is an unspecified implementation detail this test must not
+//     depend on. Instead, the hook swaps the SessionManager's pool for a
+//     fresh, empty one (same New func) the instant it captures the freed
+//     pointer, so every GetSession/newSession call from then on --
+//     specifically request A's reacquire -- allocates a brand-new
+//     SessionData instead of colliding with the stolen one.
+//
+//   - gorilla session cache: even with a distinct SessionData pointer,
+//     ns's GetSession(req) call reads the SAME *http.Request (reqA) the
+//     stolen object was originally loaded from. gorilla/sessions caches a
+//     decoded *sessions.Session on the request's context keyed by cookie
+//     name, so calling store.Get(reqA, ...) again -- exactly what ns's
+//     acquisition does -- hands back the SAME underlying mainSession the
+//     stolen SessionData already points to, even though the two are
+//     different SessionData structs. Writing through ns.mainSession
+//     (CSRF/nonce/etc. for the re-auth challenge) would then silently
+//     mutate the stolen object's session VALUES too, regardless of the
+//     pool-ownership bug this test targets. So this test does not use
+//     mainSession-backed state (e.g. SetUserIdentifier) to detect
+//     corruption -- only the ownership fields that live on the SessionData
+//     struct itself (sessionOwner/inUse, read via ownerGeneration and
+//     inUse.Load), which ns's aliased mainSession cannot touch.
+//
+// The hook marks the stolen pointer's ownership fields for a simulated
+// concurrent owner and blocks until told to let request A finish --
+// including its outer ServeHTTP defer.
 //
 // If that defer is returnToPoolSafely (the reverted wiring), it
 // unconditionally releases and Reset()s whichever session currently owns
-// the object -- the stolen one -- even though the captured generation no
-// longer names its owner. With the correct wiring
-// (returnToPoolIfOwner(sessionGen)), the generation mismatch makes the
-// stale call a no-op.
+// the object -- the stolen one -- flipping inUse back to false even though
+// the captured generation no longer names its owner. With the correct
+// wiring (returnToPoolIfOwner(sessionGen)), the generation mismatch makes
+// the stale call a no-op and inUse stays true.
 import (
 	"crypto/rand"
 	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -112,12 +149,26 @@ func TestServeHTTP_InvalidatedSessionReacquireDoesNotStealConcurrentSession(t *t
 		t.Fatalf("invalidateSession: %v", err)
 	}
 
-	// Pause request A's goroutine the instant its Clear() frees the
-	// original session object, capturing that exact pointer.
-	released := make(chan *SessionData, 1)
+	// The hook runs synchronously on request A's own goroutine, right after
+	// Clear() frees the original session object. It claims that EXACT
+	// object's ownership fields for a simulated concurrent owner, then
+	// swaps in a fresh empty pool so request A's own upcoming reacquire
+	// allocates a different object instead of colliding with this one (see
+	// the long comment above), and blocks until the main goroutine says
+	// request A may continue.
+	released := make(chan struct{})
 	proceedA := make(chan struct{})
-	sessionClearReleaseHook = func(sd *SessionData) {
-		released <- sd
+	var stolen *SessionData
+	var stolenGen uint64
+	sessionClearReleaseHook = func(freed *SessionData) {
+		stolenGen = freed.generation.Add(1)
+		freed.sessionOwner.Store(stolenGen)
+		freed.inUse.Store(true)
+		stolen = freed
+
+		sessionManager.sessionPool = sync.Pool{New: sessionManager.sessionPool.New}
+
+		close(released)
 		<-proceedA
 	}
 	defer func() { sessionClearReleaseHook = nil }()
@@ -129,39 +180,14 @@ func TestServeHTTP_InvalidatedSessionReacquireDoesNotStealConcurrentSession(t *t
 		close(doneA)
 	}()
 
-	var freed *SessionData
 	select {
-	case freed = <-released:
+	case <-released:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for request A's Clear() to release its session")
 	}
 
-	// Steal the freed object with a direct, sequential GetSession call:
-	// request A is parked inside the hook, so nothing else touches the
-	// pool while this runs.
-	reqB := httptest.NewRequest(http.MethodGet, "/other", nil)
-	var stolen *SessionData
-	for attempt := 0; attempt < 200; attempt++ {
-		cand, gerr := sessionManager.GetSession(reqB)
-		if gerr != nil {
-			t.Fatalf("GetSession (request B, attempt %d): %v", attempt, gerr)
-		}
-		if cand == freed {
-			stolen = cand
-			break
-		}
-		cand.ReturnToPool()
-	}
-	if stolen == nil {
-		close(proceedA)
-		<-doneA
-		t.Fatal("test environment assumption failed: the freed session object was not handed back to a direct GetSession call within 200 attempts")
-	}
-	stolen.SetUserIdentifier("userB")
-	stolenGen := stolen.ownerGeneration()
-
-	// Let request A finish: its own reacquire-and-redirect, then its outer
-	// ServeHTTP defer.
+	// Let request A finish: its own reacquire-and-redirect (against the
+	// now-swapped, empty pool), then its outer ServeHTTP defer.
 	close(proceedA)
 	select {
 	case <-doneA:
@@ -169,12 +195,18 @@ func TestServeHTTP_InvalidatedSessionReacquireDoesNotStealConcurrentSession(t *t
 		t.Fatal("timed out waiting for ServeHTTP (request A) to return")
 	}
 
-	if stolen.ownerGeneration() != stolenGen || !stolen.inUse.Load() {
-		t.Fatalf("request A's deferred pool-return corrupted a concurrently-claimed session (generation now %d, want %d; inUse=%v)",
-			stolen.ownerGeneration(), stolenGen, stolen.inUse.Load())
+	// Safe to read stolen's state without synchronization now: request A's
+	// goroutine (the only other writer) has fully returned. inUse is the
+	// discriminator: releaseToPool (reached whenever a release succeeds,
+	// correctly or not) always flips it false, but never touches
+	// generation, so a wrongly-succeeded release still reports a matching
+	// ownerGeneration -- inUse alone tells the two apart here.
+	if !stolen.inUse.Load() {
+		t.Fatalf("request A's deferred pool-return released a concurrently-claimed session (generation %d): inUse=false, want true",
+			stolen.ownerGeneration())
 	}
-	if got := stolen.GetUserIdentifier(); got != "userB" {
-		t.Fatalf("request A's deferred pool-return wiped the concurrent owner's session data: got identifier %q, want \"userB\"", got)
+	if stolen.ownerGeneration() != stolenGen {
+		t.Fatalf("concurrently-claimed session's generation changed unexpectedly: got %d, want %d", stolen.ownerGeneration(), stolenGen)
 	}
 
 	stolen.ReturnToPool()
