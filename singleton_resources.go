@@ -318,14 +318,50 @@ func (rm *ResourceManager) cleanupInstance(instanceID string) {
 // instances alive in this process. Process-global singleton tasks (such as the
 // shared token-cleanup) must only be stopped when the LAST instance shuts down,
 // otherwise one instance's teardown would disable them for all survivors.
-var liveInstanceCount int32
+//
+// liveInstanceMu (FIX-35) serializes registerLiveInstance against
+// isLastInstanceNow. Close() decides once, early in its shutdown sequence,
+// whether it is the last instance (unregisterLiveInstance's return value),
+// but the actual process-global singleton stops happen much later, after
+// session/cache teardown. A concurrent New() (e.g. an overlapping Traefik
+// reload) can register and adopt those same singletons in between. Close()
+// must re-read the count fresh, under this same mutex, immediately before
+// each singleton stop, instead of trusting the stale early decision.
+var (
+	liveInstanceCount int32
+	liveInstanceMu    sync.Mutex
+)
 
-// registerLiveInstance records a newly constructed plugin instance.
-func registerLiveInstance() { atomic.AddInt32(&liveInstanceCount, 1) }
+// registerLiveInstance records a newly constructed plugin instance. New()
+// calls this before it adopts any process-global singleton task (memory
+// monitor, token cleanup, metadata refresh; FIX-35), so a concurrent Close()
+// elsewhere always sees this instance counted before it can decide, via
+// isLastInstanceNow, to stop those singletons.
+func registerLiveInstance() {
+	liveInstanceMu.Lock()
+	defer liveInstanceMu.Unlock()
+	atomic.AddInt32(&liveInstanceCount, 1)
+}
 
 // unregisterLiveInstance records a plugin instance shutting down and returns the
 // number of instances still alive afterwards.
-func unregisterLiveInstance() int32 { return atomic.AddInt32(&liveInstanceCount, -1) }
+func unregisterLiveInstance() int32 {
+	liveInstanceMu.Lock()
+	defer liveInstanceMu.Unlock()
+	return atomic.AddInt32(&liveInstanceCount, -1)
+}
+
+// isLastInstanceNow reports whether no live plugin instance is currently
+// registered, read fresh under liveInstanceMu (FIX-35). Close() calls this
+// immediately before each process-global singleton stop, instead of reusing
+// the boolean unregisterLiveInstance returned earlier in its shutdown
+// sequence, closing the window in which a concurrent New() registers and
+// adopts a singleton after that earlier decision was made.
+func isLastInstanceNow() bool {
+	liveInstanceMu.Lock()
+	defer liveInstanceMu.Unlock()
+	return atomic.LoadInt32(&liveInstanceCount) <= 0
+}
 
 // Shutdown gracefully shuts down all managed resources
 func (rm *ResourceManager) Shutdown(ctx context.Context) error {

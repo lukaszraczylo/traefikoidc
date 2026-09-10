@@ -330,12 +330,21 @@ func (t *TraefikOidc) Close() error {
 		// Get resource manager for cleanup
 		rm := GetResourceManager()
 
+		// Record this instance's shutdown. FIX-35: the boolean this returns
+		// is NOT reused below for the stop decisions — each one re-reads
+		// isLastInstanceNow() fresh, under the same liveInstanceMu as
+		// registerLiveInstance, immediately before it acts. A stale "was
+		// last instance" decision made once here and reused minutes later
+		// (after session/cache teardown) could stop a singleton a
+		// concurrently-created new instance has since registered for and
+		// adopted.
+		unregisterLiveInstance()
+
 		// singleton-token-cleanup is a process-global task shared by every plugin
 		// instance. Only stop it when the LAST instance is shutting down;
 		// otherwise one instance's teardown (e.g. a single config reload) would
 		// kill chunked-session/token cleanup for all surviving instances (rank 12).
-		lastInstance := unregisterLiveInstance() <= 0
-		if lastInstance {
+		if isLastInstanceNow() {
 			_ = rm.StopBackgroundTask("singleton-token-cleanup") // best effort, last instance only
 		}
 		// Stop metadata refresh task using same hash-based name as
@@ -343,8 +352,8 @@ func (t *TraefikOidc) Close() error {
 		// (main.go), so it is SHARED by every live instance pointing at the
 		// same provider; stopping it on one instance's Close would kill 2h
 		// metadata refresh for its surviving sibling (which never re-registers).
-		// Gate on lastInstance, matching singleton-token-cleanup above.
-		if lastInstance && t.providerURL != "" {
+		// Gate on a fresh isLastInstanceNow(), matching singleton-token-cleanup above.
+		if t.providerURL != "" && isLastInstanceNow() {
 			hash := sha256.Sum256([]byte(t.providerURL))
 			taskName := "singleton-metadata-refresh-" + hex.EncodeToString(hash[:])[0:6]
 			_ = rm.StopBackgroundTask(taskName) // Safe to ignore: best effort cleanup
@@ -457,10 +466,19 @@ func (t *TraefikOidc) Close() error {
 		// memory-monitor); stopping them on any single instance's Close (e.g. one
 		// config reload) would kill cleanup for all surviving instances — the same
 		// rationale as the targeted StopBackgroundTask above.
-		if lastInstance {
+		//
+		// FIX-35: re-check isLastInstanceNow() immediately before the stop,
+		// under the same liveInstanceMu registerLiveInstance takes, rather
+		// than the decision made earlier in this function. Everything above
+		// (session shutdown, cache closes) takes real time, during which a
+		// concurrently-created new instance (an overlapping Traefik reload)
+		// can have registered and adopted these same singletons.
+		if isLastInstanceNow() {
 			taskRegistry := GetGlobalTaskRegistry()
 			taskRegistry.StopAllTasks()
 			t.safeLogDebug("All global background tasks stopped")
+		} else {
+			t.safeLogDebug("Skipped stopping global background tasks: another instance registered during shutdown")
 		}
 
 		// Note: Centralized pool in internal/pool is singleton-managed and doesn't require explicit cleanup

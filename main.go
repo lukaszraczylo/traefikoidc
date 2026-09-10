@@ -480,6 +480,14 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	startReplayCacheCleanup(pluginCtx, logger)
 
+	// Register this instance BEFORE adopting any process-global singleton
+	// task (FIX-35). A concurrent Close() elsewhere (an overlapping Traefik
+	// reload) decides whether it is the last live instance by reading this
+	// same counter; registering first guarantees that decision — made fresh,
+	// immediately before each singleton stop — always sees this instance
+	// counted before it can adopt a shared task below.
+	registerLiveInstance()
+
 	// Start memory monitoring for leak detection and performance insights.
 	// The interval is clamped to MinMemoryMonitorInterval (30s) inside
 	// StartMonitoring; tests that need deterministic sampling should call
@@ -503,7 +511,8 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	// Add reference for this instance
 	rm.AddReference(name)
-	registerLiveInstance()
+	// registerLiveInstance is now called earlier, before this instance
+	// adopts the memory-monitor singleton (FIX-35).
 
 	// Initialize metadata in a goroutine with proper tracking
 	if t.goroutineWG != nil {
