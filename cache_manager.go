@@ -169,6 +169,13 @@ func (c *CacheInterfaceWrapper) Get(key string) (interface{}, bool) {
 	return c.cache.Get(key)
 }
 
+// SetIfAbsent atomically stores a value only if the key is not already
+// present. See UniversalCache.SetIfAbsent and AtomicSetIfAbsentCache
+// (FIX-17).
+func (c *CacheInterfaceWrapper) SetIfAbsent(key string, value interface{}, ttl time.Duration) (bool, error) {
+	return c.cache.SetIfAbsent(key, value, ttl)
+}
+
 // Delete removes a key
 func (c *CacheInterfaceWrapper) Delete(key string) {
 	c.cache.Delete(key)

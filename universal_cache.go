@@ -331,10 +331,18 @@ func (c *UniversalCache) SetLocal(key string, value interface{}, ttl time.Durati
 // setLocal performs the in-memory portion of a write. ttl must already be
 // resolved against DefaultTTL by the caller.
 func (c *UniversalCache) setLocal(key string, value interface{}, ttl time.Duration) error {
-	size := c.estimateSize(value)
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.setLocalLocked(key, value, ttl)
+	return nil
+}
+
+// setLocalLocked performs the in-memory write. Caller must already hold
+// c.mu — extracted from setLocal so SetIfAbsent can run its presence check
+// and this insert inside a single critical section (FIX-17), rather than
+// setLocal re-acquiring c.mu itself.
+func (c *UniversalCache) setLocalLocked(key string, value interface{}, ttl time.Duration) {
+	size := c.estimateSize(value)
 
 	// For an existing key the replace below frees the OLD value's size, so the
 	// memory cap should only be checked against the NET growth (new - old), not
@@ -403,8 +411,94 @@ func (c *UniversalCache) setLocal(key string, value interface{}, ttl time.Durati
 		c.logger.Debugf("UniversalCache[%s]: Set key=%s, ttl=%v, size=%d bytes",
 			c.config.Type, key, ttl, size)
 	}
+}
 
-	return nil
+// backendSetNXer is the optional distributed check-and-set primitive a
+// CacheBackend can provide: RedisBackend implements it via Redis SET key
+// value NX PX <ttl-ms>. CacheBackend itself is not widened to require it —
+// every other implementer and test double would need a method only
+// SetIfAbsent needs — so SetIfAbsent reaches it through this type
+// assertion instead (FIX-17).
+type backendSetNXer interface {
+	SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
+}
+
+// SetIfAbsent atomically stores value under key only if key is not already
+// present, and reports whether THIS call performed the store. It replaces
+// the TOCTOU-prone pattern of a separate Get followed by a Set with one
+// atomic check-and-set (FIX-17, R36 correction).
+//
+// With no distributed backend attached, the check and the insert happen
+// inside a single c.mu critical section, so concurrent SetIfAbsent callers
+// racing the same key in this process can never both observe "absent".
+//
+// With a backend attached that implements the optional backendSetNXer
+// primitive (RedisBackend does), that call is the sole source of truth for
+// "did this claim the key", so the check is atomic across every replica
+// sharing that backend too — closing the gap backchannelLogoutJTIMu's
+// process-local mutex could never cover. A successful backend claim is then
+// mirrored into the local cache as a best-effort read-through; a failure to
+// mirror it does not change the (already-correct) return value.
+//
+// A backend that does not implement backendSetNXer (for example one
+// wrapped by the circuit-breaker or health-check decorator, which pass
+// through Get/Set/Delete but do not add SetNX) falls back to the local-only
+// path, so this call is then atomic within this process only — the same
+// guarantee callers previously had to provide for themselves.
+func (c *UniversalCache) SetIfAbsent(key string, value interface{}, ttl time.Duration) (bool, error) {
+	if ttl == 0 {
+		ttl = c.config.DefaultTTL
+	}
+
+	if c.backend != nil {
+		if nx, ok := c.backend.(backendSetNXer); ok {
+			return c.setIfAbsentBackend(nx, key, value, ttl)
+		}
+	}
+
+	return c.setIfAbsentLocal(key, value, ttl)
+}
+
+// setIfAbsentBackend claims key in the distributed backend first — the one
+// operation every replica shares — then mirrors a successful claim into the
+// local cache. The mirror is best-effort: if it fails, the backend claim
+// still stands and this call still correctly reports true.
+func (c *UniversalCache) setIfAbsentBackend(nx backendSetNXer, key string, value interface{}, ttl time.Duration) (bool, error) {
+	data, err := c.serialize(value)
+	if err != nil {
+		c.logger.Errorf("SetIfAbsent: failed to serialize value for key %s: %v", key, err)
+		return false, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	claimed, err := nx.SetNX(ctx, c.prefixKey(key), data, ttl)
+	cancel()
+	if err != nil {
+		c.logger.Infof("SetIfAbsent: backend SetNX error for key %s: %v", key, err)
+		return false, err
+	}
+	if !claimed {
+		return false, nil
+	}
+	if lerr := c.setLocal(key, value, ttl); lerr != nil {
+		c.logger.Debugf("SetIfAbsent: local mirror failed for key %s: %v", key, lerr)
+	}
+	return true, nil
+}
+
+// setIfAbsentLocal performs the presence check and the insert inside one
+// c.mu critical section, so no other Set/SetIfAbsent call on this cache can
+// interleave between them.
+func (c *UniversalCache) setIfAbsentLocal(key string, value interface{}, ttl time.Duration) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if existing, exists := c.items[key]; exists && !time.Now().After(existing.ExpiresAt) {
+		return false, nil
+	}
+
+	c.setLocalLocked(key, value, ttl)
+	return true, nil
 }
 
 // Get retrieves a value from the cache
