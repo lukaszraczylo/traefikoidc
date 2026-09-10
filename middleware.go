@@ -103,6 +103,44 @@ func downstreamWriter(rw http.ResponseWriter) http.ResponseWriter {
 	return rw
 }
 
+// optionsPreflightWriter wraps the real http.ResponseWriter for the
+// bypassReasonOptions forwarding path. shouldBypassAuth treats any OPTIONS
+// request carrying both Origin and Access-Control-Request-Method as a CORS
+// preflight and forwards it to next WITHOUT a session check -- necessary for
+// a real browser preflight, which carries no session cookie. But any
+// non-browser client can set those same two headers itself, so this only
+// rules out an accidental bare OPTIONS, not a deliberate attacker (FIX-02).
+// Wrapping the writer so next can set status and headers (answering real
+// CORS headers) but never emit a body closes that gap: a browser discards a
+// preflight response body anyway, so this is unobservable to a genuine
+// preflight, while a forged one can no longer read a protected resource's
+// content through the OPTIONS bypass.
+//
+// Declares Header/Write/WriteHeader explicitly rather than relying on the
+// embedded http.ResponseWriter's promoted methods, for the same reason
+// trackingWriter does (FIX-06): yaegi v0.16.1 does not count a promoted
+// method when statically checking whether a type satisfies
+// http.ResponseWriter.
+type optionsPreflightWriter struct {
+	http.ResponseWriter
+}
+
+func (w *optionsPreflightWriter) Header() http.Header { return w.ResponseWriter.Header() }
+
+// WriteHeader deletes any Content-Length next set before sending the
+// status: no body is ever going to follow, and a stale Content-Length would
+// leave the client waiting for bytes that never arrive.
+func (w *optionsPreflightWriter) WriteHeader(code int) {
+	w.ResponseWriter.Header().Del("Content-Length")
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Write discards the body. A CORS preflight response must never carry a
+// body a non-browser client could read to exfiltrate a protected resource.
+func (w *optionsPreflightWriter) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
 // bypassReason describes why a request is being forwarded without OIDC auth.
 // It is only used for logging and to decide whether extra side-effects
 // (propagating the user header from an existing session) should run.
@@ -500,9 +538,16 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			t.next.ServeHTTP(downstreamWriter(rw), req)
 		case bypassReasonOptions:
 			// CORS preflight: forward unconditionally (no session needed)
-			// so the backend can answer with CORS headers.
+			// so the backend can answer with CORS headers. Origin +
+			// Access-Control-Request-Method only rule out an accidental
+			// bare OPTIONS, not a deliberate attacker -- any non-browser
+			// client can set both itself -- so next must not be able to
+			// leak a protected resource's body on this unauthenticated
+			// path (FIX-02). optionsPreflightWriter forwards status and
+			// headers but discards the body; a browser never reads a
+			// preflight body, so real CORS answers keep working.
 			stripIdentityHeaders(req)
-			t.next.ServeHTTP(downstreamWriter(rw), req)
+			t.next.ServeHTTP(&optionsPreflightWriter{ResponseWriter: downstreamWriter(rw)}, req)
 		default:
 			t.next.ServeHTTP(downstreamWriter(rw), req)
 		}

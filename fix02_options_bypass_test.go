@@ -8,10 +8,20 @@ package traefikoidc
 // method, so an unauthenticated `OPTIONS <protected-path>` with neither
 // header reached the backend unauthenticated (reproduced against
 // http.FileServer: 200 with the protected file's body).
+//
+// TestServeHTTP_ForgedPreflightDoesNotLeakBody hardens the residual gap a
+// follow-up review found in that fix: the Origin +
+// Access-Control-Request-Method check only rules out an accidental bare
+// OPTIONS request, not a deliberate attacker, since any non-browser client
+// can set both headers itself. bypassReasonOptions still forwarded to next
+// with no session check, so a forged preflight against http.FileServer
+// still returned the protected file's body.
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -151,5 +161,53 @@ func TestServeHTTP_GenuinePreflightReachesBackend(t *testing.T) {
 
 	if !nextCalled {
 		t.Fatalf("a genuine CORS preflight must still reach the backend, got status=%d body=%q", rw.Code, rw.Body.String())
+	}
+}
+
+// TestServeHTTP_ForgedPreflightDoesNotLeakBody reproduces the finding's own
+// exploit: a non-browser client sends an OPTIONS request carrying BOTH
+// Origin and Access-Control-Request-Method (indistinguishable from a real
+// preflight to shouldBypassAuth) against a protected path, with no session
+// cookie. It must not receive the backend's response body, even though the
+// request still forwards unauthenticated so a real browser preflight keeps
+// getting its CORS headers answered.
+func TestServeHTTP_ForgedPreflightDoesNotLeakBody(t *testing.T) {
+	sm, err := NewSessionManager(strings.Repeat("k", 32), false, "", "", time.Hour, NewLogger("error"))
+	if err != nil {
+		t.Fatalf("NewSessionManager: %v", err)
+	}
+	defer sm.Shutdown()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("TOP-SECRET-PAYROLL"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	next := http.FileServer(http.Dir(dir))
+
+	initComplete := make(chan struct{})
+	close(initComplete)
+
+	tObj := &TraefikOidc{
+		logger:         GetSingletonNoOpLogger(),
+		name:           "test",
+		next:           next,
+		sessionManager: sm,
+		redirURLPath:   "/callback",
+		authURL:        "https://idp.example.com/authorize",
+		issuerURL:      "https://idp.example.com",
+		clientID:       "test-client-id",
+		scopes:         []string{"openid"},
+		initComplete:   initComplete,
+	}
+
+	req := httptest.NewRequest(http.MethodOptions, "https://app.example.com/secret.txt", nil)
+	req.Header.Set("Origin", "https://attacker.example")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	rw := httptest.NewRecorder()
+
+	tObj.ServeHTTP(rw, req)
+
+	if strings.Contains(rw.Body.String(), "TOP-SECRET-PAYROLL") {
+		t.Fatalf("forged preflight leaked protected content: status=%d body=%q", rw.Code, rw.Body.String())
 	}
 }
