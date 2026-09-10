@@ -128,6 +128,7 @@ func main() {
 	runCheck("new01-internal-recovery-oidcerror-classification", checkNew01InternalRecoveryOIDCErrorClassification)
 	runCheck("new01-introspection-bearer-4xx-no-panic", checkNew01IntrospectionBearer4xxNoPanic)
 	runCheck("new01-introspection-bearer-5xx-no-panic", checkNew01IntrospectionBearer5xxNoPanic)
+	runCheck("new01-opaque-session-introspection-classification", checkNew01OpaqueSessionIntrospectionClassification)
 
 	runCheck("fix06-sse-flush-reaches-next", checkSSEFlushReachesNext)
 	runCheck("fix17-setifabsent-claims-once", checkSetIfAbsentUnderYaegi)
@@ -532,8 +533,17 @@ func checkNew01IntrospectionBearerStatus(wantStatus int) (string, error) {
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
 
-	if rw.Code == 0 {
-		return "", fmt.Errorf("ServeHTTP did not write a response")
+	// Every introspectToken error on the bearer path -- 4xx or 5xx alike --
+	// maps to bearerErrIntrospectionUnavailable, a 503 (bearer_auth.go). A
+	// recovered errors.As panic answers a DIFFERENT status: ServeHTTP's own
+	// deferred recover turns any panic into 500 (middleware.go), and
+	// httptest.NewRecorder starts at Code 200, so neither of those values
+	// can be mistaken for the real 503. rw.Code == 0 (the previous check
+	// here) can never happen -- the Recorder never leaves that zero value --
+	// so it accepted a recovered panic silently. Require the exact expected
+	// value instead.
+	if rw.Code != http.StatusServiceUnavailable {
+		return "", fmt.Errorf("expected response_status=%d (bearerErrIntrospectionUnavailable) for introspection_status=%d, got %d", http.StatusServiceUnavailable, wantStatus, rw.Code)
 	}
 	return fmt.Sprintf(" introspection_status=%d response_status=%d", wantStatus, rw.Code), nil
 }
@@ -544,6 +554,105 @@ func checkNew01IntrospectionBearer4xxNoPanic() (string, error) {
 
 func checkNew01IntrospectionBearer5xxNoPanic() (string, error) {
 	return checkNew01IntrospectionBearerStatus(http.StatusInternalServerError)
+}
+
+// checkNew01OpaqueSessionIntrospectionClassification drives the SESSION
+// path fixed by commit d7686c3, which checkNew01IntrospectionBearerStatus
+// above does not reach: an authenticated cookie session holding an opaque
+// access token, validated via isUserAuthenticatedRS ->
+// validateStandardTokensRS -> validateOpaqueToken, when introspection
+// answers a 5xx. Before d7686c3, validateStandardTokensRS classified
+// validateOpaqueToken's error with errors.As(err, &httpErr) against
+// *HTTPError -- interpreted under yaegi v0.16.1, so this panicked on every
+// opaque-token session-path classification regardless of introspection
+// status. The bearer path shares introspectToken but never reaches this
+// call site, so a yaegicheck suite that only drove the bearer path could
+// not have caught this.
+//
+// A cookie session is built directly (New's session manager is an
+// unexported field, unreachable from this package) with a second
+// SessionManager sharing the exact cfg fields oidc.New passes into its own
+// NewSessionManager call (SessionEncryptionKey, ForceHTTPS, CookieDomain,
+// CookiePrefix, SessionMaxAge). The cookie codec key is a deterministic
+// function of those inputs alone (deriveCookieKeys, no per-instance
+// randomness), so a cookie minted here decodes identically in the plugin's
+// own session manager.
+func checkNew01OpaqueSessionIntrospectionClassification() (string, error) {
+	discovery := servers.NewOIDCServer(nil)
+	defer discovery.Close()
+
+	introspect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer introspect.Close()
+
+	cfg := oidc.CreateConfig()
+	cfg.ProviderURL = discovery.URL
+	cfg.ClientID = "yaegi-check-session-client"
+	cfg.ClientSecret = "yaegi-check-session-secret"
+	cfg.CallbackURL = "/oauth2/callback"
+	cfg.SessionEncryptionKey = "0123456789abcdef0123456789abcdef"
+	cfg.RateLimit = 100
+	cfg.AllowOpaqueTokens = true
+	cfg.RequireTokenIntrospection = true
+	cfg.IntrospectionURL = introspect.URL
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h, err := oidc.New(context.Background(), next, cfg, "yaegi-check-session")
+	if err != nil {
+		return "", fmt.Errorf("New: %w", err)
+	}
+	if closer, ok := h.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+
+	sm, err := oidc.NewSessionManager(cfg.SessionEncryptionKey, cfg.ForceHTTPS, cfg.CookieDomain, cfg.CookiePrefix, time.Duration(cfg.SessionMaxAge)*time.Second, oidc.NewLogger("error"))
+	if err != nil {
+		return "", fmt.Errorf("NewSessionManager: %w", err)
+	}
+	defer sm.Shutdown()
+
+	setupReq := httptest.NewRequest("GET", "/protected", nil)
+	session, err := sm.GetSession(setupReq)
+	if err != nil {
+		return "", fmt.Errorf("GetSession: %w", err)
+	}
+	if err := session.SetAuthenticated(true); err != nil {
+		return "", fmt.Errorf("SetAuthenticated: %w", err)
+	}
+	// No dots: isOpaqueToken (validateStandardTokensRS) reads it as opaque,
+	// routing it into validateOpaqueToken/introspectToken instead of JWT
+	// parsing. No refresh token is set, so a classification of "not
+	// verifiable, requireTokenIntrospection fails closed" resolves
+	// deterministically to expired (not needsRefresh) below.
+	session.SetAccessToken("opaque-session-token-without-dots")
+	rec := httptest.NewRecorder()
+	if err := session.Save(setupReq, rec); err != nil {
+		return "", fmt.Errorf("session.Save: %w", err)
+	}
+	session.ReturnToPool()
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	// requireTokenIntrospection=true with no refresh token classifies a
+	// 5xx-introspection opaque access token as expired (not "token
+	// invalid", which is reserved for a definitive active=false/expired/
+	// revoked introspection body -- RFC 7662 s2.2/s2.3): ServeHTTP responds
+	// with handleExpiredToken -> defaultInitiateAuthentication, a 302 to
+	// the provider. A reintroduced errors.As panic is instead recovered by
+	// ServeHTTP's own deferred recover as a 500, before t.next is ever
+	// reached -- a status this check must reject just as firmly as the 200
+	// (rw.Code's unwritten zero value can never appear here either) a
+	// silently-swallowed panic could otherwise produce.
+	if rw.Code != http.StatusFound {
+		return "", fmt.Errorf("expected response_status=%d (re-authentication redirect) for a 5xx introspection response on the session path, got %d", http.StatusFound, rw.Code)
+	}
+	return fmt.Sprintf(" response_status=%d", rw.Code), nil
 }
 
 // checkSSEFlushReachesNext pins FIX-06: the writer ServeHTTP hands to next
