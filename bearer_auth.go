@@ -388,6 +388,20 @@ type bearerFailureTracker struct {
 	threshold int
 	window    time.Duration
 	penalty   time.Duration
+	// nextSweepAt is the map size recordFailure next scans the map at. A
+	// static per-call gate (len > defaultBearerEntrySweepThreshold) made
+	// EVERY recordFailure call re-scan the entire map once a flood of
+	// distinct source IPs crossed the threshold, turning attacker-controlled
+	// traffic into O(n^2) work under b.mu while blocked() (called on every
+	// bearer request) waits on the same lock (FIX-28). nextSweepAt doubles
+	// after each sweep (bounded below by defaultBearerEntrySweepThreshold),
+	// amortizing the scan so its frequency grows logarithmically with the
+	// flood size instead of linearly.
+	nextSweepAt int
+	// sweepPasses counts how many times recordFailure has run the full-map
+	// staleness scan. Exposed for tests to confirm the amortization actually
+	// bounds scan frequency.
+	sweepPasses int
 }
 
 type bearerFailureEntry struct {
@@ -411,10 +425,11 @@ func newBearerFailureTracker(threshold int, window, penalty time.Duration) *bear
 		penalty = 60 * time.Second
 	}
 	return &bearerFailureTracker{
-		entries:   make(map[string]*bearerFailureEntry),
-		threshold: threshold,
-		window:    window,
-		penalty:   penalty,
+		entries:     make(map[string]*bearerFailureEntry),
+		threshold:   threshold,
+		window:      window,
+		penalty:     penalty,
+		nextSweepAt: defaultBearerEntrySweepThreshold,
 	}
 }
 
@@ -459,13 +474,29 @@ func (b *bearerFailureTracker) recordFailure(ip string) {
 	// interleaved with sweeps could never accumulate enough to trip (FIX-28).
 	// Only remove an entry once it is BOTH untripped-or-expired AND outside
 	// the counting window, so a fresh, still-accumulating counter survives.
-	if len(b.entries) > defaultBearerEntrySweepThreshold {
+	//
+	// The sweep itself is gated on b.nextSweepAt, not the static threshold:
+	// a flood of distinct, still-fresh source IPs (attacker-controlled) that
+	// crosses defaultBearerEntrySweepThreshold and stays above it made every
+	// subsequent recordFailure call re-scan the whole map for nothing (the
+	// predicate above finds nothing to delete while entries stay fresh),
+	// which is O(n) work under b.mu on every call — O(n^2) to fill the map —
+	// while blocked() waits on the same mutex on every bearer request
+	// (FIX-28). nextSweepAt doubles after each sweep so the scan frequency
+	// grows logarithmically with the flood size instead of on every call.
+	if len(b.entries) > b.nextSweepAt {
 		cutoff := now.Add(-(b.window + b.penalty))
 		for k, e := range b.entries {
 			if e.penaltyUntil.Before(cutoff) && now.Sub(e.firstFailureAt) > b.window {
 				delete(b.entries, k)
 			}
 		}
+		b.sweepPasses++
+		next := 2 * len(b.entries)
+		if next < defaultBearerEntrySweepThreshold {
+			next = defaultBearerEntrySweepThreshold
+		}
+		b.nextSweepAt = next
 	}
 	e, ok := b.entries[ip]
 	if !ok || now.Sub(e.firstFailureAt) > b.window {
