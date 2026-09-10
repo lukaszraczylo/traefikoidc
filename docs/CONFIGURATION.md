@@ -320,6 +320,15 @@ blank endpoint otherwise fails every login with no other signal:
 SECURITY: dropped the discovered token endpoint "http://idp.example.com/token": it is plaintext http while providerURL "https://idp.example.com" is https, and this check has no override; requests needing the token endpoint will fail until the provider serves it over https
 ```
 
+The `revocationURL`, `oidcEndSessionURL` and `introspectionURL` config
+fields can supply those three endpoints directly. A drop from the
+plaintext-`http://` check does not break login for them, because the
+override replaces the endpoint right after sanitize runs.
+
+Only `token`, `jwks_uri` and `authorization` log the `SECURITY:` line.
+These three have no config field that can supply them, so a drop always
+breaks login.
+
 If your IdP's discovery document ever advertises an `http://` endpoint under
 an `https://` `providerURL`, fix the discovery document (for example, a
 TLS-terminating proxy in front of the IdP that does not forward
