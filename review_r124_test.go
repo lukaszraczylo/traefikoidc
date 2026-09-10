@@ -13,13 +13,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/lukaszraczylo/traefikoidc/internal/cache/backends"
 )
 
-// NewMemoryBackendForTest returns an in-memory cache backend for white-box
-// tests that need a real (non-redis) backend.
+// NewMemoryBackendForTest returns a cache backend backed by an in-process
+// miniredis instance, for white-box tests that need a real CacheBackend
+// without depending on a live Redis server. internal/cache's in-memory
+// backend was removed as unreachable dead code (FIX-43); RedisBackend
+// against miniredis is the project's standard lightweight substitute (see
+// e.g. universal_cache_serialization_test.go).
 func NewMemoryBackendForTest() (backends.CacheBackend, error) {
-	return backends.NewMemoryBackend(&backends.Config{})
+	mr, err := miniredis.Run()
+	if err != nil {
+		return nil, err
+	}
+	return backends.NewRedisBackend(backends.DefaultRedisConfig(mr.Addr()))
 }
 
 func dcrTestRegistrar() *DynamicClientRegistrar {

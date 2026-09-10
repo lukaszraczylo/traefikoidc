@@ -13,7 +13,8 @@ import (
 // yields an error and waiting callers are released instead of blocking on
 // call.wg forever (R141).
 func TestSingleflightCache_PanickingFetcherDoesNotDeadlock(t *testing.T) {
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	requireNoErrorFatal(t, err)
 	defer backend.Close()
 

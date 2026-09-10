@@ -7,7 +7,7 @@ import (
 )
 
 // CacheBackend defines the interface for all cache backend implementations
-// Implementations include: MemoryBackend, RedisBackend, and HybridBackend
+// Implementations include: RedisBackend
 type CacheBackend interface {
 	// Set stores a value in the cache with the specified TTL
 	// Returns an error if the operation fails

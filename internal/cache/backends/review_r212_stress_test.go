@@ -13,7 +13,8 @@ import (
 // run and all waiters must share its result, with no race on
 // call.val/call.err read after wg.Wait() (R212). Run under -race.
 func TestSingleflightStressDedup(t *testing.T) {
-	backend, _ := NewMemoryBackend(&Config{CleanupInterval: time.Hour})
+	mr := NewMiniredisServer(t)
+	backend, _ := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	sf := NewSingleflightCache(backend)
 
 	var fetches atomic.Int64
@@ -51,7 +52,8 @@ func TestSingleflightStressDedup(t *testing.T) {
 // A panicking fetcher must not leave waiters blocked forever: they must all
 // receive the recovered error (R212).
 func TestSingleflightStressPanicUnblocks(t *testing.T) {
-	backend, _ := NewMemoryBackend(&Config{CleanupInterval: time.Hour})
+	mr := NewMiniredisServer(t)
+	backend, _ := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	sf := NewSingleflightCache(backend)
 
 	panicFetcher := func(context.Context) ([]byte, time.Duration, error) {
