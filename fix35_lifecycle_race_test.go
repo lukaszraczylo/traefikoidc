@@ -23,12 +23,6 @@ import (
 // Close itself stays green even if the production fix (utilities.go's fresh,
 // lock-guarded re-check; main.go's registerLiveInstance-before-adoption
 // ordering) is reverted, which is a much weaker regression pin.
-// TestFix35_ConcurrentNewKeepsSingletonAliveAcrossOldClose drives the REAL
-// (*TraefikOidc).Close() through this exact window via closeTestHook, rather
-// than re-implementing Close's stop decision inline: a test that never calls
-// Close itself stays green even if the production fix (utilities.go's fresh,
-// lock-guarded re-check; main.go's registerLiveInstance-before-adoption
-// ordering) is reverted, which is a much weaker regression pin.
 //
 // It establishes its own liveInstanceCount baseline (save, zero, restore via
 // t.Cleanup) instead of assuming the package-global counter is already 0.
