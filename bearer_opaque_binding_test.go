@@ -273,6 +273,9 @@ func TestBearerOpaqueIntrospection_RevokedTokenRejected(t *testing.T) {
 	if bErr == nil {
 		t.Fatal("an opaque bearer token blacklisted by RevokeToken (logout) must be rejected, even though introspection still reports it active")
 	}
+	if bErr.kind != bearerErrTokenInactive {
+		t.Fatalf("want bearerErrTokenInactive (401), got kind %v", bErr.kind)
+	}
 }
 
 // TestBearerOpaqueIntrospection_BlacklistedJtiRejected guards the jti side
@@ -300,6 +303,9 @@ func TestBearerOpaqueIntrospection_BlacklistedJtiRejected(t *testing.T) {
 	if bErr == nil {
 		t.Fatal("an opaque bearer token whose introspection jti is blacklisted must be rejected")
 	}
+	if bErr.kind != bearerErrTokenInactive {
+		t.Fatalf("want bearerErrTokenInactive (401), got kind %v", bErr.kind)
+	}
 }
 
 // TestBearerOpaqueIntrospection_NbfFutureRejected guards the not-before
@@ -324,6 +330,9 @@ func TestBearerOpaqueIntrospection_NbfFutureRejected(t *testing.T) {
 	_, bErr := tObj.buildPrincipalFromOpaqueIntrospection("opaque-token")
 	if bErr == nil {
 		t.Fatal("an introspected token with nbf in the future must be rejected")
+	}
+	if bErr.kind != bearerErrTokenInactive {
+		t.Fatalf("want bearerErrTokenInactive (401), got kind %v", bErr.kind)
 	}
 }
 
