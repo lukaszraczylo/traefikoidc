@@ -124,6 +124,7 @@ func downstreamWriter(rw http.ResponseWriter) http.ResponseWriter {
 // http.ResponseWriter.
 type optionsPreflightWriter struct {
 	http.ResponseWriter
+	wroteHeader bool
 }
 
 func (w *optionsPreflightWriter) Header() http.Header { return w.ResponseWriter.Header() }
@@ -132,13 +133,26 @@ func (w *optionsPreflightWriter) Header() http.Header { return w.ResponseWriter.
 // status: no body is ever going to follow, and a stale Content-Length would
 // leave the client waiting for bytes that never arrive.
 func (w *optionsPreflightWriter) WriteHeader(code int) {
+	w.wroteHeader = true
 	w.ResponseWriter.Header().Del("Content-Length")
 	w.ResponseWriter.WriteHeader(code)
 }
 
 // Write discards the body. A CORS preflight response must never carry a
 // body a non-browser client could read to exfiltrate a protected resource.
+//
+// A next handler can set Content-Length and call Write directly, with no
+// preceding WriteHeader call (net/http's implicit-200 idiom). WriteHeader
+// is the only place Content-Length gets deleted, so without this check that
+// idiom would leave the real Content-Length header in place while zero body
+// bytes are actually sent -- the client waits for bytes that never arrive.
+// Committing the header here first (defaulting to 200, matching what
+// net/http would send for an implicit commit) keeps the same guarantee
+// WriteHeader already gives an explicit caller.
 func (w *optionsPreflightWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
 	return len(b), nil
 }
 
