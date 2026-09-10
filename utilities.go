@@ -363,7 +363,7 @@ func (t *TraefikOidc) Close() error {
 		// kill chunked-session/token cleanup for all surviving instances (rank 12).
 		//
 		// stopIfLastInstance (FIX-35) holds liveInstanceMu across the check AND
-		// the stop, unlike a plain isLastInstanceNow() check followed by an
+		// the stop, unlike a separate count check followed by an
 		// unguarded call — that would release the mutex before the stop ran,
 		// leaving a window for a concurrent New() to register and adopt this
 		// same task in between.

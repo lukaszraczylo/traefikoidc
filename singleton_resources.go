@@ -320,7 +320,7 @@ func (rm *ResourceManager) cleanupInstance(instanceID string) {
 // otherwise one instance's teardown would disable them for all survivors.
 //
 // liveInstanceMu (FIX-35) serializes registerLiveInstance against
-// isLastInstanceNow. Close() decides once, early in its shutdown sequence,
+// stopIfLastInstance. Close() decides once, early in its shutdown sequence,
 // whether it is the last instance (unregisterLiveInstance's return value),
 // but the actual process-global singleton stops happen much later, after
 // session/cache teardown. A concurrent New() (e.g. an overlapping Traefik
@@ -336,7 +336,7 @@ var (
 // calls this before it adopts any process-global singleton task (memory
 // monitor, token cleanup, metadata refresh; FIX-35), so a concurrent Close()
 // elsewhere always sees this instance counted before it can decide, via
-// isLastInstanceNow, to stop those singletons.
+// stopIfLastInstance, to stop those singletons.
 func registerLiveInstance() {
 	liveInstanceMu.Lock()
 	defer liveInstanceMu.Unlock()
@@ -351,25 +351,13 @@ func unregisterLiveInstance() int32 {
 	return atomic.AddInt32(&liveInstanceCount, -1)
 }
 
-// isLastInstanceNow reports whether no live plugin instance is currently
-// registered, read fresh under liveInstanceMu (FIX-35). Close() calls this
-// immediately before each process-global singleton stop, instead of reusing
-// the boolean unregisterLiveInstance returned earlier in its shutdown
-// sequence, closing the window in which a concurrent New() registers and
-// adopts a singleton after that earlier decision was made.
-func isLastInstanceNow() bool {
-	liveInstanceMu.Lock()
-	defer liveInstanceMu.Unlock()
-	return atomic.LoadInt32(&liveInstanceCount) <= 0
-}
-
 // stopIfLastInstance holds liveInstanceMu across BOTH the "is this the last
 // live instance" check and the stop action itself, and runs stop only when
 // the check passes.
 //
-// isLastInstanceNow alone still leaves a check-then-stop window open: it
-// releases liveInstanceMu as soon as it returns, before the caller's stop
-// actually runs. The singleton stops this guards (StopBackgroundTask,
+// A separate count check followed by the stop would leave a check-then-stop
+// window open: the check releases liveInstanceMu as soon as it returns,
+// before the caller's stop actually runs. The singleton stops this guards (StopBackgroundTask,
 // StopAllTasks) can take real wall-clock time — BackgroundTask.Stop waits up
 // to 5s per task — during which a concurrent New() can register and adopt
 // the very singleton about to be stopped. stopIfLastInstance closes that
@@ -377,7 +365,7 @@ func isLastInstanceNow() bool {
 // this function is still running, because both take the same liveInstanceMu.
 //
 // registerLiveInstance is the only other caller of liveInstanceMu besides
-// unregisterLiveInstance/isLastInstanceNow, and none of them call back into
+// unregisterLiveInstance, and neither of them calls back into
 // stopIfLastInstance (main.go's New is the sole registerLiveInstance
 // caller, and no BackgroundTask taskFunc calls it), so this cannot deadlock.
 //

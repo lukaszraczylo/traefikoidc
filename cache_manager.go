@@ -5,10 +5,6 @@ import (
 	"time"
 )
 
-const (
-	defaultBlacklistDuration = 24 * time.Hour
-)
-
 // CacheManager manages all caching components using the universal cache
 type CacheManager struct {
 	manager *UniversalCacheManager

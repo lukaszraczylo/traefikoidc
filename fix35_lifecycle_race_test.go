@@ -72,8 +72,8 @@ func TestFix35_ConcurrentNewKeepsSingletonAliveAcrossOldClose(t *testing.T) {
 }
 
 // TestFix35_StopIfLastInstanceHoldsLockAcrossCheckAndStop pins the FIX-35
-// review's major finding: isLastInstanceNow() alone only wraps the counter
-// read. Used as `if isLastInstanceNow() { stop() }`, liveInstanceMu is
+// review's major finding: a separate fresh-read check only wraps the counter
+// read. Used as `if check() { stop() }`, liveInstanceMu is
 // released as soon as the check returns, before stop() (which can block for
 // real time — BackgroundTask.Stop waits up to 5s per task) ever runs. A
 // concurrent registerLiveInstance() can land in that gap and have its
