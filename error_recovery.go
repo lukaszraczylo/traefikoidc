@@ -597,6 +597,35 @@ var singleUseRetryableErrors = []string{
 	"temporary failure",
 }
 
+// isNeverSentError reports whether err proves a single-use request was never
+// sent to the server, so retrying it cannot re-present already-consumed
+// input (an authorization code or a rotated refresh token).
+//
+// A *HTTPError means a response WAS received: the request definitely
+// reached the endpoint, regardless of what its body says. Before this
+// check, ExecuteSingleUseWithContext substring-matched singleUseRetryableErrors
+// against the raw error text, and helpers.go's token-endpoint HTTPError
+// carries up to 10 KiB of the response body in its Message -- an IdP 500
+// whose body happened to mention "connection refused" was retried, re-
+// sending a consumed code or a rotated refresh token (FIX-14).
+//
+// Only a genuine dial/connect failure -- a *net.OpError, which is what
+// Go's net package returns before any request reaches the wire -- can
+// prove the request was never sent, so the fragment match is scoped to it.
+func isNeverSentError(err error) bool {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return false
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return isSubstringMatch(opErr.Error(), singleUseRetryableErrors)
+	}
+
+	return false
+}
+
 // ExecuteSingleUseWithContext retries only on errors that prove the request was
 // never sent (connect/dial failures). It intentionally does NOT retry on
 // "timeout": for a single-use operation such as the authorization-code
@@ -619,7 +648,7 @@ func (re *RetryExecutor) ExecuteSingleUseWithContext(ctx context.Context, fn fun
 
 		lastErr = err
 
-		if !isSubstringMatch(err.Error(), singleUseRetryableErrors) {
+		if !isNeverSentError(err) {
 			re.RecordFailure()
 			return err
 		}

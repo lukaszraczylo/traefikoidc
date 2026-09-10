@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,6 +70,12 @@ func TestRetryExecutor_SingleUse_DoesNotRetryTimeout(t *testing.T) {
 // retries errors which prove the request was never sent (connection refused),
 // so a transient dial failure of the token endpoint does not lose the
 // (unconsumed) authorization code.
+//
+// The simulated failure is a *net.OpError, matching what net/http.Client.Do
+// actually returns for a dial failure (FIX-14 scopes the single-use retry
+// fragment match to this concrete type, not an arbitrary error string, so a
+// token-endpoint HTTPError whose body happens to mention "connection
+// refused" is never mistaken for a pre-send failure).
 func TestRetryExecutor_SingleUse_RetriesPreSendError(t *testing.T) {
 	cfg := DefaultRetryConfig()
 	cfg.MaxAttempts = 3
@@ -81,7 +88,11 @@ func TestRetryExecutor_SingleUse_RetriesPreSendError(t *testing.T) {
 	err := re.ExecuteSingleUseWithContext(context.Background(), func() error {
 		calls++
 		if calls < 3 {
-			return errors.New("dial tcp 10.0.0.1:443: connect: connection refused")
+			return &net.OpError{
+				Op:  "dial",
+				Net: "tcp",
+				Err: errors.New("connect: connection refused"),
+			}
 		}
 		return nil
 	})
