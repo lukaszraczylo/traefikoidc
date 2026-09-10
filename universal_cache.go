@@ -423,15 +423,16 @@ func (c *UniversalCache) GetLocal(key string) (interface{}, bool) {
 }
 
 // getLocal returns the in-memory entry for key honoring expiry, grace
-// periods, and the RLock fast path used by token/JWK/session caches.
+// periods, and the RLock fast path used by token/JWK/session/introspection/
+// blacklist caches.
 func (c *UniversalCache) getLocal(key string) (interface{}, bool) {
 	// Fast read path for caches whose eviction is dominated by TTL rather than
-	// access-recency (token, JWK, session). Holding only an RLock here lets all
-	// concurrent readers verify cached tokens in parallel — under yaegi the
-	// previous unconditional Lock serialized every JWT verify on a single
-	// mutex and pinned a CPU under load.
+	// access-recency (token, JWK, session, introspection, blacklist). Holding
+	// only an RLock here lets all concurrent readers verify cached tokens in
+	// parallel — under yaegi the previous unconditional Lock serialized every
+	// JWT verify on a single mutex and pinned a CPU under load.
 	switch c.config.Type {
-	case CacheTypeToken, CacheTypeJWK, CacheTypeSession, CacheTypeIntrospection:
+	case CacheTypeToken, CacheTypeJWK, CacheTypeSession, CacheTypeIntrospection, CacheTypeBlacklist:
 		c.mu.RLock()
 		item, exists := c.items[key]
 		if !exists {
