@@ -21,6 +21,13 @@ type IntrospectionResponse struct {
 	Username  string `json:"username,omitempty"`
 	TokenType string `json:"token_type,omitempty"`
 	Sub       string `json:"sub,omitempty"`
+	// Sid is the session identifier the introspection response ties the
+	// token to. RFC 7662 does not define it, but some providers (notably
+	// those also implementing OIDC front-channel/back-channel logout)
+	// return it anyway; when present it lets a sid-only (front-channel)
+	// logout revoke an opaque bearer token (FIX-03), not just sub-based
+	// (backchannel) logout.
+	Sid string `json:"sid,omitempty"`
 	// Aud holds the introspection audience. Per RFC 7662 it may be a single
 	// string or an array of strings, so it is decoded as interface{} and
 	// matched with verifyAudience (which handles both shapes).

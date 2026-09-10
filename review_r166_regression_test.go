@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestR166_BearerOpaqueWithTwoDotsIntrospected guards the JWT-vs-opaque
@@ -30,6 +31,10 @@ func TestR166_BearerOpaqueWithTwoDotsIntrospected(t *testing.T) {
 			// (FIX-03): audience==clientID here, so buildPrincipalFromOpaqueIntrospection
 			// requires a matching client_id or aud.
 			"client_id": "https://api.example.com",
+			// iat is required (FIX-03): buildPrincipalFromOpaqueIntrospection
+			// bounds it via enforceIatAge, and makeBearerOIDC sets
+			// maxTokenAge=24h, so a response with no iat is rejected.
+			"iat": time.Now().Unix(),
 		})
 	}))
 	defer ts.Close()

@@ -899,18 +899,29 @@ func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*prin
 		}
 	}
 
-	// maxTokenAge bound on iat, mirroring enforceIatAge on the JWT path.
-	// RFC 7662 iat is optional; only enforce when the AS actually returned
-	// one, consistent with the iat-optional contract (R126/FIX-27).
-	if t.maxTokenAge > 0 && resp.Iat > 0 {
-		if time.Since(time.Unix(resp.Iat, 0)) > t.maxTokenAge {
-			return nil, newBearerError(bearerErrInvalidToken, "token iat outside age bound")
-		}
+	// maxTokenAge bound on iat, via the SAME enforceIatAge the JWT path
+	// uses (not a hand-rolled duplicate): RFC 7662 iat is optional, but
+	// New() always sets maxTokenAge > 0 (0/unset becomes 24h,
+	// main.go's config-default closure), so a response with no iat gives
+	// nothing to bound the token's age against and must fail closed —
+	// exactly like enforceIatAge already does for a JWT with no iat
+	// (R126/FIX-27 made iat optional on the JWT path too, and that path
+	// fails closed rather than silently skipping the bound).
+	iatClaims := map[string]interface{}{}
+	if resp.Iat > 0 {
+		iatClaims["iat"] = float64(resp.Iat)
+	}
+	if bErr := enforceIatAge(iatClaims, t.maxTokenAge); bErr != nil {
+		return nil, bErr
 	}
 
 	// Honor IdP-initiated (backchannel/front-channel) logout, mirroring the
-	// JWT bearer path (R146). The introspection response carries no sid
-	// (RFC 7662 does not define one), so this checks by subject only; iat
+	// JWT bearer path (R146). RFC 7662 does not define sid, but some
+	// providers return it anyway (FIX-03): when the response carries one,
+	// check it exactly like the JWT path does, so a sid-only (front-channel)
+	// logout — front-channel logout always records by sid only, and so does
+	// a backchannel logout token that carries only sid — can revoke an
+	// opaque token too, not just a backchannel logout recorded by sub. iat
 	// absent -> zero time (fail closed, same as the JWT path's FIX-24
 	// contract), so a token whose age cannot be bounded is treated as
 	// pre-dating any logout rather than as freshly issued.
@@ -918,16 +929,35 @@ func (t *TraefikOidc) buildPrincipalFromOpaqueIntrospection(token string) (*prin
 	if resp.Iat > 0 {
 		createdAt = time.Unix(resp.Iat, 0)
 	}
-	if t.isSessionInvalidated("", resp.Sub, createdAt) {
+	if t.isSessionInvalidated(resp.Sid, resp.Sub, createdAt) {
 		return nil, newBearerError(bearerErrInvalidToken, "session has been invalidated (logout)")
 	}
 
+	// Populate every non-empty IntrospectionResponse member the RFC 7662
+	// response can carry, not just sub/username, so bearerIdentifierClaim
+	// can resolve the identifier from any of them (FIX-03) — mirroring how
+	// the JWT bearer path resolves against the full decoded claim set.
 	claims := map[string]interface{}{}
 	if resp.Sub != "" {
 		claims["sub"] = resp.Sub
 	}
 	if resp.Username != "" {
 		claims["username"] = resp.Username
+	}
+	if resp.ClientID != "" {
+		claims["client_id"] = resp.ClientID
+	}
+	if resp.Scope != "" {
+		claims["scope"] = resp.Scope
+	}
+	if resp.Iss != "" {
+		claims["iss"] = resp.Iss
+	}
+	if resp.Jti != "" {
+		claims["jti"] = resp.Jti
+	}
+	if resp.Aud != nil {
+		claims["aud"] = resp.Aud
 	}
 	rawIdentifier, bErr := resolveBearerIdentifier(claims, t.bearerIdentifierClaim)
 	if bErr != nil {
