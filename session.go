@@ -2342,10 +2342,12 @@ func (sd *SessionData) SetRefreshToken(token string) {
 		return
 	}
 
-	// Chunked layout: validate and write every new chunk BEFORE touching the
-	// previous token, so an abort (request missing, store error, size check,
-	// reassembly) leaves the still-valid prior refresh token intact (R154;
-	// extends the R95 access-token fix to the refresh token).
+	// Chunked layout: validate every new chunk BEFORE touching anything, so
+	// an abort (request missing, size check, reassembly) leaves the still-
+	// valid prior refresh token intact (R154; extends the R95 access-token
+	// fix to the refresh token). All of this is pure computation on the
+	// chunks slice -- no gorilla store.Get, so nothing session-owned changes
+	// yet.
 	chunks := splitIntoChunks(compressed, maxCookieSize)
 
 	if len(chunks) == 0 {
@@ -2355,6 +2357,11 @@ func (sd *SessionData) SetRefreshToken(token string) {
 
 	if len(chunks) > 50 {
 		sd.manager.logger.Errorf("CRITICAL: Too many chunks (%d) for refresh token - possible corruption", len(chunks))
+		return
+	}
+
+	if sd.request == nil {
+		sd.manager.logger.Errorf("CRITICAL: SetRefreshToken: sd.request is nil, cannot create chunk sessions")
 		return
 	}
 
@@ -2368,29 +2375,38 @@ func (sd *SessionData) SetRefreshToken(token string) {
 		return
 	}
 
-	newChunks := make(map[int]*sessions.Session, len(chunks))
 	for i, chunkData := range chunks {
-		sessionName := fmt.Sprintf("%s_%d", sd.manager.refreshTokenCookieName(), i)
-
-		if sd.request == nil {
-			sd.manager.logger.Errorf("CRITICAL: SetRefreshToken: sd.request is nil, cannot create chunk session %s", sessionName)
-			return
-		}
-
 		if chunkData == "" {
 			sd.manager.logger.Errorf("CRITICAL: Empty refresh token chunk data at index %d", i)
 			return
 		}
-
 		if len(chunkData) > maxCookieSize {
 			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
 			return
 		}
-
 		if !validateChunkSize(chunkData) {
 			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d will exceed browser cookie limits after encoding (raw size: %d)", i, len(chunkData))
 			return
 		}
+	}
+
+	// Validation passed: expire the OLD chunks (this re-Gets, via
+	// sd.manager.store.Get, the same gorilla-registry-cached *sessions.Session
+	// objects GetSession already loaded for this request) BEFORE fetching or
+	// filling the NEW ones. Doing this after the fill (the previous order)
+	// re-Gets and wipes the exact objects this call just wrote, because the
+	// registry hands back the identical cached object for a given cookie
+	// name on this request (FIX-05; matches the SetAccessToken order).
+	sd.expireRefreshTokenChunksEnhanced(nil)
+	for k := range sd.refreshTokenChunks {
+		delete(sd.refreshTokenChunks, k)
+	}
+	sd.refreshSession.Values["token"] = ""
+	sd.refreshSession.Values["compressed"] = (compressed != token)
+	sd.refreshSession.Values["issued_at"] = time.Now().Unix()
+
+	for i, chunkData := range chunks {
+		sessionName := fmt.Sprintf("%s_%d", sd.manager.refreshTokenCookieName(), i)
 
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
@@ -2403,21 +2419,7 @@ func (sd *SessionData) SetRefreshToken(token string) {
 		session.Values["chunk_created_at"] = time.Now().Unix()
 		session.Values["token_total"] = len(chunks)
 		session.Values["chunk_integrity"] = chunkIntegrity
-		newChunks[i] = session
-	}
-
-	// Every new chunk committed: now it is safe to discard the old token.
-	if sd.request != nil {
-		sd.expireRefreshTokenChunksEnhanced(nil)
-	}
-	for k := range sd.refreshTokenChunks {
-		delete(sd.refreshTokenChunks, k)
-	}
-	sd.refreshSession.Values["token"] = ""
-	sd.refreshSession.Values["compressed"] = (compressed != token)
-	sd.refreshSession.Values["issued_at"] = time.Now().Unix()
-	for i, s := range newChunks {
-		sd.refreshTokenChunks[i] = s
+		sd.refreshTokenChunks[i] = session
 	}
 
 	sd.manager.logger.Debugf("SUCCESS: Stored refresh token in %d chunks", len(chunks))
@@ -3032,10 +3034,11 @@ func (sd *SessionData) SetIDToken(token string) {
 		return
 	}
 
-	// Chunked layout: validate and write every new chunk BEFORE touching
-	// the previous token, so an abort (request missing, store error, size
-	// check) leaves the still-valid prior ID token intact (R154; extends
-	// the R95 access-token fix to the ID token).
+	// Chunked layout: validate every new chunk BEFORE touching anything, so
+	// an abort (request missing, size check, reassembly) leaves the still-
+	// valid prior ID token intact (R154; extends the R95 access-token fix
+	// to the ID token). All of this is pure computation on the chunks
+	// slice -- no gorilla store.Get, so nothing session-owned changes yet.
 	chunks := splitIntoChunks(compressed, maxCookieSize)
 
 	if len(chunks) == 0 {
@@ -3045,6 +3048,11 @@ func (sd *SessionData) SetIDToken(token string) {
 
 	if len(chunks) > 50 {
 		sd.manager.logger.Errorf("CRITICAL: Too many chunks (%d) for ID token - possible corruption", len(chunks))
+		return
+	}
+
+	if sd.request == nil {
+		sd.manager.logger.Errorf("CRITICAL: SetIDToken: sd.request is nil, cannot create chunk sessions")
 		return
 	}
 
@@ -3058,29 +3066,39 @@ func (sd *SessionData) SetIDToken(token string) {
 		return
 	}
 
-	newChunks := make(map[int]*sessions.Session, len(chunks))
 	for i, chunkData := range chunks {
-		sessionName := fmt.Sprintf("%s_%d", sd.manager.idTokenCookieName(), i)
-
-		if sd.request == nil {
-			sd.manager.logger.Errorf("CRITICAL: SetIDToken: sd.request is nil, cannot create chunk session %s", sessionName)
-			return
-		}
-
 		if chunkData == "" {
 			sd.manager.logger.Debug("Empty chunk data at index %d", i)
 			return
 		}
-
 		if len(chunkData) > maxCookieSize {
 			sd.manager.logger.Info("Chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
 			return
 		}
-
 		if !validateChunkSize(chunkData) {
 			sd.manager.logger.Errorf("CRITICAL: ID token chunk %d will exceed browser cookie limits after encoding (raw size: %d)", i, len(chunkData))
 			return
 		}
+	}
+
+	// Validation passed: expire the OLD chunks (this re-Gets, via
+	// sd.manager.store.Get, the same gorilla-registry-cached *sessions.Session
+	// objects GetSession already loaded for this request) BEFORE fetching or
+	// filling the NEW ones. Doing this after the fill (the previous order)
+	// re-Gets and wipes the exact objects this call just wrote, because the
+	// registry hands back the identical cached object for a given cookie
+	// name on this request (FIX-05; matches the SetAccessToken order).
+	sd.expireIDTokenChunksEnhanced(nil)
+	for k := range sd.idTokenChunks {
+		delete(sd.idTokenChunks, k)
+	}
+	if sd.idTokenSession != nil {
+		sd.idTokenSession.Values["token"] = ""
+		sd.idTokenSession.Values["compressed"] = (compressed != token)
+	}
+
+	for i, chunkData := range chunks {
+		sessionName := fmt.Sprintf("%s_%d", sd.manager.idTokenCookieName(), i)
 
 		session, err := sd.manager.store.Get(sd.request, sessionName)
 		if err != nil {
@@ -3093,22 +3111,7 @@ func (sd *SessionData) SetIDToken(token string) {
 		session.Values["chunk_created_at"] = time.Now().Unix()
 		session.Values["token_total"] = len(chunks)
 		session.Values["chunk_integrity"] = chunkIntegrity
-		newChunks[i] = session
-	}
-
-	// Every new chunk committed: now it is safe to discard the old token.
-	if sd.request != nil {
-		sd.expireIDTokenChunksEnhanced(nil)
-	}
-	for k := range sd.idTokenChunks {
-		delete(sd.idTokenChunks, k)
-	}
-	if sd.idTokenSession != nil {
-		sd.idTokenSession.Values["token"] = ""
-		sd.idTokenSession.Values["compressed"] = (compressed != token)
-	}
-	for i, s := range newChunks {
-		sd.idTokenChunks[i] = s
+		sd.idTokenChunks[i] = session
 	}
 
 	sd.manager.logger.Debugf("SUCCESS: Stored ID token in %d chunks", len(chunks))
