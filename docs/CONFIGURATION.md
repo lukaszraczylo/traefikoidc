@@ -366,7 +366,7 @@ guidance.
 | `stripAuthorizationHeader` | bool | `true` | Strip `Authorization` from forwarded requests after successful bearer auth. |
 | `bearerEmitWWWAuthenticate` | bool | `true` | Emit RFC 6750 `WWW-Authenticate: Bearer error="..."` hints on 401. |
 | `bearerOverridesCookie` | bool | `false` | Cookie wins when both bearer and cookie are present (default). Set true for bearer-wins. |
-| `maxTokenAgeSeconds` | int64 | `86400` | Upper bound on `iat` claim age (24h). 0 disables the check. |
+| `maxTokenAgeSeconds` | int64 | `86400` | Upper bound on `iat` claim age (24h). `0` and unset both map to the 24h default; no value disables the check, and a bearer token or opaque-introspection response without `iat` is rejected. |
 | `maxIdentifierLength` | int | `256` | Length cap on the sanitised principal identifier. |
 | `bearerFailureThreshold` | int | `20` | Consecutive 401s from one source IP that trip the throttle. |
 | `bearerFailureWindowSeconds` | int | `60` | Rolling window for counting 401s. |
