@@ -131,6 +131,42 @@ func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
 	return re.ExecuteWithContext(ctx, fn)
 }
 
+// asHTTPError reports whether err is, or (via a chain of Unwrap() error
+// methods) wraps, an *HTTPError. It exists because errors.As cannot be used
+// here: under yaegi v0.16.1 (the interpreter Traefik uses to load the
+// traefikoidc plugin, which imports this package transitively via
+// internal/utils), errors.As(err, &target) panics with "errors: *target must
+// be interface or implement error" whenever target's pointed-to type is
+// itself interpreted, and *HTTPError is declared in this package so it is
+// always interpreted at runtime, regardless of err's own concrete type.
+//
+// This manually reimplements errors.As's single-chain Unwrap() walk using
+// only type assertions and errors.Unwrap, both yaegi-safe, so native
+// classification is byte-for-byte identical to errors.As (see
+// TestR175_WrappedRetryableErrorIsRetried). See asOIDCError for the *OIDCError
+// equivalent.
+func asHTTPError(err error) (*HTTPError, bool) {
+	for err != nil {
+		if httpErr, ok := err.(*HTTPError); ok {
+			return httpErr, true
+		}
+		err = errors.Unwrap(err)
+	}
+	return nil, false
+}
+
+// asOIDCError is asHTTPError's counterpart for *OIDCError. See asHTTPError's
+// doc comment for why this exists instead of errors.As.
+func asOIDCError(err error) (*OIDCError, bool) {
+	for err != nil {
+		if oidcErr, ok := err.(*OIDCError); ok {
+			return oidcErr, true
+		}
+		err = errors.Unwrap(err)
+	}
+	return nil, false
+}
+
 // isRetryableError determines if an error should trigger a retry
 func (re *RetryExecutor) isRetryableError(err error) bool {
 	if err == nil {
@@ -146,13 +182,13 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	// Check for HTTP errors. Use errors.As (not a direct type assertion) so an
-	// error that wraps an *HTTPError — e.g. fmt.Errorf("token exchange failed:
-	// %w", httpErr) — is still recognized as retryable: previously a wrapped
-	// retryable error was misclassified as terminal and bailed after one
-	// attempt, defeating retry despite the production wrapping pattern.
-	var httpErr *HTTPError
-	if errors.As(err, &httpErr) {
+	// Check for HTTP errors. Use asHTTPError (not errors.As -- see its doc
+	// comment) so an error that wraps an *HTTPError — e.g. fmt.Errorf("token
+	// exchange failed: %w", httpErr) — is still recognized as retryable: a
+	// wrapped retryable error must not be misclassified as terminal and bail
+	// after one attempt, defeating retry despite the production wrapping
+	// pattern.
+	if httpErr, ok := asHTTPError(err); ok {
 		for _, code := range re.config.RetryableStatusCodes {
 			if httpErr.StatusCode == code {
 				return true
@@ -165,8 +201,7 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 	}
 
 	// Check for OIDC errors (unwrapped or wrapped).
-	var oidcErr *OIDCError
-	if errors.As(err, &oidcErr) {
+	if oidcErr, ok := asOIDCError(err); ok {
 		return oidcErr.IsRetryable()
 	}
 
