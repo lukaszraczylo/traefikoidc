@@ -593,10 +593,22 @@ func (r *RedisBackend) GetMany(ctx context.Context, keys []string) (map[string][
 
 	// Process responses
 	result := make(map[string][]byte)
+	var firstErr error
 	for i, resp := range responses {
 		if resp == nil {
 			// Key doesn't exist
 			r.misses.Add(1)
+			continue
+		}
+
+		// A Redis command-error reply (e.g. LOADING, WRONGTYPE) is stored
+		// as an error value by Pipeline.Execute. It means the key lookup
+		// failed, not that the key is missing, so it must not be counted
+		// as a miss.
+		if respErr, ok := resp.(error); ok {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("GetMany: command error for key %q: %w", keys[i], respErr)
+			}
 			continue
 		}
 
@@ -609,6 +621,10 @@ func (r *RedisBackend) GetMany(ctx context.Context, keys []string) (map[string][
 
 		r.hits.Add(1)
 		result[keys[i]] = []byte(value)
+	}
+
+	if firstErr != nil {
+		return result, firstErr
 	}
 
 	return result, nil
