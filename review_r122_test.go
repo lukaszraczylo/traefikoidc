@@ -59,6 +59,16 @@ func TestRefreshCoordinator_IsUnderMemoryPressureUsesOwnThreshold(t *testing.T) 
 // stopped==0 too, so it was kept and StartBackgroundTask became a permanent
 // no-op (Start is sync.Once-guarded), leaving the singleton task dead until
 // restart. The keep-condition must require started==1.
+//
+// FIX-19 refined the keep-condition further: started==0 && stopped==0 alone
+// is no longer sufficient to trigger a replace, because it is also the state
+// of a task that is merely pending its first Start() call (a legitimate,
+// imminent case introduced by CreateSingletonTask's non-atomic
+// register-then-start sequence). BackgroundTask.Start now sets a dedicated
+// startRefused flag on exactly the circuit-breaker/concurrency-limit
+// rejection paths, so this fixture sets it explicitly to keep simulating a
+// genuinely dead (never going to start on its own) task, distinct from a
+// merely-pending one.
 func TestRegisterBackgroundTask_ReplacesNeverStartedTask(t *testing.T) {
 	rm := &ResourceManager{
 		tasks:  map[string]*BackgroundTask{},
@@ -66,12 +76,14 @@ func TestRegisterBackgroundTask_ReplacesNeverStartedTask(t *testing.T) {
 	}
 	const name = "replace-never-started"
 
-	// A task in the never-started state (started==0, stopped==0): its
-	// Start was consumed via a circuit-breaker rejection. Re-registering
-	// must REPLACE it so a later Start can actually run it.
+	// A task in the never-started state (started==0, stopped==0) whose
+	// Start was consumed via a circuit-breaker rejection (startRefused=1,
+	// FIX-19). Re-registering must REPLACE it so a later Start can actually
+	// run it.
 	dead := NewBackgroundTask(name, time.Hour, func() {}, rm.logger, &rm.wg)
 	atomic.StoreInt32(&dead.started, 0)
 	atomic.StoreInt32(&dead.stopped, 0)
+	atomic.StoreInt32(&dead.startRefused, 1)
 	rm.tasks[name] = dead
 
 	if err := rm.RegisterBackgroundTask(name, time.Hour, func() {}); err != nil {

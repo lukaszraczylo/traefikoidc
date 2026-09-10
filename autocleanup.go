@@ -28,6 +28,12 @@ type BackgroundTask struct {
 	stopped    int32 // 1 = stopped, 0 = not stopped
 	started    int32 // 1 = started, 0 = not started
 	doneClosed int32 // 1 = doneChan closed, 0 = not closed
+	// startRefused is set when Start's circuit-breaker or concurrency-limit
+	// early-return fires (FIX-19). started stays 0 and stopped stays 0 in
+	// that case, which is indistinguishable from "registered but Start has
+	// not been called yet" — RegisterBackgroundTask needs the distinction to
+	// know this task's slot is actually free to reuse.
+	startRefused int32 // 1 = a Start call was refused, 0 = never refused
 }
 
 // NewBackgroundTask creates a new background task with the specified configuration.
@@ -87,6 +93,7 @@ func (bt *BackgroundTask) Start() {
 			if bt.logger != nil {
 				bt.logger.Debugf("Cannot start task %s: %v (circuit breaker protection working as expected)", bt.name, err)
 			}
+			atomic.StoreInt32(&bt.startRefused, 1)
 			// Close doneChan since the task won't run
 			if atomic.CompareAndSwapInt32(&bt.doneClosed, 0, 1) {
 				close(bt.doneChan)
@@ -102,6 +109,7 @@ func (bt *BackgroundTask) Start() {
 			if bt.logger != nil {
 				bt.logger.Debugf("Cannot start task %s: concurrency limit reached, slot not acquired", bt.name)
 			}
+			atomic.StoreInt32(&bt.startRefused, 1)
 			// Close doneChan since the task won't run
 			if atomic.CompareAndSwapInt32(&bt.doneClosed, 0, 1) {
 				close(bt.doneChan)

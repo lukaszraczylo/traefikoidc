@@ -125,20 +125,37 @@ func (rm *ResourceManager) RegisterBackgroundTask(name string, interval time.Dur
 
 	// If a task with this name already exists and is still running, keep it
 	// (idempotent re-registration from another middleware instance). Keep it
-	// only when it has STARTED (started==1 && stopped==0). A task whose
-	// startOnce was consumed without ever starting — e.g. Start was
-	// rejected by the circuit breaker, or Stop raced re-registration —
-	// would otherwise be kept here, then StartBackgroundTask would be a
-	// permanent no-op (Start is sync.Once-guarded) and the singleton
-	// task would never run again until process restart.
+	// when it has STARTED (started==1 && stopped==0).
+	//
+	// FIX-19: a task that is registered but has not started yet
+	// (started==0, stopped==0, startRefused==0) must ALSO be kept, not
+	// replaced. CreateSingletonTask runs Register -> IsTaskRunning ->
+	// StartBackgroundTask without holding tasksMu across the three calls, so
+	// a second concurrent caller can land here in the narrow window before
+	// the first caller's Start() has run. Replacing the existing object in
+	// that window orphans it: the first caller still starts and runs the
+	// object it holds a reference to, but that object is no longer the one
+	// in rm.tasks, so StopBackgroundTask/StopAllTasks/Shutdown never reach
+	// it and its ticker goroutine outlives the last Close.
+	//
+	// Replace only when the existing task is definitively no longer usable:
+	// stopped==1 (it was torn down — BackgroundTask.Start is
+	// sync.Once-guarded, so a stopped task can never start again), or
+	// startRefused==1 (its one Start attempt was rejected by the circuit
+	// breaker or concurrency limiter, so it will never transition to
+	// started==1 on its own).
 	if existing, exists := rm.tasks[name]; exists {
-		if atomic.LoadInt32(&existing.started) == 1 && atomic.LoadInt32(&existing.stopped) == 0 {
+		started := atomic.LoadInt32(&existing.started) == 1
+		stopped := atomic.LoadInt32(&existing.stopped) == 1
+		startRefused := atomic.LoadInt32(&existing.startRefused) == 1
+
+		if (started && !stopped) || (!stopped && !startRefused) {
 			if rm.logger != nil {
 				rm.logger.Debugf("Background task %s already registered", name)
 			}
 			return nil
 		}
-		// The existing task was either stopped or never actually started.
+		// The existing task was stopped, or its Start attempt was refused.
 		// Reusing the same BackgroundTask object would leave it permanently
 		// dead: BackgroundTask.Start is guarded by sync.Once, so once
 		// consumed it can never start again. Replace it with a fresh task
