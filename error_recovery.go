@@ -1266,29 +1266,6 @@ func (gd *GracefulDegradation) startHealthCheckRoutine() {
 	task.Start()
 }
 
-// healthRoutineSettled reports whether startHealthCheckRoutine has finished
-// making its one-time decision for this instance: either it assigned a
-// health-check task, or it observed stopChan already closed and returned
-// without assigning one (in which case it never will, since it runs at most
-// once). Tests use this to wait for the async goroutine NewGracefulDegradation
-// starts to settle before asserting on shared state, instead of depending on
-// goroutine-scheduling timing.
-func (gd *GracefulDegradation) healthRoutineSettled() bool {
-	gd.mutex.RLock()
-	defer gd.mutex.RUnlock()
-
-	if gd.healthCheckTask != nil {
-		return true
-	}
-
-	select {
-	case <-gd.stopChan:
-		return true
-	default:
-		return false
-	}
-}
-
 // performHealthChecks runs health checks for all registered services
 func (gd *GracefulDegradation) performHealthChecks() {
 	gd.mutex.RLock()
