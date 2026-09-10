@@ -19,10 +19,16 @@ import (
 // Server Error") unconditionally. WriteHeader after commit is an
 // idempotent no-op, but the Write appends to an already-emitted valid
 // body - so a panic in the downstream handler after it had written a
-// 200 + payload corrupted the response. The fix only writes the 500
-// when nothing was committed yet.
-// Fail-on-old: the committed 200 body gains a trailing
-// "Internal Server Error", making the assertion below fail.
+// 200 + payload corrupted the response. A later re-review
+// (middleware.go:466) found that the fix which followed -- silently
+// swallowing the panic and returning once next had been called --
+// instead reported the committed 200 + "VALID PAYLOAD" as a clean
+// success, hiding that a panic happened after the payload was cut short.
+// The current fix re-panics the original value instead, so the caller (in
+// production, net/http's own top-level recovery, or Traefik's compiled
+// recovery middleware) can tell the connection was aborted after commit.
+// Fail-on-old: ServeHTTP swallows "boom-after-commit" and returns
+// normally instead of re-panicking it.
 func TestR155_ServeHTTP_PanicAfterCommitKeepsBodyIntact(t *testing.T) {
 	var nextCalled bool
 	oidc := &TraefikOidc{
@@ -47,10 +53,17 @@ func TestR155_ServeHTTP_PanicAfterCommitKeepsBodyIntact(t *testing.T) {
 	req := httptest.NewRequest("GET", "/panic-excluded", nil)
 	rw := httptest.NewRecorder()
 
-	oidc.ServeHTTP(rw, req)
+	recovered := func() (r any) {
+		defer func() { r = recover() }()
+		oidc.ServeHTTP(rw, req)
+		return nil
+	}()
 
 	if !nextCalled {
 		t.Fatal("next handler was not reached")
+	}
+	if recovered != "boom-after-commit" {
+		t.Fatalf("ServeHTTP must re-panic the original value once next has committed a response, got %v (type %T)", recovered, recovered)
 	}
 	if got := rw.Body.String(); got != "VALID PAYLOAD" {
 		t.Errorf("recover must not append to a committed 200 body, got %q", got)

@@ -437,14 +437,23 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// bypasses wroteHeader entirely, so a false wroteHeader no longer
 	// proves nothing was sent, and we have no way to tell from here whether
 	// next already committed a response before panicking. Guessing wrong is
-	// worse than doing nothing: sending our own WriteHeader(500) on top of a
-	// response next already sent is a superfluous call net/http logs and
-	// fixes nothing for the client, who already has next's real response.
-	// So once calledNext is true, the recovery logs and returns without
-	// writing anything -- the trade-off is that a downstream panic that
-	// happens before next writes anything now reaches the client however
-	// net/http's own top-level recovery handles an unrecovered panic
-	// (closing the connection) instead of our previous guessed 500.
+	// worse than doing nothing, so once calledNext is true we do neither:
+	// log the panic below, then re-panic the exact same value instead of
+	// answering it ourselves. A prior fix here returned normally in this
+	// state (logging but writing nothing), which silently turned every
+	// post-next panic into a false success from ServeHTTP's caller's point
+	// of view: a panic before next wrote anything delivered an empty 200,
+	// and a panic mid-body delivered a truncated body as a cleanly
+	// terminated 200 -- the exact defect class http.ErrAbortHandler already
+	// gets a dedicated re-panic for, just above. Re-panicking instead
+	// reaches net/http's own top-level recovery (conn.serve) exactly as an
+	// unrecovered panic always would, and in production reaches Traefik's
+	// compiled recovery middleware (pkg/middlewares/recovery), which
+	// answers with its own 500 when nothing was sent yet, or aborts the
+	// connection when a response was already committed -- the correct
+	// outcome this plugin cannot compute for itself, and decision (b)'s
+	// "wraps nothing, sends no second WriteHeader" requirement holds either
+	// way.
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -464,7 +473,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		t.logger.Errorf("OIDC handler panic recovered: %v\n%s", r, debug.Stack())
 		if tw.calledNext {
-			return
+			panic(r)
 		}
 		if !tw.wroteHeader {
 			// A panic-induced 500 must not be cached (consistent with

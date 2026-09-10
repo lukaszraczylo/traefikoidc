@@ -1,10 +1,10 @@
 package traefikoidc
 
-// Regression tests for the re-review finding at middleware.go:440
-// (medium): ServeHTTP's deferred panic recovery swallows
-// http.ErrAbortHandler, and after t.next has been called it can still send
-// a superfluous WriteHeader(500) on top of a response next already
-// committed.
+// Regression tests for the re-review findings at middleware.go:440 and
+// middleware.go:466: ServeHTTP's deferred panic recovery must not swallow
+// http.ErrAbortHandler, and once t.next has been called it must not guess
+// at a response by answering (or silently swallowing) the panic itself --
+// it must re-panic the original value instead.
 //
 // http.ErrAbortHandler is the sentinel net/http (and httputil.ReverseProxy,
 // when copyResponse fails mid-body) panics with to mean "abort this
@@ -16,10 +16,14 @@ package traefikoidc
 // Separately, t.next.ServeHTTP always receives the real ResponseWriter
 // (FIX-06, downstreamWriter), never *trackingWriter, so tw.wroteHeader
 // stays false even after next fully commits a response. A downstream panic
-// after that point must not guess at a second WriteHeader(500): once next
-// has been called, we cannot tell whether it already committed a response,
-// so the safest and simplest rule is to never send our own status in that
-// state.
+// after that point must not guess: answering with our own WriteHeader(500)
+// risks a superfluous call on top of a response next already sent, while
+// silently swallowing the panic and returning turns a mid-body panic into
+// a falsely-clean 200 -- the same defect class the ErrAbortHandler branch
+// above exists to prevent. The recover re-panics the original value
+// instead, so net/http's own top-level recovery -- or, in production,
+// Traefik's compiled recovery middleware -- makes the real call from
+// outside this plugin.
 import (
 	"net/http"
 	"net/http/httptest"
@@ -91,11 +95,17 @@ func TestServeHTTP_PanicWithErrAbortHandler_Repanics(t *testing.T) {
 }
 
 // TestServeHTTP_PanicAfterNextCommitted_NoSuperfluousWriteHeader pins that
-// once t.next has been called and has already committed a full response,
-// a later panic (e.g. in code that runs after t.next.ServeHTTP returns)
-// must not send a second WriteHeader on the real writer. net/http logs
-// "superfluous response.WriteHeader call" for this and it serves no
-// purpose: the client already has next's response.
+// once t.next has been called and has already committed a full response, a
+// later panic (e.g. in code that runs after t.next.ServeHTTP returns) must
+// not send a second WriteHeader on the real writer -- net/http logs
+// "superfluous response.WriteHeader call" for that and it serves no
+// purpose, since the client already has next's response. The recover
+// re-panics the original value instead of guessing (middleware.go:466
+// re-review): this pins that the writer received ONLY next's own
+// WriteHeader/Write calls, and that the same panic value comes back out of
+// ServeHTTP so net/http's own top-level recovery -- or, in production,
+// Traefik's compiled recovery middleware -- can abort the already-
+// committed connection correctly.
 func TestServeHTTP_PanicAfterNextCommitted_NoSuperfluousWriteHeader(t *testing.T) {
 	tObj := newExcludedPathTraefikOidc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -105,8 +115,15 @@ func TestServeHTTP_PanicAfterNextCommitted_NoSuperfluousWriteHeader(t *testing.T
 	spy := &writeHeaderCountingWriter{}
 	req := httptest.NewRequest(http.MethodGet, "https://app.example.com/public", nil)
 
-	tObj.ServeHTTP(spy, req)
+	recovered := func() (r any) {
+		defer func() { r = recover() }()
+		tObj.ServeHTTP(spy, req)
+		return nil
+	}()
 
+	if recovered != "boom after next committed a response" {
+		t.Fatalf("ServeHTTP must re-panic the original value once next has committed a response, got %v (type %T)", recovered, recovered)
+	}
 	if len(spy.writeHeaderCalls) != 1 || spy.writeHeaderCalls[0] != http.StatusOK {
 		t.Fatalf("next's own WriteHeader(200) must be the only WriteHeader call, got %v", spy.writeHeaderCalls)
 	}
