@@ -333,9 +333,15 @@ to a local-only redirect (the IdP session stays alive), provider-side
 revocation is skipped, or `requireTokenIntrospection` breaks — all with no
 signal beyond the generic `ERROR` line. So `revocation`, `end_session` and
 `introspection` log the same `SECURITY:` line too, whenever the matching
-override is not set. `registration` never logs it: Dynamic Client
-Registration reads its own override (`registrationEndpoint` under
-`dynamicClientRegistration`) independently of this discovery step.
+override is not set. `registration` never logs the `SECURITY:` line, under
+any configuration — it is not covered by this check. Dynamic Client
+Registration reads its own, separate override
+(`dynamicClientRegistration.registrationEndpoint`), independently of this
+discovery step, but only when you set it: leave it unset and a
+plaintext-`http://` drop of the discovered registration endpoint makes
+Dynamic Client Registration fail with only the generic `ERROR` line above —
+no `SECURITY:`-tagged signal, unlike `revocation`, `end_session` and
+`introspection`.
 
 `token`, `jwks_uri` and `authorization` log the `SECURITY:` line
 unconditionally — these three have no config field that can supply them at
