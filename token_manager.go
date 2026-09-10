@@ -55,19 +55,20 @@ func (t *TraefikOidc) clientCredentials() (clientID, clientSecret, clientAuthMet
 // because they expose subtle replay-protection semantics that are dangerous
 // to misuse.
 type verifyOpts struct {
-	// skipReplayMarking suppresses the JTI -> blacklist Set near the bottom
-	// of verifyTokenWithOpts. The Get at the top remains active, so revoked
-	// tokens (added to the blacklist by RevokeToken) are still rejected.
-	// Used exclusively by the bearer-auth path, where bearer tokens are
-	// designed to be reused until exp.
+	// skipReplayMarking is dead: nothing in verifyTokenWithOpts reads it.
+	// The field once suppressed a JTI -> blacklist Set that verifyTokenWithOpts
+	// no longer contains (an earlier FIX-17 pass removed the Set without
+	// updating this comment or its one caller). The Get-based blacklist
+	// check below stays active either way. Flagged for maintainer approval
+	// to delete the field and its sole write (bearer_auth.go:710); see
+	// FIX-17's verifier report.
 	skipReplayMarking bool
 }
 
 // verifyTokenWithOpts runs the full token verification pipeline used by both
 // the cookie path and the bearer path. The cookie path uses the zero-value
-// opts; the bearer path sets skipReplayMarking=true. See the security spec
-// (docs/superpowers/specs/2026-05-18-bearer-token-auth-design.md §7.7) for
-// the exact contract: skipReplayMarking gates ONLY the JTI Set, never the Get.
+// opts; the bearer path sets skipReplayMarking=true, which currently has no
+// effect here (see the field comment above).
 //
 //nolint:gocognit,gocyclo // Complex token verification logic requires multiple security checks
 func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
@@ -133,9 +134,9 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 	}
 
 	// Only check JTI blacklist for tokens that aren't already in the cache
-	// This is for FIRST-TIME validation to detect replay attacks. The
-	// blacklist Get is ALWAYS active on the bearer path too — only the
-	// Set below is gated by opts.skipReplayMarking.
+	// This is for FIRST-TIME validation to detect replay attacks. This Get
+	// is ALWAYS active, on both the cookie and bearer paths; opts has no
+	// effect on it (see verifyOpts.skipReplayMarking's comment).
 	if jti, ok := parsedJWT.Claims["jti"].(string); ok && jti != "" {
 		// Skip JTI blacklist check if replay detection is disabled
 		if !t.disableReplayDetection {
@@ -162,21 +163,19 @@ func (t *TraefikOidc) verifyTokenWithOpts(token string, opts verifyOpts) error {
 
 	t.cacheVerifiedToken(token, jwt.Claims)
 
-	// R36 correction (FIX-17): this used to write the JTI into the shared
-	// shardedReplayCache here, with a comment claiming that cache is "the
+	// R36 correction (FIX-17): this used to write the JTI into a shared
+	// shardedReplayCache here, with a comment claiming that cache was "the
 	// store jwt.Verify consults for genuine replay detection". That was
-	// false: the only non-test caller of jwt.Verify
-	// (VerifyJWTSignatureAndClaims, via VerifyJWTSignatureAndClaims ->
-	// jwt.go) always passes skipReplayCheck=true, so jwt.Verify's replay
-	// branch — the only reader of shardedReplayCache — never runs on any
-	// production request path. The write was therefore pure overhead: an
-	// exclusive replayCacheMu.Lock (via initReplayCache) on every
-	// cache-miss verification, for a cache nothing production reads.
-	// It has been removed rather than wired into a live check; JTI-based
+	// false: the only reader of that cache was jwt.Verify's replay branch,
+	// and the only non-test caller of jwt.Verify (VerifyJWTSignatureAndClaims,
+	// above) always disabled that branch, so it never ran on any production
+	// request path. The write was therefore pure overhead: an exclusive
+	// mutex lock on every cache-miss verification, for a cache nothing in
+	// production read. Both the write and the dead branch it fed have since
+	// been removed outright, rather than wired into a live check; JTI-based
 	// revocation on this path is still enforced above via
 	// t.tokenBlacklist.Get(jti). The one live JTI replay check left in the
-	// codebase is backchannel logout (logout.go), which is independent of
-	// this cache.
+	// codebase is backchannel logout (logout.go), independent of this path.
 
 	return nil
 }
@@ -476,9 +475,11 @@ func (t *TraefikOidc) VerifyJWTSignatureAndClaims(jwt *JWT, token string) error 
 	issuerURL := t.issuerURL
 	t.metadataMu.RUnlock()
 
-	// Always skip replay check in JWT.Verify since we handle it at the VerifyToken level
-	// This prevents false positives when multiple goroutines validate the same cached token
-	if err := jwt.Verify(issuerURL, expectedAudience, true); err != nil {
+	// JWT.Verify performs no replay detection (FIX-17 removed that branch
+	// entirely, since the sole production caller here always disabled it).
+	// JTI-based revocation on this path is enforced separately, above in
+	// verifyTokenWithOpts, via tokenBlacklist.Get(jti).
+	if err := jwt.Verify(issuerURL, expectedAudience); err != nil {
 		return fmt.Errorf("standard claim verification failed: %w", err)
 	}
 

@@ -493,8 +493,6 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		logger.Debugf("Parsed template for header %s: %s", header.Name, header.Value)
 	}
 
-	startReplayCacheCleanup(pluginCtx, logger)
-
 	// Register this instance BEFORE adopting any process-global singleton
 	// task (FIX-35). A concurrent Close() elsewhere (an overlapping Traefik
 	// reload) decides whether it is the last live instance by reading this

@@ -19,10 +19,6 @@ func TestLenientAudienceRequiresUnexpiredAccessToken(t *testing.T) {
 	ts.tOidc.audience = "https://my-api.example.com"
 	ts.tOidc.strictAudienceValidation = false // default lenient
 
-	cleanupReplayCache()
-	initReplayCache()
-	defer cleanupReplayCache()
-
 	t.Run("expired wrong-audience token rejected", func(t *testing.T) {
 		accessToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 			"iss":   "https://test-issuer.com",

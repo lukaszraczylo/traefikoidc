@@ -42,24 +42,6 @@ func TestLRUStrategy_OnRemove_CoverageBoost(t *testing.T) {
 }
 
 // =============================================================================
-// JWT REPLAY CACHE TESTS
-// =============================================================================
-
-func TestGetReplayCacheStats_CoverageBoost(t *testing.T) {
-	// Test the function - it should return valid stats
-	size, maxSize := getReplayCacheStats()
-
-	if maxSize != 10000 {
-		t.Errorf("Expected maxSize to be 10000, got %d", maxSize)
-	}
-
-	// Size should be >= 0
-	if size < 0 {
-		t.Errorf("Expected size to be >= 0, got %d", size)
-	}
-}
-
-// =============================================================================
 // PROFILING MANAGER TESTS
 // =============================================================================
 

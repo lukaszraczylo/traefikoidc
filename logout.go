@@ -17,8 +17,16 @@ import (
 // backchannelLogoutJTIMu serializes checkAndMarkLogoutJTIProcessed's
 // check-and-set below so two logout tokens sharing a jti (retried
 // delivery, or a captured token replayed by an attacker) cannot both
-// observe "not yet processed" and both proceed. The previous unguarded
-// Get-then-Set had exactly that TOCTOU gap (FIX-17, R36 correction).
+// observe "not yet processed" and both proceed within THIS PROCESS. The
+// previous unguarded Get-then-Set had exactly that TOCTOU gap (FIX-17, R36
+// correction). This mutex is process-local: it does not coordinate across
+// Traefik replicas. When sessionInvalidationCache is Redis-backed (multiple
+// replicas, per README.md's back-channel logout requirement), two replicas
+// can each pass their own local check-and-set for the same jti at the same
+// time, so both accept it. Closing that gap needs an atomic primitive on the
+// cache backend itself (e.g. Redis SET NX), which is out of this fix's scope
+// (backends.CacheBackend has no such primitive and is owned by unrelated
+// cache-layer work) — flagged for the maintainer rather than added here.
 var backchannelLogoutJTIMu sync.Mutex
 
 const (
@@ -299,8 +307,11 @@ func (t *TraefikOidc) validateLogoutToken(tokenString string) (*LogoutTokenClaim
 // second call with the same jti. Only enforced when a cache is available;
 // the jti is stored under its own namespace so it never collides with
 // sid/sub invalidation entries. The check-and-set is serialized by
-// backchannelLogoutJTIMu so two logout tokens sharing a jti cannot both
-// observe "not yet processed" (FIX-17).
+// backchannelLogoutJTIMu, so two logout tokens sharing a jti cannot both
+// observe "not yet processed" WITHIN ONE PROCESS (FIX-17). See
+// backchannelLogoutJTIMu's comment: across multiple Traefik replicas
+// sharing a Redis-backed sessionInvalidationCache, this check is not
+// atomic, and two replicas can each accept the same jti concurrently.
 func (t *TraefikOidc) checkAndMarkLogoutJTIProcessed(jti string, issuedAt int64) error {
 	if jti == "" || t.sessionInvalidationCache == nil {
 		return nil

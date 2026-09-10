@@ -77,13 +77,10 @@ func TestDCRBuildRegistrationRequestDefaultAuthMethod(t *testing.T) {
 // verifyTokenWithOpts must not self-record its own JTI into the per-instance
 // tokenBlacklist. Doing so turns an LRU eviction of the raw-token cache
 // (MaxSize 1000 / 5 MiB) into a false "token replay detected" for a valid,
-// unexpired session. Cross-path replay detection (shardedReplayCache) and
-// re-presentation after a cache eviction must both keep working.
+// unexpired session. Re-presentation after a cache eviction must keep working.
 func TestVerifyTokenNoSelfReplayMarkAfterCacheEviction(t *testing.T) {
 	ts := NewTestSuite(t)
 	ts.Setup()
-	cleanupReplayCache()
-	initReplayCache()
 
 	jti := generateRandomString(16)
 	now := time.Now()
@@ -105,16 +102,6 @@ func TestVerifyTokenNoSelfReplayMarkAfterCacheEviction(t *testing.T) {
 	// First verification succeeds.
 	if err := ts.tOidc.VerifyToken(token); err != nil {
 		t.Fatalf("first verification should succeed: %v", err)
-	}
-	// FIX-17 correction: verifyTokenWithOpts no longer writes the JTI into
-	// the shared shardedReplayCache. That write was write-only in
-	// production - jwt.Verify's replay branch (the only reader) only runs
-	// when called with skipReplayCheck=false, and the sole production
-	// caller (VerifyJWTSignatureAndClaims) always passes true - so the
-	// "for cross-path replay detection" comment this test previously
-	// pinned was the false R36 claim FIX-17 corrects, not real behavior.
-	if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
-		t.Error("verifyTokenWithOpts must not write the JTI into the shared shardedReplayCache (FIX-17): nothing in production reads it")
 	}
 	// The per-instance tokenBlacklist must NOT be self-marked (this was the
 	// false-positive source after raw-token-cache eviction).

@@ -96,41 +96,6 @@ func TestR179_CallbackRateLimitReturns429(t *testing.T) {
 	}
 }
 
-// TestR179_ReplayEntryCoversClockSkewWindow regresses the replay-window gap:
-// a JWT accepted in the post-exp clock-skew window (exp + ClockSkewToleranceFuture)
-// had its replay entry expire at nominal exp, so within (exp, exp+skew] the same
-// token was re-accepted as fresh. The replay entry must now cover exp + skew.
-// Fail-on-old: second verification of an in-skew expired token succeeds (no replay
-// entry was recorded because until(exp) <= 0).
-func TestR179_ReplayEntryCoversClockSkewWindow(t *testing.T) {
-	initReplayCache()
-	ts := NewTestSuite(t)
-	ts.Setup()
-
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
-		"iss": "https://test-issuer.com",
-		"aud": "test-client-id",
-		"exp": time.Now().Add(-time.Minute).Unix(), // within ClockSkewToleranceFuture (2m)
-		"sub": "test-subject",
-		"jti": generateRandomString(16),
-	})
-	if err != nil {
-		t.Fatalf("createTestJWT: %v", err)
-	}
-
-	j, err := parseJWT(token)
-	if err != nil {
-		t.Fatalf("parseJWT: %v", err)
-	}
-
-	if err := j.Verify("https://test-issuer.com", "test-client-id"); err != nil {
-		t.Fatalf("first verification of an in-skew expired token must succeed: %v", err)
-	}
-	if err := j.Verify("https://test-issuer.com", "test-client-id"); err == nil {
-		t.Fatal("second verification must be rejected as replay (entry must cover exp + clock skew)")
-	}
-}
-
 // TestR179_PanicRecoverySetsNoStore regresses middleware.go: a handler
 // panic recovered by ServeHTTP must answer a 500 with Cache-Control:
 // no-store (consistent with every other auth-failure response), so an

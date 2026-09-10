@@ -322,16 +322,12 @@ func TestAuth0Scenario1WithCustomAudience(t *testing.T) {
 	}
 
 	// Verify ID token validates against client_id
-	cleanupReplayCache()
-	initReplayCache()
 	err = ts.tOidc.VerifyToken(idToken)
 	if err != nil {
 		t.Errorf("ID token validation failed (should validate against client_id): %v", err)
 	}
 
 	// Verify access token validates against custom audience
-	cleanupReplayCache()
-	initReplayCache()
 	err = ts.tOidc.VerifyToken(accessToken)
 	if err != nil {
 		t.Errorf("Access token validation failed (should validate against custom audience): %v", err)
@@ -395,8 +391,6 @@ func TestAuth0Scenario2DefaultAudience(t *testing.T) {
 	}
 
 	// Verify ID token validates
-	cleanupReplayCache()
-	initReplayCache()
 	err = ts.tOidc.VerifyToken(idToken)
 	if err != nil {
 		t.Errorf("ID token validation failed: %v", err)
@@ -404,8 +398,6 @@ func TestAuth0Scenario2DefaultAudience(t *testing.T) {
 
 	// Access token won't have client_id in aud, so it will fail validation
 	// This is expected for scenario 2 - the session validation relies on ID token
-	cleanupReplayCache()
-	initReplayCache()
 	err = ts.tOidc.VerifyToken(accessToken)
 	if err == nil {
 		t.Logf("Access token validation passed (unexpected but OK if client_id is in aud array)")
@@ -456,8 +448,6 @@ func TestAuth0Scenario3OpaqueAccessToken(t *testing.T) {
 	opaqueAccessToken := "opaque_access_token_random_string_12345"
 
 	// Verify ID token validates
-	cleanupReplayCache()
-	initReplayCache()
 	err = ts.tOidc.VerifyToken(idToken)
 	if err != nil {
 		t.Errorf("ID token validation failed: %v", err)
@@ -520,8 +510,6 @@ func TestAuth0AudienceArrayValidation(t *testing.T) {
 	}
 
 	// Should validate successfully - custom audience is in the array
-	cleanupReplayCache()
-	initReplayCache()
 	err = ts.tOidc.VerifyToken(accessToken)
 	if err != nil {
 		t.Errorf("Access token with audience array should validate when custom audience is present: %v", err)
@@ -554,8 +542,6 @@ func TestAuth0MismatchedAudience(t *testing.T) {
 	}
 
 	// Should fail validation - audience doesn't match
-	cleanupReplayCache()
-	initReplayCache()
 	err = ts.tOidc.VerifyToken(accessToken)
 	if err == nil {
 		t.Error("Access token with wrong audience should fail validation")
@@ -665,8 +651,6 @@ func TestIDTokenAlwaysValidatesAgainstClientID(t *testing.T) {
 	}
 
 	// Should validate successfully - ID tokens are checked against client_id
-	cleanupReplayCache()
-	initReplayCache()
 	err = ts.tOidc.VerifyToken(idToken)
 	if err != nil {
 		t.Errorf("ID token should validate against client_id even when custom audience is configured: %v", err)
@@ -688,8 +672,6 @@ func TestIDTokenAlwaysValidatesAgainstClientID(t *testing.T) {
 	}
 
 	// Should fail - ID tokens must have client_id as audience
-	cleanupReplayCache()
-	initReplayCache()
 	err = ts.tOidc.VerifyToken(wrongIDToken)
 	if err == nil {
 		t.Error("ID token with custom audience (not client_id) should fail validation")

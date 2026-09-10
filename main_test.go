@@ -856,10 +856,6 @@ func TestServeHTTP(t *testing.T) {
 			ts.tOidc.tokenBlacklist = NewCache() // Use generic cache for blacklist
 			ts.tOidc.tokenCache = NewTokenCache()
 
-			// Reset the global replayCache to prevent "token replay detected" errors
-			cleanupReplayCache()
-			initReplayCache()
-
 			// Store original tokenVerifier to restore later
 			origTokenVerifier := ts.tOidc.tokenVerifier
 
@@ -867,10 +863,6 @@ func TestServeHTTP(t *testing.T) {
 			// This prevents replay detection when the same token is verified multiple times within a test
 			mockTokenVerifier := &MockTokenVerifier{
 				VerifyFunc: func(token string) error {
-					// Clear replay cache before token verification
-					cleanupReplayCache()
-					initReplayCache()
-
 					// For test tokens, perform basic validation without JWKS dependency
 					if isTestToken(token) {
 						// Parse the token to check basic validity and expiration
@@ -1289,10 +1281,6 @@ func TestHandleCallback(t *testing.T) {
 	for _, tc := range tests {
 		// Capture range variable
 		t.Run(tc.name, func(t *testing.T) {
-			// Clear the global replay cache before each test run
-			cleanupReplayCache()
-			initReplayCache()
-
 			// Explicitly clear the shared blacklist at the start of each sub-test
 			// to ensure no state leaks, even though we expect the local one to be used.
 			// Note: This line might be redundant now that the verifier is local, but keep for safety.
@@ -3512,381 +3500,8 @@ func TestVerifyTimeConstraint(t *testing.T) {
 	}
 } // Add missing closing brace for TestVerifyTimeConstraint
 
-// ===== JWT REPLAY DETECTION TESTS =====
-// These tests ensure the replay detection fix works correctly and prevents regressions
-
-// TestJWTVerifyWithSkipReplayCheck tests the new skipReplayCheck parameter functionality
-func TestJWTVerifyWithSkipReplayCheck(t *testing.T) {
-	ts := NewTestSuite(t)
-	ts.Setup()
-
-	// Clear the global replay cache before test
-	cleanupReplayCache()
-	initReplayCache()
-
-	// Create a test JWT with unique JTI
-	jti := generateRandomString(16)
-	now := time.Now()
-	exp := now.Add(1 * time.Hour).Unix()
-	iat := now.Unix()
-	nbf := now.Unix()
-
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
-		"iss":   "https://test-issuer.com",
-		"aud":   "test-client-id",
-		"exp":   exp,
-		"iat":   iat,
-		"nbf":   nbf,
-		"sub":   "test-subject",
-		"email": "user@example.com",
-		"nonce": "test-nonce",
-		"jti":   jti,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test JWT: %v", err)
-	}
-
-	jwt, err := parseJWT(token)
-	if err != nil {
-		t.Fatalf("Failed to parse JWT: %v", err)
-	}
-
-	tests := []struct {
-		name            string
-		errorContains   string
-		skipReplayCheck bool
-		firstCall       bool
-		expectError     bool
-	}{
-		{
-			name:            "First verification with skipReplayCheck=false should succeed",
-			skipReplayCheck: false,
-			firstCall:       true,
-			expectError:     false,
-		},
-		{
-			name:            "Second verification with skipReplayCheck=false should fail (replay detected)",
-			skipReplayCheck: false,
-			firstCall:       false,
-			expectError:     true,
-			errorContains:   "token replay detected",
-		},
-		{
-			name:            "Verification with skipReplayCheck=true should always succeed",
-			skipReplayCheck: true,
-			firstCall:       false, // Even on subsequent calls
-			expectError:     false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.firstCall {
-				// Clear replay cache for first call tests
-				cleanupReplayCache()
-				initReplayCache()
-			}
-
-			err := jwt.Verify("https://test-issuer.com", "test-client-id", tc.skipReplayCheck)
-
-			if tc.expectError {
-				if err == nil {
-					t.Errorf("Expected error containing '%s', but got nil", tc.errorContains)
-				} else if !strings.Contains(err.Error(), tc.errorContains) {
-					t.Errorf("Expected error containing '%s', got '%v'", tc.errorContains, err)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Expected no error, but got: %v", err)
-				}
-			}
-		})
-	}
-}
-
-// TestJWTVerifyBackwardCompatibility tests that calls without the skipReplayCheck parameter default to replay checking
-func TestJWTVerifyBackwardCompatibility(t *testing.T) {
-	ts := NewTestSuite(t)
-	ts.Setup()
-
-	// Clear the global replay cache
-	cleanupReplayCache()
-	initReplayCache()
-
-	// Create a test JWT with unique JTI
-	jti := generateRandomString(16)
-	now := time.Now()
-	exp := now.Add(1 * time.Hour).Unix()
-	iat := now.Unix()
-	nbf := now.Unix()
-
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
-		"iss":   "https://test-issuer.com",
-		"aud":   "test-client-id",
-		"exp":   exp,
-		"iat":   iat,
-		"nbf":   nbf,
-		"sub":   "test-subject",
-		"email": "user@example.com",
-		"nonce": "test-nonce",
-		"jti":   jti,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test JWT: %v", err)
-	}
-
-	jwt, err := parseJWT(token)
-	if err != nil {
-		t.Fatalf("Failed to parse JWT: %v", err)
-	}
-
-	// First call with old signature (no skipReplayCheck parameter) should succeed
-	err = jwt.Verify("https://test-issuer.com", "test-client-id")
-	if err != nil {
-		t.Errorf("First verification should succeed, got: %v", err)
-	}
-
-	// Second call with old signature should fail due to replay detection
-	err = jwt.Verify("https://test-issuer.com", "test-client-id")
-	if err == nil {
-		t.Error("Second verification should fail due to replay detection")
-	} else if !strings.Contains(err.Error(), "token replay detected") {
-		t.Errorf("Expected 'token replay detected' error, got: %v", err)
-	}
-}
-
-// TestTokenReplayDetectionFalsePositiveFix tests the specific scenario that was causing false positives
-func TestTokenReplayDetectionFalsePositiveFix(t *testing.T) {
-	ts := NewTestSuite(t)
-	ts.Setup()
-
-	// Clear the global replay cache
-	cleanupReplayCache()
-	initReplayCache()
-
-	// Create a test JWT with unique JTI
-	jti := generateRandomString(16)
-	now := time.Now()
-	exp := now.Add(1 * time.Hour).Unix()
-	iat := now.Unix()
-	nbf := now.Unix()
-
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
-		"iss":   "https://test-issuer.com",
-		"aud":   "test-client-id",
-		"exp":   exp,
-		"iat":   iat,
-		"nbf":   nbf,
-		"sub":   "test-subject",
-		"email": "user@example.com",
-		"nonce": "test-nonce",
-		"jti":   jti,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test JWT: %v", err)
-	}
-
-	// Simulate the authentication flow that was causing false positives:
-	// 1. Initial authentication adds JTI to cache
-	// 2. Subsequent request validation should not trigger false positive
-
-	// Step 1: Initial authentication (this would add JTI to cache)
-	jwt1, err := parseJWT(token)
-	if err != nil {
-		t.Fatalf("Failed to parse JWT for initial auth: %v", err)
-	}
-
-	err = jwt1.Verify("https://test-issuer.com", "test-client-id", false) // Normal replay check
-	if err != nil {
-		t.Fatalf("Initial authentication should succeed: %v", err)
-	}
-
-	// Step 2: Subsequent request validation (this should skip replay check to avoid false positive)
-	jwt2, err := parseJWT(token)
-	if err != nil {
-		t.Fatalf("Failed to parse JWT for subsequent request: %v", err)
-	}
-
-	err = jwt2.Verify("https://test-issuer.com", "test-client-id", true) // Skip replay check
-	if err != nil {
-		t.Errorf("Subsequent request validation should succeed with skipReplayCheck=true: %v", err)
-	}
-
-	// Step 3: Verify that actual replay attacks are still detected
-	jwt3, err := parseJWT(token)
-	if err != nil {
-		t.Fatalf("Failed to parse JWT for replay attack test: %v", err)
-	}
-
-	err = jwt3.Verify("https://test-issuer.com", "test-client-id", false) // Normal replay check
-	if err == nil {
-		t.Error("Actual replay attack should be detected when skipReplayCheck=false")
-	} else if !strings.Contains(err.Error(), "token replay detected") {
-		t.Errorf("Expected 'token replay detected' error, got: %v", err)
-	}
-}
-
-// TestAuthenticationFlowReplayDetection tests the complete authentication flow
-func TestAuthenticationFlowReplayDetection(t *testing.T) {
-	ts := NewTestSuite(t)
-	ts.Setup()
-
-	// Clear the global replay cache
-	cleanupReplayCache()
-	initReplayCache()
-
-	// Create a test JWT with unique JTI
-	jti := generateRandomString(16)
-	now := time.Now()
-	exp := now.Add(1 * time.Hour).Unix()
-	iat := now.Unix()
-	nbf := now.Unix()
-
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
-		"iss":   "https://test-issuer.com",
-		"aud":   "test-client-id",
-		"exp":   exp,
-		"iat":   iat,
-		"nbf":   nbf,
-		"sub":   "test-subject",
-		"email": "user@example.com",
-		"nonce": "test-nonce",
-		"jti":   jti,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test JWT: %v", err)
-	}
-
-	// Test the complete flow:
-	// 1. Initial authentication (should add JTI to cache)
-	// 2. Multiple subsequent requests (should not trigger false positives)
-	// 3. Actual replay attack from different source (should be detected)
-
-	// Step 1: Initial authentication
-	err = ts.tOidc.VerifyToken(token)
-	if err != nil {
-		t.Fatalf("Initial authentication should succeed: %v", err)
-	}
-
-	// FIX-17 correction: VerifyToken (via verifyTokenWithOpts) no longer
-	// writes the JTI into the shared shardedReplayCache - that write was
-	// write-only in production, since jwt.Verify's replay branch (the
-	// only reader) only runs when called with skipReplayCheck=false, and
-	// the sole production caller always passes true.
-	if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
-		t.Error("VerifyToken must not write the JTI into the shared shardedReplayCache (FIX-17)")
-	}
-
-	// Step 2: Subsequent requests (simulate normal request processing)
-	// These should use the token cache and skip replay detection
-	for i := range 3 {
-		err = ts.tOidc.VerifyToken(token)
-		if err != nil {
-			t.Errorf("Subsequent request %d should succeed: %v", i+1, err)
-		}
-	}
-
-	// Step 3: Simulate actual replay attack by directly calling JWT.Verify with replay check
-	jwt, err := parseJWT(token)
-	if err != nil {
-		t.Fatalf("Failed to parse JWT for replay attack test: %v", err)
-	}
-
-	// jwt.Verify's own replay branch still detects a replay on its own
-	// (covering the existing tests/callers that exercise it directly):
-	// the first direct call with the replay check enabled records the
-	// JTI itself and succeeds (the cache is genuinely empty for this jti
-	// at this point, per the FIX-17 correction above); the second is
-	// rejected.
-	err = jwt.Verify("https://test-issuer.com", "test-client-id", false)
-	if err != nil {
-		t.Fatalf("first direct Verify call with the replay check enabled should succeed: %v", err)
-	}
-	err = jwt.Verify("https://test-issuer.com", "test-client-id", false) // Force replay check
-	if err == nil {
-		t.Error("Actual replay attack should be detected")
-	} else if !strings.Contains(err.Error(), "token replay detected") {
-		t.Errorf("Expected 'token replay detected' error, got: %v", err)
-	}
-}
-
-// TestActualReplayAttackDetection ensures real replay attacks are still properly detected
-func TestActualReplayAttackDetection(t *testing.T) {
-	ts := NewTestSuite(t)
-	ts.Setup()
-
-	// Clear the global replay cache
-	cleanupReplayCache()
-	initReplayCache()
-
-	// Create a test JWT with unique JTI
-	jti := generateRandomString(16)
-	now := time.Now()
-	exp := now.Add(1 * time.Hour).Unix()
-	iat := now.Unix()
-	nbf := now.Unix()
-
-	token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
-		"iss":   "https://test-issuer.com",
-		"aud":   "test-client-id",
-		"exp":   exp,
-		"iat":   iat,
-		"nbf":   nbf,
-		"sub":   "test-subject",
-		"email": "user@example.com",
-		"nonce": "test-nonce",
-		"jti":   jti,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test JWT: %v", err)
-	}
-
-	jwt, err := parseJWT(token)
-	if err != nil {
-		t.Fatalf("Failed to parse JWT: %v", err)
-	}
-
-	// First verification should succeed
-	err = jwt.Verify("https://test-issuer.com", "test-client-id", false)
-	if err != nil {
-		t.Fatalf("First verification should succeed: %v", err)
-	}
-
-	// Simulate different types of replay attacks
-	replayTests := []struct {
-		name        string
-		description string
-	}{
-		{
-			name:        "Direct replay attack",
-			description: "Same token used again with replay checking enabled",
-		},
-		{
-			name:        "Replay from different source",
-			description: "Token intercepted and replayed by attacker",
-		},
-	}
-
-	for _, rt := range replayTests {
-		t.Run(rt.name, func(t *testing.T) {
-			// Parse token again (simulating replay)
-			replayJWT, err := parseJWT(token)
-			if err != nil {
-				t.Fatalf("Failed to parse JWT for replay test: %v", err)
-			}
-
-			// Attempt replay with normal replay checking
-			err = replayJWT.Verify("https://test-issuer.com", "test-client-id", false)
-			if err == nil {
-				t.Errorf("Replay attack should be detected for: %s", rt.description)
-			} else if !strings.Contains(err.Error(), "token replay detected") {
-				t.Errorf("Expected 'token replay detected' error for %s, got: %v", rt.description, err)
-			}
-		})
-	}
-}
-
-// TestConcurrentTokenValidation tests thread safety of replay detection
+// TestConcurrentTokenValidation tests thread safety of VerifyToken under
+// concurrent load.
 func TestConcurrentTokenValidation(t *testing.T) {
 	ts := NewTestSuite(t)
 	ts.Setup()
@@ -3894,13 +3509,8 @@ func TestConcurrentTokenValidation(t *testing.T) {
 	// Configure rate limiter to allow more requests for concurrent testing
 	ts.tOidc.limiter = rate.NewLimiter(rate.Limit(1000), 1000) // Allow 1000 requests per second with burst of 1000
 
-	// Clear the global replay cache
-	cleanupReplayCache()
-	initReplayCache()
-
 	// Create multiple tokens with unique JTIs
 	var tokens []string
-	var jtis []string
 	now := time.Now()
 	exp := now.Add(1 * time.Hour).Unix()
 	iat := now.Unix()
@@ -3908,7 +3518,6 @@ func TestConcurrentTokenValidation(t *testing.T) {
 
 	for i := range 10 {
 		jti := generateRandomString(16)
-		jtis = append(jtis, jti)
 
 		token, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
 			"iss":   "https://test-issuer.com",
@@ -3962,24 +3571,12 @@ func TestConcurrentTokenValidation(t *testing.T) {
 	if len(errors) > 0 {
 		t.Errorf("Expected no errors in concurrent validation, got %d errors: %v", len(errors), errors)
 	}
-
-	// FIX-17 correction: VerifyToken no longer writes into the shared
-	// shardedReplayCache (that write was write-only in production).
-	for i, jti := range jtis {
-		if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
-			t.Errorf("JTI %d (%s) must not be written into the shared shardedReplayCache by VerifyToken (FIX-17)", i, jti)
-		}
-	}
 }
 
 // TestJTIBlacklistBehavior tests the JTI blacklist cache management
 func TestJTIBlacklistBehavior(t *testing.T) {
 	ts := NewTestSuite(t)
 	ts.Setup()
-
-	// Properly reinitialize the global replay cache
-	cleanupReplayCache() // Clean up any existing cache and reset sync.Once
-	initReplayCache()    // Initialize new cache through proper channel
 
 	// Create a test JWT with unique JTI
 	jti := generateRandomString(16)
@@ -4020,20 +3617,6 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 			description: "First verification should succeed and add JTI to blacklist",
 		},
 		{
-			// FIX-17 correction: VerifyToken no longer writes into the
-			// shared shardedReplayCache - that write was write-only in
-			// production (nothing reads it on any request path).
-			name: "JTI is not written to the shared replay cache",
-			action: func() error {
-				if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
-					return fmt.Errorf("JTI must not be written into the shared shardedReplayCache by VerifyToken")
-				}
-				return nil
-			},
-			expectError: false,
-			description: "JTI must not be present in the shared replay cache",
-		},
-		{
 			name: "Subsequent verification uses cache (no replay check)",
 			action: func() error {
 				return ts.tOidc.VerifyToken(token)
@@ -4042,24 +3625,21 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 			description: "Subsequent verification should succeed using token cache",
 		},
 		{
-			// jwt.Verify's own replay branch still detects a replay when
-			// called directly with the check enabled: the first call
-			// records the JTI itself (the shared cache is genuinely empty
-			// for this jti here, per the correction above) and succeeds;
-			// the second is rejected.
-			name: "Direct JWT verification detects replay",
+			// FIX-17: jwt.Verify performs no jti tracking of its own, so a
+			// direct call with a repeated jti must not be rejected either.
+			name: "Direct JWT verification does not detect replay",
 			action: func() error {
 				jwt, err := parseJWT(token)
 				if err != nil {
 					return err
 				}
-				if err := jwt.Verify("https://test-issuer.com", "test-client-id", false); err != nil {
+				if err := jwt.Verify("https://test-issuer.com", "test-client-id"); err != nil {
 					return fmt.Errorf("first direct Verify call should succeed: %w", err)
 				}
-				return jwt.Verify("https://test-issuer.com", "test-client-id", false)
+				return jwt.Verify("https://test-issuer.com", "test-client-id")
 			},
-			expectError: true,
-			description: "Direct JWT verification should detect replay",
+			expectError: false,
+			description: "Direct JWT verification must not detect replay (FIX-17)",
 		},
 	}
 
@@ -4088,10 +3668,6 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 
 	ts := NewTestSuite(t)
 	ts.Setup()
-
-	// Clear the global replay cache
-	cleanupReplayCache()
-	initReplayCache()
 
 	// Create a test JWT with unique JTI
 	jti := generateRandomString(16)
@@ -4139,12 +3715,6 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 		t.Error("Token should be in token cache")
 	}
 
-	// FIX-17 correction: VerifyToken no longer writes into the shared
-	// shardedReplayCache (that write was write-only in production).
-	if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
-		t.Error("JTI must not be written into the shared shardedReplayCache by VerifyToken (FIX-17)")
-	}
-
 	// Step 4: Verify that clearing token cache still allows validation
 	ts.tOidc.tokenCache = NewTokenCache() // Clear token cache
 
@@ -4154,14 +3724,10 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 	}
 }
 
-// TestEdgeCasesWithDifferentTokenTypes tests replay detection with different token types
+// TestEdgeCasesWithDifferentTokenTypes tests VerifyToken across different token types
 func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 	ts := NewTestSuite(t)
 	ts.Setup()
-
-	// Properly reinitialize the global replay cache
-	cleanupReplayCache() // Clean up any existing cache and reset sync.Once
-	initReplayCache()    // Initialize new cache through proper channel
 
 	now := time.Now()
 	exp := now.Add(1 * time.Hour).Unix()
@@ -4253,26 +3819,19 @@ func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 				}
 			}
 
-			// Test direct JWT verification for replay detection
+			// FIX-17: direct JWT.Verify performs no jti tracking of its own,
+			// for any token type, so a repeated call must not be rejected.
 			if !tc.expectError && tc.claims["jti"] != nil {
 				jwt, err := parseJWT(token)
 				if err != nil {
 					t.Fatalf("Failed to parse JWT: %v", err)
 				}
 
-				// jwt.Verify's own replay branch, used directly with the
-				// check enabled: the first call records the JTI itself
-				// (the shared cache is genuinely empty for it, since
-				// VerifyToken above no longer writes to it - FIX-17) and
-				// must succeed; the second must detect the replay.
-				if err = jwt.Verify("https://test-issuer.com", "test-client-id", false); err != nil {
+				if err = jwt.Verify("https://test-issuer.com", "test-client-id"); err != nil {
 					t.Fatalf("first direct Verify call for token type %s should succeed: %v", tc.tokenType, err)
 				}
-				err = jwt.Verify("https://test-issuer.com", "test-client-id", false)
-				if err == nil {
-					t.Errorf("Expected replay detection for token type %s with JTI", tc.tokenType)
-				} else if !strings.Contains(err.Error(), "token replay detected") {
-					t.Errorf("Expected 'token replay detected' error for token type %s, got: %v", tc.tokenType, err)
+				if err = jwt.Verify("https://test-issuer.com", "test-client-id"); err != nil {
+					t.Errorf("direct Verify must not detect replay for token type %s (FIX-17), got: %v", tc.tokenType, err)
 				}
 			}
 		})

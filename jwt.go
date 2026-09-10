@@ -2,7 +2,6 @@ package traefikoidc
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
@@ -10,177 +9,10 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/lukaszraczylo/traefikoidc/internal/pool"
 )
-
-// Replay attack protection cache using sharded design for reduced lock contention.
-// This cache tracks JWT IDs (jti claims) to prevent token reuse attacks.
-// Under high load (500+ req/sec), the sharded design reduces contention significantly.
-var (
-	// replayCacheMu protects access to the replay cache instance (only used for initialization)
-	replayCacheMu sync.RWMutex
-	// replayCache stores JWT IDs with expiration to prevent replay attacks (legacy interface)
-	replayCache CacheInterface
-	// shardedReplayCache is the new high-performance sharded cache for replay detection
-	shardedReplayCache *ShardedCache
-	// replayCacheCleanupWG waits for cleanup goroutine to finish
-	replayCacheCleanupWG sync.WaitGroup
-	// replayCacheCancel cancels the cleanup context
-	replayCacheCancel context.CancelFunc
-	// replayCacheCleanupMu protects cleanup operations
-	replayCacheCleanupMu sync.Mutex
-)
-
-// initReplayCache initializes the JWT replay protection cache with bounded size.
-// Uses a sharded cache design with 64 shards for reduced lock contention under high load.
-// The cache is bounded to 10,000 entries to prevent unbounded memory growth.
-// Lazy creation is guarded entirely by replayCacheMu (a plain sync.Once would
-// not re-arm after cleanup resets it, and the previous Once re-assignment raced
-// with init under -race). cleanupReplayCache nil's the fields under the same
-// lock, so this either creates anew (after a cleanup) or is a cheap no-op.
-func initReplayCache() {
-	replayCacheMu.Lock()
-	defer replayCacheMu.Unlock()
-
-	if shardedReplayCache == nil {
-		// Create sharded cache with 64 shards for reduced lock contention
-		// Under 500 req/sec, this reduces lock contention by ~64x compared to single mutex
-		shardedReplayCache = NewShardedCache(64, 10000)
-
-		// Also initialize legacy cache for backward compatibility
-		replayCache = NewCache()
-		replayCache.SetMaxSize(10000)
-	}
-}
-
-// cleanupReplayCache performs graceful shutdown of the replay cache system.
-// It cancels the cleanup context, waits for background goroutines to finish,
-// and properly closes the cache to ensure proper cleanup during shutdown.
-func cleanupReplayCache() {
-	replayCacheCleanupMu.Lock()
-	if replayCacheCancel != nil {
-		replayCacheCancel()
-		replayCacheCancel = nil
-	}
-	replayCacheCleanupMu.Unlock()
-	replayCacheCleanupWG.Wait()
-
-	replayCacheMu.Lock()
-	defer replayCacheMu.Unlock()
-
-	// Clear sharded cache
-	if shardedReplayCache != nil {
-		shardedReplayCache.Clear()
-		shardedReplayCache = nil
-	}
-
-	// Clear legacy cache
-	if replayCache != nil {
-		replayCache.Close()
-		replayCache = nil
-	}
-}
-
-// replayCacheKey namespaces a JTI by its issuer before it is stored in the
-// process-global replay cache. JTI uniqueness is guaranteed only within a
-// single issuer's namespace; many Traefik routers share this one global
-// cache across different OIDC providers, so a bare jti would let two
-// providers' legitimately-colliding JTIs map to the same entry (false
-// replay) and silently overwrite each other (R142).
-func replayCacheKey(issuer, jti string) string {
-	return issuer + "\x00" + jti
-}
-
-// getReplayCacheStats returns statistics about the replay cache state.
-// Returns:
-//   - size: Current number of entries in the cache
-//   - maxSize: Maximum allowed entries (10,000)
-func getReplayCacheStats() (size int, maxSize int) {
-	// Use sharded cache if available (no mutex needed due to internal sharding).
-	// Guard the singleton read because cleanupReplayCache nils it under the
-	// write lock.
-	replayCacheMu.RLock()
-	sc := shardedReplayCache
-	replayCacheMu.RUnlock()
-	if sc != nil {
-		return sc.Size(), 10000
-	}
-
-	// Fall back to legacy cache
-	replayCacheMu.RLock()
-	defer replayCacheMu.RUnlock()
-
-	if replayCache == nil {
-		return 0, 10000
-	}
-
-	return 0, 10000
-}
-
-// startReplayCacheCleanup starts a background goroutine for periodic cache maintenance.
-// The goroutine runs every 5 minutes to clean expired entries and log cache statistics.
-// Uses the global task registry with circuit breaker pattern to prevent duplicate tasks.
-// Parameters:
-//   - ctx: Parent context for cancellation
-//   - logger: Logger for debug output (can be nil)
-func startReplayCacheCleanup(_ context.Context, logger *Logger) {
-	registry := GetGlobalTaskRegistry()
-
-	// Define the cleanup task function
-	cleanupFunc := func() {
-		// Use mutex to safely access cache pointers - this prevents race with initReplayCache
-		replayCacheMu.RLock()
-		shardedCache := shardedReplayCache
-		legacyCache := replayCache
-		replayCacheMu.RUnlock()
-
-		// Only proceed if caches have been initialized
-		if shardedCache == nil && legacyCache == nil {
-			return
-		}
-
-		size, maxSize := getReplayCacheStats()
-		if logger != nil {
-			logger.Debugf("Replay cache stats: size=%d, maxSize=%d", size, maxSize)
-		}
-
-		// Clean up sharded cache
-		if shardedCache != nil {
-			shardedCache.Cleanup()
-		}
-
-		// Also clean up legacy cache for backward compatibility
-		if legacyCache != nil {
-			legacyCache.Cleanup()
-		}
-	}
-
-	// Create or get singleton cleanup task
-	task, err := registry.CreateSingletonTask(
-		"replay-cache-cleanup",
-		5*time.Minute,
-		cleanupFunc,
-		logger,
-		&replayCacheCleanupWG,
-	)
-
-	if err != nil {
-		if logger != nil {
-			logger.Debugf("Replay cache cleanup task already exists or circuit breaker limit reached: %v (this is expected with multiple instances)", err)
-		}
-		return
-	}
-
-	// Start the task
-	task.Start()
-
-	if logger != nil {
-		logger.Debug("Started replay cache cleanup task with circuit breaker protection")
-	}
-}
 
 // ClockSkewToleranceFuture defines the maximum allowable clock skew for future time validation.
 // Tokens are considered valid for an additional 2 minutes past their expiration time.
@@ -300,16 +132,17 @@ func parseJWT(tokenString string) (*JWT, error) {
 }
 
 // Verify performs comprehensive JWT token validation according to OIDC specifications.
-// It validates the token signature algorithm, issuer, audience, expiration, issued-at time,
-// not-before time (if present), and prevents replay attacks using JTI claims.
+// It validates the token signature algorithm, issuer, audience, expiration, issued-at
+// time, and not-before time (if present). It does not track JTIs or detect replay: the
+// only JTI-based replay protection left in the codebase is the backchannel-logout jti
+// check (logout.go), which is independent of this function (FIX-17).
 // Parameters:
 //   - issuerURL: Expected issuer URL to validate against
 //   - expectedAudience: Expected audience to validate against (can be clientID or custom audience)
-//   - skipReplayCheck: Optional parameter to skip replay attack protection
 //
 // Returns:
 //   - An error describing the first validation failure encountered
-func (j *JWT) Verify(issuerURL, expectedAudience string, skipReplayCheck ...bool) error {
+func (j *JWT) Verify(issuerURL, expectedAudience string) error {
 	alg, ok := j.Header["alg"].(string)
 	if !ok {
 		return fmt.Errorf("missing 'alg' header")
@@ -345,80 +178,6 @@ func (j *JWT) Verify(issuerURL, expectedAudience string, skipReplayCheck ...bool
 		return err
 	}
 
-	// R36 correction (FIX-17): the only non-test production caller of
-	// Verify (VerifyJWTSignatureAndClaims, token_manager.go) always passes
-	// skipReplayCheck=true, so shouldSkipReplay is always true and the
-	// block below never runs on a live request path today. It stays live
-	// code, not dead code, because ~15 existing tests across several
-	// files call Verify directly with the replay check enabled and assert
-	// on this exact behavior. Do not assume shardedReplayCache reflects
-	// anything about production traffic; token_manager.go's own
-	// verifyTokenWithOpts no longer writes to it (see its comment).
-	shouldSkipReplay := len(skipReplayCheck) > 0 && skipReplayCheck[0]
-
-	jtiValue, jtiOk := claims["jti"].(string)
-
-	if jtiOk && !shouldSkipReplay && jtiValue != "" {
-		initReplayCache()
-
-		expFloat, ok := claims["exp"].(float64)
-		var expTime time.Time
-		if ok {
-			expTime = time.Unix(int64(expFloat), 0)
-		} else {
-			expTime = time.Now().Add(10 * time.Minute)
-		}
-		duration := time.Until(expTime)
-		// A token is accepted until exp + ClockSkewToleranceFuture (see
-		// verifyExpiration), so the replay entry must live that long too —
-		// otherwise in the (exp, exp+skew] window the entry has expired
-		// and been swept and the same token is re-accepted as fresh
-		// (R179).
-		duration += ClockSkewToleranceFuture
-		if duration <= 0 {
-			// Expired token: no replay window worth recording, so nothing to do.
-			goto replayDone
-		}
-
-		// Use sharded cache for replay detection - no global mutex needed.
-		// SetIfAbsent is atomic: it holds the per-shard lock across the
-		// existence check and insert, closing the double-accept race where
-		// two concurrent requests carrying the same fresh JTI could both
-		// observe it absent and both be accepted. Guard the singleton read
-		// with replayCacheMu because cleanupReplayCache can nil it under the
-		// write lock.
-		replayCacheMu.RLock()
-		sc := shardedReplayCache
-		if sc != nil {
-			if !sc.SetIfAbsent(replayCacheKey(issuerURL, jtiValue), true, duration) {
-				replayCacheMu.RUnlock()
-				return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
-			}
-			replayCacheMu.RUnlock()
-		} else {
-			// Fall back to legacy cache (should rarely happen). Release the
-			// read lock before taking the write lock: RWMutex is not
-			// reentrant, so Lock() here while still holding RLock()
-			// self-deadlocks (R156). Guard the cache for nil — it is
-			// cleared alongside shardedReplayCache by cleanupReplayCache.
-			replayCacheMu.RUnlock()
-			replayCacheMu.Lock()
-			rk := replayCacheKey(issuerURL, jtiValue)
-			exists := false
-			if replayCache != nil {
-				_, exists = replayCache.Get(rk)
-				if !exists {
-					replayCache.Set(rk, true, duration)
-				}
-			}
-			replayCacheMu.Unlock()
-			if exists {
-				return fmt.Errorf("token replay detected (jti: %s)", jtiValue)
-			}
-		}
-	}
-
-replayDone:
 	sub, ok := claims["sub"].(string)
 	if !ok || sub == "" {
 		return fmt.Errorf("missing or empty 'sub' claim")

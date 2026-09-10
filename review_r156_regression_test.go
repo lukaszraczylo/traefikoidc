@@ -1,14 +1,10 @@
 package traefikoidc
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 )
@@ -103,78 +99,5 @@ func TestR156_IntrospectionAcceptsBearerTokenType(t *testing.T) {
 
 	if err := tObj.validateOpaqueToken("some-opaque-token"); err != nil {
 		t.Errorf("conforming provider with token_type \"Bearer\" must be accepted; got error: %v", err)
-	}
-}
-
-// TestR156_ReplayFallbackNoSelfDeadlock guards the jwt.go replay-fallback
-// fix. When a concurrent cleanupReplayCache nils shardedReplayCache in
-// the window after initReplayCache (which re-creates a nil cache) but
-// before the guarded read, JWT.Verify takes the legacy fallback branch,
-// which used to call replayCacheMu.Lock() while still holding
-// replayCacheMu.RLock() — a non-reentrant RWMutex self-deadlock — and
-// then called replayCache.Get before its nil-check (nil-panic). The fix
-// releases the read lock before taking the write lock and guards the
-// legacy cache for nil.
-//
-// The fallback is only reachable under that concurrency race, so this is
-// a best-effort regression: run cleanup in a tight loop alongside a
-// stream of fresh Verifies, bounding each with a timeout so a
-// reintroduced deadlock fails the test rather than hanging the suite.
-func TestR156_ReplayFallbackNoSelfDeadlock(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				cleanupReplayCache()
-			}
-		}
-	}()
-
-	defer func() {
-		close(stop)
-		wg.Wait()
-		// Leave the replay caches in a functional state and unbind any
-		// (possibly deadlocked) stale lock so later tests are unaffected.
-		initReplayCache()
-	}()
-
-	const verifies = 1500
-	for i := 0; i < verifies; i++ {
-		raw, err := createTestJWT(key, "RS256", "k", map[string]interface{}{
-			"iss": "https://provider.example.com",
-			"aud": "test-aud",
-			"sub": "test-user",
-			"exp": float64(time.Now().Add(5 * time.Minute).Unix()),
-			"jti": fmt.Sprintf("fresh-jti-%d", i),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		parsed, err := parseJWT(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		done := make(chan error, 1)
-		go func(j *JWT) { done <- j.Verify("https://provider.example.com", "test-aud") }(parsed)
-
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("unexpected verify error: %v", err)
-			}
-		case <-time.After(400 * time.Millisecond):
-			t.Fatal("Verify hung: replay-fallback self-deadlock still present")
-		}
 	}
 }

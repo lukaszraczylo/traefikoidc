@@ -39,7 +39,7 @@ func TestJWTVerify_IatOptional(t *testing.T) {
 			// intentionally no "iat"
 		},
 	}
-	if err := jwt.Verify("https://issuer.example.com", "client-abc", true); err != nil {
+	if err := jwt.Verify("https://issuer.example.com", "client-abc"); err != nil {
 		t.Fatalf("token without optional iat claim must verify, got: %v", err)
 	}
 }

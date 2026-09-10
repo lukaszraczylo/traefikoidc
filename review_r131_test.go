@@ -19,10 +19,6 @@ func TestStandardExpiredAccessTokenWithValidIDToken_RequestsRefresh(t *testing.T
 	ts := NewTestSuite(t)
 	ts.Setup()
 
-	cleanupReplayCache()
-	initReplayCache()
-	defer cleanupReplayCache()
-
 	now := time.Now()
 
 	accessToken, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", map[string]interface{}{
@@ -77,10 +73,6 @@ func TestStandardExpiredAccessTokenWithValidIDToken_RequestsRefresh(t *testing.T
 func TestStandardValidAccessTokenWithValidIDToken_NoRefresh(t *testing.T) {
 	ts := NewTestSuite(t)
 	ts.Setup()
-
-	cleanupReplayCache()
-	initReplayCache()
-	defer cleanupReplayCache()
 
 	now := time.Now()
 

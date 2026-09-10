@@ -12,8 +12,9 @@
 //   - iat upper-age cap bounds clock-skew / forever-token abuse.
 //   - Multi-audience tokens require matching azp.
 //   - Per-IP 401 throttle returns 429 + Retry-After after a threshold.
-//   - JTI Set is suppressed (skipReplayMarking) but JTI Get stays — revoked
-//     tokens (RevokeToken adds to blacklist) are still rejected.
+//   - JTI Get stays active — revoked tokens (RevokeToken adds to blacklist)
+//     are still rejected. skipReplayMarking is passed but currently has no
+//     effect (see verifyOpts.skipReplayMarking's comment, token_manager.go).
 //   - Identifier is read from BearerIdentifierClaim (default "sub"), never
 //     from UserIdentifierClaim, to avoid the unverified-email spoofing path.
 //   - Identifier is sanitized: length cap, control chars, bidi-override,
