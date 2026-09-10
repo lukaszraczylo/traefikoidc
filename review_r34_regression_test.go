@@ -61,15 +61,6 @@ func waitForGdInstances(t *testing.T, want int) {
 	t.Fatalf("gd instances wanted %d got %d", want, n)
 }
 
-// resetGdInstancesForTest establishes a clean baseline for the process-global
-// instance registry so a test's "last instance" and iteration assertions are
-// not skewed by instances created by earlier tests in the same process.
-func resetGdInstancesForTest() {
-	gdInstances.Lock()
-	gdInstances.set = make(map[*GracefulDegradation]struct{})
-	gdInstances.Unlock()
-}
-
 // TestConfigKeySeparatesBehaviorDifferingConfigs: two configs that differ only
 // in a transport-behavior field (here DisableCompression) must get distinct
 // transports, not share one built with the first config's settings.

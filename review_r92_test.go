@@ -1,28 +1,9 @@
 package traefikoidc
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"testing"
 	"time"
 )
-
-// makeTestJWT builds a syntactically valid 3-part JWT with the given claims.
-// The signature segment is not cryptographically validated by the code under
-// test (accessTokenUnexpired only parses claims), so a static value is fine.
-func makeTestJWT(t *testing.T, claims map[string]interface{}) string {
-	t.Helper()
-	hdr, err := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT"})
-	if err != nil {
-		t.Fatalf("marshal header: %v", err)
-	}
-	pl, err := json.Marshal(claims)
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(hdr) + "." +
-		base64.RawURLEncoding.EncodeToString(pl) + ".c2ln"
-}
 
 // R92 regression: on the lenient-audience access-token path,
 // accessTokenUnexpired previously re-checked only 'exp' after jwt.Verify

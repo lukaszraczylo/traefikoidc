@@ -8,6 +8,11 @@ package traefikoidc
 // the declaring file silently broke the consumer. Every review_rNN*_test.go
 // file must depend only on shared helpers like this one, never on another
 // round file.
+//
+// makeTestJWT joined this file for the same reason (R4 re-review): it was
+// declared inside review_r92_test.go but consumed by
+// access_token_unexpired_iat_optional_test.go, a FIX-round test file — the
+// dependency was not even confined to other round files.
 
 import (
 	"crypto"
@@ -57,4 +62,21 @@ func makeJWTForTest(claims map[string]any) string {
 	h, _ := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
 	p, _ := json.Marshal(claims)
 	return base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(p) + ".c2ln"
+}
+
+// makeTestJWT builds a syntactically valid 3-part JWT with the given claims.
+// The signature segment is not cryptographically validated by callers that
+// only parse claims (e.g. accessTokenUnexpired), so a static value is fine.
+func makeTestJWT(t *testing.T, claims map[string]interface{}) string {
+	t.Helper()
+	hdr, err := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT"})
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	pl, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(hdr) + "." +
+		base64.RawURLEncoding.EncodeToString(pl) + ".c2ln"
 }
