@@ -435,26 +435,43 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// Once t.next.ServeHTTP has been called (tw.calledNext), it received
 	// the real ResponseWriter, not tw (FIX-06) -- any write it makes
 	// bypasses wroteHeader entirely, so a false wroteHeader no longer
-	// proves nothing was sent. The header-only WriteHeader(500) below is
-	// still safe to send unconditionally in that state: it is a no-op if
-	// next already committed a response. Only the body Write can corrupt an
-	// already-committed response, so that -- and only that -- is gated on
-	// !calledNext. Skipping the header too would silently turn a genuine
-	// downstream panic before any write into an empty 200 (Go's net/http
-	// default for a handler that returns having written nothing), telling
-	// the client a failed request succeeded.
+	// proves nothing was sent, and we have no way to tell from here whether
+	// next already committed a response before panicking. Guessing wrong is
+	// worse than doing nothing: sending our own WriteHeader(500) on top of a
+	// response next already sent is a superfluous call net/http logs and
+	// fixes nothing for the client, who already has next's real response.
+	// So once calledNext is true, the recovery logs and returns without
+	// writing anything -- the trade-off is that a downstream panic that
+	// happens before next writes anything now reaches the client however
+	// net/http's own top-level recovery handles an unrecovered panic
+	// (closing the connection) instead of our previous guessed 500.
 	defer func() {
-		if r := recover(); r != nil {
-			t.logger.Errorf("OIDC handler panic recovered: %v\n%s", r, debug.Stack())
-			if !tw.wroteHeader {
-				// A panic-induced 500 must not be cached (consistent with
-				// every other auth-failure response, R101/R172).
-				rw.Header().Set("Cache-Control", "no-store")
-				rw.WriteHeader(http.StatusInternalServerError)
-				if !tw.calledNext {
-					_, _ = rw.Write([]byte("Internal Server Error"))
-				}
-			}
+		r := recover()
+		if r == nil {
+			return
+		}
+		if r == http.ErrAbortHandler {
+			// net/http (and httputil.ReverseProxy, when copyResponse fails
+			// mid-body) panics with this exact sentinel to mean "abort the
+			// connection now, write nothing else". Recovering it here and
+			// returning normally would let net/http finish the response as
+			// if it were complete, turning a truncated upstream body into a
+			// clean-looking 200. Re-panic so the outer net/http conn.serve
+			// recover (which special-cases this sentinel) aborts the
+			// connection the same way it would with no plugin in front of
+			// it.
+			panic(r)
+		}
+		t.logger.Errorf("OIDC handler panic recovered: %v\n%s", r, debug.Stack())
+		if tw.calledNext {
+			return
+		}
+		if !tw.wroteHeader {
+			// A panic-induced 500 must not be cached (consistent with
+			// every other auth-failure response, R101/R172).
+			rw.Header().Set("Cache-Control", "no-store")
+			rw.WriteHeader(http.StatusInternalServerError)
+			_, _ = rw.Write([]byte("Internal Server Error"))
 		}
 	}()
 
