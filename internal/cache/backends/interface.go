@@ -1,4 +1,4 @@
-// Package backend provides cache backend implementations for the Traefik OIDC plugin.
+// Package backends provides cache backend implementations for the Traefik OIDC plugin.
 package backends
 
 import (
