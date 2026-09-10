@@ -3963,10 +3963,11 @@ func TestConcurrentTokenValidation(t *testing.T) {
 		t.Errorf("Expected no errors in concurrent validation, got %d errors: %v", len(errors), errors)
 	}
 
-	// Verify all JTIs are in cache (use shardedReplayCache which is the actual cache used)
+	// FIX-17 correction: VerifyToken no longer writes into the shared
+	// shardedReplayCache (that write was write-only in production).
 	for i, jti := range jtis {
-		if !shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
-			t.Errorf("JTI %d (%s) should be in replay cache", i, jti)
+		if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
+			t.Errorf("JTI %d (%s) must not be written into the shared shardedReplayCache by VerifyToken (FIX-17)", i, jti)
 		}
 	}
 }
@@ -4019,16 +4020,18 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 			description: "First verification should succeed and add JTI to blacklist",
 		},
 		{
-			name: "JTI exists in blacklist after verification",
+			// FIX-17 correction: VerifyToken no longer writes into the
+			// shared shardedReplayCache - that write was write-only in
+			// production (nothing reads it on any request path).
+			name: "JTI is not written to the shared replay cache",
 			action: func() error {
-				// Use shardedReplayCache which is the actual cache used
-				if !shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
-					return fmt.Errorf("JTI not found in blacklist cache")
+				if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
+					return fmt.Errorf("JTI must not be written into the shared shardedReplayCache by VerifyToken")
 				}
 				return nil
 			},
 			expectError: false,
-			description: "JTI should be present in blacklist cache",
+			description: "JTI must not be present in the shared replay cache",
 		},
 		{
 			name: "Subsequent verification uses cache (no replay check)",
@@ -4039,11 +4042,19 @@ func TestJTIBlacklistBehavior(t *testing.T) {
 			description: "Subsequent verification should succeed using token cache",
 		},
 		{
+			// jwt.Verify's own replay branch still detects a replay when
+			// called directly with the check enabled: the first call
+			// records the JTI itself (the shared cache is genuinely empty
+			// for this jti here, per the correction above) and succeeds;
+			// the second is rejected.
 			name: "Direct JWT verification detects replay",
 			action: func() error {
 				jwt, err := parseJWT(token)
 				if err != nil {
 					return err
+				}
+				if err := jwt.Verify("https://test-issuer.com", "test-client-id", false); err != nil {
+					return fmt.Errorf("first direct Verify call should succeed: %w", err)
 				}
 				return jwt.Verify("https://test-issuer.com", "test-client-id", false)
 			},
@@ -4128,11 +4139,10 @@ func TestSessionBasedTokenRevalidation(t *testing.T) {
 		t.Error("Token should be in token cache")
 	}
 
-	// Check replay cache
-	// Use shardedReplayCache which is the actual cache used
-	inReplayCache := shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti))
-	if !inReplayCache {
-		t.Error("JTI should be in replay cache")
+	// FIX-17 correction: VerifyToken no longer writes into the shared
+	// shardedReplayCache (that write was write-only in production).
+	if shardedReplayCache != nil && shardedReplayCache.Exists(replayCacheKey(ts.tOidc.issuerURL, jti)) {
+		t.Error("JTI must not be written into the shared shardedReplayCache by VerifyToken (FIX-17)")
 	}
 
 	// Step 4: Verify that clearing token cache still allows validation
@@ -4250,7 +4260,14 @@ func TestEdgeCasesWithDifferentTokenTypes(t *testing.T) {
 					t.Fatalf("Failed to parse JWT: %v", err)
 				}
 
-				// This should detect replay for tokens with JTI
+				// jwt.Verify's own replay branch, used directly with the
+				// check enabled: the first call records the JTI itself
+				// (the shared cache is genuinely empty for it, since
+				// VerifyToken above no longer writes to it - FIX-17) and
+				// must succeed; the second must detect the replay.
+				if err = jwt.Verify("https://test-issuer.com", "test-client-id", false); err != nil {
+					t.Fatalf("first direct Verify call for token type %s should succeed: %v", tc.tokenType, err)
+				}
 				err = jwt.Verify("https://test-issuer.com", "test-client-id", false)
 				if err == nil {
 					t.Errorf("Expected replay detection for token type %s with JTI", tc.tokenType)
