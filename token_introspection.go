@@ -214,6 +214,17 @@ func (t *TraefikOidc) validateOpaqueToken(token string) error {
 	// Perform introspection
 	resp, err := t.introspectToken(token)
 	if err != nil {
+		// Return introspectToken's *HTTPError UNWRAPPED, not via
+		// fmt.Errorf("...%w", err). validateStandardTokensRS detects an
+		// *HTTPError with a plain type assertion (yaegi-safe: errors.As
+		// panics under yaegi v0.16.1 whenever its target's pointed-to type
+		// is interpreted, which *HTTPError always is here). A wrapped
+		// interpreted *HTTPError cannot be recovered even by a manual
+		// errors.Unwrap walk under yaegi (verified this session), so this
+		// producer must not wrap it at all (FIX-13, NEW-01).
+		if httpErr, ok := err.(*HTTPError); ok {
+			return httpErr
+		}
 		return fmt.Errorf("token introspection failed: %w", err)
 	}
 

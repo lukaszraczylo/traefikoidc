@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -267,5 +268,82 @@ func TestIntrospectionStatus_SessionPath_ActiveFalseStillForcesRefresh(t *testin
 	_, shouldRefresh, _ := tObj.validateStandardTokensRS(rs)
 	if !shouldRefresh {
 		t.Error("a 200 response with active=false is a definite revocation and must still force a refresh")
+	}
+}
+
+// TestIntrospectionStatus_SessionPath_500FallsThroughNoForcedRefresh extends
+// the 401/429 coverage above to a 5xx: a transient introspection-endpoint
+// failure must not force a refresh either, only fall through to ID-token
+// validation (same FIX-13 contract, RFC 7662 s2.2).
+func TestIntrospectionStatus_SessionPath_500FallsThroughNoForcedRefresh(t *testing.T) {
+	ts := introspectionStatusServer(t, http.StatusInternalServerError)
+	defer ts.Close()
+
+	const idToken = "dummy-but-cached-id-token"
+	tc := NewTokenCache()
+	tc.Set(idToken, map[string]interface{}{"exp": float64(time.Now().Add(time.Hour).Unix())}, time.Hour)
+
+	verifier := NewUnifiedMockTokenVerifier()
+	verifier.SetTokenValid(idToken, true)
+
+	tObj := &TraefikOidc{
+		logger:                    newNoOpLogger(),
+		introspectionURL:          ts.URL,
+		httpClient:                ts.Client(),
+		allowOpaqueTokens:         true,
+		requireTokenIntrospection: false,
+		tokenCache:                tc,
+		tokenVerifier:             verifier,
+		clientID:                  "test-client",
+		clientSecret:              "test-secret",
+	}
+	rs := &requestState{
+		authenticated: true,
+		accessToken:   "OpaqueNotARealJwt-1234567890",
+		refreshToken:  "refresh-token-value",
+		idToken:       idToken,
+	}
+	_, shouldRefresh, _ := tObj.validateStandardTokensRS(rs)
+	if shouldRefresh {
+		t.Error("a 500 from the introspection endpoint is transient, not a verdict on the token; it must fall through to ID-token validation, not force a refresh")
+	}
+}
+
+// TestValidateOpaqueToken_HTTPErrorReturnedUnwrapped guards NEW-01:
+// validateStandardTokensRS classifies validateOpaqueToken's error with a
+// plain type assertion (err.(*HTTPError)), not errors.As, because errors.As
+// panics under yaegi v0.16.1 whenever its target's pointed-to type is
+// interpreted -- and *HTTPError, declared in this plugin, always is. A
+// plain assertion only works if the producer hands back the *HTTPError
+// unwrapped: an interpreted *HTTPError wrapped with fmt.Errorf("...%w", e)
+// cannot be recovered by a manual errors.Unwrap walk under yaegi either
+// (verified this session), so wrapping it here would silently misclassify
+// every 4xx/5xx introspection response under yaegi even without a panic.
+func TestValidateOpaqueToken_HTTPErrorReturnedUnwrapped(t *testing.T) {
+	ts := introspectionStatusServer(t, http.StatusTooManyRequests)
+	defer ts.Close()
+
+	tObj := &TraefikOidc{
+		logger:            newNoOpLogger(),
+		introspectionURL:  ts.URL,
+		httpClient:        ts.Client(),
+		clientID:          "test-client",
+		clientSecret:      "test-secret",
+		allowOpaqueTokens: true,
+	}
+
+	err := tObj.validateOpaqueToken("opaque-tok")
+	if err == nil {
+		t.Fatal("expected an error for a 429 introspection response")
+	}
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
+		t.Fatalf("expected validateOpaqueToken to return *HTTPError unwrapped, got %T: %v", err, err)
+	}
+	if httpErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected StatusCode=429, got %d", httpErr.StatusCode)
+	}
+	if errors.Unwrap(err) != nil {
+		t.Fatal("expected validateOpaqueToken's *HTTPError to carry no further Unwrap chain")
 	}
 }

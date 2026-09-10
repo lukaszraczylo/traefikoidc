@@ -15,7 +15,6 @@ package traefikoidc
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"strings"
 	"time"
 )
@@ -165,20 +164,29 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 	if isOpaqueToken {
 		if t.allowOpaqueTokens {
 			if err := t.validateOpaqueToken(rs.accessToken); err != nil {
-				// validateOpaqueToken wraps introspectToken's *HTTPError
-				// (a non-200 response from the introspection endpoint) with
-				// %w, and HTTPError.Message embeds up to 10 KiB of the IdP's
-				// own response body. That body is attacker/IdP-controlled
-				// text, not a verdict on the presented token — a 401/403/429
-				// whose body happens to contain "revoked" or similar must
-				// not be read as "token is not active" (FIX-13). Detect an
+				// validateOpaqueToken returns introspectToken's *HTTPError
+				// (a non-200 response from the introspection endpoint)
+				// UNWRAPPED (not via fmt.Errorf %w), specifically so a plain
+				// type assertion here is sufficient and yaegi-safe: under
+				// yaegi v0.16.1 errors.As(err, &target) panics whenever
+				// target's pointed-to type is interpreted (*HTTPError is
+				// declared in this plugin), and an interpreted *HTTPError
+				// wrapped with %w cannot be recovered by a manual
+				// errors.Unwrap walk under yaegi either (verified this
+				// session) — so the producer must not wrap it at all. See
+				// asHTTPError in error_recovery.go for the general pattern.
+				//
+				// HTTPError.Message embeds up to 10 KiB of the IdP's own
+				// response body. That body is attacker/IdP-controlled text,
+				// not a verdict on the presented token — a 401/403/429 whose
+				// body happens to contain "revoked" or similar must not be
+				// read as "token is not active" (FIX-13). Detect an
 				// *HTTPError specifically and route it straight to the
 				// requireTokenIntrospection/transient handling below,
 				// BEFORE the substring match runs. Only validateOpaqueToken's
 				// own generated messages (active=false, expired, nbf — never
 				// an *HTTPError) may still reach the substring classification.
-				var httpErr *HTTPError
-				isHTTPError := errors.As(err, &httpErr)
+				_, isHTTPError := err.(*HTTPError)
 				errMsg := err.Error()
 				isTokenInvalid := !isHTTPError && (strings.Contains(errMsg, "token is not active") ||
 					strings.Contains(errMsg, "revoked") ||
