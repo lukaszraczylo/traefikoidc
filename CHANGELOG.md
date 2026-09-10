@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`allowUnauthenticatedPreflight` (default `false`).** Every `OPTIONS`
+  request needs authentication by default, as in the last release. Set the
+  option to `true` to let a genuine CORS preflight reach the backend
+  without a session. Only an `OPTIONS` request that carries both `Origin`
+  and `Access-Control-Request-Method` bypasses authentication, and the
+  plugin discards the backend's response body for it, because a browser
+  never reads a preflight body (`settings.go`, `middleware.go`, FIX-02).
+  See the option table in [CONFIGURATION.md](docs/CONFIGURATION.md).
+
 ### Changed
 
 - **private_key_jwt now rejects RSA signing keys under 2048 bits.**
