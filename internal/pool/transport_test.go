@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -476,25 +477,17 @@ func TestCreateHTTPClient(t *testing.T) {
 
 // TestCreateHTTPClient_Fallback tests fallback when pool is exhausted
 func TestCreateHTTPClient_Fallback(t *testing.T) {
-	// Replace the global pool with a full one. resetGlobalTransportPoolForTest
-	// is required: the global is sync.Once-guarded, so overriding the var
-	// alone would be clobbered by GetTransportPool's once-body, and restoring
-	// a nil original after the Once was consumed would leave later callers
-	// panicking on a nil receiver.
+	// GetTransportPool now runs unconditionally inside transportPoolOnce.Do
+	// (FIX-39: no unsynchronized nil pre-check), so a freshly reset Once
+	// always builds its own pool on the next call. Exhaust the real singleton
+	// in place (mutate its fields) instead of swapping in a hand-built
+	// *TransportPool, which Once.Do would otherwise immediately overwrite.
 	resetGlobalTransportPoolForTest()
 	defer resetGlobalTransportPoolForTest()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	globalTransportPool = &TransportPool{
-		transports:  make(map[string]*sharedTransport),
-		maxConns:    20,
-		ctx:         ctx,
-		cancel:      cancel,
-		clientCount: 10,
-		maxClients:  1, // Very low limit
-	}
+	pool := GetTransportPool()
+	pool.maxClients = 1 // Very low limit
+	atomic.StoreInt32(&pool.clientCount, 10)
 
 	config := DefaultTransportConfig()
 	timeout := 30 * time.Second
