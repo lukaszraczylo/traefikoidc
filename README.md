@@ -125,7 +125,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `refreshGracePeriodSeconds` | `60` | Proactively refresh tokens this many seconds before expiry. |
 | `maxRefreshTokenAgeSeconds` | `21600` | Heuristic max stored refresh-token lifetime (6h). Past this, the plugin treats the RT as expired without contacting the IdP — returns 401 to AJAX, full re-auth on navigations. Set `0` to disable. Tune to match your IdP's RT TTL. |
 | `rateLimit` | `100` | Requests/sec. Min `10`. |
-| `perSourceLoginRateLimit` | `0` (off) | Throttle OIDC auth events (authorization-code callback + login initiation) per external client source, auth events per minute. Keys and classifies the source by RemoteAddr only, never `X-Forwarded-For`, so a client cannot spoof it. Internal/loopback sources (proxies, in-cluster) are never throttled. `0` disables. |
+| `perSourceLoginRateLimit` | `0` (off) | Throttle OIDC auth events (authorization-code callback + login initiation) per external client source, auth events per minute. Keys and classifies the source by RemoteAddr only, never `X-Forwarded-For`, so a client cannot spoof it. Internal/loopback sources (proxies, in-cluster) are never throttled. `0` disables. RemoteAddr is the TCP peer. Behind a load balancer or CDN, the limiter keys on the proxy address: a private address is never throttled, and a public address puts every client in one shared bucket. |
 | `logLevel` | `info` | `debug`, `info`, `error`. |
 | `audience` | `clientID` | Custom access-token audience (Auth0 custom APIs). |
 | `strictAudienceValidation` | `false` | Reject mismatched audiences. **Set `true` in production.** |
