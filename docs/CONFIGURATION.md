@@ -96,6 +96,11 @@ For each token / revocation request the plugin builds a JWS with:
 
 When `clientAuthMethod: private_key_jwt`, `clientSecret` is optional.
 
+With `clientAssertionAlg` set to `RS256`, `RS384`, `RS512`, `PS256`, `PS384`,
+or `PS512`, the RSA key must be 2048 bits or larger (RFC 7518 §3.3). The
+plugin rejects a smaller key at startup instead of at every token exchange.
+There is no override for this check.
+
 **Example — inline PEM:**
 
 ```yaml

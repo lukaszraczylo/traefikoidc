@@ -163,6 +163,10 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
   `rateLimit` below 10, a missing `callbackURL`, or a non-HTTPS remote
   `providerURL` are rejected. Plaintext HTTP is permitted only for loopback
   hosts (local development).
+- **A `private_key_jwt` RSA key under 2048 bits now fails startup** instead
+  of signing locally and failing `invalid_client` at every token exchange
+  (RFC 7518 §3.3). Generate a 2048-bit-or-larger key before upgrading. No
+  override exists.
 
 ### TLS termination at a load balancer
 

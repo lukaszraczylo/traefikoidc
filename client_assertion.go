@@ -13,12 +13,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"os"
 	"time"
 )
+
+// ErrRSAKeyTooSmall is returned (wrapped) by validateAlgKeyMatch when a
+// private_key_jwt RS*/PS* signing key is smaller than the RFC 7518 §3.3
+// minimum of 2048 bits. A named sentinel lets callers detect this specific
+// rejection with errors.Is instead of matching the formatted message text
+// (FIX-42; see CHANGELOG.md).
+var ErrRSAKeyTooSmall = errors.New("RSA key too small for RS*/PS* signing (RFC 7518 §3.3 requires >= 2048 bits)")
 
 // isSupportedClientAssertionAlg reports whether alg is a recognized JWS
 // algorithm for private_key_jwt (RFC 7523 §2.2).
@@ -105,7 +113,7 @@ func validateAlgKeyMatch(alg string, key crypto.PrivateKey) error {
 		// invalid_client at runtime — better to fail at construction
 		// (R135).
 		if rsaKey.N.BitLen() < 2048 {
-			return fmt.Errorf("alg %q requires an RSA key of at least 2048 bits, got %d", alg, rsaKey.N.BitLen())
+			return fmt.Errorf("alg %q requires an RSA key of at least 2048 bits, got %d: %w", alg, rsaKey.N.BitLen(), ErrRSAKeyTooSmall)
 		}
 	case 'E': // ES*
 		ecKey, ok := key.(*ecdsa.PrivateKey)
