@@ -229,18 +229,30 @@ func (r *RedisBackend) SetNX(ctx context.Context, key string, value []byte, ttl 
 			return false, nil
 		}
 
-		if ctx.Err() != nil {
-			return false, ctx.Err()
-		}
-
 		if sent {
 			// The command reached the wire before reading its reply
 			// failed (timeout, EOF, connection reset): Redis may have
-			// applied it. Retrying here would see this call's own
-			// possible write and misreport a first-ever claim as
-			// already-claimed — surface the ambiguity instead of
-			// guessing.
+			// applied it. This is checked BEFORE ctx.Err() (FIX-17
+			// round-3): UniversalCache.setIfAbsentBackend gives SetNX a
+			// 500ms context, and the pool's read deadline on this same
+			// write is also 500ms, started strictly after the ctx
+			// deadline began ticking — so when a reply is lost, ctx has
+			// almost always already expired by the time this line runs.
+			// Checking ctx.Err() first therefore reported
+			// context.DeadlineExceeded for what is actually an ambiguous
+			// outcome, and checkAndMarkLogoutJTIProcessed does not
+			// special-case a plain deadline error: it fell through to the
+			// mutex-guarded Get+Set fallback, whose Get saw this call's
+			// own possible write and misreported a first-ever logout
+			// token as a replay. Retrying here (instead of returning) would
+			// see this call's own possible write and misreport a
+			// first-ever claim as already-claimed, same reasoning as
+			// above — surface the ambiguity instead of guessing.
 			return false, ErrSetNXAmbiguous
+		}
+
+		if ctx.Err() != nil {
+			return false, ctx.Err()
 		}
 
 		if attempt == maxRetries-1 || !isRetryableError(doErr) {
