@@ -77,7 +77,9 @@ func TestFix19_RegisterBackgroundTaskKeepsPendingTaskNoOrphan(t *testing.T) {
 	// every task registered on it, including unrelated singletons (e.g.
 	// memory-monitor, singleton-token-cleanup) that other tests in the same
 	// binary may have started and still expect running.
-	_ = rm.StopBackgroundTask(name)
+	if err := rm.StopBackgroundTask(name); err != nil {
+		t.Fatalf("StopBackgroundTask(%q): %v", name, err)
+	}
 
 	// Snapshot count1 right after the stop, then again after another window
 	// long enough for several more ticks. A well-stopped task's counter must
@@ -87,7 +89,7 @@ func TestFix19_RegisterBackgroundTaskKeepsPendingTaskNoOrphan(t *testing.T) {
 	final1 := atomic.LoadInt32(&count1)
 
 	if final1 != afterStop1 {
-		t.Fatalf("task wrapping count1 kept running after StopAllTasks (orphan escaped registry): %d -> %d", afterStop1, final1)
+		t.Fatalf("task wrapping count1 kept running after StopBackgroundTask (orphan escaped registry): %d -> %d", afterStop1, final1)
 	}
 	if afterStop1 == 0 {
 		t.Fatal("precondition: task wrapping count1 never ran at all")
