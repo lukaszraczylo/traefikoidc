@@ -61,16 +61,23 @@ func DefaultHTTPClientConfig() HTTPClientConfig {
 	}
 }
 
-// TokenHTTPClientConfig returns configuration optimized for token operations
+// TokenHTTPClientConfig returns configuration optimized for token operations.
 func TokenHTTPClientConfig() HTTPClientConfig {
 	config := DefaultHTTPClientConfig()
 	config.Timeout = 10 * time.Second // Shorter timeout for token operations
 	config.MaxRedirects = 50          // Token endpoints may redirect more
-	config.UseCookieJar = true        // Enable cookie jar for token operations
+	// UseCookieJar stays false (DefaultHTTPClientConfig's default). This
+	// config builds the single per-plugin-instance pooled token client
+	// (main.go, CreateTokenHTTPClient), shared by every user's token and
+	// refresh exchange. A jar on a shared client stores whatever
+	// Set-Cookie the IdP returns for one user's exchange and replays it on
+	// the next user's request to the same host - cross-user state
+	// confusion at the IdP (FIX-12; R70 had turned this on). Token/refresh
+	// calls are stateless back-channel requests and need no jar.
 	return config
 }
 
-// OIDCProviderHTTPClientConfig returns configuration optimized for OIDC provider calls
+// OIDCProviderHTTPClientConfig returns configuration optimized for OIDC provider calls.
 func OIDCProviderHTTPClientConfig() HTTPClientConfig {
 	config := DefaultHTTPClientConfig()
 	config.Timeout = 15 * time.Second         // Slightly longer for OIDC operations
@@ -78,7 +85,10 @@ func OIDCProviderHTTPClientConfig() HTTPClientConfig {
 	config.MaxIdleConnsPerHost = 25           // More connections per OIDC provider
 	config.MaxConnsPerHost = 50               // Allow more concurrent requests to OIDC provider
 	config.IdleConnTimeout = 90 * time.Second // Keep connections alive longer for reuse
-	config.UseCookieJar = true                // Enable cookie jar for session management
+	// UseCookieJar stays false, for the same cross-user reason as
+	// TokenHTTPClientConfig above (FIX-12): any client built from this
+	// config through the shared transport pool is one instance shared by
+	// every user, so a jar would leak cookies between them.
 	return config
 }
 
