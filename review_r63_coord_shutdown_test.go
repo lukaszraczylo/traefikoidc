@@ -2,6 +2,7 @@ package traefikoidc
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -52,6 +53,12 @@ func TestRefreshCoordinatorShutdownReleasesWaiterOnInflight(t *testing.T) {
 	case <-shutDone:
 	case <-time.After(1 * time.Second):
 		t.Fatal("Shutdown did not return promptly while a refresh was still in flight")
+	}
+
+	// R63/R154 wg tracking: Shutdown's wg.Wait must not return before the
+	// tracked executeRefreshAsync goroutine has recorded the aborted outcome.
+	if got := atomic.LoadInt32(&rc.circuitBreaker.failures); got != 1 {
+		t.Fatalf("Shutdown returned before the tracked refresh goroutine finished: circuit-breaker failures=%d, want 1", got)
 	}
 
 	select {

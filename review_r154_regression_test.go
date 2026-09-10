@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -148,6 +149,12 @@ func TestRefreshCoordinator_ShutdownWaitsForInFlight(t *testing.T) {
 		// the still-blocked refreshFunc.
 	case <-time.After(1 * time.Second):
 		t.Fatal("Shutdown did not return promptly while an in-flight refresh was still running")
+	}
+
+	// R63/R154 wg tracking: Shutdown's wg.Wait must not return before the
+	// tracked executeRefreshAsync goroutine has recorded the aborted outcome.
+	if got := atomic.LoadInt32(&rc.circuitBreaker.failures); got != 1 {
+		t.Fatalf("Shutdown returned before the tracked refresh goroutine finished: circuit-breaker failures=%d, want 1", got)
 	}
 
 	select {
