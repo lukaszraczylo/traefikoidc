@@ -137,6 +137,66 @@ func (r *RedisBackend) Set(ctx context.Context, key string, value []byte, ttl ti
 	})
 }
 
+// SetNX stores a value in Redis only if the key does not already exist,
+// atomically, using Redis SET key value NX PX <ttl-ms> — one server-side
+// command rather than a Get followed by a Set, so two callers racing the
+// same key (e.g. two Traefik replicas racing the same backchannel-logout
+// jti) can never both observe "absent". Backs UniversalCache.SetIfAbsent's
+// distributed case (FIX-17): CacheBackend has no such primitive, and
+// widening it would force every implementer to add an operation only this
+// one caller needs, so UniversalCache reaches this through an optional
+// interface type assertion instead.
+//
+// Returns (true, nil) when this call claimed the key, (false, nil) when the
+// key already existed (someone else claimed it first — not an error), and
+// (false, err) on a genuine backend failure.
+func (r *RedisBackend) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	if r.closed.Load() {
+		return false, ErrBackendClosed
+	}
+
+	// Mirrors Set's TTL convention: negative means "already expired", so
+	// there is nothing to claim.
+	prefixedKey := r.prefixKey(key)
+	if ttl < 0 {
+		return false, nil
+	}
+
+	var claimed bool
+	err := r.executeWithRetry(ctx, func(conn *RedisConn) error {
+		var resp interface{}
+		var doErr error
+		if ttl > 0 {
+			ttlMillis := ttl.Milliseconds()
+			if ttlMillis < 1 {
+				ttlMillis = 1
+			}
+			resp, doErr = conn.Do("SET", prefixedKey, string(value), "NX", "PX", fmt.Sprintf("%d", ttlMillis))
+		} else {
+			resp, doErr = conn.Do("SET", prefixedKey, string(value), "NX")
+		}
+		if doErr != nil {
+			if errors.Is(doErr, ErrNilResponse) {
+				// NX condition failed: the key already exists. A valid
+				// protocol outcome, not an error — the connection is
+				// healthy and nothing here should be retried.
+				claimed = false
+				return nil
+			}
+			return doErr
+		}
+		if _, strErr := RESPString(resp); strErr != nil {
+			return strErr
+		}
+		claimed = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return claimed, nil
+}
+
 // Get retrieves a value from Redis
 func (r *RedisBackend) Get(ctx context.Context, key string) ([]byte, time.Duration, bool, error) {
 	if r.closed.Load() {
