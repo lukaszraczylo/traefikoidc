@@ -23,11 +23,20 @@ import (
 // idempotent so calling it again after commit is a no-op, but a later
 // Write appends to the committed body - so writing "Internal Server
 // Error" after a handler has already produced a valid 200 (or a 302
-// redirect) corrupts the response. Flush/Hijack are forwarded so
-// downstream SSE and WebSocket handlers keep working through the wrapper.
+// redirect) corrupts the response.
+//
+// The wrapper itself is NEVER handed to t.next.ServeHTTP (see
+// downstreamWriter/FIX-06) -- next always gets the real writer ServeHTTP
+// received, so Flush/Hijack/Unwrap survive the yaegi interpreted->compiled
+// boundary. That means wroteHeader can only observe writes this
+// middleware's OWN code makes before forwarding; it says nothing about
+// whether the downstream handler committed a response after taking over.
+// calledNext records that handoff so the panic handler knows when
+// wroteHeader can no longer be trusted and must not guess.
 type trackingWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
+	calledNext  bool
 }
 
 func (w *trackingWriter) WriteHeader(code int) {
@@ -56,6 +65,33 @@ func (w *trackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 func (w *trackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// downstreamWriter returns the http.ResponseWriter to hand to the next
+// handler in the chain: rw itself, unless it is our own *trackingWriter, in
+// which case the writer it wraps (Unwrap()). Traefik plugins run
+// interpreted under yaegi v0.16.1, whose stdlib interop layer composes a
+// boundary wrapper only for ResponseWriter+Hijacker crossing into compiled
+// code, not for Flusher or Unwrap. So a compiled downstream (Traefik's
+// ReverseProxy calling http.NewResponseController(rw).Flush() for SSE)
+// handed the interpreted trackingWriter gets "feature not supported" in
+// production, even though trackingWriter declares Flush/Unwrap and native
+// tests (which never cross an interpreter boundary) pass. Every
+// t.next.ServeHTTP call site must use this instead of the local rw
+// (FIX-06).
+//
+// It also marks the trackingWriter's calledNext, whether the call site is
+// ServeHTTP itself or (via forwardAuthorized, reached through
+// processAuthorizedRequest/processAuthorizedRequestRS) a separate function
+// sharing the same *trackingWriter -- mutating the field through the
+// pointer makes the handoff visible back in ServeHTTP's deferred recover
+// regardless of which function actually calls next.
+func downstreamWriter(rw http.ResponseWriter) http.ResponseWriter {
+	if tw, ok := rw.(*trackingWriter); ok {
+		tw.calledNext = true
+		return tw.Unwrap()
+	}
+	return rw
+}
 
 // bypassReason describes why a request is being forwarded without OIDC auth.
 // It is only used for logging and to decide whether extra side-effects
@@ -323,10 +359,19 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// committed by a handler (200 + body or a redirect), WriteHeader is an
 	// idempotent no-op and appending the body would corrupt a valid
 	// response, so only write when nothing has been sent yet.
+	//
+	// Once t.next.ServeHTTP has been called (tw.calledNext), it received
+	// the real ResponseWriter, not tw (FIX-06) -- any write it makes
+	// bypasses wroteHeader entirely, so a false wroteHeader no longer
+	// proves nothing was sent. Writing the fallback 500 in that state
+	// risks appending to a response the downstream handler already
+	// committed, exactly the corruption this handler exists to prevent.
+	// Deliberately do not guess: skip the fallback once control has passed
+	// downstream.
 	defer func() {
 		if r := recover(); r != nil {
 			t.logger.Errorf("OIDC handler panic recovered: %v\n%s", r, debug.Stack())
-			if !tw.wroteHeader {
+			if !tw.wroteHeader && !tw.calledNext {
 				// A panic-induced 500 must not be cached (consistent with
 				// every other auth-failure response, R101/R172).
 				rw.Header().Set("Cache-Control", "no-store")
@@ -422,7 +467,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			// identity headers so X-Forwarded-User / X-User-Groups etc.
 			// on a public endpoint can't be trusted downstream (R102).
 			stripIdentityHeaders(req)
-			t.next.ServeHTTP(rw, req)
+			t.next.ServeHTTP(downstreamWriter(rw), req)
 		case bypassReasonSSE, bypassReasonWebSocket:
 			// Skip the OIDC redirect dance (clients can't follow it
 			// mid-stream) but still require an authenticated session.
@@ -437,14 +482,14 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				t.sendErrorResponse(rw, req, msg, status)
 				return
 			}
-			t.next.ServeHTTP(rw, req)
+			t.next.ServeHTTP(downstreamWriter(rw), req)
 		case bypassReasonOptions:
 			// CORS preflight: forward unconditionally (no session needed)
 			// so the backend can answer with CORS headers.
 			stripIdentityHeaders(req)
-			t.next.ServeHTTP(rw, req)
+			t.next.ServeHTTP(downstreamWriter(rw), req)
 		default:
-			t.next.ServeHTTP(rw, req)
+			t.next.ServeHTTP(downstreamWriter(rw), req)
 		}
 		return
 	}
@@ -1282,5 +1327,5 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 
 	t.logger.Debugf("Request authorized for user %s (source=%d), forwarding to next handler", p.Identifier, p.Source)
 
-	t.next.ServeHTTP(rw, req)
+	t.next.ServeHTTP(downstreamWriter(rw), req)
 }
