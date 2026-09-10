@@ -296,10 +296,23 @@ type RedisConn struct {
 	mu           sync.Mutex
 }
 
-// Do executes a Redis command and returns the response
+// Do executes a Redis command and returns the response.
 func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
+	resp, _, err := c.doTracked(command, args...)
+	return resp, err
+}
+
+// doTracked is Do's implementation. It additionally reports whether the
+// command was already written to the connection when it failed: SetNX uses
+// this to tell "definitely not applied" (the write itself failed) from
+// "outcome unknown, may have applied" (the write succeeded but reading the
+// reply failed). SET NX is not safe to retry blindly the way Set's
+// idempotent SETEX/PSETEX is — a retried SET NX after a lost reply sees its
+// own possible write and reports "already claimed" for what may have been a
+// first-ever claim (FIX-17 round-2).
+func (c *RedisConn) doTracked(command string, args ...string) (interface{}, bool, error) {
 	if c.closed.Load() {
-		return nil, ErrBackendClosed
+		return nil, false, ErrBackendClosed
 	}
 
 	c.mu.Lock()
@@ -309,7 +322,7 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	// maxSafeArgs is set to (1<<20)-1 = 1,048,575 which is more than any reasonable Redis command
 	const maxSafeArgs = (1 << 20) - 1
 	if len(args) > maxSafeArgs {
-		return nil, errors.New("too many arguments: exceeds maximum safe count")
+		return nil, false, errors.New("too many arguments: exceeds maximum safe count")
 	}
 
 	// Build command arguments
@@ -319,11 +332,11 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	for _, s := range args {
 		// Protect against possible overflow
 		if len(s) > maxTotalArgBytes-totalBytes {
-			return nil, errors.New("arguments too large (would overflow maximum allowed total size)")
+			return nil, false, errors.New("arguments too large (would overflow maximum allowed total size)")
 		}
 		totalBytes += len(s)
 		if totalBytes > maxTotalArgBytes {
-			return nil, errors.New("total argument size exceeds maximum allowed")
+			return nil, false, errors.New("total argument size exceeds maximum allowed")
 		}
 	}
 	// Build command slice: prepend command to args
@@ -341,7 +354,7 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	writer.Release() // Return to pool immediately after use
 	if err != nil {
 		c.closed.Store(true)
-		return nil, err
+		return nil, false, err
 	}
 
 	// Set read timeout
@@ -359,10 +372,12 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 		if !errors.Is(err, ErrNilResponse) && !errors.Is(err, ErrCommandReply) {
 			c.closed.Store(true)
 		}
-		return nil, err
+		// The write above already succeeded, so the command reached the
+		// wire even though its reply did not come back.
+		return nil, true, err
 	}
 
-	return resp, nil
+	return resp, true, nil
 }
 
 // Close closes the connection

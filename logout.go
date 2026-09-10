@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lukaszraczylo/traefikoidc/internal/cache/backends"
 )
 
 // backchannelLogoutJTIMu serializes the FALLBACK check-and-set inside
@@ -22,12 +24,16 @@ import (
 // a process-local check when its distributed backend does not implement
 // the atomic SetNX primitive (FIX-17 round-2; this closed the gap where a
 // Redis backend wrapped by the circuit-breaker or health-check decorator
-// made every SetIfAbsent call silently local-only). It guards against two
-// logout tokens sharing a jti (retried delivery, or a captured token
-// replayed by an attacker) both observing "not yet processed" within THIS
-// PROCESS. This mutex is process-local: it does not coordinate across
-// Traefik replicas — so this fallback path itself gives only a
-// per-process guarantee, same as before FIX-17.
+// made every SetIfAbsent call silently local-only). One SetIfAbsent error
+// does NOT fall through to this mutex: backends.ErrSetNXAmbiguous (a lost
+// SET NX reply — the write may have already reached the shared backend) is
+// accepted outright instead, because this fallback's Get could otherwise
+// see that same call's own possible write and misreport a first-ever token
+// as a replay. It guards against two logout tokens sharing a jti (retried
+// delivery, or a captured token replayed by an attacker) both observing
+// "not yet processed" within THIS PROCESS. This mutex is process-local: it
+// does not coordinate across Traefik replicas — so this fallback path
+// itself gives only a per-process guarantee, same as before FIX-17.
 // The primary path (a cache that implements AtomicSetIfAbsentCache, which
 // CacheInterfaceWrapper — what sessionInvalidationCache actually is at
 // runtime — does, and whose SetIfAbsent call succeeds) does not use this
@@ -342,6 +348,20 @@ func (t *TraefikOidc) checkAndMarkLogoutJTIProcessed(jti string, issuedAt int64)
 			if !claimed {
 				return fmt.Errorf("logout token replay: jti %s already processed", jti)
 			}
+			return nil
+		}
+		if err == backends.ErrSetNXAmbiguous {
+			// The distributed SET NX write reached Redis but its reply was
+			// lost, so we don't know whether THIS call claimed the key
+			// (FIX-17 round-2). Falling through to the Get below would be
+			// wrong either way it turns out: if the write applied, Get
+			// finds our own key and misreports this first-ever token as a
+			// replay; treating an ambiguous outcome as a hard failure would
+			// also needlessly reject a valid token on a lost TCP ACK.
+			// Accept it — a genuine second delivery of the same jti is
+			// still caught by the next call once the ambiguity is over,
+			// same as any other momentary cache hiccup a replay check must
+			// tolerate.
 			return nil
 		}
 		// SetIfAbsent already logged the backend failure itself. Fall

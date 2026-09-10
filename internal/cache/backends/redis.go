@@ -148,8 +148,18 @@ func (r *RedisBackend) Set(ctx context.Context, key string, value []byte, ttl ti
 // interface type assertion instead.
 //
 // Returns (true, nil) when this call claimed the key, (false, nil) when the
-// key already existed (someone else claimed it first — not an error), and
-// (false, err) on a genuine backend failure.
+// key already existed (someone else claimed it first — not an error),
+// (false, ErrSetNXAmbiguous) when the command reached the wire but its
+// reply could not be read — Redis may or may not have applied it — and
+// (false, err) on any other genuine backend failure.
+//
+// SetNX runs its own retry loop rather than executeWithRetry (FIX-17
+// round-2): Set's SETEX/PSETEX are idempotent, so retrying one after a lost
+// reply just repeats the same unconditional write. SET NX is not — retrying
+// it after a lost reply would see this call's OWN possible write and
+// misreport a first-ever claim as already-claimed. So SetNX retries a
+// failed connection acquisition (nothing was sent yet, safe to retry) but
+// never re-sends SET NX once doTracked reports the command was written.
 func (r *RedisBackend) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
 	if r.closed.Load() {
 		return false, ErrBackendClosed
@@ -162,39 +172,91 @@ func (r *RedisBackend) SetNX(ctx context.Context, key string, value []byte, ttl 
 		return false, nil
 	}
 
-	var claimed bool
-	err := r.executeWithRetry(ctx, func(conn *RedisConn) error {
-		var resp interface{}
-		var doErr error
-		if ttl > 0 {
-			ttlMillis := ttl.Milliseconds()
-			if ttlMillis < 1 {
-				ttlMillis = 1
-			}
-			resp, doErr = conn.Do("SET", prefixedKey, string(value), "NX", "PX", fmt.Sprintf("%d", ttlMillis))
-		} else {
-			resp, doErr = conn.Do("SET", prefixedKey, string(value), "NX")
+	var args []string
+	if ttl > 0 {
+		ttlMillis := ttl.Milliseconds()
+		if ttlMillis < 1 {
+			ttlMillis = 1
 		}
-		if doErr != nil {
-			if errors.Is(doErr, ErrNilResponse) {
-				// NX condition failed: the key already exists. A valid
-				// protocol outcome, not an error — the connection is
-				// healthy and nothing here should be retried.
-				claimed = false
-				return nil
-			}
-			return doErr
-		}
-		if _, strErr := RESPString(resp); strErr != nil {
-			return strErr
-		}
-		claimed = true
-		return nil
-	})
-	if err != nil {
-		return false, err
+		args = []string{prefixedKey, string(value), "NX", "PX", fmt.Sprintf("%d", ttlMillis)}
+	} else {
+		args = []string{prefixedKey, string(value), "NX"}
 	}
-	return claimed, nil
+
+	maxRetries := 3
+	baseDelay := 50 * time.Millisecond
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+
+		conn, err := r.pool.Get(ctx)
+		if err != nil {
+			if attempt == maxRetries-1 {
+				return false, fmt.Errorf("failed to get connection after %d attempts: %w", maxRetries, err)
+			}
+			delay := baseDelay * time.Duration(1<<uint(attempt))
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(delay):
+				continue
+			}
+		}
+
+		var (
+			resp  interface{}
+			sent  bool
+			doErr error
+		)
+		func() {
+			defer func() { r.pool.Put(conn) }()
+			resp, sent, doErr = conn.doTracked("SET", args...)
+		}()
+
+		if doErr == nil {
+			if _, strErr := RESPString(resp); strErr != nil {
+				return false, strErr
+			}
+			return true, nil
+		}
+
+		if errors.Is(doErr, ErrNilResponse) {
+			// NX condition failed: the key already existed before this
+			// call. A valid protocol outcome, not an error — the
+			// connection is healthy and nothing here should be retried.
+			return false, nil
+		}
+
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+
+		if sent {
+			// The command reached the wire before reading its reply
+			// failed (timeout, EOF, connection reset): Redis may have
+			// applied it. Retrying here would see this call's own
+			// possible write and misreport a first-ever claim as
+			// already-claimed — surface the ambiguity instead of
+			// guessing.
+			return false, ErrSetNXAmbiguous
+		}
+
+		if attempt == maxRetries-1 || !isRetryableError(doErr) {
+			return false, doErr
+		}
+
+		delay := baseDelay * time.Duration(1<<uint(attempt))
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(delay):
+			continue
+		}
+	}
+
+	return false, fmt.Errorf("operation failed after %d attempts", maxRetries)
 }
 
 // Get retrieves a value from Redis
