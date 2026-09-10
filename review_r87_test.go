@@ -31,18 +31,15 @@ func newR87LogoutHarness(t *testing.T) *r87LogoutHarness {
 	}
 	x := base64.RawURLEncoding.EncodeToString(priv.PublicKey.X.Bytes())
 	y := base64.RawURLEncoding.EncodeToString(priv.PublicKey.Y.Bytes())
-	oidc := &TraefikOidc{
-		logger:                   NewLogger("error"),
-		enableBackchannelLogout:  true,
-		backchannelLogoutPath:    "/backchannel-logout",
-		sessionInvalidationCache: &mockCacheInterface{data: map[string]interface{}{}},
-		clientID:                 "test-client",
-		issuerURL:                "https://provider.example.com",
-		jwkCache: &staticJWKCache{jwks: &JWKSet{Keys: []JWK{{
+	oidc := newTestOIDC(t, func(o *TraefikOidc) {
+		o.enableBackchannelLogout = true
+		o.backchannelLogoutPath = "/backchannel-logout"
+		o.sessionInvalidationCache = &mockCacheInterface{data: map[string]interface{}{}}
+		o.jwkCache = &staticJWKCache{jwks: &JWKSet{Keys: []JWK{{
 			Kty: "EC", Crv: "P-256", X: x, Y: y, Kid: "test-key-1", Use: "sig", Alg: "ES256",
-		}}}},
-		jwksURL: "https://provider.example.com/.well-known/jwks.json",
-	}
+		}}}}
+		o.jwksURL = "https://provider.example.com/.well-known/jwks.json"
+	})
 	tok := func(claims map[string]interface{}) string {
 		h, _ := json.Marshal(map[string]interface{}{"alg": "ES256", "typ": "logout+jwt", "kid": "test-key-1"})
 		hb := base64.RawURLEncoding.EncodeToString(h)

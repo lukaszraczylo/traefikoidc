@@ -120,29 +120,18 @@ func TestBackchannelLogout_RejectsReplayedJTI(t *testing.T) {
 // answer 401 like the sibling branches so sub-resource loads to not
 // overwrite the in-flight session's CSRF/nonce.
 func TestServeHTTP_ExpiredAjaxReturns401(t *testing.T) {
-	sessionManager := createTestSessionManager(t)
-	oidc := &TraefikOidc{
-		next:                         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
-		logger:                       NewLogger("error"),
-		initComplete:                 make(chan struct{}),
-		sessionManager:               sessionManager,
-		firstRequestStarted:          1,
-		metadataRefreshStartedAtomic: 1,
-		issuerURL:                    "https://provider.example.com",
-		redirURLPath:                 "/callback",
-		logoutURLPath:                "/logout",
-		clientID:                     "test-client",
-		audience:                     "test-client",
+	oidc := newTestOIDC(t, func(o *TraefikOidc) {
+		o.logoutURLPath = "/logout"
+		o.audience = "test-client"
 		// Access-token verification reports "token has expired" and the
 		// session has no refresh or ID token -> isUserAuthenticatedRS sets
 		// expired=true, reaching the branch under test.
-		tokenVerifier: &EnhancedMockTokenVerifier{VerifyFunc: func(token string) error { return errors.New("token has expired") }},
-	}
-	close(oidc.initComplete)
+		o.tokenVerifier = &EnhancedMockTokenVerifier{VerifyFunc: func(token string) error { return errors.New("token has expired") }}
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	session, err := sessionManager.GetSession(req)
+	session, err := oidc.sessionManager.GetSession(req)
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}

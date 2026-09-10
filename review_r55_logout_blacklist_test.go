@@ -15,26 +15,22 @@ import (
 func TestLogoutBlacklistsSessionTokens(t *testing.T) {
 	require := require.New(t)
 
-	logger := NewLogger("info")
-	sessionManager, _ := NewSessionManager("test-secret-key-that-is-at-least-32-bytes", false, "", "", 0, logger)
-	tOidc := &TraefikOidc{
-		endSessionURL:  "", // no provider end-session -> local redirect path
-		logger:         logger,
-		tokenBlacklist: NewCache(), // generic cache used as the blacklist
-		httpClient:     &http.Client{},
-		clientID:       "test-client-id",
-		audience:       "test-client-id",
-		clientSecret:   "test-client-secret",
-		tokenCache:     NewTokenCache(),
-		forceHTTPS:     false,
-		sessionManager: sessionManager,
-	}
+	tOidc := newTestOIDC(t, func(o *TraefikOidc) {
+		o.endSessionURL = ""          // no provider end-session -> local redirect path
+		o.tokenBlacklist = NewCache() // generic cache used as the blacklist
+		o.httpClient = &http.Client{}
+		o.clientID = "test-client-id"
+		o.audience = "test-client-id"
+		o.clientSecret = "test-client-secret"
+		o.tokenCache = NewTokenCache()
+		o.forceHTTPS = false
+	})
 
 	req := httptest.NewRequest("GET", "/logout", nil)
 	req.Header.Set("Host", "test-host")
 	rr := httptest.NewRecorder()
 
-	session, err := sessionManager.GetSession(req)
+	session, err := tOidc.sessionManager.GetSession(req)
 	require.NoError(err)
 	session.SetAuthenticated(true)
 	session.SetAccessToken(ValidAccessToken)

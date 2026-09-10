@@ -59,19 +59,6 @@ func TestBearerIntrospection_ExpiredActiveRejected(t *testing.T) {
 	}
 }
 
-type stubIntrospectionCache struct{ v *IntrospectionResponse }
-
-func (s *stubIntrospectionCache) Set(key string, value any, ttl time.Duration) {}
-func (s *stubIntrospectionCache) Get(key string) (any, bool) {
-	if s.v != nil {
-		return s.v, true
-	}
-	return nil, false
-}
-func (s *stubIntrospectionCache) Delete(key string)        {}
-func (s *stubIntrospectionCache) SetMaxSize(size int)      {}
-func (s *stubIntrospectionCache) Size() int                { return 0 }
-func (s *stubIntrospectionCache) Clear()                   {}
-func (s *stubIntrospectionCache) Cleanup()                 {}
-func (s *stubIntrospectionCache) Close()                   {}
-func (s *stubIntrospectionCache) GetStats() map[string]any { return nil }
+// stubIntrospectionCache moved to newtestoidc_test.go (FIX-41): it is also
+// used by review_r143_test.go and review_r149_test.go, so declaring it in
+// one round file made those a hidden cross-file dependency on this one.
