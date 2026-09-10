@@ -1183,11 +1183,15 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 			// Bound the raw ID token to the same header budget as rendered
 			// template values so a large token can't push this (and every
 			// other header on the request) past nginx/traefik 431 limits.
-			idTokenHeader := p.IDToken
-			if len(idTokenHeader) > headerTemplateMaxLen {
-				idTokenHeader = idTokenHeader[:headerTemplateMaxLen]
+			// A truncated JWT is structurally invalid, so drop the header
+			// instead of forwarding a corrupted value (fail-closed, matching
+			// the X-Forwarded-User / X-Auth-Request-User pattern above;
+			// FIX-34).
+			if len(p.IDToken) > headerTemplateMaxLen {
+				t.logger.Debugf("Dropping X-Auth-Request-Token header: ID token length %d exceeds %d", len(p.IDToken), headerTemplateMaxLen)
+			} else {
+				req.Header.Set("X-Auth-Request-Token", p.IDToken)
 			}
-			req.Header.Set("X-Auth-Request-Token", idTokenHeader)
 		}
 	}
 

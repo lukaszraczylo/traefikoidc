@@ -115,14 +115,17 @@ func validInflatedIDToken(t *testing.T, fieldBytes int) string {
 	return hdr + "." + payload + "." + sig
 }
 
-// TestR155_XAuthRequestToken_CappedAtHeaderBudget guards the
-// X-Auth-Request-Token length cap (middleware.go). The header set the
-// raw ID token with no bound, unlike every other header on the request,
-// letting a large token push the request past 431 limits. The fix caps
-// it at headerTemplateMaxLen (8192) like rendered template values.
-// Fail-on-old: the full (uncapped) ID token is set, so the header is
-// longer than 8192.
-func TestR155_XAuthRequestToken_CappedAtHeaderBudget(t *testing.T) {
+// TestR155_XAuthRequestToken_DroppedWhenOverHeaderBudget guards the
+// X-Auth-Request-Token length bound (middleware.go). The header originally
+// set the raw ID token with no bound, unlike every other header on the
+// request, letting a large token push the request past 431 limits. R155
+// capped it at headerTemplateMaxLen (8192) like rendered template values,
+// but a truncated JWT is structurally invalid, so FIX-34 drops the header
+// instead of forwarding a corrupted value (fail-closed, matching the
+// X-Forwarded-User / X-Auth-Request-User pattern in the same function).
+// Fail-on-old (pre-FIX-34): the header is present, truncated to exactly
+// headerTemplateMaxLen bytes.
+func TestR155_XAuthRequestToken_DroppedWhenOverHeaderBudget(t *testing.T) {
 	oidc := newR154TestPlugin(t)
 	// Ensure claim extraction returns a parseable map despite the large
 	// synthetic token, so the roles/header pipeline proceeds.
@@ -157,10 +160,7 @@ func TestR155_XAuthRequestToken_CappedAtHeaderBudget(t *testing.T) {
 	oidc.processAuthorizedRequest(httptest.NewRecorder(), req, session, "https://example.com/callback")
 
 	h := captured.Get("X-Auth-Request-Token")
-	if len(h) != headerTemplateMaxLen {
-		t.Errorf("X-Auth-Request-Token must be capped at headerTemplateMaxLen, got len %d", len(h))
-	}
-	if !strings.HasPrefix(full, h) {
-		t.Errorf("capped header must be a prefix of the ID token")
+	if h != "" {
+		t.Errorf("X-Auth-Request-Token must be dropped (not truncated) when the ID token exceeds headerTemplateMaxLen, got len %d", len(h))
 	}
 }
