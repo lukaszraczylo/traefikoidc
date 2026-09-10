@@ -150,8 +150,11 @@ func (r *RedisBackend) Set(ctx context.Context, key string, value []byte, ttl ti
 // Returns (true, nil) when this call claimed the key, (false, nil) when the
 // key already existed (someone else claimed it first — not an error),
 // (false, ErrSetNXAmbiguous) when the command reached the wire but its
-// reply could not be read — Redis may or may not have applied it — and
-// (false, err) on any other genuine backend failure.
+// reply could not be read at all (timeout, EOF, connection reset) — Redis
+// may or may not have applied it — and (false, err) on any other genuine
+// backend failure, INCLUDING a definitive RESP '-' command-error reply
+// (-READONLY, -OOM, -MISCONF, ...): that proves Redis read and rejected the
+// command, so it is never ambiguous (R4 cache review).
 //
 // SetNX runs its own retry loop rather than executeWithRetry (FIX-17
 // round-2): Set's SETEX/PSETEX are idempotent, so retrying one after a lost
@@ -227,6 +230,20 @@ func (r *RedisBackend) SetNX(ctx context.Context, key string, value []byte, ttl 
 			// call. A valid protocol outcome, not an error — the
 			// connection is healthy and nothing here should be retried.
 			return false, nil
+		}
+
+		if errors.Is(doErr, ErrCommandReply) {
+			// A RESP '-' reply (e.g. -READONLY, -OOM, -MISCONF) proves
+			// Redis read the command and refused it — unlike a lost reply,
+			// this is a DEFINITIVE outcome: the SET NX was never applied.
+			// Reporting it as ErrSetNXAmbiguous would make
+			// checkAndMarkLogoutJTIProcessed accept the caller's claim
+			// outright (the ambiguous branch exists precisely to avoid a
+			// false replay report for a write that may have landed), which
+			// here would let a captured logout token replay forever while
+			// Redis rejects writes. Surface it as a plain error instead, so
+			// the caller falls through to its own local fallback.
+			return false, doErr
 		}
 
 		if sent {
