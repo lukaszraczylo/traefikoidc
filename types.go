@@ -203,6 +203,10 @@ type TraefikOidc struct {
 	enableFrontchannelLogout  bool
 	requireTokenIntrospection bool
 	allowPrivateIPAddresses   bool
+	// allowUnauthenticatedPreflight mirrors Config.AllowUnauthenticatedPreflight
+	// (default false): gates whether shouldBypassAuth's genuine-preflight
+	// check (middleware.go) bypasses OIDC auth at all.
+	allowUnauthenticatedPreflight bool
 	// allowLoopbackHosts permits loopback/localhost hosts in outbound URL
 	// validation (validateHost). Derived at construction time from a loopback
 	// providerURL (local development), never operator-set directly. Mirrors

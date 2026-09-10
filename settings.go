@@ -86,21 +86,31 @@ type Config struct {
 	// link-local sources (reverse proxies, in-cluster callers) are trusted
 	// and never throttled. Value = max auth events per minute per external
 	// source; 0 disables. See per_source_ratelimit.go (R185).
-	PerSourceLoginRateLimit   int    `json:"perSourceLoginRateLimit,omitempty"`
-	OverrideScopes            bool   `json:"overrideScopes"`
-	DisableReplayDetection    bool   `json:"disableReplayDetection,omitempty"`
-	RequireTokenIntrospection bool   `json:"requireTokenIntrospection,omitempty"`
-	AllowOpaqueTokens         bool   `json:"allowOpaqueTokens,omitempty"`
-	StrictAudienceValidation  bool   `json:"strictAudienceValidation,omitempty"`
-	EnablePKCE                bool   `json:"enablePKCE"`
-	ForceHTTPS                bool   `json:"forceHTTPS"`
-	AllowPrivateIPAddresses   bool   `json:"allowPrivateIPAddresses,omitempty"`
-	MinimalHeaders            bool   `json:"minimalHeaders,omitempty"`
-	StripAuthCookies          bool   `json:"stripAuthCookies,omitempty"`
-	EnableBackchannelLogout   bool   `json:"enableBackchannelLogout,omitempty"`
-	EnableFrontchannelLogout  bool   `json:"enableFrontchannelLogout,omitempty"`
-	BackchannelLogoutURL      string `json:"backchannelLogoutURL,omitempty"`
-	FrontchannelLogoutURL     string `json:"frontchannelLogoutURL,omitempty"`
+	PerSourceLoginRateLimit   int  `json:"perSourceLoginRateLimit,omitempty"`
+	OverrideScopes            bool `json:"overrideScopes"`
+	DisableReplayDetection    bool `json:"disableReplayDetection,omitempty"`
+	RequireTokenIntrospection bool `json:"requireTokenIntrospection,omitempty"`
+	AllowOpaqueTokens         bool `json:"allowOpaqueTokens,omitempty"`
+	StrictAudienceValidation  bool `json:"strictAudienceValidation,omitempty"`
+	EnablePKCE                bool `json:"enablePKCE"`
+	ForceHTTPS                bool `json:"forceHTTPS"`
+	AllowPrivateIPAddresses   bool `json:"allowPrivateIPAddresses,omitempty"`
+	// AllowUnauthenticatedPreflight restores the pre-FIX-02 CORS preflight
+	// bypass: when true, a genuine preflight (OPTIONS carrying both Origin
+	// and Access-Control-Request-Method) is forwarded to the backend without
+	// a session check, with its response body discarded
+	// (optionsPreflightWriter, middleware.go) so a forged preflight still
+	// cannot read a protected resource's body. Default false: the released
+	// behavior requires authentication for every OPTIONS request, preflight
+	// or not, like any other method. Enable only if your backend itself
+	// answers CORS preflights and must see them unauthenticated.
+	AllowUnauthenticatedPreflight bool   `json:"allowUnauthenticatedPreflight,omitempty"`
+	MinimalHeaders                bool   `json:"minimalHeaders,omitempty"`
+	StripAuthCookies              bool   `json:"stripAuthCookies,omitempty"`
+	EnableBackchannelLogout       bool   `json:"enableBackchannelLogout,omitempty"`
+	EnableFrontchannelLogout      bool   `json:"enableFrontchannelLogout,omitempty"`
+	BackchannelLogoutURL          string `json:"backchannelLogoutURL,omitempty"`
+	FrontchannelLogoutURL         string `json:"frontchannelLogoutURL,omitempty"`
 	// CACertPath is an optional filesystem path to a PEM-encoded CA bundle used
 	// to verify the OIDC provider's TLS certificate. Use this when the provider
 	// is signed by an internal/private CA that is not in the system trust store.
