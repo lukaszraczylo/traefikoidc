@@ -104,12 +104,13 @@ func downstreamWriter(rw http.ResponseWriter) http.ResponseWriter {
 }
 
 // optionsPreflightWriter wraps the real http.ResponseWriter for the
-// bypassReasonOptions forwarding path. shouldBypassAuth treats any OPTIONS
-// request carrying both Origin and Access-Control-Request-Method as a CORS
-// preflight and forwards it to next WITHOUT a session check -- necessary for
-// a real browser preflight, which carries no session cookie. But any
-// non-browser client can set those same two headers itself, so this only
-// rules out an accidental bare OPTIONS, not a deliberate attacker (FIX-02).
+// bypassReasonOptions forwarding path. When AllowUnauthenticatedPreflight is
+// enabled, shouldBypassAuth treats any OPTIONS request carrying both Origin
+// and Access-Control-Request-Method as a CORS preflight and forwards it to
+// next WITHOUT a session check -- necessary for a real browser preflight,
+// which carries no session cookie. But any non-browser client can set those
+// same two headers itself, so this only rules out an accidental bare
+// OPTIONS, not a deliberate attacker (FIX-02).
 // Wrapping the writer so next can set status and headers (answering real
 // CORS headers) but never emit a body closes that gap: a browser discards a
 // preflight response body anyway, so this is unobservable to a genuine
@@ -181,19 +182,28 @@ func (t *TraefikOidc) shouldBypassAuth(req *http.Request) (bool, string) {
 	if t.determineExcludedURL(req.URL.Path) {
 		return true, bypassReasonExcluded
 	}
-	// CORS preflights carry no session cookie and must reach the backend so
-	// it can answer with Access-Control-Allow-*. Otherwise the 401 here
-	// (with no ACAO headers, since the security applier only runs on the
-	// authenticated path) makes the browser block the cross-origin
-	// request entirely and the real request never proceeds (R124).
+	// The released behavior requires authentication for every OPTIONS
+	// request, preflight or not, like any other method: a 401 with no
+	// Access-Control-Allow-* headers makes the browser block the
+	// cross-origin request, which is the correct outcome for a protected
+	// resource the caller hasn't authenticated to yet. R124 bypassed OPTIONS
+	// unconditionally to unbreak CORS for backends that answer their own
+	// preflights; FIX-02 found that bypass matched on the method alone,
+	// forwarding ANY unauthenticated "OPTIONS <protected-path>" with no
+	// session check. Restoring the released default here (bypass off)
+	// closes that gap directly. AllowUnauthenticatedPreflight (default
+	// false) is the opt-in for deployments that still need the R124
+	// behavior for a backend that must see its own preflights.
 	//
 	// A genuine preflight (RFC "Fetch" CORS protocol) always carries BOTH
 	// an Origin header and an Access-Control-Request-Method header - the
 	// browser sends no other OPTIONS request shaped like this. Gating on
-	// the method alone bypassed auth for ANY unauthenticated
-	// "OPTIONS <protected-path>", forwarding it to the backend with no
-	// session check (FIX-02).
-	if req.Method == http.MethodOptions &&
+	// the method alone (the pre-FIX-02 shape) is why the opt-in also
+	// requires both headers, not method alone: even with the flag on this
+	// only rules out an accidental bare OPTIONS, not a deliberate attacker
+	// (see optionsPreflightWriter below).
+	if t.allowUnauthenticatedPreflight &&
+		req.Method == http.MethodOptions &&
 		req.Header.Get("Origin") != "" &&
 		req.Header.Get("Access-Control-Request-Method") != "" {
 		return true, bypassReasonOptions
@@ -537,15 +547,16 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			}
 			t.next.ServeHTTP(downstreamWriter(rw), req)
 		case bypassReasonOptions:
-			// CORS preflight: forward unconditionally (no session needed)
-			// so the backend can answer with CORS headers. Origin +
-			// Access-Control-Request-Method only rule out an accidental
-			// bare OPTIONS, not a deliberate attacker -- any non-browser
-			// client can set both itself -- so next must not be able to
-			// leak a protected resource's body on this unauthenticated
-			// path (FIX-02). optionsPreflightWriter forwards status and
-			// headers but discards the body; a browser never reads a
-			// preflight body, so real CORS answers keep working.
+			// Only reached when AllowUnauthenticatedPreflight is true
+			// (shouldBypassAuth gates it): forward the CORS preflight
+			// unconditionally (no session needed) so the backend can answer
+			// with CORS headers. Origin + Access-Control-Request-Method only
+			// rule out an accidental bare OPTIONS, not a deliberate attacker
+			// -- any non-browser client can set both itself -- so next must
+			// not be able to leak a protected resource's body on this
+			// unauthenticated path (FIX-02). optionsPreflightWriter forwards
+			// status and headers but discards the body; a browser never
+			// reads a preflight body, so real CORS answers keep working.
 			stripIdentityHeaders(req)
 			t.next.ServeHTTP(&optionsPreflightWriter{ResponseWriter: downstreamWriter(rw)}, req)
 		default:

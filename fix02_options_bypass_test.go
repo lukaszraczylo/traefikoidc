@@ -16,6 +16,16 @@ package traefikoidc
 // can set both headers itself. bypassReasonOptions still forwarded to next
 // with no session check, so a forged preflight against http.FileServer
 // still returned the protected file's body.
+//
+// A later maintainer decision (the AllowUnauthenticatedPreflight config
+// option, settings.go) restored the released default: every OPTIONS request
+// -- genuine preflight or not -- needs auth unless the operator opts in.
+// Every test below that exercises the bypass path (positive or negative)
+// sets allowUnauthenticatedPreflight: true so it keeps testing the
+// Origin+Access-Control-Request-Method gate itself rather than the flag
+// gate placed in front of it. The default-off case is pinned separately by
+// TestServeHTTP_DefaultConfigGenuinePreflightRequiresAuth in
+// fix02b_allow_unauthenticated_preflight_test.go.
 
 import (
 	"net/http"
@@ -32,7 +42,7 @@ import (
 // Access-Control-Request-Method is not a CORS preflight and must go
 // through the normal auth pipeline like any other method.
 func TestShouldBypassAuth_BareOptionsDoesNotBypass(t *testing.T) {
-	tObj := &TraefikOidc{logger: GetSingletonNoOpLogger()}
+	tObj := &TraefikOidc{logger: GetSingletonNoOpLogger(), allowUnauthenticatedPreflight: true}
 	req := httptest.NewRequest(http.MethodOptions, "/api/resource", nil)
 
 	if bypass, reason := tObj.shouldBypassAuth(req); bypass {
@@ -44,7 +54,7 @@ func TestShouldBypassAuth_BareOptionsDoesNotBypass(t *testing.T) {
 // case: Origin alone (e.g. a plain cross-origin GET, not a preflight) must
 // not bypass either -- both headers are required.
 func TestShouldBypassAuth_OptionsWithOnlyOriginDoesNotBypass(t *testing.T) {
-	tObj := &TraefikOidc{logger: GetSingletonNoOpLogger()}
+	tObj := &TraefikOidc{logger: GetSingletonNoOpLogger(), allowUnauthenticatedPreflight: true}
 	req := httptest.NewRequest(http.MethodOptions, "/api/resource", nil)
 	req.Header.Set("Origin", "https://app.example.com")
 
@@ -57,7 +67,7 @@ func TestShouldBypassAuth_OptionsWithOnlyOriginDoesNotBypass(t *testing.T) {
 // real CORS preflight (Origin + Access-Control-Request-Method) must still
 // bypass auth, so a browser's actual preflight keeps working.
 func TestShouldBypassAuth_GenuinePreflightBypasses(t *testing.T) {
-	tObj := &TraefikOidc{logger: GetSingletonNoOpLogger()}
+	tObj := &TraefikOidc{logger: GetSingletonNoOpLogger(), allowUnauthenticatedPreflight: true}
 	req := httptest.NewRequest(http.MethodOptions, "/api/resource", nil)
 	req.Header.Set("Origin", "https://app.example.com")
 	req.Header.Set("Access-Control-Request-Method", "GET")
@@ -94,16 +104,17 @@ func TestServeHTTP_UnauthenticatedBareOptionsDoesNotReachBackend(t *testing.T) {
 	close(initComplete)
 
 	tObj := &TraefikOidc{
-		logger:         GetSingletonNoOpLogger(),
-		name:           "test",
-		next:           next,
-		sessionManager: sm,
-		redirURLPath:   "/callback",
-		authURL:        "https://idp.example.com/authorize",
-		issuerURL:      "https://idp.example.com",
-		clientID:       "test-client-id",
-		scopes:         []string{"openid"},
-		initComplete:   initComplete,
+		logger:                        GetSingletonNoOpLogger(),
+		name:                          "test",
+		next:                          next,
+		sessionManager:                sm,
+		redirURLPath:                  "/callback",
+		authURL:                       "https://idp.example.com/authorize",
+		issuerURL:                     "https://idp.example.com",
+		clientID:                      "test-client-id",
+		scopes:                        []string{"openid"},
+		initComplete:                  initComplete,
+		allowUnauthenticatedPreflight: true,
 	}
 
 	req := httptest.NewRequest(http.MethodOptions, "https://app.example.com/secret.txt", nil)
@@ -140,16 +151,17 @@ func TestServeHTTP_GenuinePreflightReachesBackend(t *testing.T) {
 	close(initComplete)
 
 	tObj := &TraefikOidc{
-		logger:         GetSingletonNoOpLogger(),
-		name:           "test",
-		next:           next,
-		sessionManager: sm,
-		redirURLPath:   "/callback",
-		authURL:        "https://idp.example.com/authorize",
-		issuerURL:      "https://idp.example.com",
-		clientID:       "test-client-id",
-		scopes:         []string{"openid"},
-		initComplete:   initComplete,
+		logger:                        GetSingletonNoOpLogger(),
+		name:                          "test",
+		next:                          next,
+		sessionManager:                sm,
+		redirURLPath:                  "/callback",
+		authURL:                       "https://idp.example.com/authorize",
+		issuerURL:                     "https://idp.example.com",
+		clientID:                      "test-client-id",
+		scopes:                        []string{"openid"},
+		initComplete:                  initComplete,
+		allowUnauthenticatedPreflight: true,
 	}
 
 	req := httptest.NewRequest(http.MethodOptions, "https://app.example.com/secret.txt", nil)
@@ -188,16 +200,17 @@ func TestServeHTTP_ForgedPreflightDoesNotLeakBody(t *testing.T) {
 	close(initComplete)
 
 	tObj := &TraefikOidc{
-		logger:         GetSingletonNoOpLogger(),
-		name:           "test",
-		next:           next,
-		sessionManager: sm,
-		redirURLPath:   "/callback",
-		authURL:        "https://idp.example.com/authorize",
-		issuerURL:      "https://idp.example.com",
-		clientID:       "test-client-id",
-		scopes:         []string{"openid"},
-		initComplete:   initComplete,
+		logger:                        GetSingletonNoOpLogger(),
+		name:                          "test",
+		next:                          next,
+		sessionManager:                sm,
+		redirURLPath:                  "/callback",
+		authURL:                       "https://idp.example.com/authorize",
+		issuerURL:                     "https://idp.example.com",
+		clientID:                      "test-client-id",
+		scopes:                        []string{"openid"},
+		initComplete:                  initComplete,
+		allowUnauthenticatedPreflight: true,
 	}
 
 	req := httptest.NewRequest(http.MethodOptions, "https://app.example.com/secret.txt", nil)

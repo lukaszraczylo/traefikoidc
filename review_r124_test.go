@@ -123,6 +123,12 @@ func TestValidateTokenExpiryRS_AppliesClockSkewLeeway(t *testing.T) {
 func TestShouldBypassAuth_PassesOptions(t *testing.T) {
 	tObj := &TraefikOidc{
 		logger: GetSingletonNoOpLogger(),
+		// The released behavior requires auth for OPTIONS by default
+		// (FIX-02 maintainer decision); this test pins the opt-in bypass
+		// path, so it must set the flag explicitly. See
+		// TestShouldBypassAuth_DefaultDoesNotBypassOptions in
+		// fix02_options_bypass_test.go for the default-off case.
+		allowUnauthenticatedPreflight: true,
 	}
 	req := httptest.NewRequest(http.MethodOptions, "/api/resource", nil)
 	req.Header.Set("Origin", "https://app.example.com")
