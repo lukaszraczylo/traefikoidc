@@ -714,6 +714,36 @@ func isSubstringMatch(s string, fragments []string) bool {
 	return false
 }
 
+// asHTTPError reports whether err is, or (via a chain of Unwrap() error
+// methods) wraps, an *HTTPError. It exists because errors.As cannot be used
+// here: under yaegi v0.16.1 (the interpreter Traefik uses to load this
+// plugin, pinned in Makefile:9), errors.As(err, &target) panics with
+// "errors: *target must be interface or implement error" whenever target's
+// pointed-to type is itself interpreted, and *HTTPError is declared in this
+// plugin so it is always interpreted at runtime — regardless of err's own
+// concrete type (see isTerminalClientError above for the same hazard on a
+// path that does not need the Unwrap walk).
+//
+// This manually reimplements errors.As's single-chain Unwrap() walk using
+// only type assertions and errors.Unwrap, both yaegi-safe, so native
+// classification is byte-for-byte identical to errors.As (see
+// TestIsRetryableError_WrappedTransient). The one place native and yaegi
+// genuinely diverge: an interpreted *HTTPError wrapped with
+// fmt.Errorf("...%w", e) is found by this walk in native Go but NOT under
+// yaegi (an interpreter quirk with wrapped interpreted-type targets,
+// verified this session) — so every producer feeding isRetryableError must
+// keep returning an *HTTPError unwrapped (exchangeTokens already does; see
+// helpers.go).
+func asHTTPError(err error) (*HTTPError, bool) {
+	for err != nil {
+		if httpErr, ok := err.(*HTTPError); ok {
+			return httpErr, true
+		}
+		err = errors.Unwrap(err)
+	}
+	return nil, false
+}
+
 // isRetryableError checks if an error should trigger a retry
 // isRetryableError determines if an error should trigger a retry attempt.
 // Checks error message against configured retryable error patterns.
@@ -731,8 +761,7 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 	// "EOF" (isEOFError), or a generic "timeout" — would be reclassified
 	// retryable and retried to MaxAttempts on a permanent error, repeating
 	// the failing request (R123, R157).
-	var statusHTTP *HTTPError
-	if errors.As(err, &statusHTTP) && statusHTTP.StatusCode != 0 && statusHTTP.StatusCode < 500 && statusHTTP.StatusCode != 429 {
+	if statusHTTP, ok := asHTTPError(err); ok && statusHTTP.StatusCode != 0 && statusHTTP.StatusCode < 500 && statusHTTP.StatusCode != 429 {
 		return false
 	}
 
@@ -782,13 +811,14 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	// errors.As so retry classification survives error wrapping: a transient
-	// or 5xx/429 error returned as fmt.Errorf("...: %w", err) from an
-	// upstream layer must still be retried. Direct type assertions on the
-	// top-level error silently misclassified wrapped transient errors as
-	// permanent, giving up before any retry (R111).
-	var httpErr *HTTPError
-	if errors.As(err, &httpErr) {
+	// asHTTPError (not errors.As) so retry classification survives error
+	// wrapping: a transient or 5xx/429 error returned as fmt.Errorf("...:
+	// %w", err) from an upstream layer must still be retried. Direct type
+	// assertions on the top-level error silently misclassified wrapped
+	// transient errors as permanent, giving up before any retry (R111).
+	// errors.As itself cannot be used under yaegi -- see asHTTPError's doc
+	// comment.
+	if httpErr, ok := asHTTPError(err); ok {
 		status := httpErr.StatusCode
 		// A 0 StatusCode means the producer used HTTPError purely as a
 		// message carrier (no real HTTP status). Treat it as unknown
