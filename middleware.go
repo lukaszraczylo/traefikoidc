@@ -471,6 +471,21 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			// recover (which special-cases this sentinel) aborts the
 			// connection the same way it would with no plugin in front of
 			// it.
+			//
+			// Under yaegi v0.16.1, `r == http.ErrAbortHandler` only matches
+			// when the sentinel was raised by COMPILED code -- an
+			// interpreted panic(http.ErrAbortHandler) compares unequal to
+			// the compiled net/http.ErrAbortHandler value the interpreter
+			// sees here, so this branch is only reached by the real
+			// production case (a compiled httputil.ReverseProxy `next`
+			// aborting mid-copy). Re-panicking that value is also not
+			// byte-for-byte the original sentinel once it has crossed back
+			// out through the interpreter boundary, so net/http's
+			// conn.serve and Traefik's recovery middleware (shouldLogPanic)
+			// both treat it as an ordinary panic and log it, unlike the
+			// silent abort a fully-compiled stack gets. The connection is
+			// still aborted correctly either way; only the log noise
+			// differs (see cmd/yaegicheck for the check that pins this).
 			panic(r)
 		}
 		t.logger.Errorf("OIDC handler panic recovered: %v\n%s", r, debug.Stack())

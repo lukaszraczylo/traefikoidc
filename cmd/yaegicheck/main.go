@@ -25,9 +25,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -131,6 +134,7 @@ func main() {
 	runCheck("new01-opaque-session-introspection-classification", checkNew01OpaqueSessionIntrospectionClassification)
 
 	runCheck("fix06-sse-flush-reaches-next", checkSSEFlushReachesNext)
+	runCheck("middleware-erraborthandler-aborts-under-yaegi", checkErrAbortHandlerAbortsUnderYaegi)
 	runCheck("fix17-setifabsent-claims-once", checkSetIfAbsentUnderYaegi)
 	fmt.Println("OK: all yaegi regression checks passed")
 }
@@ -698,6 +702,79 @@ func checkSSEFlushReachesNext() (string, error) {
 		return "", fmt.Errorf("the underlying writer was not flushed")
 	}
 	return "", nil
+}
+
+// checkErrAbortHandlerAbortsUnderYaegi guards the re-review finding on
+// ServeHTTP's ErrAbortHandler branch (middleware.go): under yaegi v0.16.1,
+// `r == http.ErrAbortHandler` only ever matches a panic raised by COMPILED
+// code -- which is exactly the real production shape, since only this
+// plugin runs interpreted; every `next` handler downstream of it
+// (Traefik's own router, a compiled httputil.ReverseProxy) is compiled.
+// This drives that shape end-to-end under the interpreter: a live
+// front-facing server running the interpreted plugin, whose next is a
+// compiled httputil.ReverseProxy pointed at an upstream that writes a
+// partial chunk, flushes it to the client, then Hijacks and closes the raw
+// connection mid-stream -- the same way copyResponse
+// (net/http/httputil/reverseproxy.go) panics with http.ErrAbortHandler
+// when the upstream body read fails after headers were already sent. The
+// client must observe the aborted connection (a non-nil read error on the
+// truncated body), never a clean 200. Do not assign rp.ErrorLog: yaegi
+// v0.16.1 rejects the *log.Logger field assignment.
+func checkErrAbortHandlerAbortsUnderYaegi() (string, error) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("partial-chunk"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			return
+		}
+		conn, _, hjErr := hj.Hijack()
+		if hjErr != nil {
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer upstream.Close()
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		return "", fmt.Errorf("parse upstream URL: %w", err)
+	}
+	rp := httputil.NewSingleHostReverseProxy(upstreamURL)
+
+	cfg := oidc.CreateConfig()
+	cfg.ProviderURL = "https://accounts.google.com"
+	cfg.ClientID = "yaegi-check-abort-client"
+	cfg.ClientSecret = "yaegi-check-abort-secret"
+	cfg.CallbackURL = "/oauth2/callback"
+	cfg.SessionEncryptionKey = "0123456789abcdef0123456789abcdef"
+	cfg.ExcludedURLs = []string{"/public"}
+
+	h, err := oidc.New(context.Background(), rp, cfg, "yaegi-check-abort")
+	if err != nil {
+		return "", fmt.Errorf("New: %w", err)
+	}
+	if closer, ok := h.(interface{ Close() error }); ok {
+		defer func() { _ = closer.Close() }()
+	}
+
+	front := httptest.NewServer(h)
+	defer front.Close()
+
+	resp, err := http.Get(front.URL + "/public")
+	if err != nil {
+		return "", fmt.Errorf("client GET: %w", err)
+	}
+	defer resp.Body.Close()
+
+	_, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		return "", fmt.Errorf("expected the client read to fail after the upstream aborted mid-body, got a clean read (status %d)", resp.StatusCode)
+	}
+	return fmt.Sprintf(" client_read_err=%v", readErr), nil
 }
 
 // memNXBackend is a minimal in-process CacheBackend that also implements
