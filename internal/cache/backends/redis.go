@@ -18,7 +18,7 @@ var (
 )
 
 // NoExpiryTTL is the sentinel RedisBackend.Get reports for a key that has
-// no associated expiry (Redis PTTL -2/-1). It is distinct from a returned
+// no associated expiry (Redis PTTL -1). It is distinct from a returned
 // ttl of 0, which means the key has under a millisecond left (or vanished
 // between GET and PTTL): the caller must not treat those two cases the
 // same way — folding "no expiry" into 0 made a caller that repopulates a

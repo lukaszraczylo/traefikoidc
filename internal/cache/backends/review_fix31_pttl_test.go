@@ -64,6 +64,10 @@ func TestFIX31_GetWithRealTTLReportsPositiveDuration(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, exists)
 	assert.NotEqual(t, NoExpiryTTL, ttl)
-	assert.Greater(t, ttl, time.Duration(0))
+	// A lower bound near the full 10s pins the millisecond-precision PTTL
+	// contract: if Get is ever reverted to second-precision TTL while still
+	// being read as milliseconds, a ~10s key reports ~10ms and this bound
+	// catches it (a bare ttl>0 check would not).
+	assert.Greater(t, ttl, 9*time.Second)
 	assert.LessOrEqual(t, ttl, 10*time.Second)
 }
