@@ -1059,3 +1059,136 @@ func TestFix36_ExecuteRefreshAsyncSkipsRefreshFuncWhenAlreadyCanceled(t *testing
 		t.Fatal("refreshFunc must not be called when rc.ctx is already canceled before the refresh starts")
 	}
 }
+
+// TestFix36_PreStartGateStopsRefreshAfterShutdownCloses pins round-4's fix to
+// the gap TestFix36_ExecuteRefreshAsyncSkipsRefreshFuncWhenAlreadyCanceled
+// hides: that test cancels rc.ctx directly, but Shutdown itself does NOT
+// cancel rc.ctx up front (it waits up to shutdownRefreshDrainTimeout so an
+// in-flight refresh can still deliver its result — see Shutdown's doc). So
+// rc.ctx.Err() alone stays nil for up to the whole drain cap after Shutdown
+// has started, and executeRefreshAsync's inner goroutine used to check only
+// that — a refresh whose wg.Add ran just before Shutdown closed stopChan, but
+// whose goroutine reached the pre-refreshFunc gate afterward, still ran
+// refreshFunc and spent the IdP grant for nothing.
+//
+// This test builds that exact ordering deterministically instead of racing
+// timers: it holds a separate in-flight refresh (op A) blocked so Shutdown is
+// guaranteed to still be draining (rc.ctx not yet canceled) for the whole
+// test, then replicates CoordinateRefresh's own wg.Add + getOrCreateOperation
+// sequence for op B by hand so the test controls exactly when Shutdown's
+// stopChan close happens relative to it — strictly after wg.Add, strictly
+// before the call into executeRefreshAsync that performs the pre-start gate
+// check.
+//
+// Fails on pre-fix code: the inner goroutine only checks rc.ctx.Err(), which
+// is nil (op A is still blocked, so Shutdown has not hit the cap or finished
+// draining), so refreshFunc runs and calledB becomes 1.
+func TestFix36_PreStartGateStopsRefreshAfterShutdownCloses(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	cfg := DefaultRefreshCoordinatorConfig()
+	cfg.RefreshTimeout = shutdownRefreshDrainTimeout + 30*time.Second
+	rc := NewRefreshCoordinator(cfg, logger)
+
+	// Op A: a real in-flight refresh that Shutdown must wait on, so rc.ctx
+	// stays un-canceled for the whole test (otherwise a fast Shutdown could
+	// cancel rc.ctx before we reach the point under test, masking the gap
+	// this test targets).
+	aStarted := make(chan struct{})
+	aRelease := make(chan struct{})
+	var aReleaseOnce sync.Once
+	t.Cleanup(func() { aReleaseOnce.Do(func() { close(aRelease) }) })
+	go func() {
+		_, _ = rc.CoordinateRefresh(context.Background(), "fix36-gate-a-session", "fix36-gate-a-token",
+			func() (*TokenResponse, error) {
+				close(aStarted)
+				<-aRelease
+				return &TokenResponse{}, nil
+			})
+	}()
+	select {
+	case <-aStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("op A never started")
+	}
+
+	// Register op B exactly like CoordinateRefresh does: check stopChan (open)
+	// then wg.Add(1), under lifecycleMu.RLock — this is the state a real
+	// CoordinateRefresh call for B would be in if it ran just before Shutdown.
+	rc.lifecycleMu.RLock()
+	select {
+	case <-rc.stopChan:
+		rc.lifecycleMu.RUnlock()
+		t.Fatal("stopChan closed before Shutdown was even called")
+	default:
+	}
+	rc.wg.Add(1)
+	rc.lifecycleMu.RUnlock()
+
+	operation, isNew, err := rc.getOrCreateOperation(context.Background(), "fix36-gate-b-session", "fix36-gate-b-hash", "fix36-gate-b-token")
+	if err != nil || !isNew {
+		t.Fatalf("getOrCreateOperation setup failed: isNew=%v err=%v", isNew, err)
+	}
+
+	// Now start Shutdown and wait — deterministically, on the real channel,
+	// not a sleep — for it to close stopChan. Shutdown is still blocked
+	// draining op A at this point, so rc.ctx remains un-canceled.
+	shutdownDone := make(chan struct{})
+	go func() {
+		rc.Shutdown()
+		close(shutdownDone)
+	}()
+	select {
+	case <-rc.stopChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown never closed stopChan")
+	}
+
+	// Op B's goroutine reaches executeRefreshAsync's pre-start gate only now:
+	// strictly after stopChan closed, while rc.ctx is still un-canceled
+	// because op A is still blocked. A refresh not yet started must not run.
+	var calledB int32
+	rc.executeRefreshAsync(operation, "fix36-gate-b-session", "fix36-gate-b-hash", func() (*TokenResponse, error) {
+		atomic.StoreInt32(&calledB, 1)
+		return &TokenResponse{AccessToken: "should-not-run"}, nil
+	})
+	rc.wg.Done() // mirrors the `defer rc.wg.Done()` around the real goroutine in CoordinateRefresh
+
+	if atomic.LoadInt32(&calledB) != 0 {
+		t.Fatal("refreshFunc for an operation not yet started must not run once Shutdown has closed stopChan, even while rc.ctx is still un-canceled")
+	}
+	operation.mutex.RLock()
+	res := operation.result
+	operation.mutex.RUnlock()
+	if res == nil || res.err == nil {
+		t.Fatal("an operation skipped by the pre-start gate must resolve with a shutdown error, not a nil error")
+	}
+
+	aReleaseOnce.Do(func() { close(aRelease) })
+	select {
+	case <-shutdownDone:
+	case <-time.After(shutdownRefreshDrainTimeout + 2*time.Second):
+		t.Fatal("Shutdown did not return after op A was released")
+	}
+}
+
+// TestFix36_ShutdownCancelsContextOnEveryPath pins round-4's second fix:
+// Shutdown must cancel rc.ctx before it returns on every path, including the
+// clean-drain fast path where nothing was in flight (Shutdown's own wg.Wait()
+// returns before shutdownRefreshDrainTimeout elapses). Pre-fix, Shutdown only
+// called rc.cancel() after the drain cap elapsed, so rc.ctx was never
+// canceled by a clean Shutdown — silently leaving the pre-start gate in
+// executeRefreshAsync's inner goroutine dead: any check against rc.ctx.Err()
+// after such a Shutdown would always see nil.
+//
+// Fails on pre-fix code: rc.ctx.Err() is nil after Shutdown returns here,
+// because nothing was in flight to hit the drain-cap cancellation path.
+func TestFix36_ShutdownCancelsContextOnEveryPath(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	rc := NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), logger)
+
+	rc.Shutdown()
+
+	if rc.ctx.Err() == nil {
+		t.Fatal("rc.ctx must be canceled after Shutdown returns even when nothing was in flight (clean-drain fast path)")
+	}
+}
