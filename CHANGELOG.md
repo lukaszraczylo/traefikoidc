@@ -33,12 +33,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Validation](docs/CONFIGURATION.md#discovered-endpoint-validation)
   (`url_helpers.go`, `main.go`).
 
-- **Claim validation accepts four previously-rejected token shapes.** Each
-  change below is intentional, matches a production change, and is pinned by
-  an existing regression test.
-  - `iat` (issued-at) is optional per RFC 7519 §4.1.6: a token that omits it
-    is validated on `iss`/`aud`/`exp`/`nbf` alone instead of being rejected
-    (`jwt.go`, R126).
+- **Claim validation accepts four previously-rejected or silently-dropped
+  claim shapes.** Each change below is intentional, matches a production
+  change, and is pinned by an existing regression test.
+  - `iat` (issued-at) is optional in `jwt.Verify`, per RFC 7519 §4.1.6. A
+    token that omits it is validated on `iss`/`aud`/`exp`/`nbf` alone,
+    instead of being rejected (`jwt.go`, R126). This relaxation applies to
+    `jwt.Verify` only. Bearer-token auth still rejects a token with no
+    `iat`: it returns `"missing iat claim"` (`enforceIatAge` in
+    `bearer_auth.go`), because `maxTokenAgeSeconds` always applies — `0`
+    falls back to a 24h default (`main.go`). The lenient-audience
+    access-token path (`accessTokenUnexpired` in `token_validation_rs.go`)
+    also still requires `iat`.
   - A numeric `sub` (bearer-auth identifier) claim is stringified instead of
     rejected, so an IdP that emits a numeric subject still authenticates
     (`bearer_auth.go` `resolveBearerIdentifier`, R102).
@@ -53,12 +59,3 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (`token_manager.go` `stringListFromClaim`, `utilities.go`
     `claimScalarString`, R105).
 
-- **Blacklist cache entries move from the `token:` Redis namespace to
-  `blacklist:`** (implemented in `universal_cache_singleton.go` /
-  `universal_cache.go`, see FIX-16). For one release, a blacklist miss also
-  reads the legacy `token:<key>` key and treats it as blacklisted only when
-  the stored value is the boolean `true` written by the pre-rename
-  revocation path. Revocations written under the old namespace on a
-  mixed-version deployment (rolling upgrade, multiple replicas at different
-  versions) remain effective for that release; plan to complete the
-  migration before the following release drops the legacy read.
