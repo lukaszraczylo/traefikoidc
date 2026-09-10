@@ -31,10 +31,12 @@ import (
 // boundary. That means wroteHeader can only observe writes this
 // middleware's OWN code makes before forwarding; it says nothing about
 // whether the downstream handler committed a response after taking over.
-// calledNext records that handoff: once true, the panic handler still
-// sends its header-only 500 (WriteHeader is idempotent, so this is a
-// no-op if next already committed a response) but never writes a body,
-// since only the body Write can corrupt an already-committed response.
+// calledNext records that handoff: once true, the deferred recover in
+// ServeHTTP no longer tries to answer a panic itself at all -- it
+// re-panics the original value instead, because from here it has no way
+// to tell whether next already committed a response before panicking (see
+// the recover site in ServeHTTP for why guessing would be worse than
+// re-panicking).
 type trackingWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
