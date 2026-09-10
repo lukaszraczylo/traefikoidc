@@ -563,7 +563,17 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	defer session.returnToPoolSafely()
+	// Deferred with a captured generation, not a plain returnToPoolSafely:
+	// the invalidated-session paths below (processAuthorizedRequestRS /
+	// processAuthorizedRequest) can session.Clear() this exact object and
+	// re-acquire a fresh one before this function returns. A plain
+	// deferred return stays bound to this pointer regardless, so it can
+	// fire AFTER a concurrent request has since popped the same pooled
+	// object and release/Reset a session that request still owns (ABA on
+	// the pool-return CAS; FIX-10). returnToPoolIfOwner is a no-op once
+	// the object's generation has moved past what was captured here.
+	sessionGen := session.ownerGeneration()
+	defer session.returnToPoolIfOwner(sessionGen)
 
 	scheme := utils.DetermineScheme(req, t.forceHTTPS)
 	host := utils.DetermineHost(req)

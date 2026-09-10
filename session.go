@@ -1074,6 +1074,7 @@ func (sm *SessionManager) newSession(r *http.Request) *SessionData {
 	sessionData.Reset() // clear any stale state from a previous pooled user
 	sessionData.request = r
 	sessionData.inUse.Store(true)
+	sessionData.generation.Add(1)
 	sessionData.dirty = false
 	atomic.AddInt64(&sm.poolHits, 1)
 	atomic.AddInt64(&sm.activeSessions, 1)
@@ -1104,6 +1105,7 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	atomic.AddInt64(&sm.activeSessions, 1)
 
 	sessionData.inUse.Store(true)
+	sessionData.generation.Add(1)
 	sessionData.request = r
 	sessionData.dirty = false
 
@@ -1361,6 +1363,14 @@ type SessionData struct {
 	expireCookie bool
 
 	inUse atomic.Bool
+
+	// generation counts every handout of this pooled object (bumped by
+	// GetSession and newSession, once each, right after inUse is set).
+	// A caller that must defer a pool-return across a call chain that
+	// might itself Clear() and reacquire the same object captures this
+	// value at acquire time and passes it to returnToPoolIfOwner instead
+	// of deferring returnToPoolSafely directly -- see FIX-10.
+	generation atomic.Uint64
 
 	// cachedClaimsToken is the ID token string whose claims were last parsed and
 	// cached. A lazy, per-request cache to avoid re-parsing the JWT on every
@@ -1787,6 +1797,39 @@ func (sd *SessionData) returnToPoolSafely() {
 			atomic.AddInt64(&sd.manager.activeSessions, -1)
 		}
 	}
+}
+
+// ownerGeneration returns sd's current ownership generation. GetSession and
+// newSession each bump this once per handout, so it uniquely identifies
+// this particular acquisition of a pooled object. A caller that must defer
+// a pool-return across a call chain that might itself Clear() and
+// reacquire the same object (see middleware.go ServeHTTP) should capture
+// this value right after acquiring the session and pass it to
+// returnToPoolIfOwner instead of deferring returnToPoolSafely directly.
+func (sd *SessionData) ownerGeneration() uint64 {
+	if sd == nil {
+		return 0
+	}
+	return sd.generation.Load()
+}
+
+// returnToPoolIfOwner returns sd to the pool only if its generation still
+// matches gen, the value ownerGeneration reported when the caller acquired
+// it. If sd.Clear() already returned this object to the pool and a
+// GetSession/newSession call handed it to a new owner (bumping the
+// generation) before this call runs, this is a stale deferred return from
+// a PREVIOUS owner and is a deliberate no-op: acting on it would flip
+// inUse on the new owner's live session and let a third caller pop the
+// same object concurrently (ABA on the pool-return CAS in
+// returnToPoolSafely; FIX-10).
+func (sd *SessionData) returnToPoolIfOwner(gen uint64) {
+	if sd == nil || sd.manager == nil {
+		return
+	}
+	if sd.generation.Load() != gen {
+		return
+	}
+	sd.returnToPoolSafely()
 }
 
 // clearTokenChunks clears and expires all token chunk sessions.
