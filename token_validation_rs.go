@@ -41,41 +41,19 @@ func (t *TraefikOidc) validateGoogleTokensRS(rs *requestState) (bool, bool, bool
 // accessTokenUnexpired reports whether a signature-verified access
 // token's time claims still hold. Used on the lenient-audience path where
 // jwt.Verify short-circuits at the aud check BEFORE reaching exp/iat/nbf
-// validation, leaving all time claims unvalidated. Re-apply the same
-// clock-skew-aware checks the main path applies (verifyExpiration,
-// verifyIssuedAt with iat required, and verifyNotBefore when present) so a
-// token that is expired, used before its issue time, or not yet valid (nbf)
-// is not trusted for authorization here.
+// validation, leaving all time claims unvalidated. Re-applies the shared
+// verifyTimeClaims helper (jwt.go) — exp required, iat validated only when
+// present (RFC 7519 §4.1.6), nbf validated when present — so this path
+// cannot drift onto a stricter iat contract than jwt.Verify itself
+// (R126/FIX-27: this function once hard-required iat after jwt.Verify made
+// it optional, forcing refresh/re-auth for an otherwise-valid, iat-less
+// lenient-audience token).
 func (t *TraefikOidc) accessTokenUnexpired(token string) bool {
 	parsed, err := parseJWT(token)
 	if err != nil {
 		return false
 	}
-	claims := parsed.Claims
-
-	exp, ok := claims["exp"].(float64)
-	if !ok {
-		return false
-	}
-	if err := verifyExpiration(exp); err != nil {
-		return false
-	}
-
-	iat, ok := claims["iat"].(float64)
-	if !ok {
-		return false
-	}
-	if err := verifyIssuedAt(iat); err != nil {
-		return false
-	}
-
-	if nbf, ok := claims["nbf"].(float64); ok {
-		if err := verifyNotBefore(nbf); err != nil {
-			return false
-		}
-	}
-
-	return true
+	return verifyTimeClaims(parsed.Claims) == nil
 }
 
 // validateTokenExpiryRS is the requestState-aware variant of validateTokenExpiry.

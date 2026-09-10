@@ -341,27 +341,8 @@ func (j *JWT) Verify(issuerURL, expectedAudience string, skipReplayCheck ...bool
 		return err
 	}
 
-	exp, ok := claims["exp"].(float64)
-	if !ok {
-		return fmt.Errorf("missing or invalid 'exp' claim")
-	}
-	if err := verifyExpiration(exp); err != nil {
+	if err := verifyTimeClaims(claims); err != nil {
 		return err
-	}
-
-	// iat is OPTIONAL per RFC 7519 §4.1.6; only validate when present.
-	// Hard-requiring it here also rejected otherwise-valid access and
-	// logout tokens whose provider omits iat.
-	if iat, ok := claims["iat"].(float64); ok {
-		if err := verifyIssuedAt(iat); err != nil {
-			return err
-		}
-	}
-
-	if nbf, ok := claims["nbf"].(float64); ok {
-		if err := verifyNotBefore(nbf); err != nil {
-			return err
-		}
 	}
 
 	shouldSkipReplay := len(skipReplayCheck) > 0 && skipReplayCheck[0]
@@ -531,6 +512,38 @@ func verifyIssuedAt(issuedAt float64) error {
 // It calls verifyTimeConstraint with future=false.
 func verifyNotBefore(notBefore float64) error {
 	return verifyTimeConstraint(notBefore, "nbf", false)
+}
+
+// verifyTimeClaims validates the standard JWT time claims of a decoded
+// claim set: exp (required), iat (optional per RFC 7519 §4.1.6 — validated
+// only when present), and nbf (optional, validated when present). Shared
+// by jwt.Verify and accessTokenUnexpired (the lenient-audience-path
+// time-claims re-check in token_validation_rs.go) so the two cannot drift
+// onto different iat contracts again (R126/FIX-27: hard-requiring iat here
+// once rejected otherwise-valid access and logout tokens whose provider
+// omits it).
+func verifyTimeClaims(claims map[string]interface{}) error {
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		return fmt.Errorf("missing or invalid 'exp' claim")
+	}
+	if err := verifyExpiration(exp); err != nil {
+		return err
+	}
+
+	if iat, ok := claims["iat"].(float64); ok {
+		if err := verifyIssuedAt(iat); err != nil {
+			return err
+		}
+	}
+
+	if nbf, ok := claims["nbf"].(float64); ok {
+		if err := verifyNotBefore(nbf); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // verifySignatureWithKey verifies a JWT signature using an already-parsed
