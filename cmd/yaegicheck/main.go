@@ -128,6 +128,7 @@ func main() {
 	runCheck("new01-introspection-bearer-4xx-no-panic", checkNew01IntrospectionBearer4xxNoPanic)
 	runCheck("new01-introspection-bearer-5xx-no-panic", checkNew01IntrospectionBearer5xxNoPanic)
 
+	runCheck("fix06-sse-flush-reaches-next", checkSSEFlushReachesNext)
 	fmt.Println("OK: all yaegi regression checks passed")
 }
 
@@ -541,4 +542,49 @@ func checkNew01IntrospectionBearer4xxNoPanic() (string, error) {
 
 func checkNew01IntrospectionBearer5xxNoPanic() (string, error) {
 	return checkNew01IntrospectionBearerStatus(http.StatusInternalServerError)
+}
+
+// checkSSEFlushReachesNext pins FIX-06: the writer ServeHTTP hands to next
+// must support http.NewResponseController(w).Flush() under yaegi. Before
+// the fix, next received the interpreted *trackingWriter, which exposes no
+// Flusher across the interpreter boundary, so SSE responses were buffered
+// in Traefik. The excluded-URL bypass reaches next without a session.
+func checkSSEFlushReachesNext() (string, error) {
+	cfg := oidc.CreateConfig()
+	cfg.ProviderURL = "https://accounts.google.com"
+	cfg.ClientID = "yaegi-check-client"
+	cfg.ClientSecret = "yaegi-check-secret"
+	cfg.CallbackURL = "/oauth2/callback"
+	cfg.SessionEncryptionKey = "0123456789abcdef0123456789abcdef"
+	cfg.ExcludedURLs = []string{"/public"}
+
+	var flushErr error
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: 1\n\n"))
+		flushErr = http.NewResponseController(w).Flush()
+	})
+	h, err := oidc.New(context.Background(), next, cfg, "yaegi-sse")
+	if err != nil {
+		return "", fmt.Errorf("New: %v", err)
+	}
+	if closer, ok := h.(interface{ Close() error }); ok {
+		defer func() { _ = closer.Close() }()
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/public/stream", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	h.ServeHTTP(rec, req)
+	if !reached {
+		return "", fmt.Errorf("next was not reached (status %d)", rec.Code)
+	}
+	if flushErr != nil {
+		return "", fmt.Errorf("Flush on the writer handed to next failed: %v", flushErr)
+	}
+	if !rec.Flushed {
+		return "", fmt.Errorf("the underlying writer was not flushed")
+	}
+	return "", nil
 }

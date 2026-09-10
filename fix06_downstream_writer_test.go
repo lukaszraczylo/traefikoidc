@@ -12,12 +12,8 @@ package traefikoidc
 // http.NewResponseController(rw).Flush() on the interpreted trackingWriter
 // gets "feature not supported" in production, even though trackingWriter
 // declares Flush/Unwrap and native tests (which never cross an
-// interpreter boundary) pass. See cmd/yaegiflushcheck/main.go (its own
-// nested Go module, not part of this package -- it depends on
-// github.com/traefik/yaegi/interp to drive the real plugin under yaegi with
-// a compiled next; run with `go run .` from cmd/yaegiflushcheck, with
-// GOPATH pointing at a src/github.com/lukaszraczylo/traefikoidc symlink to
-// this checkout) for the interop reproduction.
+// interpreter boundary) pass. See checkSSEFlushReachesNext in cmd/yaegicheck/main.go (run by
+// `make yaegi-validate`) for the interop reproduction.
 //
 // The fix hands t.next.ServeHTTP the ORIGINAL writer ServeHTTP received
 // (trackingWriter.Unwrap()), never the wrapper, on every forwarding path.
