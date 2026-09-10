@@ -31,13 +31,23 @@ import (
 // boundary. That means wroteHeader can only observe writes this
 // middleware's OWN code makes before forwarding; it says nothing about
 // whether the downstream handler committed a response after taking over.
-// calledNext records that handoff so the panic handler knows when
-// wroteHeader can no longer be trusted and must not guess.
+// calledNext records that handoff: once true, the panic handler still
+// sends its header-only 500 (WriteHeader is idempotent, so this is a
+// no-op if next already committed a response) but never writes a body,
+// since only the body Write can corrupt an already-committed response.
 type trackingWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
 	calledNext  bool
 }
+
+// Header is declared explicitly rather than left to the embedded
+// http.ResponseWriter's promotion. yaegi v0.16.1 does not count a promoted
+// method when statically checking whether *trackingWriter satisfies
+// http.ResponseWriter at import time, so without this method yaegi refuses
+// to load the plugin at all (`rw = tw` at middleware.go's ServeHTTP: "missing
+// Header method"), even though every native (compiled) test passes (FIX-06).
+func (w *trackingWriter) Header() http.Header { return w.ResponseWriter.Header() }
 
 func (w *trackingWriter) WriteHeader(code int) {
 	w.wroteHeader = true
@@ -358,25 +368,30 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// which closes/truncates the connection. If the response was already
 	// committed by a handler (200 + body or a redirect), WriteHeader is an
 	// idempotent no-op and appending the body would corrupt a valid
-	// response, so only write when nothing has been sent yet.
+	// response, so only write the body when nothing has been sent yet.
 	//
 	// Once t.next.ServeHTTP has been called (tw.calledNext), it received
 	// the real ResponseWriter, not tw (FIX-06) -- any write it makes
 	// bypasses wroteHeader entirely, so a false wroteHeader no longer
-	// proves nothing was sent. Writing the fallback 500 in that state
-	// risks appending to a response the downstream handler already
-	// committed, exactly the corruption this handler exists to prevent.
-	// Deliberately do not guess: skip the fallback once control has passed
-	// downstream.
+	// proves nothing was sent. The header-only WriteHeader(500) below is
+	// still safe to send unconditionally in that state: it is a no-op if
+	// next already committed a response. Only the body Write can corrupt an
+	// already-committed response, so that -- and only that -- is gated on
+	// !calledNext. Skipping the header too would silently turn a genuine
+	// downstream panic before any write into an empty 200 (Go's net/http
+	// default for a handler that returns having written nothing), telling
+	// the client a failed request succeeded.
 	defer func() {
 		if r := recover(); r != nil {
 			t.logger.Errorf("OIDC handler panic recovered: %v\n%s", r, debug.Stack())
-			if !tw.wroteHeader && !tw.calledNext {
+			if !tw.wroteHeader {
 				// A panic-induced 500 must not be cached (consistent with
 				// every other auth-failure response, R101/R172).
 				rw.Header().Set("Cache-Control", "no-store")
 				rw.WriteHeader(http.StatusInternalServerError)
-				_, _ = rw.Write([]byte("Internal Server Error"))
+				if !tw.calledNext {
+					_, _ = rw.Write([]byte("Internal Server Error"))
+				}
 			}
 		}
 	}()
