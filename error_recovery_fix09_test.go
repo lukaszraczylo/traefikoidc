@@ -97,3 +97,35 @@ func TestCircuitBreakerHalfOpenNetworkErrorReopens(t *testing.T) {
 		t.Fatalf("a network error must still reopen a half-open circuit, got %v", circuitBreakerStateToString(cb.GetState()))
 	}
 }
+
+// TestCircuitBreakerClosedTerminalClientErrorStaysClosed pins FIX-09's
+// scope choice: the terminal-client-error exemption applies to the Closed
+// state too, not only half-open, so a per-user invalid_grant never trips
+// the breaker at all. A following genuine 5xx still opens it normally.
+func TestCircuitBreakerClosedTerminalClientErrorStaysClosed(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		MaxFailures:  1,
+		Timeout:      100 * time.Millisecond,
+		ResetTimeout: 50 * time.Millisecond,
+	}, NewLogger("error"))
+
+	err := cb.ExecuteWithContext(context.Background(), func() error {
+		return &HTTPError{StatusCode: 400, Message: "invalid_grant"}
+	})
+	if err == nil {
+		t.Fatal("expected the probe's own error to be returned to the caller")
+	}
+	if cb.GetState() != CircuitBreakerClosed {
+		t.Fatalf("a terminal client 4xx must not trip a closed circuit, got %v", circuitBreakerStateToString(cb.GetState()))
+	}
+
+	err = cb.ExecuteWithContext(context.Background(), func() error {
+		return &HTTPError{StatusCode: 500, Message: "downstream unavailable"}
+	})
+	if err == nil {
+		t.Fatal("expected the tripping call to return its own error")
+	}
+	if cb.GetState() != CircuitBreakerOpen {
+		t.Fatalf("a genuine 5xx must still open a closed circuit, got %v", circuitBreakerStateToString(cb.GetState()))
+	}
+}

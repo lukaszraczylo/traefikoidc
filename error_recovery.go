@@ -292,9 +292,20 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 // unhealthy, so the circuit breaker's failure-counting state machine
 // ignores them (FIX-09). 429 is excluded because it is the service
 // signaling it is overloaded, a genuine health signal.
+//
+// This uses a plain type assertion, not errors.As. Under yaegi v0.16.1 (the
+// interpreter Traefik uses to load this plugin, pinned in Makefile:9),
+// errors.As(err, &target) panics with "errors: *target must be interface
+// or implement error" whenever target's pointed-to type (*HTTPError here)
+// is itself interpreted, regardless of err's own concrete type. This
+// function runs on every fn() error in ExecuteWithContext, on the
+// default-on token-exchange/refresh path, so that panic reaches production
+// (FIX-09). The production error also reaches the breaker unwrapped
+// (helpers.go returns *HTTPError directly), so a type assertion is
+// sufficient and needs no Unwrap chain walk.
 func isTerminalClientError(err error) bool {
-	var httpErr *HTTPError
-	if !errors.As(err, &httpErr) {
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
 		return false
 	}
 	return httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 && httpErr.StatusCode != 429
