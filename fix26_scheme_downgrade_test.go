@@ -210,27 +210,85 @@ func TestUpdateMetadataEndpoints_NonCriticalEndpointsWithoutOverrideLogSecurityL
 }
 
 // TestUpdateMetadataEndpoints_ConfigOverrideReplacesDroppedEndpoint pins the
-// second half of the same finding: setting an operator override
-// (oidcEndSessionURL here) for an endpoint that discovery drops for the
-// scheme-downgrade reason means the endpoint does not stay empty — the
-// override runs right after sanitize and replaces it, so a "requests needing
-// this endpoint will fail" style claim would be false for these three.
+// second half of the same finding, table-driven over all three endpoints
+// that carry an override: setting the operator override for an endpoint
+// discovery drops for the scheme-downgrade reason means the endpoint does
+// not stay empty — the override runs right after sanitize and replaces it,
+// so a "requests needing this endpoint will fail" style claim would be
+// false for these three. Only end_session was pinned before; a regression
+// that stopped applying configRevocationURL or configIntrospectionURL
+// specifically would have left every test green (re-review finding at
+// fix26_scheme_downgrade_test.go:218).
 func TestUpdateMetadataEndpoints_ConfigOverrideReplacesDroppedEndpoint(t *testing.T) {
-	var buf bytes.Buffer
-	tObj := &TraefikOidc{
-		logger:              fix26CapturingLogger(&buf),
-		providerURL:         "https://provider.example.com",
-		configEndSessionURL: "https://provider.example.com/logout-override",
-	}
+	for _, tc := range []struct {
+		field        string
+		droppedURL   string
+		overrideURL  string
+		buildMD      func(dropped string) *ProviderMetadata
+		buildTObj    func(logger *Logger, override string) *TraefikOidc
+		resultingURL func(tObj *TraefikOidc) string
+	}{
+		{
+			field:       "end_session",
+			droppedURL:  "http://provider.example.com/logout",
+			overrideURL: "https://provider.example.com/logout-override",
+			buildMD: func(dropped string) *ProviderMetadata {
+				return &ProviderMetadata{EndSessionURL: dropped}
+			},
+			buildTObj: func(logger *Logger, override string) *TraefikOidc {
+				return &TraefikOidc{
+					logger:              logger,
+					providerURL:         "https://provider.example.com",
+					configEndSessionURL: override,
+				}
+			},
+			resultingURL: func(tObj *TraefikOidc) string { return tObj.endSessionURL },
+		},
+		{
+			field:       "revocation",
+			droppedURL:  "http://provider.example.com/revoke",
+			overrideURL: "https://provider.example.com/revoke-override",
+			buildMD: func(dropped string) *ProviderMetadata {
+				return &ProviderMetadata{RevokeURL: dropped}
+			},
+			buildTObj: func(logger *Logger, override string) *TraefikOidc {
+				return &TraefikOidc{
+					logger:              logger,
+					providerURL:         "https://provider.example.com",
+					configRevocationURL: override,
+				}
+			},
+			resultingURL: func(tObj *TraefikOidc) string { return tObj.revocationURL },
+		},
+		{
+			field:       "introspection",
+			droppedURL:  "http://provider.example.com/introspect",
+			overrideURL: "https://provider.example.com/introspect-override",
+			buildMD: func(dropped string) *ProviderMetadata {
+				return &ProviderMetadata{IntrospectionURL: dropped}
+			},
+			buildTObj: func(logger *Logger, override string) *TraefikOidc {
+				return &TraefikOidc{
+					logger:                 logger,
+					providerURL:            "https://provider.example.com",
+					configIntrospectionURL: override,
+				}
+			},
+			resultingURL: func(tObj *TraefikOidc) string { return tObj.introspectionURL },
+		},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			var buf bytes.Buffer
+			tObj := tc.buildTObj(fix26CapturingLogger(&buf), tc.overrideURL)
 
-	tObj.updateMetadataEndpoints(&ProviderMetadata{
-		EndSessionURL: "http://provider.example.com/logout",
-	})
+			tObj.updateMetadataEndpoints(tc.buildMD(tc.droppedURL))
 
-	if tObj.endSessionURL != "https://provider.example.com/logout-override" {
-		t.Fatalf("configEndSessionURL must replace the dropped discovered endpoint, got %q", tObj.endSessionURL)
-	}
-	if strings.Contains(buf.String(), "SECURITY:") {
-		t.Fatalf("end_session has a config override, so no SECURITY line applies, got:\n%s", buf.String())
+			if got := tc.resultingURL(tObj); got != tc.overrideURL {
+				t.Fatalf("%s: the configured override must replace the dropped discovered endpoint, got %q, want %q", tc.field, got, tc.overrideURL)
+			}
+			if strings.Contains(buf.String(), "SECURITY:") {
+				t.Fatalf("%s: has a config override, so no SECURITY line applies, got:\n%s", tc.field, buf.String())
+			}
+		})
 	}
 }
