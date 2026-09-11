@@ -67,12 +67,17 @@ func TestSessionPoolReturn_StaleGenerationDoesNotReleaseNewOwner(t *testing.T) {
 		t.Fatalf("Clear must return the object to the pool (inUse still true)")
 	}
 
-	// A new owner claims the exact same object: this is the only state
-	// GetSession/newSession mutate on a handout (session.go:1076-1077,
-	// 1106-1107), reproduced directly so the test does not depend on
-	// sync.Pool's unspecified reuse timing.
+	// A new owner claims the exact same object: this is the sequence
+	// GetSession/newSession run on every real handout -- generation,
+	// sessionOwner, then inUse (session.go:1076-1078, 1108-1110) --
+	// reproduced directly so the test does not depend on sync.Pool's
+	// unspecified reuse timing. sessionOwner must be set to the new
+	// generation, not left at 0: a stale returnToPoolIfOwner call gates on
+	// sessionOwner, so leaving it 0 would make the object look already-free
+	// rather than owned by someone else, which is what this test needs to
+	// tell apart.
+	o.sessionOwner.Store(o.generation.Add(1))
 	o.inUse.Store(true)
-	o.generation.Add(1)
 	o.SetUserIdentifier("bob")
 
 	if staleGen == o.ownerGeneration() {
