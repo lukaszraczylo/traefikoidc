@@ -19,6 +19,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Opaque bearer tokens when all three bearer flags are set.** A deployment
+  that sets `enableBearerAuth`, `requireTokenIntrospection` and
+  `allowOpaqueTokens` now accepts opaque bearer tokens after RFC 7662
+  introspection. The last release rejected every non-JWT bearer token. The
+  plugin binds an accepted opaque token to the client through `client_id` or
+  `aud`. It also applies the identifier, token-age, logout, revocation and
+  `nbf` checks (`bearer_auth.go`).
+
+- **Sessions created before this upgrade can omit `post_logout_redirect_uri`
+  on their first logout.** The plugin now builds that parameter only from the
+  redirect-URI origin recorded at login, never from the logout request's
+  host. Older sessions have no recorded origin, so those users stay on the
+  IdP's logout page once (`helpers.go`).
+
+- **Shutdown waits up to 5 seconds for a token refresh in progress.** On
+  shutdown, for example a Traefik reload, the refresh coordinator lets a
+  refresh that already reached the IdP deliver its tokens, then returns
+  (`shutdownRefreshDrainTimeout`, `refresh_coordinator.go`). A refresh that
+  has not started does not start after shutdown.
+
+- **A panic after the request reaches the backend now aborts the
+  connection.** The plugin re-panics it, for example the reverse proxy's
+  `http.ErrAbortHandler` when an upstream drops the connection mid-body. Go's
+  HTTP server then aborts the connection. Before, the plugin recovered the
+  panic, so a truncated response could reach the client as a complete 200. A
+  panic before the request reaches the backend still returns 500
+  (`middleware.go`).
+
 - **private_key_jwt now rejects RSA signing keys under 2048 bits.**
   `validateAlgKeyMatch` stops `New()` with an error when a configured
   `private_key_jwt` RS\*/PS\* key is smaller than 2048 bits (RFC 7518 §3.3).
@@ -54,6 +82,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `universal_cache.go`, FIX-16). The fallback works in one direction only:
   during a rolling deploy, a replica that runs the previous version does
   not see revocations that an upgraded replica writes under `blacklist:`.
+  A blacklist miss checks the legacy `token:` entry at most once per key in
+  each 30 seconds, so the fallback adds little Redis traffic.
 
 - **Claim validation accepts four previously-rejected or silently-dropped
   claim shapes.** Each change below is intentional, matches a production
@@ -81,3 +111,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (`token_manager.go` `stringListFromClaim`, `utilities.go`
     `claimScalarString`, R105).
 
+### Fixed
+
+- The opaque bearer path rejects a token that `RevokeToken` added to the
+  blacklist, for example at logout. It also rejects an opaque token whose
+  `nbf` is in the future (`bearer_auth.go`).
+- The backchannel-logout replay check treats a Redis error reply such as
+  `READONLY`, `OOM` or `MISCONF` as a failure, not as an unknown outcome. A
+  replayed logout token is now rejected while Redis refuses writes
+  (`internal/cache/backends/redis.go`).
+- After a failed cache write, a replica no longer ignores a newer value that
+  another replica wrote, such as a later logout. The preference for the local
+  value expires after 5 seconds (`backendStaleMarkTTL`, `universal_cache.go`).
+- The token circuit breaker treats HTTP 408 from the token endpoint as a
+  transient failure, the same as 429 (`error_recovery.go`).
+- With `allowUnauthenticatedPreflight` enabled, a preflight response no longer
+  carries a stale `Content-Length` when the backend writes a body without
+  calling `WriteHeader` (`middleware.go`).
+- A dropped `http://` revocation, end-session or introspection endpoint logs
+  the `SECURITY:` line when its override (`revocationURL`, `oidcEndSessionURL`
+  or `introspectionURL`) is not configured (`main.go`).
