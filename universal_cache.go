@@ -1447,7 +1447,12 @@ func (c *UniversalCache) backendStaleLocalValue(key string) (interface{}, bool) 
 	if !stale {
 		return nil, false
 	}
-	if time.Since(markedAt) > backendStaleMarkTTL {
+	// A MonotonicMarkers cache keeps its mark until the local entry expires:
+	// letting it age out would fall back to an OLDER backend marker and stop
+	// enforcing this replica's newer one (for example, a logout whose Redis
+	// write failed). Get's newer-wins compare still lets a newer marker that
+	// another replica wrote take over.
+	if !c.config.MonotonicMarkers && time.Since(markedAt) > backendStaleMarkTTL {
 		delete(c.staleBackend, key)
 		return nil, false
 	}
