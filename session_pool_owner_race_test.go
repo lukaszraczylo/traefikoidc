@@ -32,13 +32,19 @@ package traefikoidc
 // then races the real returnToPoolIfOwner against a goroutine performing
 // exactly the writes GetSession/newSession make on a handout of that freed
 // object, many times, to catch any reintroduced interleaving statistically.
-// A cruder version of this simulation (skipping the explicit free step,
-// which does not matter for the OLD two-field design because a release
-// never touched generation there) reproduced the pre-fix bug in roughly
-// 0.1% of iterations (362/400000) against the unfixed code -- consistent
-// with the original re-review evidence of about 3 hits per 1.2M iterations
-// (0, 0, 2, 0, 0 hits per 200k-iteration run).
+//
+// This only catches the bug statistically, and it needs GOMAXPROCS>=2 to
+// interleave the two goroutines inside the gate's TOCTOU window: reverting
+// returnToPoolIfOwner and returnToPoolSafely to the pre-fix two-field gate
+// (an independent sd.generation.Load() != gen check, then a separate
+// sd.inUse.CompareAndSwap(true, false)) and running this exact test gives
+// 76, 84 and 89 hits per 400000 iterations at the default GOMAXPROCS on a
+// 16-core machine. The same reverted code gives 0 hits in every run at
+// GOMAXPROCS=1, because a single OS thread cannot land one goroutine's CAS
+// inside the other's check-then-act window. The test below skips itself
+// under GOMAXPROCS<2 rather than passing for that wrong reason.
 import (
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +53,10 @@ import (
 )
 
 func TestSessionPoolReturnIfOwner_ConcurrentHandoutRace(t *testing.T) {
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("needs GOMAXPROCS>=2 to interleave a stale return with a concurrent handout")
+	}
+
 	sm, err := NewSessionManager(strings.Repeat("k", 32), false, "", "", time.Hour, NewLogger("error"))
 	if err != nil {
 		t.Fatalf("NewSessionManager: %v", err)
