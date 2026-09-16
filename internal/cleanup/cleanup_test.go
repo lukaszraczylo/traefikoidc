@@ -879,6 +879,15 @@ func TestWorkerPool_GetMetrics(t *testing.T) {
 
 	wg.Wait()
 
+	// executeTask increments tasksProcessed in a deferred call that runs
+	// after the task returns, so a task's own wg.Done() can fire before its
+	// count is recorded. Wait for the metric instead of assuming wg.Wait()
+	// saw both increments.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt64(&pool.metrics.tasksProcessed) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
 	metrics := pool.GetMetrics()
 
 	if metrics["workers"].(int) != 2 {
