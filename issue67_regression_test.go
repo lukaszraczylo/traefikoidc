@@ -598,6 +598,7 @@ func TestIssue67_TokenResilienceRecursionBug(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
 	resilienceConfig := DefaultTokenResilienceConfig()
 	resilienceManager := NewTokenResilienceManager(resilienceConfig, logger)
+	t.Cleanup(resilienceManager.Close)
 
 	oidc := &TraefikOidc{
 		tokenURL:               server.URL + "/token",
@@ -683,6 +684,7 @@ func TestIssue67_TokenResilienceManager_NoRecursion(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
 	resilienceConfig := DefaultTokenResilienceConfig()
 	resilienceManager := NewTokenResilienceManager(resilienceConfig, logger)
+	t.Cleanup(resilienceManager.Close)
 
 	// Create custom TraefikOidc to track calls
 	oidc := &TraefikOidc{
@@ -762,6 +764,7 @@ func TestIssue67_DirectRecursionDetection(t *testing.T) {
 		tokenHTTPClient:        &http.Client{Timeout: 2 * time.Second},
 		logger:                 logger,
 	}
+	t.Cleanup(oidc.tokenResilienceManager.Close)
 
 	// Set a timeout to prevent infinite hangs
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

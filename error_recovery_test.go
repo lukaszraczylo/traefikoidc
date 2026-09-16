@@ -1135,6 +1135,7 @@ func TestBaseRecoveryMechanism_LogMethods(t *testing.T) {
 
 func TestErrorRecoveryManagerCreation(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
+	t.Cleanup(erm.Close)
 
 	if erm == nil {
 		t.Fatal("Expected non-nil error recovery manager")
@@ -1151,6 +1152,7 @@ func TestErrorRecoveryManagerCreation(t *testing.T) {
 
 func TestErrorRecoveryManagerGetCircuitBreaker(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
+	t.Cleanup(erm.Close)
 
 	cb1 := erm.GetCircuitBreaker("service1")
 	cb2 := erm.GetCircuitBreaker("service1")
@@ -1171,6 +1173,7 @@ func TestErrorRecoveryManagerGetCircuitBreaker(t *testing.T) {
 
 func TestErrorRecoveryManagerExecuteWithRecovery(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
+	t.Cleanup(erm.Close)
 
 	success := false
 	err := erm.ExecuteWithRecovery(context.Background(), "test-service", func() error {
@@ -1189,6 +1192,7 @@ func TestErrorRecoveryManagerExecuteWithRecovery(t *testing.T) {
 
 func TestErrorRecoveryManagerMetrics(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
+	t.Cleanup(erm.Close)
 
 	_ = erm.GetCircuitBreaker("service1")
 	_ = erm.GetCircuitBreaker("service2")
@@ -1208,6 +1212,7 @@ func TestErrorRecoveryManagerMetrics(t *testing.T) {
 func TestErrorRecoveryManagerIntegration(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
 	erm := NewErrorRecoveryManager(logger)
+	t.Cleanup(erm.Close)
 
 	t.Run("circuit breaker and retry integration", func(t *testing.T) {
 		cb := NewCircuitBreaker(CircuitBreakerConfig{

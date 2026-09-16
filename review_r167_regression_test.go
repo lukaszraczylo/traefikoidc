@@ -58,6 +58,7 @@ func TestR167_RefreshSingleUseOnTimeout(t *testing.T) {
 	cfg.RetryConfig.InitialDelay = time.Millisecond
 	cfg.RetryConfig.MaxDelay = time.Millisecond
 	rm := NewTokenResilienceManager(cfg, GetSingletonNoOpLogger())
+	t.Cleanup(rm.Close)
 
 	_, err := rm.ExecuteTokenRefresh(context.Background(), oidc, "refresh_token")
 	if err == nil {

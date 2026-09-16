@@ -132,6 +132,7 @@ func TestRefreshToken_IdentityNotSubstituted(t *testing.T) {
 func TestExecuteTokenOperation_RetryInsideBreaker(t *testing.T) {
 	logger := newNoOpLogger()
 	manager := NewTokenResilienceManager(DefaultTokenResilienceConfig(), logger)
+	t.Cleanup(manager.Close)
 
 	var calls int32
 	_ = manager.ExecuteTokenOperation(context.Background(), "test", false, func() error {

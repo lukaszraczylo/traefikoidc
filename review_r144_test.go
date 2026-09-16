@@ -38,6 +38,7 @@ func TestExecuteWithRecovery_RetryCountsOnce(t *testing.T) {
 		gracefulDegradation: NewGracefulDegradation(DefaultGracefulDegradationConfig(), logger),
 		logger:              logger,
 	}
+	t.Cleanup(mgr.Close)
 
 	_ = mgr.ExecuteWithRecovery(context.Background(), "svc", func() error {
 		return errors.New("boom")
