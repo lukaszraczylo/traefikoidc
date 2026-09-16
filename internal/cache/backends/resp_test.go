@@ -142,7 +142,12 @@ func TestRESPReader_ReadError(t *testing.T) {
 			_, err := reader.ReadResponse()
 
 			require.Error(t, err)
-			assert.Equal(t, tt.expectedError, err.Error())
+			// R177: a '-' reply is now wrapped with ErrCommandReply so
+			// callers can tell a Redis command error (healthy connection)
+			// apart from an IO/parse error. The command's message text is
+			// preserved verbatim inside the wrapped error.
+			assert.True(t, errors.Is(err, ErrCommandReply), "want ErrCommandReply, got %v", err)
+			assert.Contains(t, err.Error(), tt.expectedError)
 		})
 	}
 }

@@ -5,10 +5,6 @@ import (
 	"time"
 )
 
-const (
-	defaultBlacklistDuration = 24 * time.Hour
-)
-
 // CacheManager manages all caching components using the universal cache
 type CacheManager struct {
 	manager *UniversalCacheManager
@@ -107,7 +103,7 @@ func (cm *CacheManager) GetSharedMetadataCache() *MetadataCache {
 func (cm *CacheManager) GetSharedJWKCache() JWKCacheInterface {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return &JWKCache{cache: cm.manager.GetJWKCache()}
+	return &JWKCache{cache: cm.manager.GetJWKCache(), lastForceRefresh: make(map[string]time.Time)}
 }
 
 // GetSharedIntrospectionCache returns the shared token introspection cache
@@ -171,6 +167,13 @@ func (c *CacheInterfaceWrapper) Set(key string, value interface{}, ttl time.Dura
 // Get retrieves a value
 func (c *CacheInterfaceWrapper) Get(key string) (interface{}, bool) {
 	return c.cache.Get(key)
+}
+
+// SetIfAbsent atomically stores a value only if the key is not already
+// present. See UniversalCache.SetIfAbsent and AtomicSetIfAbsentCache
+// (FIX-17).
+func (c *CacheInterfaceWrapper) SetIfAbsent(key string, value interface{}, ttl time.Duration) (bool, error) {
+	return c.cache.SetIfAbsent(key, value, ttl)
 }
 
 // Delete removes a key

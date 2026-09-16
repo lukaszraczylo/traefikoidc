@@ -2,6 +2,11 @@ module github.com/lukaszraczylo/traefikoidc
 
 go 1.24.0
 
+// Pin the toolchain to a stdlib version without the go1.26.5 CVEs
+// (GO-2026-6089 net/http ReadHeaderTimeout, GO-2026-5972 asn1 recursion,
+// GO-2026-5026 idna) reported by govulncheck (R219). Auto-downloaded.
+toolchain go1.26.6
+
 require (
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/gorilla/sessions v1.3.0

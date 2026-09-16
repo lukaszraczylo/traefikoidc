@@ -4,6 +4,7 @@ package recovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -719,6 +720,16 @@ func TestRecoveryMetrics_HTTPMetricsHandler(t *testing.T) {
 	body := w.Body.String()
 	if body == "" {
 		t.Error("Expected non-empty response body")
+	}
+
+	// Body must be valid JSON (R147): the handler previously declared
+	// Content-Type: application/json but wrote Go map syntax via fmt.
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Errorf("metrics body is not valid JSON: %v (body: %s)", err, body)
+	}
+	if _, ok := decoded["metrics"]; !ok {
+		t.Errorf("metrics JSON body must contain a \"metrics\" key, got: %s", body)
 	}
 }
 

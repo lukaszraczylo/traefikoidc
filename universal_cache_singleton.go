@@ -94,6 +94,24 @@ func GetUniversalCacheManagerWithConfig(logger *Logger, redisConfig *RedisConfig
 	return universalCacheManager
 }
 
+// newBlacklistCacheConfig returns the UniversalCacheConfig used for the
+// shared token-blacklist cache. It MUST keep a CacheType distinct from
+// the token cache's CacheTypeToken: prefixKey composes the backend key
+// from c.config.Type, so a shared type would put blacklist and token
+// entries for the same raw token string in the same (e.g. Redis)
+// namespace — both rejecting valid claims-cached tokens as blacklisted
+// and letting token caching clobber a real blacklist marker (R128).
+func newBlacklistCacheConfig(logger *Logger) UniversalCacheConfig {
+	return UniversalCacheConfig{
+		Type:             CacheTypeBlacklist,
+		MaxSize:          1000,
+		DefaultTTL:       24 * time.Hour,
+		Logger:           logger,
+		SkipAutoCleanup:  true, // Managed cleanup
+		MonotonicMarkers: true, // revocation markers are never stale (FIX-04)
+	}
+}
+
 // initializeDefaultCaches initializes caches with memory-only backends
 func initializeDefaultCaches(manager *UniversalCacheManager, logger *Logger) {
 	// Initialize token cache - CRITICAL FIX: Reduced from 5000 to 1000
@@ -106,14 +124,12 @@ func initializeDefaultCaches(manager *UniversalCacheManager, logger *Logger) {
 		SkipAutoCleanup: true, // Managed cleanup
 	})
 
-	// Initialize blacklist cache
-	manager.blacklistCache = NewUniversalCache(UniversalCacheConfig{
-		Type:            CacheTypeToken,
-		MaxSize:         1000,
-		DefaultTTL:      24 * time.Hour,
-		Logger:          logger,
-		SkipAutoCleanup: true, // Managed cleanup
-	})
+	// Initialize blacklist cache. Distinct CacheType so its (possibly
+	// shared-backend) "blacklist:" namespace can never collide with the
+	// token cache's "token:" namespace for the same raw token string; a
+	// collision would both reject valid claims-cached tokens as blacklisted
+	// and let token caching clobber a real blacklist marker (R128).
+	manager.blacklistCache = NewUniversalCache(newBlacklistCacheConfig(logger))
 
 	// Initialize metadata cache with grace periods
 	manager.metadataCache = NewUniversalCache(UniversalCacheConfig{
@@ -156,8 +172,13 @@ func initializeDefaultCaches(manager *UniversalCacheManager, logger *Logger) {
 	})
 
 	// Initialize introspection cache for OAuth 2.0 Token Introspection (RFC 7662)
+	// Uses its own CacheType so its Redis namespace differs from the blacklist
+	// (both in CacheTypeToken): with a shared Redis backend an opaque token is keyed
+	// by its raw value in both caches, so sharing the "token:" prefix let an
+	// introspection write clobber a same-token blacklist marker (revoked opaque
+	// token could be re-accepted) across replicas. See R114.
 	manager.introspectionCache = NewUniversalCache(UniversalCacheConfig{
-		Type:            CacheTypeToken,  // Use token cache type for introspection results
+		Type:            CacheTypeIntrospection,
 		MaxSize:         1000,            // Cache up to 1000 introspection results
 		DefaultTTL:      5 * time.Minute, // Short TTL for security (introspect frequently)
 		Logger:          logger,
@@ -176,11 +197,12 @@ func initializeDefaultCaches(manager *UniversalCacheManager, logger *Logger) {
 	// Initialize session invalidation cache for backchannel/front-channel logout
 	// This cache stores invalidated session IDs and subjects to revoke sessions
 	manager.sessionInvalidationCache = NewUniversalCache(UniversalCacheConfig{
-		Type:            CacheTypeSession,
-		MaxSize:         5000,           // Support many concurrent invalidations
-		DefaultTTL:      25 * time.Hour, // Slightly longer than session max age (24h)
-		Logger:          logger,
-		SkipAutoCleanup: true, // Managed cleanup
+		Type:             CacheTypeSession,
+		MaxSize:          5000,           // Support many concurrent invalidations
+		DefaultTTL:       25 * time.Hour, // Slightly longer than session max age (24h)
+		Logger:           logger,
+		SkipAutoCleanup:  true, // Managed cleanup
+		MonotonicMarkers: true, // a failed Set must not Delete an existing invalidation marker (FIX-04)
 	})
 
 	// Refresh-result cache: short-lived store keyed by sha256(refreshToken).
@@ -297,15 +319,13 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 		createBackend(CacheTypeToken),
 	)
 
-	// Initialize blacklist cache (CRITICAL - must be consistent across replicas)
+	// Initialize blacklist cache (CRITICAL - must be consistent across replicas).
+	// Distinct CacheType so its "blacklist:" Redis namespace can't collide with
+	// the token cache's "token:" namespace for the same raw token (R128); a
+	// shared prefix would reject valid claims-cached tokens as blacklisted or
+	// let token caching clobber a real blacklist marker.
 	manager.blacklistCache = NewUniversalCacheWithBackend(
-		UniversalCacheConfig{
-			Type:            CacheTypeToken,
-			MaxSize:         1000,
-			DefaultTTL:      24 * time.Hour,
-			Logger:          logger,
-			SkipAutoCleanup: true, // Managed cleanup
-		},
+		newBlacklistCacheConfig(logger),
 		createBackend("blacklist"),
 	)
 
@@ -355,16 +375,18 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 		SkipAutoCleanup: true, // Managed cleanup
 	})
 
-	// Introspection cache uses backend for sharing results
+	// Introspection cache uses backend for sharing results. Distinct CacheType
+	// so its Redis "introspection:" namespace can't collide with the blacklist's
+	// "token:" namespace for the same raw opaque token (R114).
 	manager.introspectionCache = NewUniversalCacheWithBackend(
 		UniversalCacheConfig{
-			Type:            CacheTypeToken,
+			Type:            CacheTypeIntrospection,
 			MaxSize:         1000,
 			DefaultTTL:      5 * time.Minute,
 			Logger:          logger,
 			SkipAutoCleanup: true, // Managed cleanup
 		},
-		createBackend(CacheTypeToken),
+		createBackend(CacheTypeIntrospection),
 	)
 
 	// Token type cache stays memory-only (local optimization)
@@ -393,11 +415,12 @@ func initializeCachesWithRedis(manager *UniversalCacheManager, logger *Logger, r
 	// Uses Redis backend to share session invalidations across all Traefik replicas
 	manager.sessionInvalidationCache = NewUniversalCacheWithBackend(
 		UniversalCacheConfig{
-			Type:            CacheTypeSession,
-			MaxSize:         5000,           // Support many concurrent invalidations
-			DefaultTTL:      25 * time.Hour, // Slightly longer than session max age (24h)
-			Logger:          logger,
-			SkipAutoCleanup: true, // Managed cleanup
+			Type:             CacheTypeSession,
+			MaxSize:          5000,           // Support many concurrent invalidations
+			DefaultTTL:       25 * time.Hour, // Slightly longer than session max age (24h)
+			Logger:           logger,
+			SkipAutoCleanup:  true, // Managed cleanup
+			MonotonicMarkers: true, // a failed Set must not Delete an existing invalidation marker (FIX-04)
 		},
 		createBackend("session_invalidation"),
 	)

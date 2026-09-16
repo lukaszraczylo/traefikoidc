@@ -89,18 +89,50 @@ func TestCircuitBreakerHalfOpenTransition(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	allowed := false
-	_ = cb.Execute(func() error {
-		allowed = true
-		return nil
-	})
-
-	if !allowed {
-		t.Error("Request should be allowed in half-open state")
+	// First request after the open timeout probes half-open. A single success
+	// does NOT immediately close: the circuit stays half-open until
+	// resetTimeout has elapsed (reset-cooldown hysteresis).
+	if err := cb.Execute(func() error { return nil }); err != nil {
+		t.Errorf("Request should be allowed in half-open state, got: %v", err)
+	}
+	if cb.GetState() != CircuitBreakerHalfOpen {
+		t.Errorf("Circuit should stay half-open during reset cooldown, got %v", circuitBreakerStateToString(cb.GetState()))
 	}
 
+	// After resetTimeout elapses, a successful request fully closes it.
+	time.Sleep(60 * time.Millisecond)
+	if err := cb.Execute(func() error { return nil }); err != nil {
+		t.Errorf("Request should be allowed, got: %v", err)
+	}
 	if cb.GetState() != CircuitBreakerClosed {
-		t.Errorf("Circuit should be closed after successful half-open request, got %v", cb.GetState())
+		t.Errorf("Circuit should be closed after successful request following reset cooldown, got %v", circuitBreakerStateToString(cb.GetState()))
+	}
+}
+
+// TestCircuitBreakerResetTimeoutEnforced is a regression test for the dead
+// resetTimeout config field: it must be consulted before a half-open success
+// can fully close the circuit. This failed on the old code where resetTimeout
+// was set but never read, so a single half-open success closed the circuit
+// immediately regardless of the configured reset cooldown.
+func TestCircuitBreakerResetTimeoutEnforced(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		MaxFailures:  1,
+		Timeout:      50 * time.Millisecond,
+		ResetTimeout: time.Minute,
+	}, nil)
+
+	_ = cb.Execute(func() error { return errors.New("fail") })
+	if cb.GetState() != CircuitBreakerOpen {
+		t.Fatal("circuit should be open after failure")
+	}
+
+	time.Sleep(70 * time.Millisecond) // past the open timeout -> half-open
+
+	if err := cb.Execute(func() error { return nil }); err != nil {
+		t.Fatalf("request should be allowed in half-open state, got: %v", err)
+	}
+	if cb.GetState() != CircuitBreakerHalfOpen {
+		t.Fatalf("circuit must remain half-open until resetTimeout elapses, got %v", circuitBreakerStateToString(cb.GetState()))
 	}
 }
 
@@ -243,7 +275,13 @@ func TestCircuitBreakerIsAvailable(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	if !cb.IsAvailable() {
-		t.Error("Circuit should be available in half-open state")
+		t.Error("Circuit should report availability once the open timeout has elapsed")
+	}
+	// R94: IsAvailable is a read-only probe and must not mutate circuit
+	// state. Merely checking availability must NOT transition the circuit
+	// to half-open (that is the job of real request admission).
+	if got := cb.GetState(); got != CircuitBreakerOpen {
+		t.Errorf("IsAvailable must not change circuit state; expected Open, got %v", got)
 	}
 }
 
@@ -1097,6 +1135,7 @@ func TestBaseRecoveryMechanism_LogMethods(t *testing.T) {
 
 func TestErrorRecoveryManagerCreation(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
+	t.Cleanup(erm.Close)
 
 	if erm == nil {
 		t.Fatal("Expected non-nil error recovery manager")
@@ -1113,6 +1152,7 @@ func TestErrorRecoveryManagerCreation(t *testing.T) {
 
 func TestErrorRecoveryManagerGetCircuitBreaker(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
+	t.Cleanup(erm.Close)
 
 	cb1 := erm.GetCircuitBreaker("service1")
 	cb2 := erm.GetCircuitBreaker("service1")
@@ -1133,6 +1173,7 @@ func TestErrorRecoveryManagerGetCircuitBreaker(t *testing.T) {
 
 func TestErrorRecoveryManagerExecuteWithRecovery(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
+	t.Cleanup(erm.Close)
 
 	success := false
 	err := erm.ExecuteWithRecovery(context.Background(), "test-service", func() error {
@@ -1151,6 +1192,7 @@ func TestErrorRecoveryManagerExecuteWithRecovery(t *testing.T) {
 
 func TestErrorRecoveryManagerMetrics(t *testing.T) {
 	erm := NewErrorRecoveryManager(nil)
+	t.Cleanup(erm.Close)
 
 	_ = erm.GetCircuitBreaker("service1")
 	_ = erm.GetCircuitBreaker("service2")
@@ -1170,6 +1212,7 @@ func TestErrorRecoveryManagerMetrics(t *testing.T) {
 func TestErrorRecoveryManagerIntegration(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
 	erm := NewErrorRecoveryManager(logger)
+	t.Cleanup(erm.Close)
 
 	t.Run("circuit breaker and retry integration", func(t *testing.T) {
 		cb := NewCircuitBreaker(CircuitBreakerConfig{
@@ -1271,9 +1314,12 @@ func TestGracefulDegradationRegisterHealthCheck(t *testing.T) {
 	defer gd.Close()
 
 	t.Run("register health check", func(t *testing.T) {
-		healthy := true
+		var healthy atomic.Bool
+		healthy.Store(true)
+		// The health check runs on a background goroutine (performHealthChecks at
+		// the configured interval); a plain captured bool would be a data race.
 		healthCheck := func() bool {
-			return healthy
+			return healthy.Load()
 		}
 
 		gd.RegisterHealthCheck("service1", healthCheck)
@@ -1281,7 +1327,7 @@ func TestGracefulDegradationRegisterHealthCheck(t *testing.T) {
 		gd.markServiceDegraded("service1")
 		assert.True(t, gd.isServiceDegraded("service1"))
 
-		healthy = true
+		healthy.Store(true)
 		time.Sleep(100 * time.Millisecond)
 	})
 }
@@ -1507,6 +1553,13 @@ func TestGracefulDegradationHealthChecks(t *testing.T) {
 		config := DefaultGracefulDegradationConfig()
 		gd := NewGracefulDegradation(config, logger)
 		defer gd.Close()
+		// The shared health-check task runs this gd's checks in the background
+		// (globalPerformHealthChecks). Hold its pass lock so that pass cannot
+		// run the check concurrently with the direct call below or change the
+		// degraded state between the assertions. The deferred Unlock runs
+		// before the deferred Close, so Close never waits on a blocked pass.
+		globalHealthCheckMu.Lock()
+		defer globalHealthCheckMu.Unlock()
 
 		healthCheckCalled := false
 		gd.RegisterHealthCheck("test-service", func() bool {
@@ -1529,6 +1582,9 @@ func TestGracefulDegradationHealthChecks(t *testing.T) {
 		config := DefaultGracefulDegradationConfig()
 		gd := NewGracefulDegradation(config, logger)
 		defer gd.Close()
+		// Keep the shared background pass out of this subtest (see above).
+		globalHealthCheckMu.Lock()
+		defer globalHealthCheckMu.Unlock()
 
 		gd.RegisterHealthCheck("failing-service", func() bool {
 			return false
@@ -1609,9 +1665,12 @@ func TestGracefulDegradationFullScenario(t *testing.T) {
 		return "fallback data", nil
 	})
 
-	serviceHealthy := false
+	var serviceHealthy atomic.Bool
+	serviceHealthy.Store(false)
+	// Health checks run on a background goroutine (performHealthChecks at the
+	// configured interval); a plain captured bool is a data race.
 	gd.RegisterHealthCheck("critical-service", func() bool {
-		return serviceHealthy
+		return serviceHealthy.Load()
 	})
 
 	result1, err1 := gd.ExecuteWithFallback("critical-service", func() (interface{}, error) {
@@ -1634,7 +1693,7 @@ func TestGracefulDegradationFullScenario(t *testing.T) {
 	assert.NoError(t, err3)
 	assert.Equal(t, "fallback data", result3)
 
-	serviceHealthy = true
+	serviceHealthy.Store(true)
 	time.Sleep(250 * time.Millisecond)
 
 	metrics := gd.GetMetrics()

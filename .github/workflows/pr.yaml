@@ -18,6 +18,43 @@ jobs:
   pr-checks:
     uses: lukaszraczylo/shared-actions/.github/workflows/go-pr.yaml@main
     with:
-      go-version: "1.25.x"
+      go-version: "1.26.x"
       coverage-threshold: 70
     secrets: inherit
+
+  yaegi-validate:
+    name: Yaegi interpreter compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+
+      # Pinned to the yaegi version Traefik v3.7.1 vendors (Makefile
+      # YAEGI_VERSION), so this tests the real interpreter a release runs
+      # under, not a newer one that may tolerate more.
+      - name: Install yaegi
+        run: go install github.com/traefik/yaegi/cmd/yaegi@v0.16.1
+
+      # yaegi resolves the plugin's own import path
+      # (github.com/lukaszraczylo/traefikoidc) through GOPATH/src, same as
+      # `make yaegi-validate` does locally.
+      - name: Symlink checkout into GOPATH
+        run: |
+          mkdir -p "$(go env GOPATH)/src/github.com/lukaszraczylo"
+          ln -sfn "$GITHUB_WORKSPACE" "$(go env GOPATH)/src/github.com/lukaszraczylo/traefikoidc"
+
+      # Runs cmd/yaegicheck under the real interpreter: imports the plugin
+      # package, exercises CreateConfig + New, and drives every yaegi-only
+      # regression check (errors.As-on-an-interpreted-target panics,
+      # SSE Flush across the interpreter boundary, etc.) that native
+      # `go build`/`go test` cannot see.
+      - name: Run yaegi regression checks
+        run: DO_NOT_TRACK=1 GOFLAGS=-mod=vendor yaegi run ./cmd/yaegicheck/main.go

@@ -427,10 +427,19 @@ func (mm *MemoryMonitor) StartMonitoring(ctx context.Context, interval time.Dura
 
 	// Check if monitoring is already started
 	if globalMonitoringStarted {
-		if !isTestMode() {
-			mm.logger.Debug("Memory monitoring already started, skipping duplicate start")
+		// If the singleton task was torn down out-of-band (plugin Close ->
+		// TaskRegistry.StopAllTasks), the process-global flag survives the
+		// teardown. Detect that and allow restart so memory monitoring
+		// resumes for a recreated plugin instance; otherwise a config
+		// reload would permanently disable monitoring.
+		if !GetResourceManager().IsTaskRunning("memory-monitor") {
+			globalMonitoringStarted = false
+		} else {
+			if !isTestMode() {
+				mm.logger.Debug("Memory monitoring already started, skipping duplicate start")
+			}
+			return
 		}
-		return
 	}
 
 	if interval <= 0 {
@@ -538,15 +547,19 @@ func (mm *MemoryMonitor) StopMonitoring() {
 		return
 	}
 
-	registry := GetGlobalTaskRegistry()
-	if task, exists := registry.GetTask("memory-monitor"); exists {
-		task.Stop()
-		globalMonitoringStarted = false
-		if !isTestMode() {
-			mm.logger.Info("Stopped global memory monitoring")
-		}
-	} else {
-		mm.logger.Errorf("Failed to find memory monitoring task to stop")
+	// The memory-monitor task is a process-global singleton registered via
+	// CreateSingletonTask, which stores the task in the ResourceManager's
+	// registry — NOT in TaskRegistry.tasks (R88 split). Look it up there;
+	// previously GetGlobalTaskRegistry().GetTask read TaskRegistry.tasks,
+	// always returned not-exists, so Stop was never called, the ticker
+	// goroutine leaked past shutdown, and this logged a spurious error.
+	if err := GetResourceManager().StopBackgroundTask("memory-monitor"); err != nil {
+		mm.logger.Errorf("Failed to find memory monitoring task to stop: %v", err)
+		return
+	}
+	globalMonitoringStarted = false
+	if !isTestMode() {
+		mm.logger.Info("Stopped global memory monitoring")
 	}
 }
 
@@ -580,11 +593,11 @@ func ResetGlobalMemoryMonitor() {
 	defer globalMonitoringMutex.Unlock()
 
 	if globalMemoryMonitor != nil {
-		// Stop monitoring if it's active
+		// Stop monitoring if it's active (singleton task lives in the
+		// ResourceManager's registry, see StopMonitoring).
 		if globalMonitoringStarted {
-			registry := GetGlobalTaskRegistry()
-			if task, exists := registry.GetTask("memory-monitor"); exists {
-				task.Stop()
+			if err := GetResourceManager().StopBackgroundTask("memory-monitor"); err != nil {
+				GetSingletonNoOpLogger().Error("Failed to find memory monitoring task to stop: %v", err)
 			}
 		}
 		globalMemoryMonitor = nil

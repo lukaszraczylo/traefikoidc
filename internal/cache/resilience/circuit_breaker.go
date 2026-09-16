@@ -132,7 +132,15 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 
 		if shouldRetry {
 			cb.setState(StateHalfOpen)
-			return true
+			// Count this probe toward the half-open gate. Previously the
+			// open→half-open transition returned true without incrementing
+			// halfOpenRequests, so N goroutines arriving at the cooldown
+			// simultaneously all transitioned and passed as an unbounded
+			// burst (the half-open branch below is only reached by
+			// requests that race in after the first transition) (R152).
+			current := cb.halfOpenRequests.Add(1)
+			// int64 comparison: narrowing HalfOpenMaxRequests to int32 could wrap.
+			return int64(current) <= int64(cb.config.HalfOpenMaxRequests)
 		}
 		return false
 

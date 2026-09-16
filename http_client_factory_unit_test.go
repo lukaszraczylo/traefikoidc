@@ -18,7 +18,10 @@ func TestOIDCProviderHTTPClientConfigUnit(t *testing.T) {
 	assert.Equal(t, 25, config.MaxIdleConnsPerHost, "OIDC provider should have 25 max idle conns per host")
 	assert.Equal(t, 50, config.MaxConnsPerHost, "OIDC provider should have 50 max conns per host")
 	assert.Equal(t, 90*time.Second, config.IdleConnTimeout, "OIDC provider should have 90s idle conn timeout")
-	assert.True(t, config.UseCookieJar, "OIDC provider should have cookie jar enabled")
+	// UseCookieJar must stay false (FIX-12): this config feeds the shared
+	// pooled client, and a jar there would leak one user's IdP cookies to
+	// every other user of the same pooled instance.
+	assert.False(t, config.UseCookieJar, "OIDC provider pooled client must not have a shared cookie jar")
 }
 
 // TestCreateDefaultClientUnit tests CreateDefaultClient function
@@ -38,7 +41,9 @@ func TestCreateTokenClientUnit(t *testing.T) {
 
 	require.NotNil(t, client)
 	assert.NotNil(t, client.Transport, "client should have transport")
-	assert.NotNil(t, client.Jar, "token client should have cookie jar")
+	// No jar (FIX-12): TokenHTTPClientConfig's UseCookieJar stays false so
+	// a client built from it never carries cross-request cookie state.
+	assert.Nil(t, client.Jar, "token client must not have a cookie jar")
 	assert.Equal(t, 10*time.Second, client.Timeout, "token client should have 10s timeout")
 }
 

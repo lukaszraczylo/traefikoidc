@@ -126,13 +126,19 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `refreshGracePeriodSeconds` | `60` | Proactively refresh tokens this many seconds before expiry. |
 | `maxRefreshTokenAgeSeconds` | `21600` | Heuristic max stored refresh-token lifetime (6h). Past this, the plugin treats the RT as expired without contacting the IdP — returns 401 to AJAX, full re-auth on navigations. Set `0` to disable. Tune to match your IdP's RT TTL. |
 | `rateLimit` | `100` | Requests/sec. Min `10`. |
+| `perSourceLoginRateLimit` | `0` (off) | Throttle OIDC auth events (authorization-code callback + login initiation) per external client source, auth events per minute. Keys and classifies the source by RemoteAddr only, never `X-Forwarded-For`, so a client cannot spoof it. Internal/loopback sources (proxies, in-cluster) are never throttled. `0` disables. RemoteAddr is the TCP peer. Behind a load balancer or CDN, the limiter keys on the proxy address: a private address is never throttled, and a public address puts every client in one shared bucket. |
 | `logLevel` | `info` | `debug`, `info`, `error`. |
 | `audience` | `clientID`, or `resource` if set | Custom access-token audience (Auth0 custom APIs). |
 | `resource` | none | RFC 8707 resource indicator, alternative to `audience` for supporting IdPs (see [docs/RFC8707.md](docs/RFC8707.md)). |
 | `strictAudienceValidation` | `false` | Reject mismatched audiences. **Set `true` in production.** |
 | `allowOpaqueTokens` / `requireTokenIntrospection` | `false` | Accept opaque access tokens via RFC 7662. |
+| `revocationURL` / `oidcEndSessionURL` / `introspectionURL` | `""` | Override the discovered revocation / end-session / introspection endpoints; take precedence when discovery omits them. |
+| `maxIdentifierLength` | `256` | Bound the post-sanitisation length of the bearer identity header (`X-Forwarded-User`). |
+| `bearerFailureWindowSeconds` | `60` | Rolling window (s) over which per-IP bearer 401s are counted toward the throttle. |
+| `bearerFailurePenaltySeconds` | `60` | Seconds an IP is kept in the 429 penalty box after the bearer failure threshold. |
 | `disableReplayDetection` | `false` | Disable JTI cache. Use Redis instead for multi-replica. |
 | `allowPrivateIPAddresses` | `false` | Permit private-IP `providerURL` (internal Keycloak, etc.). |
+| `allowUnauthenticatedPreflight` | `false` | Bypass auth for a genuine CORS preflight (`OPTIONS` + `Origin` + `Access-Control-Request-Method`); the response body is still discarded. Default requires auth for every `OPTIONS` request, preflight or not. |
 | `minimalHeaders` | `false` | Reduce forwarded headers (mitigates HTTP 431). |
 | `stripAuthCookies` | `false` | Strip OIDC cookies from backend hop (mitigates HTTP 431). |
 | `caCertPath` / `caCertPEM` | none | Trust an internal CA for the provider's TLS. |
@@ -160,6 +166,18 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
   `rateLimit` below 10, a missing `callbackURL`, or a non-HTTPS remote
   `providerURL` are rejected. Plaintext HTTP is permitted only for loopback
   hosts (local development).
+- **A `private_key_jwt` RSA key under 2048 bits now fails startup** instead
+  of signing locally and failing `invalid_client` at every token exchange
+  (RFC 7518 §3.3). Generate a 2048-bit-or-larger key before upgrading. No
+  override exists.
+- **A discovered `http://` endpoint under an `https://` `providerURL` is now
+  dropped**, not used as-is: the plugin refuses to send a client secret or
+  token over plaintext HTTP even when the IdP's own discovery document
+  advertises it that way. A dropped `token`, `jwks_uri`, or `authorization`
+  endpoint breaks login; a `SECURITY:`-tagged log line names the endpoint.
+  See [Discovered Endpoint
+  Validation](docs/CONFIGURATION.md#discovered-endpoint-validation). No
+  override exists.
 
 ### TLS termination at a load balancer
 
@@ -237,9 +255,10 @@ Hardening built in by default:
   `Authorization: Bearer` header arrive on the same request, the cookie path
   runs (safer against browser/extension/proxy bearer injection). Set
   `bearerOverridesCookie: true` for the AWS/GCP/Kubernetes convention.
-- **Replay protection preserved.** The bearer path skips the JTI **Set**
-  (so the same token can be reused) but the **Get** stays active —
-  `RevokeToken` still terminates a bearer token immediately.
+- **Revocation enforced.** No access-token JTI is recorded for replay;
+  `RevokeToken` (called from logout) blacklists the raw token (and a JWT's
+  `jti`), and both the JWT and the opaque bearer path reject a blacklisted
+  token.
 - **Excluded URLs strip Authorization.** When `enableBearerAuth=true`,
   excluded paths (e.g. `/health`, `/metrics`) get the `Authorization` header
   removed before forwarding so the token can't leak into public endpoint

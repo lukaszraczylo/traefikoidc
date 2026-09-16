@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +18,8 @@ import (
 func TestSingleflightCache_BasicGetOrFetch(t *testing.T) {
 	t.Parallel()
 
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	require.NoError(t, err)
 	defer backend.Close()
 
@@ -91,7 +93,8 @@ func TestSingleflightCache_BasicGetOrFetch(t *testing.T) {
 func TestSingleflightCache_Deduplication(t *testing.T) {
 	t.Parallel()
 
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	require.NoError(t, err)
 	defer backend.Close()
 
@@ -144,7 +147,8 @@ func TestSingleflightCache_Deduplication(t *testing.T) {
 func TestSingleflightCache_DifferentKeys(t *testing.T) {
 	t.Parallel()
 
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	require.NoError(t, err)
 	defer backend.Close()
 
@@ -193,7 +197,8 @@ func TestSingleflightCache_DifferentKeys(t *testing.T) {
 func TestSingleflightCache_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	require.NoError(t, err)
 	defer backend.Close()
 
@@ -236,7 +241,8 @@ func TestSingleflightCache_ContextCancellation(t *testing.T) {
 func TestSingleflightCache_ErrorPropagation(t *testing.T) {
 	t.Parallel()
 
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	require.NoError(t, err)
 	defer backend.Close()
 
@@ -282,7 +288,8 @@ func TestSingleflightCache_ErrorPropagation(t *testing.T) {
 func TestSingleflightCache_PassthroughMethods(t *testing.T) {
 	t.Parallel()
 
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	require.NoError(t, err)
 	defer backend.Close()
 
@@ -359,7 +366,8 @@ func TestSingleflightCache_PassthroughMethods(t *testing.T) {
 func TestSingleflightCache_Stats(t *testing.T) {
 	t.Parallel()
 
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	require.NoError(t, err)
 	defer backend.Close()
 
@@ -404,7 +412,8 @@ func TestSingleflightCache_Stats(t *testing.T) {
 func TestSingleflightCache_ResetStats(t *testing.T) {
 	t.Parallel()
 
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	require.NoError(t, err)
 	defer backend.Close()
 
@@ -435,7 +444,8 @@ func TestSingleflightCache_ResetStats(t *testing.T) {
 func TestSingleflightCache_GetBackend(t *testing.T) {
 	t.Parallel()
 
-	backend, err := NewMemoryBackend(DefaultConfig())
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
 	require.NoError(t, err)
 	defer backend.Close()
 
@@ -446,7 +456,9 @@ func TestSingleflightCache_GetBackend(t *testing.T) {
 
 // BenchmarkSingleflightCache_Sequential benchmarks sequential access
 func BenchmarkSingleflightCache_Sequential(b *testing.B) {
-	backend, _ := NewMemoryBackend(DefaultConfig())
+	mr, _ := miniredis.Run()
+	defer mr.Close()
+	backend, _ := NewRedisBackend(DefaultRedisConfig(mr.Addr()))
 	defer backend.Close()
 
 	cache := NewSingleflightCache(backend)
@@ -465,7 +477,9 @@ func BenchmarkSingleflightCache_Sequential(b *testing.B) {
 
 // BenchmarkSingleflightCache_Concurrent benchmarks concurrent access
 func BenchmarkSingleflightCache_Concurrent(b *testing.B) {
-	backend, _ := NewMemoryBackend(DefaultConfig())
+	mr, _ := miniredis.Run()
+	defer mr.Close()
+	backend, _ := NewRedisBackend(DefaultRedisConfig(mr.Addr()))
 	defer backend.Close()
 
 	cache := NewSingleflightCache(backend)
@@ -489,7 +503,9 @@ func BenchmarkSingleflightCache_Concurrent(b *testing.B) {
 
 // BenchmarkSingleflightCache_HighContention benchmarks high contention scenario
 func BenchmarkSingleflightCache_HighContention(b *testing.B) {
-	backend, _ := NewMemoryBackend(DefaultConfig())
+	mr, _ := miniredis.Run()
+	defer mr.Close()
+	backend, _ := NewRedisBackend(DefaultRedisConfig(mr.Addr()))
 	defer backend.Close()
 
 	cache := NewSingleflightCache(backend)

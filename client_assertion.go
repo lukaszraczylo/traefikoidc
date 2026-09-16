@@ -3,6 +3,7 @@ package traefikoidc
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -12,12 +13,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"os"
 	"time"
 )
+
+// ErrRSAKeyTooSmall is returned (wrapped) by validateAlgKeyMatch when a
+// private_key_jwt RS*/PS* signing key is smaller than the RFC 7518 §3.3
+// minimum of 2048 bits. A named sentinel lets callers detect this specific
+// rejection with errors.Is instead of matching the formatted message text
+// (FIX-42; see CHANGELOG.md).
+var ErrRSAKeyTooSmall = errors.New("RSA key too small for RS*/PS* signing (RFC 7518 §3.3 requires >= 2048 bits)")
 
 // isSupportedClientAssertionAlg reports whether alg is a recognized JWS
 // algorithm for private_key_jwt (RFC 7523 §2.2).
@@ -94,13 +103,43 @@ func NewClientAssertionSigner(pemBytes []byte, alg, kid string) (*ClientAssertio
 func validateAlgKeyMatch(alg string, key crypto.PrivateKey) error {
 	switch alg[0] {
 	case 'R', 'P': // RS* or PS*
-		if _, ok := key.(*rsa.PrivateKey); !ok {
+		rsaKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
 			return fmt.Errorf("alg %q requires an RSA key, got %T", alg, key)
 		}
+		// RFC 7518 §3.3: RS*/PS* MUST use a key of 2048 bits or larger.
+		// A smaller key signs locally but conformant IdPs (Entra, Okta,
+		// Keycloak) reject it, so every exchange/refresh/revocation fails
+		// invalid_client at runtime — better to fail at construction
+		// (R135).
+		if rsaKey.N.BitLen() < 2048 {
+			return fmt.Errorf("alg %q requires an RSA key of at least 2048 bits, got %d: %w", alg, rsaKey.N.BitLen(), ErrRSAKeyTooSmall)
+		}
 	case 'E': // ES*
-		if _, ok := key.(*ecdsa.PrivateKey); !ok {
+		ecKey, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
 			return fmt.Errorf("alg %q requires an EC key, got %T", alg, key)
 		}
+		// ES* maps 1:1 to a NIST curve (ES256→P-256, ES384→P-384,
+		// ES512→P-521). A key on the wrong curve would otherwise pass this
+		// check yet always produce a signature the IdP rejects.
+		if want := ecdsaAlgorithmCurve(alg); want != nil && ecKey.Curve != want {
+			return fmt.Errorf("alg %q requires a key on curve %s, got %s", alg, want.Params().Name, ecKey.Curve.Params().Name)
+		}
+	}
+	return nil
+}
+
+// ecdsaAlgorithmCurve returns the NIST curve required by an ES* algorithm, or
+// nil for any non-ES algorithm.
+func ecdsaAlgorithmCurve(alg string) elliptic.Curve {
+	switch alg {
+	case "ES256":
+		return elliptic.P256()
+	case "ES384":
+		return elliptic.P384()
+	case "ES512":
+		return elliptic.P521()
 	}
 	return nil
 }
@@ -119,6 +158,14 @@ func (s *ClientAssertionSigner) Sign(audience, clientID string) (string, error) 
 	}
 
 	now := nowFn()
+
+	// RFC 7523 §3: aud must be the token (or introspection/revocation)
+	// endpoint URL. An empty audience yields a client_assertion with
+	// "aud":"" that the IdP will reject, so fail fast with a clear
+	// error rather than minting a useless token (R150).
+	if audience == "" {
+		return "", fmt.Errorf("client assertion audience must not be empty")
+	}
 
 	// 16 random bytes as lowercase hex for jti uniqueness.
 	jtiBytes := make([]byte, 16)
@@ -290,6 +337,3 @@ func buildClientAssertionSignerFromConfig(config *Config) (*ClientAssertionSigne
 
 	return NewClientAssertionSigner(pemBytes, alg, config.ClientAssertionKeyID)
 }
-
-
-

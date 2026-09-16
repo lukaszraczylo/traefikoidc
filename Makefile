@@ -29,7 +29,7 @@ vet: ## Run go vet
 
 .PHONY: lint
 lint: ## Run golangci-lint if available
-	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || echo "golangci-lint not installed; skipping"
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; else echo "golangci-lint not installed; skipping"; fi
 
 .PHONY: staticcheck
 staticcheck: ## Run staticcheck (matches the CI "Static Analysis" job; catches U1000 unused, etc.)
@@ -37,8 +37,8 @@ staticcheck: ## Run staticcheck (matches the CI "Static Analysis" job; catches U
 	@GOFLAGS=-buildvcs=false $$(command -v staticcheck || echo "$(GOPATH)/bin/staticcheck") ./...
 
 .PHONY: test
-test: ## Run the test suite
-	$(GO) test ./... -count=1 -timeout $(TEST_TIMEOUT)
+test: ## Run the test suite (race detector on: several regression pins, e.g. R44/R77/R111, only fail under -race)
+	$(GO) test -race ./... -count=1 -timeout $(TEST_TIMEOUT)
 
 .PHONY: vendor
 vendor: ## Refresh and vendor dependencies

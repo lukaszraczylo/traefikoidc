@@ -14,6 +14,17 @@ type CircuitBreakerBackend struct {
 	cb      *CircuitBreaker
 }
 
+// backendSetNXer is the optional distributed check-and-set primitive a
+// wrapped backend can provide (backends.RedisBackend does, via Redis SET key
+// value NX PX <ttl-ms>). Declared locally, matching by method set rather
+// than by name, because backends.CacheBackend itself does not require it —
+// only UniversalCache.SetIfAbsent (FIX-17) needs it, and widening
+// CacheBackend would force every implementer to add a method only that one
+// caller uses.
+type backendSetNXer interface {
+	SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
+}
+
 // NewCircuitBreakerBackend creates a new circuit breaker wrapped backend
 func NewCircuitBreakerBackend(b backends.CacheBackend, config *CircuitBreakerConfig) backends.CacheBackend {
 	if config == nil {
@@ -99,6 +110,34 @@ func (c *CircuitBreakerBackend) Clear(ctx context.Context) error {
 		c.cb.RecordFailure()
 	}
 	return err
+}
+
+// SetNX forwards to the wrapped backend's SetNX when it provides one,
+// through the same circuit-breaker accounting as every other operation.
+// Round-2 fix for FIX-17's cross-replica gap: without this passthrough,
+// UniversalCache.SetIfAbsent's optional-interface type assertion against a
+// CircuitBreakerBackend-wrapped Redis backend always failed, silently
+// degrading the backchannel-logout jti replay check to a per-process-only
+// guarantee for any deployment with enableCircuitBreaker on (recommended in
+// docs/REDIS.md). When the wrapped backend does not implement SetNX at all,
+// reports backends.ErrSetNXUnsupported rather than guessing.
+func (c *CircuitBreakerBackend) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	nx, ok := c.backend.(backendSetNXer)
+	if !ok {
+		return false, backends.ErrSetNXUnsupported
+	}
+
+	if !c.cb.AllowRequest() {
+		return false, backends.ErrCircuitOpen
+	}
+
+	claimed, err := nx.SetNX(ctx, key, value, ttl)
+	if err == nil {
+		c.cb.RecordSuccess()
+	} else {
+		c.cb.RecordFailure()
+	}
+	return claimed, err
 }
 
 // GetStats returns statistics including circuit breaker state

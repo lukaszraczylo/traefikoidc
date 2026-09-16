@@ -610,13 +610,13 @@ func (s *SessionBehaviourSuite) TestSessionData_ReturnToPool() {
 	s.Require().NoError(err)
 
 	// Initially in use
-	s.True(session.inUse)
+	s.True(session.inUse.Load())
 
 	// Return to pool safely
 	session.returnToPoolSafely()
 
 	// Should no longer be in use
-	s.False(session.inUse)
+	s.False(session.inUse.Load())
 }
 
 // TestTokenCompression tests token compression functionality

@@ -11,28 +11,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCacheBackendContract defines a set of tests that all CacheBackend implementations must pass
-// This ensures that Memory, Redis, and Hybrid backends all behave consistently
+// TestCacheBackendContract defines a set of tests that all CacheBackend
+// implementations must pass. RedisBackend is the only implementation left
+// (FIX-43 deleted MemoryBackend and HybridBackend); it runs against a real
+// miniredis-backed instance via setupRedisBackend (R4 cache review — this
+// suite used to be a no-op: both subtests were t.Skip stubs).
 func TestCacheBackendContract(t *testing.T) {
-	// Test suite will be run against each backend type
-	t.Run("MemoryBackend", func(t *testing.T) {
-		backend := setupMemoryBackend(t)
-		runContractTests(t, backend)
-	})
-
 	t.Run("RedisBackend", func(t *testing.T) {
-		backend := setupRedisBackend(t)
-		runContractTests(t, backend)
-	})
-
-	t.Run("HybridBackend", func(t *testing.T) {
-		backend := setupHybridBackend(t)
-		runContractTests(t, backend)
+		backend, advanceClock := setupRedisBackend(t)
+		runContractTests(t, backend, advanceClock)
 	})
 }
 
-// runContractTests executes all contract tests against a backend
-func runContractTests(t *testing.T, backend CacheBackend) {
+// runContractTests executes all contract tests against a backend.
+// advanceClock advances TTL expiration by d: miniredis (see setupRedisBackend)
+// only expires keys when its simulated clock is explicitly moved forward, so
+// testTTLExpiration cannot rely on a real time.Sleep the way every other
+// contract test can.
+func runContractTests(t *testing.T, backend CacheBackend, advanceClock func(d time.Duration)) {
 	t.Helper()
 
 	ctx := context.Background()
@@ -62,7 +58,7 @@ func runContractTests(t *testing.T, backend CacheBackend) {
 	})
 
 	t.Run("TTLExpiration", func(t *testing.T) {
-		testTTLExpiration(t, ctx, backend)
+		testTTLExpiration(t, ctx, backend, advanceClock)
 	})
 
 	t.Run("Clear", func(t *testing.T) {
@@ -213,7 +209,7 @@ func testExists(t *testing.T, ctx context.Context, backend CacheBackend) {
 }
 
 // testTTLExpiration verifies TTL expiration behavior
-func testTTLExpiration(t *testing.T, ctx context.Context, backend CacheBackend) {
+func testTTLExpiration(t *testing.T, ctx context.Context, backend CacheBackend, advanceClock func(d time.Duration)) {
 	t.Helper()
 
 	key := "ttl-key"
@@ -229,8 +225,8 @@ func testTTLExpiration(t *testing.T, ctx context.Context, backend CacheBackend) 
 	require.NoError(t, err)
 	assert.True(t, exists, "Key should exist immediately after Set")
 
-	// Wait for expiration
-	time.Sleep(200 * time.Millisecond)
+	// Advance past expiration.
+	advanceClock(200 * time.Millisecond)
 
 	// Verify expired
 	exists, err = backend.Exists(ctx, key)
@@ -378,44 +374,17 @@ func testSpecialCharactersInKeys(t *testing.T, ctx context.Context, backend Cach
 	}
 }
 
-// Helper functions to setup different backend types
-// These will be implemented in respective test files
-
-func setupMemoryBackend(t *testing.T) CacheBackend {
+// setupRedisBackend wires the contract suite to a real RedisBackend backed
+// by miniredis (R4 cache review), matching the pattern redis_test.go and
+// singleflight_test.go already use. The returned func advances miniredis's
+// own simulated clock (see MiniredisServer.FastForward): miniredis only
+// expires a key when that clock is explicitly moved forward, so it never
+// expires anything on real elapsed time alone.
+func setupRedisBackend(t *testing.T) (CacheBackend, func(d time.Duration)) {
 	t.Helper()
-	// This will be implemented in memory_test.go
-	// For now, return nil to allow compilation
-	t.Skip("MemoryBackend implementation pending")
-	return nil
-}
-
-func setupRedisBackend(t *testing.T) CacheBackend {
-	t.Helper()
-	// This will be implemented in redis_test.go
-	// For now, return nil to allow compilation
-	t.Skip("RedisBackend implementation pending")
-	return nil
-}
-
-func setupHybridBackend(t *testing.T) CacheBackend {
-	t.Helper()
-
-	primary := newMockBackend()
-	secondary := newMockBackend()
-
-	config := &HybridConfig{
-		Primary:         primary,
-		Secondary:       secondary,
-		AsyncBufferSize: 100,
-		Logger:          NewTestLogger(t),
-	}
-
-	hybrid, err := NewHybridBackend(config)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		hybrid.Close()
-	})
-
-	return hybrid
+	mr := NewMiniredisServer(t)
+	backend, err := NewRedisBackend(DefaultRedisConfig(mr.GetAddr()))
+	require.NoError(t, err, "failed to create RedisBackend")
+	t.Cleanup(func() { _ = backend.Close() })
+	return backend, mr.FastForward
 }

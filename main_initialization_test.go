@@ -135,7 +135,8 @@ func TestInitializeMetadata(t *testing.T) {
 							"issuer":                 srv.URL,
 							"authorization_endpoint": srv.URL + "/auth",
 							"token_endpoint":         srv.URL + "/token",
-							// Missing jwks_uri, revocation_endpoint, end_session_endpoint
+							"jwks_uri":               srv.URL + "/jwks",
+							// Missing revocation_endpoint, end_session_endpoint (both optional)
 						})
 					}
 				}))
@@ -278,7 +279,7 @@ func TestInitializeMetadata_Concurrency(t *testing.T) {
 	mu.Unlock()
 
 	if finalCount != numInstances {
-		t.Logf("Made %d requests for %d instances (some may have been cached)", finalCount, numInstances)
+		t.Errorf("expected %d metadata requests from %d independent instances, got %d (some instances may have been blocked, deduplicated, or failed to initialize)", numInstances, numInstances, finalCount)
 	}
 }
 

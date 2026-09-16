@@ -265,14 +265,14 @@ func TestAzureOIDCRegression(t *testing.T) {
 		rs := (&requestState{}).captureSession(session)
 		authenticated, needsRefresh, expired := tOidc.validateAzureTokensRS(rs)
 
-		// Should not be authenticated due to validation failure
+		// Should not be authenticated due to validation failure, and with no
+		// refresh token and no tokens to probe, should not claim an expiry
+		// state (matches the standard path: unauthenticated, no refresh).
 		if authenticated {
 			t.Error("Should not be authenticated when token validation fails")
 		}
-
-		// Should be marked as expired since no tokens work
-		if !expired && !needsRefresh {
-			t.Error("Should be marked as needing refresh or expired when validation fails")
+		if needsRefresh || expired {
+			t.Error("With no refresh token and no tokens to probe, should be (false,false,false)")
 		}
 
 		// Verify CSRF token is still preserved in session
@@ -691,7 +691,7 @@ func TestValidateAzureTokensEdgeCases(t *testing.T) {
 				return session
 			},
 			expectedAuth:    false,
-			expectedRefresh: true,
+			expectedRefresh: false,
 			expectedExpired: false,
 			description:     "Unauthenticated Azure session without refresh token",
 		},
@@ -725,10 +725,10 @@ func TestValidateAzureTokensEdgeCases(t *testing.T) {
 				session.SetAccessToken("opaque_access_token_longer_than_minimum") // Not JWT format but long enough
 				return session
 			},
-			expectedAuth:    true,
+			expectedAuth:    false,
 			expectedRefresh: false,
-			expectedExpired: false,
-			description:     "Azure session with opaque access token",
+			expectedExpired: true,
+			description:     "Azure session with opaque access token but NO ID token fails closed (no unverified auth, R99)",
 		},
 		{
 			name: "AuthenticatedWithBothTokensInvalid",

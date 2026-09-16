@@ -140,12 +140,14 @@ type combinedSessionPayload struct {
 	X  map[string]interface{} `json:"x,omitempty"`
 	A  string                 `json:"a,omitempty"`
 	R  string                 `json:"r,omitempty"`
+	Ri int64                  `json:"ri,omitempty"` // refresh-token issued_at (unix), preserved so maxRefreshTokenAge survives combined round-trip
 	I  string                 `json:"i,omitempty"`
 	Ui string                 `json:"ui,omitempty"`
 	Cs string                 `json:"cs,omitempty"`
 	N  string                 `json:"n,omitempty"`
 	Cv string                 `json:"cv,omitempty"`
 	Ip string                 `json:"ip,omitempty"`
+	Ru string                 `json:"ru,omitempty"` // redirect_uri used at initiate; reused at callback so a per-request rebuild can't drift (R136)
 	Ca int64                  `json:"ca,omitempty"`
 	Rc int                    `json:"rc,omitempty"`
 	Au bool                   `json:"au,omitempty"`
@@ -163,6 +165,7 @@ var knownSessionKeys = map[string]bool{
 	"nonce":           true,
 	"code_verifier":   true,
 	"incoming_path":   true,
+	"redirect_url":    true,
 	"created_at":      true,
 	"redirect_count":  true,
 }
@@ -381,16 +384,6 @@ func decompressTokenInternal(compressed string) string {
 
 	limitedReader := io.LimitReader(gz, 500*1024)
 
-	if cap(readerBuf) >= 512*1024 {
-		readerBuf = readerBuf[:cap(readerBuf)]
-		n, err := limitedReader.Read(readerBuf)
-		if err != nil && err != io.EOF {
-			return compressed
-		}
-		decompressed := readerBuf[:n]
-		return string(decompressed)
-	}
-
 	decompressed, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return compressed
@@ -510,7 +503,7 @@ func NewSessionManager(encryptionKey string, forceHTTPS bool, cookieDomain strin
 			refreshMutex:       sync.Mutex{},
 			sessionMutex:       sync.RWMutex{},
 			dirty:              false,
-			inUse:              false,
+			inUse:              atomic.Bool{},
 		}
 		sd.Reset()
 		return sd
@@ -655,7 +648,7 @@ func (sm *SessionManager) cleanupSessionPool() {
 
 		if poolSession := sm.sessionPool.Get(); poolSession != nil {
 			sessionData, ok := poolSession.(*SessionData)
-			if ok && sessionData != nil && !sessionData.inUse {
+			if ok && sessionData != nil && !sessionData.inUse.Load() {
 				sessionData.Reset()
 				cleaned++
 			}
@@ -725,7 +718,7 @@ func (sm *SessionManager) PeriodicChunkCleanup() {
 	for i := 0; i < 10; i++ {
 		if poolSession := sm.sessionPool.Get(); poolSession != nil {
 			sessionData, ok := poolSession.(*SessionData)
-			if ok && sessionData != nil && !sessionData.inUse {
+			if ok && sessionData != nil && !sessionData.inUse.Load() {
 				sessionData.Reset()
 				poolCleaned++
 			}
@@ -906,21 +899,39 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 	}
 
 	options.HttpOnly = true
-	// Use configured cookie path (default "/" for backward compatibility)
-	cookiePath := sm.cookiePath
-	if cookiePath == "" {
-		cookiePath = "/"
-	}
-	options.Path = cookiePath
+	options.Path = sm.effectiveCookiePath()
 
 	if sm.cookieDomain != "" {
 		options.Domain = sm.cookieDomain
 		sm.logger.Debugf("Using configured cookie domain: %s", sm.cookieDomain)
 	} else if options.Domain == "" && r != nil {
 		host := r.Host
+		// Strip the port before the subdomain-bounding check below; a ported
+		// r.Host (e.g. app.example.com:8080) would otherwise fail
+		// HasSuffix(host, "."+fh) and wrongly fall back to the strict
+		// parent X-Forwarded-Host, scoping the token-bearing session cookie
+		// to every sibling subdomain.
+		if ci := strings.Index(host, ":"); ci != -1 {
+			host = host[:ci]
+		}
 
 		if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
-			host = forwardedHost
+			// Only use the forwarded host when it is the serving host or a
+			// subdomain of it. A broader/unrelated X-Forwarded-Host (e.g.
+			// example.com for app.example.com) would scope the token-bearing
+			// session cookie to every sibling subdomain.
+			fh := forwardedHost
+			if ci := strings.Index(fh, ":"); ci != -1 {
+				fh = fh[:ci]
+			}
+			// X-Forwarded-Host is authoritative in a reverse-proxy setup
+			// (Traefik forwards the external host; r.Host is the internal
+			// service). Keep it unless it is a strict parent of the serving
+			// host, which would scope the token-bearing cookie to sibling
+			// subdomains — then fall back to the serving host.
+			if !strings.HasSuffix(host, "."+fh) {
+				host = fh
+			}
 		}
 
 		if host != "" && !strings.Contains(host, "localhost") && !strings.Contains(host, "127.0.0.1") {
@@ -949,10 +960,21 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 		Secure:   isSecure || sm.forceHTTPS,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sm.sessionMaxAge.Seconds()),
-		Path:     "/",
+		Path:     sm.effectiveCookiePath(),
 		Domain:   sm.cookieDomain,
 	}
 	return baseOptions
+}
+
+// effectiveCookiePath returns the path session cookies are written at: the
+// configured cookiePath, or "/" when none is set (backward compatible). Cookie
+// writes and deletions must use the same path, because a browser deletes a
+// cookie only when name, domain and path all match.
+func (sm *SessionManager) effectiveCookiePath() string {
+	if sm.cookiePath == "" {
+		return "/"
+	}
+	return sm.cookiePath
 }
 
 // CleanupOldCookies removes stale session cookies from the client browser.
@@ -1013,14 +1035,14 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 						continue
 					}
 
-					deleteCookie := &http.Cookie{
+					deleteCookie := &http.Cookie{ // #nosec G124 -- deletion cookie: HttpOnly and SameSite are set; Secure follows the request scheme so the browser accepts the deletion over HTTP
 						Name:     cookie.Name,
 						Value:    "",
-						Path:     "/",
+						Path:     sm.effectiveCookiePath(),
 						Domain:   domain,
 						MaxAge:   -1,
 						HttpOnly: true,
-						Secure:   r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sm.forceHTTPS,
+						Secure:   strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") || r.TLS != nil || sm.forceHTTPS,
 						SameSite: http.SameSiteLaxMode,
 					}
 					http.SetCookie(w, deleteCookie)
@@ -1050,19 +1072,61 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 //
 // Returns:
 //   - The loaded SessionData instance.
-//   - An error if session loading or validation fails.
+//
+// newSession returns a clean, pooled session with no cookie state loaded. It
+// is used when the request's session cookie is expired: GetSession keeps
+// re-reading that same expired cookie and returns nil, so the caller needs a
+// fresh session to (re-)initiate authentication rather than erroring out.
+// Mirrors GetSession's pool/activeSessions accounting.
+func (sm *SessionManager) newSession(r *http.Request) *SessionData {
+	sessionData, _ := sm.sessionPool.Get().(*SessionData) // Safe to ignore: pool return is best-effort
+	if sessionData == nil {
+		return nil
+	}
+	sessionData.Reset() // clear any stale state from a previous pooled user
+	sessionData.request = r
+	newGeneration := sessionData.generation.Add(1)
+	sessionData.sessionOwner.Store(newGeneration)
+	sessionData.inUse.Store(true)
+	sessionData.dirty = false
+	atomic.AddInt64(&sm.poolHits, 1)
+	atomic.AddInt64(&sm.activeSessions, 1)
+
+	// GetSession normally populates the four legacy sub-sessions from the
+	// request; newSession runs where that read already failed (expired
+	// cookie), so initialize non-nil containers here. Downstream auth
+	// flow (SetCSRF/SetNonce/... then Save) writes through these.
+	if sessionData.mainSession == nil {
+		sessionData.mainSession, _ = sm.store.Get(r, sm.mainCookieName())
+	}
+	if sessionData.accessSession == nil {
+		sessionData.accessSession, _ = sm.store.Get(r, sm.accessTokenCookieName())
+	}
+	if sessionData.refreshSession == nil {
+		sessionData.refreshSession, _ = sm.store.Get(r, sm.refreshTokenCookieName())
+	}
+	if sessionData.idTokenSession == nil {
+		sessionData.idTokenSession, _ = sm.store.Get(r, sm.idTokenCookieName())
+	}
+	return sessionData
+}
+
+// - An error if session loading or validation fails.
 func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 	sessionData, _ := sm.sessionPool.Get().(*SessionData) // Safe to ignore: pool return is best-effort
 	atomic.AddInt64(&sm.poolHits, 1)
 	atomic.AddInt64(&sm.activeSessions, 1)
 
-	sessionData.inUse = true
+	newGeneration := sessionData.generation.Add(1)
+	sessionData.sessionOwner.Store(newGeneration)
+	sessionData.inUse.Store(true)
 	sessionData.request = r
 	sessionData.dirty = false
 
 	handleError := func(err error, message string) (*SessionData, error) {
 		if sessionData != nil {
-			sessionData.inUse = false
+			sessionData.sessionOwner.Store(0)
+			sessionData.inUse.Store(false)
 			sessionData.Reset()
 			sm.sessionPool.Put(sessionData)
 			atomic.AddInt64(&sm.activeSessions, -1)
@@ -1078,7 +1142,11 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 		// Check session timeout
 		if sessionData.getCreatedAtUnsafe() > 0 {
 			if time.Since(time.Unix(sessionData.getCreatedAtUnsafe(), 0)) > sm.sessionMaxAge {
-				_ = sessionData.Clear(r, nil) // Safe to ignore: session is being invalidated
+				// handleError returns the session to the pool and fully
+				// resets it; do NOT call Clear() here too, or the same
+				// pointer is pooled twice (two GetSession calls hand out
+				// one shared object -> data race / session bleed) and
+				// activeSessions is double-decremented.
 				return handleError(fmt.Errorf("session timeout"), "session expired")
 			}
 		}
@@ -1098,7 +1166,8 @@ func (sm *SessionManager) GetSession(r *http.Request) (*SessionData, error) {
 
 	if createdAt, ok := sessionData.mainSession.Values["created_at"].(int64); ok {
 		if time.Since(time.Unix(createdAt, 0)) > sm.sessionMaxAge {
-			_ = sessionData.Clear(r, nil) // Safe to ignore: session is being invalidated
+			// handleError returns the session to the pool and resets it;
+			// do not also call Clear() (double pool-put, see above).
 			return handleError(fmt.Errorf("session timeout"), "session expired")
 		}
 	}
@@ -1157,6 +1226,12 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 		sm.logger.Debugf("Invalid combined cookie chunk count: %v", firstChunk.Values["n"])
 		return false
 	}
+	// The first chunk must carry index 0; a set whose metadata disagrees with
+	// its cookie position is a mixed-generation set from an interrupted save.
+	if idx, idxOk := firstChunk.Values["i"].(int); !idxOk || idx != 0 {
+		sm.logger.Debugf("Combined cookie chunk 0 has invalid index: %v", firstChunk.Values["i"])
+		return false
+	}
 
 	// Load all chunks
 	chunkSessions := make([]*sessions.Session, totalChunks)
@@ -1167,6 +1242,16 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 		chunk, err := sm.store.Get(r, sm.combinedChunkCookieName(i))
 		if err != nil || chunk.IsNew {
 			sm.logger.Debugf("Missing combined cookie chunk %d", i)
+			return false
+		}
+		// Verify each chunk's own stored index/count match its cookie
+		// position. Without this a partial write can leave a cookie set of
+		// mixed generations that reassembles and decompresses into
+		// valid-looking but wrong session data.
+		idx, idxOk := chunk.Values["i"].(int)
+		n, nOk := chunk.Values["n"].(int)
+		if !idxOk || idx != i || !nOk || n != totalChunks {
+			sm.logger.Debugf("Combined cookie chunk %d has mismatched metadata (i=%v n=%v, want i=%d n=%d)", i, chunk.Values["i"], chunk.Values["n"], i, totalChunks)
 			return false
 		}
 		chunkSessions[i] = chunk
@@ -1200,6 +1285,7 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 	sessionData.mainSession.Values["nonce"] = payload.N
 	sessionData.mainSession.Values["code_verifier"] = payload.Cv
 	sessionData.mainSession.Values["incoming_path"] = payload.Ip
+	sessionData.mainSession.Values["redirect_url"] = payload.Ru
 	sessionData.mainSession.Values["created_at"] = payload.Ca
 	sessionData.mainSession.Values["redirect_count"] = payload.Rc
 
@@ -1213,6 +1299,9 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 
 	sessionData.refreshSession.Values["token"] = payload.R
 	sessionData.refreshSession.Values["compressed"] = false
+	if payload.Ri > 0 {
+		sessionData.refreshSession.Values["issued_at"] = payload.Ri
+	}
 
 	sessionData.idTokenSession.Values["token"] = payload.I
 	sessionData.idTokenSession.Values["compressed"] = false
@@ -1229,7 +1318,14 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 //   - chunks: The map (typically SessionData.accessTokenChunks or SessionData.refreshTokenChunks)
 //     to populate with the found session chunks.
 func (sm *SessionManager) getTokenChunkSessions(r *http.Request, baseName string, chunks map[int]*sessions.Session) {
-	for i := 0; ; i++ {
+	// Bound the scan at MaxChunks (50) so an oversized set of chunk
+	// cookies (attack or corruption) can't drive unbounded
+	// securecookie decrypts. Loading through index 50 still lets
+	// processChunkedToken's len(chunks) > MaxChunks check fire, so the
+	// overflow → error behavior is unchanged; indices beyond 50 would be
+	// rejected anyway (R183).
+	const maxChunkScan = 50
+	for i := 0; i <= maxChunkScan; i++ {
 		sessionName := fmt.Sprintf("%s_%d", baseName, i)
 		session, err := sm.store.Get(r, sessionName)
 		if err != nil || session.IsNew {
@@ -1275,7 +1371,44 @@ type SessionData struct {
 
 	dirty bool
 
-	inUse bool
+	// expireCookie is a one-shot flag set by Clear to force the cookies it
+	// writes to be expired (Max-Age: -1). Without it, Save rebuilds a
+	// positive MaxAge and logout leaves an empty session cookie alive for
+	// the full session lifetime instead of expiring it (R101).
+	expireCookie bool
+
+	// inUse is a best-effort, observational "is this object currently
+	// checked out" flag kept for callers that only need a snapshot (e.g.
+	// token_manager.go's refreshToken abort check). It is updated in
+	// lockstep with sessionOwner but is NOT itself the ownership gate --
+	// see sessionOwner below. FIX-10 follow-up: it used to be, paired with
+	// generation, but two independent atomics left a TOCTOU gap (session.go
+	// re-review finding at line 1829): a stale returnToPoolIfOwner could
+	// read a matching generation and then CompareAndSwap this exact flag
+	// after a NEW owner had already set it true, releasing a session that
+	// owner was actively using.
+	inUse atomic.Bool
+
+	// generation counts every handout of this pooled object (bumped by
+	// GetSession and newSession, once each). It is the value ownerGeneration
+	// reports and the value returnToPoolIfOwner is asked to match; it never
+	// resets to zero (not even when the object is pooled), so it uniquely
+	// identifies one particular acquisition for the lifetime of the process.
+	generation atomic.Uint64
+
+	// sessionOwner is the single atomic word that decides ownership: 0 means
+	// free (in the pool, nobody owns it); any nonzero value is the
+	// generation of whoever currently owns it. A handout claims the object
+	// with sessionOwner.Store(newGeneration); a release claims it back with
+	// a CompareAndSwap that checks the expected generation and clears
+	// ownership in the SAME atomic step. Packing the "is this still owned by
+	// generation G" check and the "release it" mutation into one
+	// CompareAndSwap (instead of a separate Load-then-act on inUse) is what
+	// closes the TOCTOU: generation is monotonic and never reused, so once a
+	// new owner's Store overwrites sessionOwner, no later CAS naming an
+	// older generation can ever match again, regardless of how the CAS is
+	// timed against the new owner's own writes.
+	sessionOwner atomic.Uint64
 
 	// cachedClaimsToken is the ID token string whose claims were last parsed and
 	// cached. A lazy, per-request cache to avoid re-parsing the JWT on every
@@ -1316,10 +1449,22 @@ func (sd *SessionData) MarkDirty() {
 // Returns:
 //   - An error if saving any of the session components fails.
 func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
-	isSecure := r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil || sd.manager.forceHTTPS
+	// X-Forwarded-Proto value is compared case-insensitively: reverse proxies
+	// (nginx, Traefik) emit lowercase "https", but a client-controllable or
+	// non-canonical value like "HTTPS" must still yield a Secure cookie.
+	// Case-sensitive comparison here would silently downgrade the session
+	// cookie to transport-unsafe on such a header (R143).
+	isSecure := strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") || r.TLS != nil || sd.manager.forceHTTPS
 
 	options := sd.manager.getSessionOptions(isSecure)
 	options = sd.manager.EnhanceSessionSecurity(options, r)
+
+	if sd.expireCookie {
+		// Clear set this flag: the cookies written below must be expired,
+		// not re-issued with a fresh positive MaxAge.
+		options.MaxAge = -1
+		sd.expireCookie = false
+	}
 
 	// Use combined storage for new sessions
 	if sd.useCombinedStorage {
@@ -1333,7 +1478,11 @@ func (sd *SessionData) Save(r *http.Request, w http.ResponseWriter) error {
 // saveCombined saves all session data in a single compressed, chunked cookie.
 // This reduces cookie count and total size through combined compression.
 func (sd *SessionData) saveCombined(r *http.Request, w http.ResponseWriter, options *sessions.Options) error {
-	// Build the combined payload
+	// Build the combined payload. All token/main fields are read under
+	// sessionMutex.RLock so a concurrent Set* (which writes under the
+	// write side) can't tear the payload mid-build (R132). The extra-map
+	// walk below already took the Read side; extend it to the field reads.
+	sd.sessionMutex.RLock()
 	payload := &combinedSessionPayload{
 		A:  sd.getAccessTokenUnsafe(),
 		R:  sd.getRefreshTokenUnsafe(),
@@ -1344,12 +1493,18 @@ func (sd *SessionData) saveCombined(r *http.Request, w http.ResponseWriter, opti
 		N:  sd.getNonceUnsafe(),
 		Cv: sd.getCodeVerifierUnsafe(),
 		Ip: sd.getIncomingPathUnsafe(),
+		Ru: sd.getRedirectURLUnsafe(),
 		Ca: sd.getCreatedAtUnsafe(),
 		Rc: sd.getRedirectCountUnsafe(),
 	}
+	// Persist the refresh token's issued_at so maxRefreshTokenAge keeps
+	// working after a combined save/load round-trip (it lives on
+	// refreshSession, which is otherwise dropped by combined storage).
+	if ra, ok := sd.refreshSession.Values["issued_at"].(int64); ok {
+		payload.Ri = ra
+	}
 
 	// Collect extra session values not handled by the standard fields
-	sd.sessionMutex.RLock()
 	if sd.mainSession != nil && len(sd.mainSession.Values) > 0 {
 		extra := make(map[string]interface{})
 		for key, val := range sd.mainSession.Values {
@@ -1374,7 +1529,11 @@ func (sd *SessionData) saveCombined(r *http.Request, w http.ResponseWriter, opti
 	compressed, err := compressCombinedPayload(payload)
 	if err != nil {
 		sd.manager.logger.Errorf("Failed to compress combined payload: %v", err)
-		// Fall back to legacy storage on compression failure
+		// Fall back to legacy storage on compression failure. Expire any
+		// pre-existing combined chunk cookies first, or GetSession
+		// (combined-first) would keep serving the stale combined payload
+		// and shadow the freshly written legacy tokens (R163).
+		sd.expireOldCombinedChunks(r, w, options, 0)
 		return sd.saveLegacy(r, w, options)
 	}
 
@@ -1383,8 +1542,15 @@ func (sd *SessionData) saveCombined(r *http.Request, w http.ResponseWriter, opti
 	// Split into chunks
 	chunks := splitCombinedIntoChunks(compressed, maxCookieSize)
 	if len(chunks) > maxCombinedChunks {
-		sd.manager.logger.Errorf("Combined session requires %d chunks, exceeds max %d", len(chunks), maxCombinedChunks)
-		return fmt.Errorf("session data too large: requires %d chunks, max is %d", len(chunks), maxCombinedChunks)
+		sd.manager.logger.Errorf("Combined session requires %d chunks, exceeds max %d; falling back to legacy storage", len(chunks), maxCombinedChunks)
+		// The legacy path supports up to 50 token chunks (~100KB), so large
+		// tokens must not drop the session entirely — persist via the
+		// legacy (per-token chunk) format instead of erroring and forcing
+		// the user to re-authenticate (R97). Expire the old combined
+		// chunks first so GetSession's combined-first read serves the
+		// fresh legacy tokens rather than the stale combined payload (R163).
+		sd.expireOldCombinedChunks(r, w, options, 0)
+		return sd.saveLegacy(r, w, options)
 	}
 
 	sd.manager.logger.Debugf("Combined session split into %d chunks", len(chunks))
@@ -1543,20 +1709,24 @@ func (sd *SessionData) expireLegacyCookies(r *http.Request, w http.ResponseWrite
 	expireLegacyMain(sd.manager.refreshTokenCookieName())
 	expireLegacyMain(sd.manager.idTokenCookieName())
 
-	// Expire legacy chunk cookies (safe to clear values, they're separate from main sessions)
-	for i := 0; i < 50; i++ { // Max legacy chunks was 50
-		accessChunk := fmt.Sprintf("%s_%d", sd.manager.accessTokenCookieName(), i)
-		refreshChunk := fmt.Sprintf("%s_%d", sd.manager.refreshTokenCookieName(), i)
-		idChunk := fmt.Sprintf("%s_%d", sd.manager.idTokenCookieName(), i)
-
-		session, err := sd.manager.store.Get(r, accessChunk)
-		if err != nil || session.IsNew {
-			break // No more chunks
+	// Expire legacy chunk cookies (safe to clear values, they're separate from main sessions).
+	// Each token type is walked to its own limit so a small, un-chunked access token
+	// does not gate refresh/id chunk expiry (R133 P2-A): previously the shared
+	// access-driven loop broke all three series at the first absent access chunk,
+	// leaving stale refresh/id legacy chunk cookies behind after combined migration.
+	expireLegacyChunkSeries := func(baseName string) {
+		for i := 0; i < 50; i++ { // Max legacy chunks was 50
+			chunk := fmt.Sprintf("%s_%d", baseName, i)
+			session, err := sd.manager.store.Get(r, chunk)
+			if err != nil || session.IsNew {
+				break // No more chunks for this token type
+			}
+			expireLegacyChunk(chunk)
 		}
-		expireLegacyChunk(accessChunk)
-		expireLegacyChunk(refreshChunk)
-		expireLegacyChunk(idChunk)
 	}
+	expireLegacyChunkSeries(sd.manager.accessTokenCookieName())
+	expireLegacyChunkSeries(sd.manager.refreshTokenCookieName())
+	expireLegacyChunkSeries(sd.manager.idTokenCookieName())
 }
 
 // clearSessionValues removes all values from a session and optionally expires it.
@@ -1610,6 +1780,15 @@ func (sd *SessionData) clearAllSessionData(r *http.Request, expire bool) {
 	}
 }
 
+// sessionClearReleaseHook, when non-nil, runs synchronously right after
+// Clear has released its SessionData back to the object pool (but before
+// Clear returns to its caller). Tests use it to deterministically let a
+// concurrent acquirer claim the freed object before the caller's own
+// deferred pool-return (see ServeHTTP, middleware.go:700-701) runs --
+// reproducing the ABA window FIX-10 closes without depending on
+// sync.Pool's unspecified reuse timing. Always nil outside tests.
+var sessionClearReleaseHook func(*SessionData)
+
 // Clear completely clears all session data and safely returns the session to the pool.
 // It removes all authentication data, expires cookies, and handles panic recovery.
 // This method ensures the SessionData object is always returned to the pool.
@@ -1622,6 +1801,9 @@ func (sd *SessionData) clearAllSessionData(r *http.Request, expire bool) {
 func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	defer func() {
 		sd.returnToPoolSafely()
+		if sessionClearReleaseHook != nil {
+			sessionClearReleaseHook(sd)
+		}
 	}()
 
 	sd.sessionMutex.Lock()
@@ -1637,6 +1819,7 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 			// Return a test error without trying to save problematic data
 			err = fmt.Errorf("test error triggered by X-Test-Error header")
 		} else {
+			sd.expireCookie = true
 			err = sd.Save(r, w)
 		}
 	}
@@ -1646,18 +1829,97 @@ func (sd *SessionData) Clear(r *http.Request, w http.ResponseWriter) error {
 	return err
 }
 
-// returnToPoolSafely safely returns the session to the object pool.
-// Add thread-safe helper method to return session to pool.
-// It ensures the session is marked as not in use and properly reset before pooling.
+// releaseToPool performs the bookkeeping shared by every pool-return path,
+// once a caller has already won exclusive ownership via a sessionOwner
+// compare-and-swap. It must never run except immediately after such a CAS
+// succeeds -- callers hold no other synchronization, so sd must be provably
+// unreachable from anyone else by the time this runs.
+func (sd *SessionData) releaseToPool() {
+	sd.inUse.Store(false)
+	sd.Reset()
+	sd.manager.sessionPool.Put(sd)
+	atomic.AddInt64(&sd.manager.activeSessions, -1)
+}
+
+// returnToPoolSafely safely returns the session to the object pool
+// regardless of which generation currently owns it (an unconditional
+// release). Add thread-safe helper method to return session to pool. It
+// ensures the session is marked as not in use and properly reset before
+// pooling.
+//
+// Use this only from a call site that is provably still the CURRENT owner
+// at the time it runs (no Clear()+reacquire could have happened on this
+// exact pointer in between) -- e.g. a plain deferred return registered
+// right after acquiring the session, with no session.Clear() call anywhere
+// in between. A call site that cannot make that guarantee (see ServeHTTP)
+// must capture ownerGeneration() at acquire time and use
+// returnToPoolIfOwner instead: unlike that method, returnToPoolSafely does
+// not check WHICH generation currently owns sd, only THAT one does, so it
+// will happily release a different (newer) owner's live session.
 func (sd *SessionData) returnToPoolSafely() {
-	if sd != nil && sd.manager != nil {
-		if sd.inUse {
-			sd.inUse = false
-			sd.Reset()
-			sd.manager.sessionPool.Put(sd)
-			atomic.AddInt64(&sd.manager.activeSessions, -1)
+	if sd == nil || sd.manager == nil {
+		return
+	}
+	// Exactly-once return: the ownership check ("does anyone currently own
+	// this object?") and claiming it back ("mark it free") happen as a
+	// single sessionOwner CompareAndSwap per attempt, retried only while a
+	// concurrent releaser is racing the SAME transition. Without this, two
+	// concurrent calls (e.g. request path + a goroutine cleanup) could both
+	// observe ownership and both Put the same SessionData back into the
+	// pool, leaving it present twice — which later yields two concurrent
+	// holders of one session (double side-effects) plus an extra
+	// activeSessions decrement.
+	for {
+		cur := sd.sessionOwner.Load()
+		if cur == 0 {
+			return // already free
+		}
+		if sd.sessionOwner.CompareAndSwap(cur, 0) {
+			break
 		}
 	}
+	sd.releaseToPool()
+}
+
+// ownerGeneration returns sd's current ownership generation. GetSession and
+// newSession each bump this once per handout, so it uniquely identifies
+// this particular acquisition of a pooled object. A caller that must defer
+// a pool-return across a call chain that might itself Clear() and
+// reacquire the same object (see middleware.go ServeHTTP) should capture
+// this value right after acquiring the session and pass it to
+// returnToPoolIfOwner instead of deferring returnToPoolSafely directly.
+func (sd *SessionData) ownerGeneration() uint64 {
+	if sd == nil {
+		return 0
+	}
+	return sd.generation.Load()
+}
+
+// returnToPoolIfOwner returns sd to the pool only if gen (the value
+// ownerGeneration reported when the caller acquired it) still names the
+// CURRENT owner. If sd.Clear() already returned this object to the pool and
+// a GetSession/newSession call handed it to a new owner before this call
+// runs, this is a stale deferred return from a PREVIOUS owner and is a
+// deliberate no-op.
+//
+// The "is gen still the owner" check and the release both happen inside one
+// sessionOwner.CompareAndSwap(gen, 0): there is no separate load-then-act
+// step for a concurrent handout to land inside. This closes a TOCTOU that a
+// two-field design (a bool "in use" flag plus a separate generation
+// counter) could not: GetSession/newSession write those two fields with
+// unavoidable daylight between them, so a stale caller could read a
+// matching generation, then have its release's compare-and-swap land AFTER
+// a new owner had already flipped the bool -- releasing a session that new
+// owner was actively using (re-review finding at session.go:1829, a
+// follow-up to FIX-10).
+func (sd *SessionData) returnToPoolIfOwner(gen uint64) {
+	if sd == nil || sd.manager == nil {
+		return
+	}
+	if !sd.sessionOwner.CompareAndSwap(gen, 0) {
+		return
+	}
+	sd.releaseToPool()
 }
 
 // clearTokenChunks clears and expires all token chunk sessions.
@@ -1742,11 +2004,20 @@ func (sd *SessionData) SetAuthenticated(value bool) error {
 			changed = true
 		}
 		sd.mainSession.ID = id
-		newCreationTime := time.Now().Unix()
-		if oldTime, ok := sd.mainSession.Values["created_at"].(int64); !ok || oldTime != newCreationTime {
-			changed = true
+		// Anchor the creation timestamp only when first authenticating
+		// (transition from unauthenticated). Re-asserting an already-
+		// authenticated session — e.g. on every token refresh — must not
+		// advance the absolute session-max-age clock, otherwise an active
+		// client's session (and a captured cookie that keeps refreshing)
+		// never reaches the configured maximum (sliding window defeats the
+		// absolute timeout).
+		if currentAuth != value {
+			newCreationTime := time.Now().Unix()
+			if oldTime, ok := sd.mainSession.Values["created_at"].(int64); !ok || oldTime != newCreationTime {
+				changed = true
+			}
+			sd.mainSession.Values["created_at"] = newCreationTime
 		}
-		sd.mainSession.Values["created_at"] = newCreationTime
 		if oldAuth, ok := sd.mainSession.Values["authenticated"].(bool); !ok || oldAuth != value {
 			changed = true
 		}
@@ -1805,7 +2076,8 @@ func (sd *SessionData) Reset() {
 	}
 
 	sd.dirty = false
-	sd.inUse = false
+	sd.sessionOwner.Store(0)
+	sd.inUse.Store(false)
 	sd.request = nil
 	sd.useCombinedStorage = true // Reset to use combined storage by default
 
@@ -1821,16 +2093,13 @@ func (sd *SessionData) Reset() {
 }
 
 // ReturnToPool manually returns the session to the object pool.
-// This is used in cleanup paths where Clear() is not called, to prevent memory leaks.
-// It only returns the session if it's not currently in use.
+// This is used in cleanup paths where Clear() is not called, to prevent
+// memory leaks. It is the unconditional release (see returnToPoolSafely for
+// the exactly-once contract and when NOT to use it): both share the same
+// sessionOwner-based gate so a caller cannot pick whichever of the two
+// leaves the object in an inconsistent, doubly-released state.
 func (sd *SessionData) ReturnToPool() {
-	if sd != nil && sd.manager != nil {
-		if !sd.inUse {
-			sd.Reset()
-			sd.manager.sessionPool.Put(sd)
-			atomic.AddInt64(&sd.manager.activeSessions, -1)
-		}
-	}
+	sd.returnToPoolSafely()
 }
 
 // GetAccessToken retrieves the user's access token from session storage.
@@ -1926,19 +2195,19 @@ func (sd *SessionData) SetAccessToken(token string) {
 		return
 	}
 
-	if sd.request != nil {
-		sd.expireAccessTokenChunksEnhanced(nil)
-	}
-
-	for k := range sd.accessTokenChunks {
-		delete(sd.accessTokenChunks, k)
-	}
+	// Defer clearing the PREVIOUS access token (its HTTP chunk cookies and the
+	// in-memory chunk map) until the new token's storage is fully validated.
+	// Clearing first, then aborting on a too-large new token (>100KB after
+	// compression, or >50 chunks) would leave the previous still-valid access
+	// token nowhere — GetAccessToken returns "" and the user is forced to
+	// re-authenticate (R122). We commit the clear only once we're replacing it.
 
 	if token == "" {
 		if sd.accessSession != nil {
 			sd.accessSession.Values["token"] = ""
 			sd.accessSession.Values["compressed"] = false
 		}
+		sd.clearAccessTokenChunks()
 		return
 	}
 
@@ -1967,6 +2236,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 	}
 
 	if len(compressed) <= maxCookieSize {
+		sd.clearAccessTokenChunks()
 		if sd.accessSession != nil {
 			sd.accessSession.Values["token"] = compressed
 			sd.accessSession.Values["compressed"] = (compressed != token)
@@ -1977,10 +2247,12 @@ func (sd *SessionData) SetAccessToken(token string) {
 			}
 		}
 	} else {
-		if sd.accessSession != nil {
-			sd.accessSession.Values["token"] = ""
-			sd.accessSession.Values["compressed"] = (compressed != token)
-		}
+		// WARNING: do not clear the existing token (accessSession.Values
+		// ["token"] / accessTokenChunks) until the new token's chunks are
+		// validated below. Clearing first meant an abort on any chunk
+		// failure (too many chunks, reassembly mismatch) left NO token
+		// anywhere -> GetAccessToken returned "" -> forced re-auth (data
+		// loss of the previous still-valid access token).
 
 		chunks := splitIntoChunks(compressed, maxCookieSize)
 
@@ -1995,9 +2267,21 @@ func (sd *SessionData) SetAccessToken(token string) {
 		}
 
 		testReassembled := strings.Join(chunks, "")
+		// R188 cross-chunk integrity: bind all chunks to one another so a
+		// mix of authentic-but-different chunk sets is caught at assembly
+		// (see processChunkedToken). Stored on every chunk.
+		chunkIntegrity := fmt.Sprintf("%x", sha256.Sum256([]byte(testReassembled)))
 		if testReassembled != compressed {
 			sd.manager.logger.Debug("Access token chunk reassembly test failed")
 			return
+		}
+
+		// Validation passed: now it is safe to clear the existing token
+		// before storing the new chunked one.
+		sd.clearAccessTokenChunks()
+		if sd.accessSession != nil {
+			sd.accessSession.Values["token"] = ""
+			sd.accessSession.Values["compressed"] = (compressed != token)
 		}
 
 		for i, chunkData := range chunks {
@@ -2032,10 +2316,26 @@ func (sd *SessionData) SetAccessToken(token string) {
 			session.Values["token_chunk"] = chunkData
 			session.Values["compressed"] = (compressed != token)
 			session.Values["chunk_created_at"] = time.Now().Unix()
+			session.Values["token_total"] = len(chunks)
+			session.Values["chunk_integrity"] = chunkIntegrity
 			sd.accessTokenChunks[i] = session
 		}
 
 		sd.manager.logger.Debugf("SUCCESS: Stored access token in %d chunks", len(chunks))
+	}
+}
+
+// clearAccessTokenChunks expires the current access token's HTTP chunk cookies
+// (via expireAccessTokenChunksEnhanced) and clears the in-memory access
+// token chunk map. Callers invoke it only once they are committed to
+// replacing the token, so a failed (too-large) store leaves the previous
+// valid access token intact. Called with sd.sessionMutex already held.
+func (sd *SessionData) clearAccessTokenChunks() {
+	if sd.request != nil {
+		sd.expireAccessTokenChunksEnhanced(nil)
+	}
+	for k := range sd.accessTokenChunks {
+		delete(sd.accessTokenChunks, k)
 	}
 }
 
@@ -2134,15 +2434,14 @@ func (sd *SessionData) SetRefreshToken(token string) {
 	}
 	sd.dirty = true
 
-	if sd.request != nil {
-		sd.expireRefreshTokenChunksEnhanced(nil)
-	}
-
-	for k := range sd.refreshTokenChunks {
-		delete(sd.refreshTokenChunks, k)
-	}
-
 	if token == "" {
+		// Explicit clear: the caller wants the previous token gone.
+		if sd.request != nil {
+			sd.expireRefreshTokenChunksEnhanced(nil)
+		}
+		for k := range sd.refreshTokenChunks {
+			delete(sd.refreshTokenChunks, k)
+		}
 		sd.refreshSession.Values["token"] = ""
 		sd.refreshSession.Values["compressed"] = false
 		return
@@ -2159,69 +2458,100 @@ func (sd *SessionData) SetRefreshToken(token string) {
 	}
 
 	if len(compressed) <= maxCookieSize {
+		// Single-cookie layout: nothing to validate, safe to swap.
+		if sd.request != nil {
+			sd.expireRefreshTokenChunksEnhanced(nil)
+		}
+		for k := range sd.refreshTokenChunks {
+			delete(sd.refreshTokenChunks, k)
+		}
 		sd.refreshSession.Values["token"] = compressed
 		sd.refreshSession.Values["compressed"] = (compressed != token)
 		sd.refreshSession.Values["issued_at"] = time.Now().Unix()
-	} else {
-		sd.refreshSession.Values["token"] = ""
-		sd.refreshSession.Values["compressed"] = (compressed != token)
-		sd.refreshSession.Values["issued_at"] = time.Now().Unix()
-
-		chunks := splitIntoChunks(compressed, maxCookieSize)
-
-		if len(chunks) == 0 {
-			sd.manager.logger.Errorf("CRITICAL: Failed to create chunks for refresh token")
-			return
-		}
-
-		if len(chunks) > 50 {
-			sd.manager.logger.Errorf("CRITICAL: Too many chunks (%d) for refresh token - possible corruption", len(chunks))
-			return
-		}
-
-		testReassembled := strings.Join(chunks, "")
-		if testReassembled != compressed {
-			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk reassembly test failed")
-			return
-		}
-
-		for i, chunkData := range chunks {
-			sessionName := fmt.Sprintf("%s_%d", sd.manager.refreshTokenCookieName(), i)
-
-			if sd.request == nil {
-				sd.manager.logger.Errorf("CRITICAL: SetRefreshToken: sd.request is nil, cannot create chunk session %s", sessionName)
-				return
-			}
-
-			if chunkData == "" {
-				sd.manager.logger.Errorf("CRITICAL: Empty refresh token chunk data at index %d", i)
-				return
-			}
-
-			if len(chunkData) > maxCookieSize {
-				sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
-				return
-			}
-
-			if !validateChunkSize(chunkData) {
-				sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d will exceed browser cookie limits after encoding (raw size: %d)", i, len(chunkData))
-				return
-			}
-
-			session, err := sd.manager.store.Get(sd.request, sessionName)
-			if err != nil {
-				sd.manager.logger.Errorf("CRITICAL: Failed to get refresh token chunk session %s: %v", sessionName, err)
-				return
-			}
-
-			session.Values["token_chunk"] = chunkData
-			session.Values["compressed"] = (compressed != token)
-			session.Values["chunk_created_at"] = time.Now().Unix()
-			sd.refreshTokenChunks[i] = session
-		}
-
-		sd.manager.logger.Debugf("SUCCESS: Stored refresh token in %d chunks", len(chunks))
+		return
 	}
+
+	// Chunked layout: validate every new chunk BEFORE touching anything, so
+	// an abort (request missing, size check, reassembly) leaves the still-
+	// valid prior refresh token intact (R154; extends the R95 access-token
+	// fix to the refresh token). All of this is pure computation on the
+	// chunks slice -- no gorilla store.Get, so nothing session-owned changes
+	// yet.
+	chunks := splitIntoChunks(compressed, maxCookieSize)
+
+	if len(chunks) == 0 {
+		sd.manager.logger.Errorf("CRITICAL: Failed to create chunks for refresh token")
+		return
+	}
+
+	if len(chunks) > 50 {
+		sd.manager.logger.Errorf("CRITICAL: Too many chunks (%d) for refresh token - possible corruption", len(chunks))
+		return
+	}
+
+	if sd.request == nil {
+		sd.manager.logger.Errorf("CRITICAL: SetRefreshToken: sd.request is nil, cannot create chunk sessions")
+		return
+	}
+
+	testReassembled := strings.Join(chunks, "")
+	// R188 cross-chunk integrity: bind all chunks to one another so a mix
+	// of authentic-but-different chunk sets is caught at assembly (see
+	// processChunkedToken). Stored on every chunk.
+	chunkIntegrity := fmt.Sprintf("%x", sha256.Sum256([]byte(testReassembled)))
+	if testReassembled != compressed {
+		sd.manager.logger.Errorf("CRITICAL: Refresh token chunk reassembly test failed")
+		return
+	}
+
+	for i, chunkData := range chunks {
+		if chunkData == "" {
+			sd.manager.logger.Errorf("CRITICAL: Empty refresh token chunk data at index %d", i)
+			return
+		}
+		if len(chunkData) > maxCookieSize {
+			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
+			return
+		}
+		if !validateChunkSize(chunkData) {
+			sd.manager.logger.Errorf("CRITICAL: Refresh token chunk %d will exceed browser cookie limits after encoding (raw size: %d)", i, len(chunkData))
+			return
+		}
+	}
+
+	// Validation passed: expire the OLD chunks (this re-Gets, via
+	// sd.manager.store.Get, the same gorilla-registry-cached *sessions.Session
+	// objects GetSession already loaded for this request) BEFORE fetching or
+	// filling the NEW ones. Doing this after the fill (the previous order)
+	// re-Gets and wipes the exact objects this call just wrote, because the
+	// registry hands back the identical cached object for a given cookie
+	// name on this request (FIX-05; matches the SetAccessToken order).
+	sd.expireRefreshTokenChunksEnhanced(nil)
+	for k := range sd.refreshTokenChunks {
+		delete(sd.refreshTokenChunks, k)
+	}
+	sd.refreshSession.Values["token"] = ""
+	sd.refreshSession.Values["compressed"] = (compressed != token)
+	sd.refreshSession.Values["issued_at"] = time.Now().Unix()
+
+	for i, chunkData := range chunks {
+		sessionName := fmt.Sprintf("%s_%d", sd.manager.refreshTokenCookieName(), i)
+
+		session, err := sd.manager.store.Get(sd.request, sessionName)
+		if err != nil {
+			sd.manager.logger.Errorf("CRITICAL: Failed to get refresh token chunk session %s: %v", sessionName, err)
+			return
+		}
+
+		session.Values["token_chunk"] = chunkData
+		session.Values["compressed"] = (compressed != token)
+		session.Values["chunk_created_at"] = time.Now().Unix()
+		session.Values["token_total"] = len(chunks)
+		session.Values["chunk_integrity"] = chunkIntegrity
+		sd.refreshTokenChunks[i] = session
+	}
+
+	sd.manager.logger.Debugf("SUCCESS: Stored refresh token in %d chunks", len(chunks))
 }
 
 // GetRefreshTokenIssuedAt retrieves the timestamp when the refresh token was issued/stored.
@@ -2468,6 +2798,8 @@ func isCorruptionMarker(data string) bool {
 // Returns:
 //   - The CSRF token string, or an empty string if not set.
 func (sd *SessionData) GetCSRF() string {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
 	csrf, _ := sd.mainSession.Values["csrf"].(string)
 	return csrf
 }
@@ -2477,6 +2809,8 @@ func (sd *SessionData) GetCSRF() string {
 // Parameters:
 //   - token: The CSRF token to store.
 func (sd *SessionData) SetCSRF(token string) {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
 	currentVal, _ := sd.mainSession.Values["csrf"].(string)
 	if currentVal != token {
 		sd.mainSession.Values["csrf"] = token
@@ -2490,6 +2824,8 @@ func (sd *SessionData) SetCSRF(token string) {
 // Returns:
 //   - The nonce string, or an empty string if not set.
 func (sd *SessionData) GetNonce() string {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
 	nonce, _ := sd.mainSession.Values["nonce"].(string)
 	return nonce
 }
@@ -2499,6 +2835,8 @@ func (sd *SessionData) GetNonce() string {
 // Parameters:
 //   - nonce: The nonce string to store.
 func (sd *SessionData) SetNonce(nonce string) {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
 	currentVal, _ := sd.mainSession.Values["nonce"].(string)
 	if currentVal != nonce {
 		sd.mainSession.Values["nonce"] = nonce
@@ -2512,6 +2850,8 @@ func (sd *SessionData) SetNonce(nonce string) {
 // Returns:
 //   - The code verifier string, or an empty string if not set or PKCE is disabled.
 func (sd *SessionData) GetCodeVerifier() string {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
 	codeVerifier, _ := sd.mainSession.Values["code_verifier"].(string)
 	return codeVerifier
 }
@@ -2522,6 +2862,8 @@ func (sd *SessionData) GetCodeVerifier() string {
 // Parameters:
 //   - codeVerifier: The PKCE code verifier string to store.
 func (sd *SessionData) SetCodeVerifier(codeVerifier string) {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
 	currentVal, _ := sd.mainSession.Values["code_verifier"].(string)
 	if currentVal != codeVerifier {
 		sd.mainSession.Values["code_verifier"] = codeVerifier
@@ -2563,6 +2905,8 @@ func (sd *SessionData) SetUserIdentifier(userIdentifier string) {
 // Returns:
 //   - The original request URI string, or an empty string if not set.
 func (sd *SessionData) GetIncomingPath() string {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
 	path, _ := sd.mainSession.Values["incoming_path"].(string)
 	return path
 }
@@ -2573,11 +2917,42 @@ func (sd *SessionData) GetIncomingPath() string {
 // Parameters:
 //   - path: The original request URI string (e.g., "/protected/resource?id=123").
 func (sd *SessionData) SetIncomingPath(path string) {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
 	currentVal, _ := sd.mainSession.Values["incoming_path"].(string)
 	if currentVal != path {
 		sd.mainSession.Values["incoming_path"] = path
 		sd.dirty = true
 	}
+}
+
+// GetRedirectURL retrieves the fully-qualified redirect_uri persisted when the
+// authentication flow was initiated. It is consumed at the callback (in place
+// of a per-request rebuild) so a drift in X-Forwarded-Host between the
+// initiate and callback requests cannot change the redirect_uri sent to the
+// provider (R136).
+func (sd *SessionData) GetRedirectURL() string {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
+	ru, _ := sd.mainSession.Values["redirect_url"].(string)
+	return ru
+}
+
+// SetRedirectURL stores the redirect_uri used at initiate time (R136).
+func (sd *SessionData) SetRedirectURL(redirectURL string) {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+	currentVal, _ := sd.mainSession.Values["redirect_url"].(string)
+	if currentVal != redirectURL {
+		sd.mainSession.Values["redirect_url"] = redirectURL
+		sd.dirty = true
+	}
+}
+
+// getRedirectURLUnsafe retrieves the redirect URL without acquiring locks.
+func (sd *SessionData) getRedirectURLUnsafe() string {
+	ru, _ := sd.mainSession.Values["redirect_url"].(string)
+	return ru
 }
 
 // GetIDToken retrieves the user's ID token from session storage.
@@ -2755,14 +3130,6 @@ func (sd *SessionData) SetIDToken(token string) {
 	}
 	sd.dirty = true
 
-	if sd.request != nil {
-		sd.expireIDTokenChunksEnhanced(nil)
-	}
-
-	for k := range sd.idTokenChunks {
-		delete(sd.idTokenChunks, k)
-	}
-
 	if token == "" {
 		if sd.idTokenSession != nil {
 			sd.idTokenSession.Values["token"] = ""
@@ -2782,71 +3149,101 @@ func (sd *SessionData) SetIDToken(token string) {
 	}
 
 	if len(compressed) <= maxCookieSize {
+		// Single-cookie layout: nothing to validate, safe to swap.
+		if sd.request != nil {
+			sd.expireIDTokenChunksEnhanced(nil)
+		}
+		for k := range sd.idTokenChunks {
+			delete(sd.idTokenChunks, k)
+		}
 		if sd.idTokenSession != nil {
 			sd.idTokenSession.Values["token"] = compressed
 			sd.idTokenSession.Values["compressed"] = (compressed != token)
 		}
-	} else {
-		if sd.idTokenSession != nil {
-			sd.idTokenSession.Values["token"] = ""
-			sd.idTokenSession.Values["compressed"] = (compressed != token)
-		}
-
-		chunks := splitIntoChunks(compressed, maxCookieSize)
-
-		if len(chunks) == 0 {
-			sd.manager.logger.Errorf("CRITICAL: Failed to create chunks for ID token")
-			return
-		}
-
-		if len(chunks) > 50 {
-			sd.manager.logger.Errorf("CRITICAL: Too many chunks (%d) for ID token - possible corruption", len(chunks))
-			return
-		}
-
-		testReassembled := strings.Join(chunks, "")
-		if testReassembled != compressed {
-			sd.manager.logger.Errorf("CRITICAL: ID token chunk reassembly test failed")
-			return
-		}
-
-		for i, chunkData := range chunks {
-			sessionName := fmt.Sprintf("%s_%d", sd.manager.idTokenCookieName(), i)
-
-			if sd.request == nil {
-				sd.manager.logger.Errorf("CRITICAL: SetIDToken: sd.request is nil, cannot create chunk session %s", sessionName)
-				return
-			}
-
-			if chunkData == "" {
-				sd.manager.logger.Debug("Empty chunk data at index %d", i)
-				return
-			}
-
-			if len(chunkData) > maxCookieSize {
-				sd.manager.logger.Info("Chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
-				return
-			}
-
-			if !validateChunkSize(chunkData) {
-				sd.manager.logger.Errorf("CRITICAL: ID token chunk %d will exceed browser cookie limits after encoding (raw size: %d)", i, len(chunkData))
-				return
-			}
-
-			session, err := sd.manager.store.Get(sd.request, sessionName)
-			if err != nil {
-				sd.manager.logger.Errorf("CRITICAL: Failed to get chunk session %s: %v", sessionName, err)
-				return
-			}
-
-			session.Values["token_chunk"] = chunkData
-			session.Values["compressed"] = (compressed != token)
-			session.Values["chunk_created_at"] = time.Now().Unix()
-			sd.idTokenChunks[i] = session
-		}
-
-		sd.manager.logger.Debugf("SUCCESS: Stored ID token in %d chunks", len(chunks))
+		return
 	}
+
+	// Chunked layout: validate every new chunk BEFORE touching anything, so
+	// an abort (request missing, size check, reassembly) leaves the still-
+	// valid prior ID token intact (R154; extends the R95 access-token fix
+	// to the ID token). All of this is pure computation on the chunks
+	// slice -- no gorilla store.Get, so nothing session-owned changes yet.
+	chunks := splitIntoChunks(compressed, maxCookieSize)
+
+	if len(chunks) == 0 {
+		sd.manager.logger.Errorf("CRITICAL: Failed to create chunks for ID token")
+		return
+	}
+
+	if len(chunks) > 50 {
+		sd.manager.logger.Errorf("CRITICAL: Too many chunks (%d) for ID token - possible corruption", len(chunks))
+		return
+	}
+
+	if sd.request == nil {
+		sd.manager.logger.Errorf("CRITICAL: SetIDToken: sd.request is nil, cannot create chunk sessions")
+		return
+	}
+
+	testReassembled := strings.Join(chunks, "")
+	// R188 cross-chunk integrity: bind all chunks to one another so a mix
+	// of authentic-but-different chunk sets is caught at assembly (see
+	// processChunkedToken). Stored on every chunk.
+	chunkIntegrity := fmt.Sprintf("%x", sha256.Sum256([]byte(testReassembled)))
+	if testReassembled != compressed {
+		sd.manager.logger.Errorf("CRITICAL: ID token chunk reassembly test failed")
+		return
+	}
+
+	for i, chunkData := range chunks {
+		if chunkData == "" {
+			sd.manager.logger.Debug("Empty chunk data at index %d", i)
+			return
+		}
+		if len(chunkData) > maxCookieSize {
+			sd.manager.logger.Info("Chunk %d size %d exceeds maxCookieSize %d", i, len(chunkData), maxCookieSize)
+			return
+		}
+		if !validateChunkSize(chunkData) {
+			sd.manager.logger.Errorf("CRITICAL: ID token chunk %d will exceed browser cookie limits after encoding (raw size: %d)", i, len(chunkData))
+			return
+		}
+	}
+
+	// Validation passed: expire the OLD chunks (this re-Gets, via
+	// sd.manager.store.Get, the same gorilla-registry-cached *sessions.Session
+	// objects GetSession already loaded for this request) BEFORE fetching or
+	// filling the NEW ones. Doing this after the fill (the previous order)
+	// re-Gets and wipes the exact objects this call just wrote, because the
+	// registry hands back the identical cached object for a given cookie
+	// name on this request (FIX-05; matches the SetAccessToken order).
+	sd.expireIDTokenChunksEnhanced(nil)
+	for k := range sd.idTokenChunks {
+		delete(sd.idTokenChunks, k)
+	}
+	if sd.idTokenSession != nil {
+		sd.idTokenSession.Values["token"] = ""
+		sd.idTokenSession.Values["compressed"] = (compressed != token)
+	}
+
+	for i, chunkData := range chunks {
+		sessionName := fmt.Sprintf("%s_%d", sd.manager.idTokenCookieName(), i)
+
+		session, err := sd.manager.store.Get(sd.request, sessionName)
+		if err != nil {
+			sd.manager.logger.Errorf("CRITICAL: Failed to get chunk session %s: %v", sessionName, err)
+			return
+		}
+
+		session.Values["token_chunk"] = chunkData
+		session.Values["compressed"] = (compressed != token)
+		session.Values["chunk_created_at"] = time.Now().Unix()
+		session.Values["token_total"] = len(chunks)
+		session.Values["chunk_integrity"] = chunkIntegrity
+		sd.idTokenChunks[i] = session
+	}
+
+	sd.manager.logger.Debugf("SUCCESS: Stored ID token in %d chunks", len(chunks))
 }
 
 // GetRedirectCount returns the number of redirects in the current authentication flow.
@@ -2854,6 +3251,8 @@ func (sd *SessionData) SetIDToken(token string) {
 // Returns:
 //   - The current redirect count, 0 if not set.
 func (sd *SessionData) GetRedirectCount() int {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
 	if count, ok := sd.mainSession.Values["redirect_count"].(int); ok {
 		return count
 	}
@@ -2864,7 +3263,9 @@ func (sd *SessionData) GetRedirectCount() int {
 // STABILITY FIX: Prevents infinite redirect loops by tracking successive redirects.
 // Used to detect potential redirect loops and abort authentication if too many occur.
 func (sd *SessionData) IncrementRedirectCount() {
-	currentCount := sd.GetRedirectCount()
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+	currentCount := sd.getRedirectCountUnsafe()
 	sd.mainSession.Values["redirect_count"] = currentCount + 1
 	sd.dirty = true
 }
@@ -2873,6 +3274,8 @@ func (sd *SessionData) IncrementRedirectCount() {
 // STABILITY FIX: Prevents infinite redirect loops by clearing the counter
 // when authentication completes successfully or when starting a new flow.
 func (sd *SessionData) ResetRedirectCount() {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
 	sd.mainSession.Values["redirect_count"] = 0
 	sd.dirty = true
 }

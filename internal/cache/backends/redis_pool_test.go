@@ -367,7 +367,47 @@ func TestConnectionPool_Close(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestConnectionPool_Timeouts tests various timeout scenarios
+// TestConnectionPool_GetDuringClose_NoNilRegression ensures a Get racing with
+// Close never yields a nil *RedisConn with a nil error (which previously
+// happened when the receive from the closed p.connections channel returned
+// the zero value), and never panics by calling Close on a nil receiver.
+func TestConnectionPool_GetDuringClose_NoNilRegression(t *testing.T) {
+	mr := NewMiniredisServer(t)
+
+	config := &PoolConfig{
+		Address:        mr.GetAddr(),
+		MaxConnections: 1,
+		ConnectTimeout: 1 * time.Second,
+	}
+
+	pool, err := NewConnectionPool(config)
+	require.NoError(t, err)
+
+	// Fill the pool so a concurrent Get blocks waiting for a connection.
+	held, err := pool.Get(context.Background())
+	require.NoError(t, err)
+	defer pool.Put(held)
+
+	type result struct {
+		conn *RedisConn
+		err  error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		c, e := pool.Get(context.Background())
+		resCh <- result{c, e}
+	}()
+
+	// Give the goroutine time to reach the blocking receive on p.connections,
+	// then close the pool. Closing the channel unblocks the receive with the
+	// zero value; Get must surface ErrBackendClosed rather than (nil, nil).
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, pool.Close())
+
+	res := <-resCh
+	require.Error(t, res.err, "Get after Close must return an error, not (nil, nil)")
+	assert.True(t, errors.Is(res.err, ErrBackendClosed), "want ErrBackendClosed, got %v", res.err)
+}
 func TestConnectionPool_Timeouts(t *testing.T) {
 	mr := NewMiniredisServer(t)
 
@@ -647,4 +687,48 @@ func TestRedisConn_RejectOversizedArgumentBytes(t *testing.T) {
 	_, err = conn.Do("SET", "k", largeArg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "arguments too large")
+}
+
+// TestConnectionPool_PutDuringClose_NoPanic hammers Put/Get concurrently with
+// Close. Before the fix, Put checked closed then sent on p.connections
+// without holding p.mu; if Close closed the channel in between, the send
+// panicked ("send on closed channel") at shutdown. Run under -race.
+func TestConnectionPool_PutDuringClose_NoPanic(t *testing.T) {
+	mr := NewMiniredisServer(t)
+
+	config := &PoolConfig{
+		Address:        mr.GetAddr(),
+		MaxConnections: 5,
+		ConnectTimeout: 5 * time.Second,
+		ReadTimeout:    3 * time.Second,
+		WriteTimeout:   3 * time.Second,
+	}
+
+	pool, err := NewConnectionPool(config)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if conn, err := pool.Get(ctx); err == nil {
+					pool.Put(conn) // may race Close
+				}
+			}
+		}()
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	_ = pool.Close()
+	close(stop)
+	wg.Wait()
 }

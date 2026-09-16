@@ -957,8 +957,10 @@ func (s *AuthFlowBehaviourSuite) TestHandleCallback_NonceMismatch() {
 	// Call handleCallback
 	s.tOidc.handleCallback(rw2, req2, "https://example.com/callback")
 
-	// Should return internal server error due to nonce mismatch
-	s.Equal(http.StatusInternalServerError, rw2.Code)
+	// R161: nonce mismatch is a client-side authorization-request
+	// integrity failure (same class as state/CSRF mismatch), so it returns
+	// 400, not 500.
+	s.Equal(http.StatusBadRequest, rw2.Code)
 }
 
 // TestHandleCallback_UserNotAuthorized tests callback when user is not authorized
