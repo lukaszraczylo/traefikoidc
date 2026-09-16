@@ -18,7 +18,7 @@ jobs:
   pr-checks:
     uses: lukaszraczylo/shared-actions/.github/workflows/go-pr.yaml@main
     with:
-      go-version: "1.25.x"
+      go-version: "1.26.x"
       coverage-threshold: 70
     secrets: inherit
 
@@ -35,7 +35,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: "1.26.x"
 
       # Pinned to the yaegi version Traefik v3.7.1 vendors (Makefile
       # YAEGI_VERSION), so this tests the real interpreter a release runs
