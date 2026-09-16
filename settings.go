@@ -104,13 +104,20 @@ type Config struct {
 	// behavior requires authentication for every OPTIONS request, preflight
 	// or not, like any other method. Enable only if your backend itself
 	// answers CORS preflights and must see them unauthenticated.
-	AllowUnauthenticatedPreflight bool   `json:"allowUnauthenticatedPreflight,omitempty"`
-	MinimalHeaders                bool   `json:"minimalHeaders,omitempty"`
-	StripAuthCookies              bool   `json:"stripAuthCookies,omitempty"`
-	EnableBackchannelLogout       bool   `json:"enableBackchannelLogout,omitempty"`
-	EnableFrontchannelLogout      bool   `json:"enableFrontchannelLogout,omitempty"`
-	BackchannelLogoutURL          string `json:"backchannelLogoutURL,omitempty"`
-	FrontchannelLogoutURL         string `json:"frontchannelLogoutURL,omitempty"`
+	AllowUnauthenticatedPreflight bool `json:"allowUnauthenticatedPreflight,omitempty"`
+	MinimalHeaders                bool `json:"minimalHeaders,omitempty"`
+	StripAuthCookies              bool `json:"stripAuthCookies,omitempty"`
+	// CookiePath restricts session cookies to a specific path prefix instead of "/".
+	// When traefikoidc protects some but not all paths on a domain, set this to the
+	// middleware's path prefix (e.g. "/app-protegido") so the browser does not send
+	// the OIDC session cookies to unprotected paths — preventing "Request Header
+	// Or Cookie Too Large" (431) errors on those paths.
+	// Default "/" (all paths, current behavior).
+	CookiePath               string `json:"cookiePath,omitempty"`
+	EnableBackchannelLogout  bool   `json:"enableBackchannelLogout,omitempty"`
+	EnableFrontchannelLogout bool   `json:"enableFrontchannelLogout,omitempty"`
+	BackchannelLogoutURL     string `json:"backchannelLogoutURL,omitempty"`
+	FrontchannelLogoutURL    string `json:"frontchannelLogoutURL,omitempty"`
 	// CACertPath is an optional filesystem path to a PEM-encoded CA bundle used
 	// to verify the OIDC provider's TLS certificate. Use this when the provider
 	// is signed by an internal/private CA that is not in the system trust store.

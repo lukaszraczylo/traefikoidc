@@ -77,6 +77,7 @@ func (c Config) configToMap() map[string]interface{} {
 	result["allowUnauthenticatedPreflight"] = c.AllowUnauthenticatedPreflight
 	result["minimalHeaders"] = c.MinimalHeaders
 	result["stripAuthCookies"] = c.StripAuthCookies
+	result["cookiePath"] = c.CookiePath
 	result["enableBackchannelLogout"] = c.EnableBackchannelLogout
 	result["enableFrontchannelLogout"] = c.EnableFrontchannelLogout
 	result["backchannelLogoutURL"] = c.BackchannelLogoutURL

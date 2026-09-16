@@ -383,6 +383,7 @@ guidance.
 | `maxRefreshTokenAgeSeconds` | int | `21600` | Heuristic max age (in seconds) of a stored refresh token. Once exceeded, requests treat the RT as expired up front (returns 401 to AJAX, triggers full re-auth on navigations) instead of grant-spamming the IdP with `invalid_grant` retries. IdPs do not advertise RT TTL on the wire, so this is intentionally a conservative heuristic — tune to match your provider. Set `0` to disable. Default `21600` (6h). |
 | `cookieDomain` | string | auto-detected | Domain for session cookies |
 | `cookiePrefix` | string | `_oidc_raczylo_` | Prefix for cookie names |
+| `cookiePath` | string | `/` | Path prefix for session cookies. Set it to the middleware's path (for example `/app`) so the browser does not send OIDC cookies to unprotected paths (avoids HTTP 431). |
 
 ### Multi-Subdomain Setup
 
