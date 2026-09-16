@@ -899,12 +899,7 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 	}
 
 	options.HttpOnly = true
-	// Use configured cookie path (default "/" for backward compatibility)
-	cookiePath := sm.cookiePath
-	if cookiePath == "" {
-		cookiePath = "/"
-	}
-	options.Path = cookiePath
+	options.Path = sm.effectiveCookiePath()
 
 	if sm.cookieDomain != "" {
 		options.Domain = sm.cookieDomain
@@ -965,10 +960,21 @@ func (sm *SessionManager) getSessionOptions(isSecure bool) *sessions.Options {
 		Secure:   isSecure || sm.forceHTTPS,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sm.sessionMaxAge.Seconds()),
-		Path:     "/",
+		Path:     sm.effectiveCookiePath(),
 		Domain:   sm.cookieDomain,
 	}
 	return baseOptions
+}
+
+// effectiveCookiePath returns the path session cookies are written at: the
+// configured cookiePath, or "/" when none is set (backward compatible). Cookie
+// writes and deletions must use the same path, because a browser deletes a
+// cookie only when name, domain and path all match.
+func (sm *SessionManager) effectiveCookiePath() string {
+	if sm.cookiePath == "" {
+		return "/"
+	}
+	return sm.cookiePath
 }
 
 // CleanupOldCookies removes stale session cookies from the client browser.
@@ -1032,7 +1038,7 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 					deleteCookie := &http.Cookie{ // #nosec G124 -- deletion cookie: HttpOnly and SameSite are set; Secure follows the request scheme so the browser accepts the deletion over HTTP
 						Name:     cookie.Name,
 						Value:    "",
-						Path:     "/",
+						Path:     sm.effectiveCookiePath(),
 						Domain:   domain,
 						MaxAge:   -1,
 						HttpOnly: true,
