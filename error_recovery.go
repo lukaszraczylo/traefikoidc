@@ -1021,6 +1021,10 @@ type GracefulDegradation struct {
 	config           GracefulDegradationConfig
 	mutex            sync.RWMutex
 	shutdownOnce     sync.Once
+	// beforeSharedTaskStop is a test seam, nil in production. Close calls it
+	// after deciding this is the last live instance and before stopping the
+	// shared health-check task.
+	beforeSharedTaskStop func()
 }
 
 // GracefulDegradationConfig holds configuration for graceful degradation behavior.
@@ -1064,6 +1068,16 @@ var gdInstances = struct {
 // whole pass keeps registered health checks single-threaded (R189).
 var globalHealthCheckMu sync.Mutex
 
+// gdLifecycleMu serializes GracefulDegradation registration with the
+// last-instance check and shared-task stop in Close. Without it, an instance
+// created after Close decided it was the last one, but before the stop, adopted
+// the still-running task, and the stop then killed the task that the new live
+// instance relies on. With it, a new instance either counts toward the
+// last-instance check or registers after the stop, and its routine replaces
+// the stopped task. The health-check pass never takes this lock, so Close can
+// hold it while BackgroundTask.Stop waits for an in-progress pass.
+var gdLifecycleMu sync.Mutex
+
 // globalPerformHealthChecks runs the health check pass for every live
 // GracefulDegradation instance. The shared singleton task calls this, so a
 // health check registered on ANY instance is exercised, and closing one
@@ -1104,9 +1118,11 @@ func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *G
 	// startHealthCheckRoutine no longer touches gdInstances at all — this is
 	// now the ONLY place a GracefulDegradation is added to the set, so there
 	// is no second, racing registration left to worry about.
+	gdLifecycleMu.Lock()
 	gdInstances.Lock()
 	gdInstances.set[gd] = struct{}{}
 	gdInstances.Unlock()
+	gdLifecycleMu.Unlock()
 
 	go gd.startHealthCheckRoutine()
 
@@ -1336,12 +1352,21 @@ func (gd *GracefulDegradation) Close() {
 		// GracefulDegradation instance; stopping it on any one instance's
 		// close would kill health checks / recovery for all surviving
 		// instances (mirror of the singleton-token-cleanup lastInstance gate).
+		// Hold gdLifecycleMu across the last-instance check and the stop, so a
+		// concurrent NewGracefulDegradation cannot register in between and
+		// adopt a task that is about to stop.
+		gdLifecycleMu.Lock()
+		defer gdLifecycleMu.Unlock()
+
 		gdInstances.Lock()
 		delete(gdInstances.set, gd)
 		lastInstance := len(gdInstances.set) == 0
 		gdInstances.Unlock()
 
 		if lastInstance {
+			if gd.beforeSharedTaskStop != nil {
+				gd.beforeSharedTaskStop()
+			}
 			// Stop by name through the resource manager rather than reading
 			// this instance's own gd.healthCheckTask field: with two or more
 			// GracefulDegradation instances, the shared task can already be
