@@ -29,7 +29,7 @@ vet: ## Run go vet
 
 .PHONY: lint
 lint: ## Run golangci-lint if available
-	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || echo "golangci-lint not installed; skipping"
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; else echo "golangci-lint not installed; skipping"; fi
 
 .PHONY: staticcheck
 staticcheck: ## Run staticcheck (matches the CI "Static Analysis" job; catches U1000 unused, etc.)
