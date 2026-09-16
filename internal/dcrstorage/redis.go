@@ -93,7 +93,7 @@ func (s *RedisStore) Save(ctx context.Context, providerURL string, creds *Client
 	}
 
 	// Serialize credentials to JSON for storage
-	data, err := json.Marshal(creds) //nolint:gosec // secret intentionally serialized for Redis storage
+	data, err := json.Marshal(creds) // #nosec G117 -- ClientSecret is the credential this store must persist in Redis
 	if err != nil {
 		return fmt.Errorf("failed to marshal credentials: %w", err)
 	}

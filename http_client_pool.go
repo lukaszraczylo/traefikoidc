@@ -152,7 +152,7 @@ func newSharedTransport(config HTTPClientConfig) *http.Transport {
 			},
 			PreferServerCipherSuites: true,
 			RootCAs:                  config.RootCAs,
-			InsecureSkipVerify:       config.InsecureSkipVerify, //nolint:gosec // opt-in, loud warning emitted at plugin startup
+			InsecureSkipVerify:       config.InsecureSkipVerify, // #nosec G402 -- operator opt-in (insecureSkipVerify, default false); New logs a SECURITY WARNING
 		},
 		ForceAttemptHTTP2:     config.ForceHTTP2,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,

@@ -1029,7 +1029,7 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 						continue
 					}
 
-					deleteCookie := &http.Cookie{ //nolint:gosec // delete cookie sets Secure conditionally on the request proto
+					deleteCookie := &http.Cookie{ // #nosec G124 -- deletion cookie: HttpOnly and SameSite are set; Secure follows the request scheme so the browser accepts the deletion over HTTP
 						Name:     cookie.Name,
 						Value:    "",
 						Path:     "/",

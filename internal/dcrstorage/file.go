@@ -78,7 +78,7 @@ func (s *FileStore) Save(ctx context.Context, providerURL string, creds *ClientR
 		return fmt.Errorf("failed to create credentials directory: %w", err)
 	}
 
-	data, err := json.MarshalIndent(creds, "", "  ") //nolint:gosec // ClientSecret must be persisted; creds are the feature's output
+	data, err := json.MarshalIndent(creds, "", "  ") // #nosec G117 -- ClientSecret is the credential this store must persist (file mode 0600)
 	if err != nil {
 		return fmt.Errorf("failed to marshal credentials: %w", err)
 	}
