@@ -53,6 +53,7 @@ func (c Config) configToMap() map[string]interface{} {
 	// Fields that the legacy hand-written list dropped (R150): important
 	// non-secret config that must survive any JSON/YAML round-trip.
 	result["audience"] = c.Audience
+	result["resource"] = c.Resource
 	result["cookiePrefix"] = c.CookiePrefix
 	result["cookieDomain"] = c.CookieDomain
 	result["userIdentifierClaim"] = c.UserIdentifierClaim

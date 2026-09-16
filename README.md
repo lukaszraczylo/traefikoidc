@@ -128,7 +128,8 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `rateLimit` | `100` | Requests/sec. Min `10`. |
 | `perSourceLoginRateLimit` | `0` (off) | Throttle OIDC auth events (authorization-code callback + login initiation) per external client source, auth events per minute. Keys and classifies the source by RemoteAddr only, never `X-Forwarded-For`, so a client cannot spoof it. Internal/loopback sources (proxies, in-cluster) are never throttled. `0` disables. RemoteAddr is the TCP peer. Behind a load balancer or CDN, the limiter keys on the proxy address: a private address is never throttled, and a public address puts every client in one shared bucket. |
 | `logLevel` | `info` | `debug`, `info`, `error`. |
-| `audience` | `clientID` | Custom access-token audience (Auth0 custom APIs). |
+| `audience` | `clientID`, or `resource` if set | Custom access-token audience (Auth0 custom APIs). |
+| `resource` | none | RFC 8707 resource indicator, alternative to `audience` for supporting IdPs (see [docs/RFC8707.md](docs/RFC8707.md)). |
 | `strictAudienceValidation` | `false` | Reject mismatched audiences. **Set `true` in production.** |
 | `allowOpaqueTokens` / `requireTokenIntrospection` | `false` | Accept opaque access tokens via RFC 7662. |
 | `revocationURL` / `oidcEndSessionURL` / `introspectionURL` | `""` | Override the discovered revocation / end-session / introspection endpoints; take precedence when discovery omits them. |

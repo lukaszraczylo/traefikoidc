@@ -66,9 +66,19 @@ type Config struct {
 	// {{.Claims.employee_id}} / {{get .Claims "employee_id"}}. Applies to both
 	// template validation and the runtime get helper. Built-in claims (email,
 	// groups, roles, realm_access, ...) need not be listed.
-	AllowedClaims             []string          `json:"allowedClaims,omitempty"`
-	ExtraAuthParams           map[string]string `json:"extraAuthParams,omitempty"`
-	RefreshGracePeriodSeconds int               `json:"refreshGracePeriodSeconds"`
+	AllowedClaims   []string          `json:"allowedClaims,omitempty"`
+	ExtraAuthParams map[string]string `json:"extraAuthParams,omitempty"`
+	// Resource declares an RFC 8707 resource indicator: an alternative to
+	// Audience for IdPs that support it. strictAudienceValidation applies
+	// the same way regardless of which of the two is set; only the request
+	// made to the IdP differs. Only a single resource is supported. See
+	// docs/RFC8707.md for exact request behavior, why multiple resources
+	// aren't, and current provider support. When Resource is set and
+	// Audience is unset, Audience defaults to Resource for access-token
+	// validation; this does not affect what is sent on the wire — see
+	// TraefikOidc.explicitAudience.
+	Resource                  string `json:"resource,omitempty"`
+	RefreshGracePeriodSeconds int    `json:"refreshGracePeriodSeconds"`
 	// MaxRefreshTokenAgeSeconds is a heuristic upper bound on the lifetime of
 	// a stored refresh token. Once the token has been in the session longer
 	// than this, requests treat it as expired up-front - returning 401 to
@@ -668,12 +678,44 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// EnableBearerAuth requires an explicit Audience: it cannot default to
+	// EnableBearerAuth requires an explicit Audience or Resource: it cannot default to
 	// clientID (that path accepts ID tokens, a spoofing vector for the
 	// bearer M2M path). Enforced here in Validate so a standalone call
 	// fails closed, matching the NewWithContext constructor check (R134).
-	if c.EnableBearerAuth && c.Audience == "" {
-		return fmt.Errorf("EnableBearerAuth=true requires Audience to be set explicitly (cannot default to clientID — that path accepts ID tokens)")
+	if c.EnableBearerAuth && c.Audience == "" && c.Resource == "" {
+		return fmt.Errorf("EnableBearerAuth=true requires Audience or Resource to be set explicitly (cannot default to clientID — that path accepts ID tokens)")
+	}
+
+	// Validate the RFC 8707 resource indicator if specified
+	if c.Resource != "" {
+		resource := c.Resource
+		if len(resource) > 256 {
+			return fmt.Errorf("resource %q must not exceed 256 characters", resource)
+		}
+		if strings.Contains(resource, "*") {
+			return fmt.Errorf("resource %q must not contain wildcards", resource)
+		}
+		if strings.ContainsAny(resource, "\n\r\t\x00") {
+			return fmt.Errorf("resource %q contains invalid characters", resource)
+		}
+
+		// RFC 8707 §2: the resource parameter MUST NOT include a fragment.
+		if strings.Contains(resource, "#") {
+			return fmt.Errorf("resource %q must not contain a fragment", resource)
+		}
+
+		u, err := url.Parse(resource)
+		if err != nil || !u.IsAbs() {
+			return fmt.Errorf("resource %q must be an absolute URI", resource)
+		}
+
+		// Enforce HTTPS (loopback HTTP permitted) for http/https resources;
+		// other absolute schemes (e.g. urn:) are accepted as-is.
+		if u.Scheme == "http" || u.Scheme == "https" {
+			if !isValidSecureURL(resource) {
+				return fmt.Errorf("resource %q must be a valid HTTPS URL", resource)
+			}
+		}
 	}
 
 	// Validate Redis configuration if provided

@@ -128,6 +128,13 @@ func (t *TraefikOidc) exchangeTokens(ctx context.Context, grantType string, code
 		data.Set("refresh_token", codeOrToken)
 	}
 
+	// RFC 8707 §2.2: repeat the same resource indicator sent on the
+	// authorization request so refreshed tokens keep the same audience
+	// binding as the original grant.
+	if t.resource != "" {
+		data.Set("resource", t.resource)
+	}
+
 	client := t.tokenHTTPClient
 	if client == nil {
 		// Use shared transport pool to prevent memory leaks

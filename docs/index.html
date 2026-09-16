@@ -735,8 +735,13 @@ spec:
                                     </tr>
                                     <tr class="border-b border-gray-100 dark:border-gray-800">
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">audience</code></td>
-                                        <td class="py-2 px-3">clientID</td>
+                                        <td class="py-2 px-3">clientID, or <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">resource</code> if set</td>
                                         <td class="py-2 px-3">Custom audience for access token validation</td>
+                                    </tr>
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">resource</code></td>
+                                        <td class="py-2 px-3">none</td>
+                                        <td class="py-2 px-3">RFC 8707 resource indicator, alternative to <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">audience</code> for supporting IdPs — see docs/RFC8707.md.</td>
                                     </tr>
                                     <tr class="border-b border-gray-100 dark:border-gray-800">
                                         <td class="py-2 px-3"><code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">strictAudienceValidation</code></td>

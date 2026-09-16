@@ -244,8 +244,12 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			if config.Audience != "" {
 				return config.Audience
 			}
+			if config.Resource != "" {
+				return config.Resource
+			}
 			return config.ClientID
 		}(),
+		explicitAudience: config.Audience,
 		roleClaimName: func() string {
 			if config.RoleClaimName != "" {
 				return config.RoleClaimName
@@ -267,6 +271,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		forceHTTPS:                config.ForceHTTPS,
 		enablePKCE:                config.EnablePKCE,
 		extraAuthParams:           config.ExtraAuthParams,
+		resource:                  config.Resource,
 		overrideScopes:            config.OverrideScopes,
 		strictAudienceValidation:  config.StrictAudienceValidation,
 		allowOpaqueTokens:         config.AllowOpaqueTokens,
@@ -389,6 +394,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		t.logger.Debugf("No custom audience specified, using clientID as audience: %s", t.clientID)
 	}
 
+	// Log RFC 8707 resource indicator configuration
+	if t.resource != "" {
+		t.logger.Infof("RFC 8707 resource indicator configured: %s (effective audience: %s)", t.resource, t.audience)
+	}
+
 	// Bearer-auth startup validation. The bearer path is M2M-only and demands
 	// a non-default audience so tokens issued for a different resource cannot
 	// be replayed against this service. The BearerIdentifierClaim guard blocks
@@ -396,9 +406,9 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	// scope for M2M), trusting email is a spoofing vector for federated IdPs.
 	// See spec §7.9 / §13.
 	if config.EnableBearerAuth {
-		if config.Audience == "" {
+		if config.Audience == "" && config.Resource == "" {
 			cancelFunc()
-			return nil, fmt.Errorf("EnableBearerAuth=true requires Audience to be set explicitly (cannot default to clientID — that path accepts ID tokens)")
+			return nil, fmt.Errorf("EnableBearerAuth=true requires Audience or Resource to be set explicitly (cannot default to clientID — that path accepts ID tokens)")
 		}
 		if t.bearerIdentifierClaim == "email" {
 			cancelFunc()

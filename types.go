@@ -197,14 +197,27 @@ type TraefikOidc struct {
 	// the same contract as providerURL, which updateMetadataEndpoints already
 	// reads unlocked. A manual override always wins over discovery; an empty
 	// string means use the discovered value.
-	configRevocationURL       string
-	configEndSessionURL       string
-	configIntrospectionURL    string
-	backchannelLogoutPath     string
-	frontchannelLogoutPath    string
-	scopesSupported           []string
-	scopes                    []string
-	extraAuthParams           map[string]string
+	configRevocationURL    string
+	configEndSessionURL    string
+	configIntrospectionURL string
+	backchannelLogoutPath  string
+	frontchannelLogoutPath string
+	scopesSupported        []string
+	scopes                 []string
+	extraAuthParams        map[string]string
+	// resource holds the RFC 8707 resource indicator from Config.Resource
+	// (Config.Validate() already guarantees it is either empty or a
+	// non-empty absolute URI). Sent as the `resource` param on the
+	// authorization request and on both the authorization_code and
+	// refresh_token grants.
+	resource string
+	// explicitAudience mirrors Config.Audience verbatim, with no
+	// resource- or clientID-based defaulting applied. audience (below) does
+	// carry that defaulting, for token-validation purposes; explicitAudience
+	// exists so buildAuthURL can decide whether to send the non-standard
+	// `audience` request parameter without that default leaking onto the
+	// wire.
+	explicitAudience          string
 	refreshGracePeriod        time.Duration
 	maxRefreshTokenAge        time.Duration
 	metadataMu                sync.RWMutex

@@ -838,6 +838,24 @@ func TestStartupValidation_BearerRequiresAudience(t *testing.T) {
 	}
 }
 
+func TestStartupValidation_BearerAcceptsResourceInPlaceOfAudience(t *testing.T) {
+	t.Parallel()
+	cfg := CreateConfig()
+	cfg.ProviderURL = "https://issuer.example.com"
+	cfg.ClientID = "id"
+	cfg.ClientSecret = "secret"
+	cfg.CallbackURL = "/oauth/callback"
+	cfg.SessionEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg.EnableBearerAuth = true
+	cfg.Audience = ""
+	cfg.Resource = "https://api.example.com"
+	mw, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), cfg, "bearer-test")
+	if err != nil {
+		t.Fatalf("expected Resource to satisfy the bearer-auth audience requirement, got %v", err)
+	}
+	defer mw.(*TraefikOidc).Close()
+}
+
 func TestStartupValidation_BearerRejectsEmailIdentifier(t *testing.T) {
 	t.Parallel()
 	cfg := CreateConfig()
