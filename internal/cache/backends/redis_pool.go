@@ -71,10 +71,12 @@ func NewConnectionPool(config *PoolConfig) (*ConnectionPool, error) {
 // returning false when the pool is already at MaxConnections. The
 // reservation is released via totalConns.Add(-1) if the dial fails.
 func (p *ConnectionPool) reserveConnectionSlot() bool {
-	max := int32(p.config.MaxConnections) // nolint:gosec // MaxConnections is operator-bounded well below int32 max
+	// Compare in int64: narrowing MaxConnections to int32 could wrap a
+	// large configured value to a negative limit and refuse every connection.
+	maxConns := int64(p.config.MaxConnections)
 	for {
 		cur := p.totalConns.Load()
-		if cur >= max {
+		if int64(cur) >= maxConns {
 			return false
 		}
 		if p.totalConns.CompareAndSwap(cur, cur+1) {

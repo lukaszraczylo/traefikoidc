@@ -139,7 +139,8 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 			// burst (the half-open branch below is only reached by
 			// requests that race in after the first transition) (R152).
 			current := cb.halfOpenRequests.Add(1)
-			return current <= int32(cb.config.HalfOpenMaxRequests) // nolint:gosec // HalfOpenMaxRequests is operator-bounded well below int32 max
+			// int64 comparison: narrowing HalfOpenMaxRequests to int32 could wrap.
+			return int64(current) <= int64(cb.config.HalfOpenMaxRequests)
 		}
 		return false
 
