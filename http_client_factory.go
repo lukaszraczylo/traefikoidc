@@ -229,9 +229,8 @@ func (f *HTTPClientFactory) CreateHTTPClient(config HTTPClientConfig) *http.Clie
 				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			},
-			PreferServerCipherSuites: true,
-			RootCAs:                  config.RootCAs,
-			InsecureSkipVerify:       config.InsecureSkipVerify, // #nosec G402 -- operator opt-in (insecureSkipVerify, default false); New logs a SECURITY WARNING
+			RootCAs:            config.RootCAs,
+			InsecureSkipVerify: config.InsecureSkipVerify, // #nosec G402 -- operator opt-in (insecureSkipVerify, default false); New logs a SECURITY WARNING
 		},
 		ForceAttemptHTTP2:     config.ForceHTTP2,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
