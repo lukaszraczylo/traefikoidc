@@ -1548,6 +1548,13 @@ func TestGracefulDegradationHealthChecks(t *testing.T) {
 		config := DefaultGracefulDegradationConfig()
 		gd := NewGracefulDegradation(config, logger)
 		defer gd.Close()
+		// The shared health-check task runs this gd's checks in the background
+		// (globalPerformHealthChecks). Hold its pass lock so that pass cannot
+		// run the check concurrently with the direct call below or change the
+		// degraded state between the assertions. The deferred Unlock runs
+		// before the deferred Close, so Close never waits on a blocked pass.
+		globalHealthCheckMu.Lock()
+		defer globalHealthCheckMu.Unlock()
 
 		healthCheckCalled := false
 		gd.RegisterHealthCheck("test-service", func() bool {
@@ -1570,6 +1577,9 @@ func TestGracefulDegradationHealthChecks(t *testing.T) {
 		config := DefaultGracefulDegradationConfig()
 		gd := NewGracefulDegradation(config, logger)
 		defer gd.Close()
+		// Keep the shared background pass out of this subtest (see above).
+		globalHealthCheckMu.Lock()
+		defer globalHealthCheckMu.Unlock()
 
 		gd.RegisterHealthCheck("failing-service", func() bool {
 			return false
