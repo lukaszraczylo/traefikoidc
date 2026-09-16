@@ -1314,13 +1314,22 @@ func (gd *GracefulDegradation) Reset() {
 // Close shuts down the graceful degradation system and cleans up resources.
 func (gd *GracefulDegradation) Close() {
 	gd.shutdownOnce.Do(func() {
-		// Signal shutdown
+		// Signal shutdown under gd.mutex. startHealthCheckRoutine checks
+		// stopChan and creates or adopts the shared task under the same
+		// lock, so an in-flight routine finishes before this instance
+		// unregisters below. Without the lock, a routine that passed its
+		// check could reach the task registry after the last Close stopped
+		// the task, and RegisterBackgroundTask would start a fresh task
+		// that no live instance can stop. Release the lock before the stop:
+		// BackgroundTask.Stop waits for a health-check pass that takes gd.mutex.
+		gd.mutex.Lock()
 		select {
 		case <-gd.stopChan:
 			// Already closed
 		default:
 			close(gd.stopChan)
 		}
+		gd.mutex.Unlock()
 
 		// Stop the shared health-check task only when this was the last live
 		// instance. The task is process-global and shared by every
