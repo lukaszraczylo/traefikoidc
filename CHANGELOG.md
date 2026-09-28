@@ -121,6 +121,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- SSE and WebSocket requests now get the configured `headers`, as normal
+  requests do. The last release sent only `X-Forwarded-User` on these
+  requests, so a backend that checks a shared-secret header answered `401`
+  on WebSocket upgrades. The same requests now also honor back-channel and
+  front-channel logout (`middleware.go`, #162).
 - The opaque bearer path rejects a token that `RevokeToken` added to the
   blacklist, for example at logout. It also rejects an opaque token whose
   `nbf` is in the future (`bearer_auth.go`).

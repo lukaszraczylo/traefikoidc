@@ -162,6 +162,14 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
   (previously signed only) and their cryptographic lifetime tracks
   `sessionMaxAge` (previously a fixed 30 days). Existing cookies become invalid
   on upgrade, so users re-authenticate one time.
+- **A rollback to v1.0.25 or earlier also invalidates sessions.** Those
+  releases cannot read the encrypted cookies that v1.0.26 and later issue.
+  They log `securecookie: the value is not valid` and `No state in
+  callback`, and the browser loops through the login. After a rollback, tell
+  users to delete
+  the `_oidc_raczylo_*` cookies (or the cookies with your `cookiePrefix`)
+  for the affected hosts. The cookies are `HttpOnly`, so users must delete
+  them in the browser site-data settings.
 - **Invalid configuration now fails closed at startup** instead of being
   silently accepted: a `sessionEncryptionKey` shorter than 32 bytes, a
   `rateLimit` below 10, a missing `callbackURL`, or a non-HTTPS remote
