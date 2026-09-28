@@ -371,8 +371,74 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 	if !t.minimalHeaders {
 		req.Header.Set("X-Auth-Request-User", safeIdentifier)
 	}
+
+	// Upgrades (WebSocket/SSE) bypass the OIDC redirect but are already authenticated by
+	// the session cookie above, so they get the configured templated headers too - a
+	// proxy-auth backend rejects the handshake otherwise (upstream issue #162).
+	idClaims, _ := session.GetIDTokenClaims(t.extractClaimsFunc)
+	t.applyTemplatedHeaders(req, map[string]interface{}{
+		"AccessToken":  session.GetAccessToken(),
+		"IDToken":      session.GetIDToken(),
+		"IdToken":      session.GetIDToken(),
+		"RefreshToken": session.GetRefreshToken(),
+		"Claims":       idClaims,
+	})
 	t.logger.Debugf("%s bypass: forwarded user %s from session", reason, safeIdentifier)
 	return true, 0
+}
+
+// applyTemplatedHeaders renders the configured templated headers onto req.
+//
+// It is shared by the normal request flow (forwardAuthorized) and by the
+// WebSocket/SSE bypass path (applyBypassUserHeaders). Upgrades are authenticated
+// through the same encrypted session cookie, so they must receive the same
+// headers: backends using a shared-secret proxy contract (e.g. Frigate, which
+// requires X-Proxy-Secret on its auth subrequest) reject the handshake with a 401
+// when the configured headers are missing, while plain HTTP requests keep working.
+func (t *TraefikOidc) applyTemplatedHeaders(req *http.Request, templateData map[string]interface{}) {
+	if len(t.headerTemplates) == 0 {
+		return
+	}
+
+	for headerName, tmpl := range t.headerTemplates {
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, templateData); err != nil {
+			t.logger.Errorf("Failed to execute template for header %s: %v", headerName, err)
+			continue
+		}
+		headerValue := buf.String()
+		// Go's text/template renders a missing key in an interface-valued
+		// map as the literal "<no value>" even with missingkey=zero
+		// (zero only applies to typed keys). Replace that sentinel so an
+		// optional claim the provider did not emit (e.g. email) does not
+		// leak "<no value>" into the downstream header.
+		if strings.Contains(headerValue, noValueSentinel) {
+			headerValue = stripNoValueSentinels(headerValue)
+		}
+		// Skip an empty render: Setting "" would clobber an identity
+		// header (X-Forwarded-User / X-Auth-Request-*) already injected
+		// earlier in this function with the authenticated value, silently
+		// dropping the user identity at the backend.
+		if headerValue == "" {
+			t.logger.Debugf("Skipping templated header %s: rendered value is empty", headerName)
+			continue
+		}
+		// Sanitize the rendered output: template inputs are claim-derived
+		// and attacker-influenceable, so reject control chars (header
+		// injection), bidi-override runes, the , ; = delimiters, and an
+		// over-long value. Fail closed by dropping the header rather than
+		// forwarding a tainted value. Do not log the value (it commonly
+		// carries the access token); log only name + reason.
+		if reason := headerValueReason(headerValue, headerTemplateMaxLen); reason != "" {
+			t.logger.Debugf("Dropping templated header %s: value failed sanitization (%s)", headerName, reason)
+			continue
+		}
+		req.Header.Set(headerName, headerValue)
+		// Do not log the value: templated headers commonly carry the access
+		// token (e.g. "Authorization: Bearer {{.AccessToken}}"), and logging
+		// it — even at debug — leaks credentials into logs.
+		t.logger.Debugf("Set templated header %s (%d bytes)", headerName, len(headerValue))
+	}
 }
 
 // ServeHTTP implements the main middleware logic for processing HTTP requests.
@@ -1384,57 +1450,15 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 	}
 
 	if len(t.headerTemplates) > 0 {
-		// p.Claims may be nil (e.g. session without an ID token). Templates
-		// referencing .Claims.* will simply produce empty values — matches
-		// the prior behavior. Bearer-source principals always carry access-
-		// token claims (post-verifyToken).
-		templateData := map[string]interface{}{
+		// templateData mirrors the normal flow: claims come from the ID token and may be
+		// nil (session without an ID token) - templates then render empty values.
+		t.applyTemplatedHeaders(req, map[string]interface{}{
 			"AccessToken":  p.AccessToken,
 			"IDToken":      p.IDToken,
-			"IdToken":      p.IDToken, // documented spelling (README/CONFIGURATION); alias so {{.IdToken}} renders (issue #149 review)
+			"IdToken":      p.IDToken,
 			"RefreshToken": p.RefreshToken,
 			"Claims":       p.Claims,
-		}
-
-		for headerName, tmpl := range t.headerTemplates {
-			var buf bytes.Buffer
-			if err := tmpl.Execute(&buf, templateData); err != nil {
-				t.logger.Errorf("Failed to execute template for header %s: %v", headerName, err)
-				continue
-			}
-			headerValue := buf.String()
-			// Go's text/template renders a missing key in an interface-valued
-			// map as the literal "<no value>" even with missingkey=zero
-			// (zero only applies to typed keys). Replace that sentinel so an
-			// optional claim the provider did not emit (e.g. email) does not
-			// leak "<no value>" into the downstream header.
-			if strings.Contains(headerValue, noValueSentinel) {
-				headerValue = stripNoValueSentinels(headerValue)
-			}
-			// Skip an empty render: Setting "" would clobber an identity
-			// header (X-Forwarded-User / X-Auth-Request-*) already injected
-			// earlier in this function with the authenticated value, silently
-			// dropping the user identity at the backend.
-			if headerValue == "" {
-				t.logger.Debugf("Skipping templated header %s: rendered value is empty", headerName)
-				continue
-			}
-			// Sanitize the rendered output: template inputs are claim-derived
-			// and attacker-influenceable, so reject control chars (header
-			// injection), bidi-override runes, the , ; = delimiters, and an
-			// over-long value. Fail closed by dropping the header rather than
-			// forwarding a tainted value. Do not log the value (it commonly
-			// carries the access token); log only name + reason.
-			if reason := headerValueReason(headerValue, headerTemplateMaxLen); reason != "" {
-				t.logger.Debugf("Dropping templated header %s: value failed sanitization (%s)", headerName, reason)
-				continue
-			}
-			req.Header.Set(headerName, headerValue)
-			// Do not log the value: templated headers commonly carry the access
-			// token (e.g. "Authorization: Bearer {{.AccessToken}}"), and logging
-			// it — even at debug — leaks credentials into logs.
-			t.logger.Debugf("Set templated header %s (%d bytes)", headerName, len(headerValue))
-		}
+		})
 	}
 
 	// Strip OIDC session cookies before forwarding to the backend to prevent
