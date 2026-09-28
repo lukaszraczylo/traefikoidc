@@ -665,6 +665,10 @@ func (m *mockJWKCacheForLogout) GetPublicKey(ctx context.Context, jwksURL, kid s
 	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
 }
 
+func (m *mockJWKCacheForLogout) getPublicKeyFresh(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	return m.GetPublicKey(ctx, jwksURL, kid, httpClient)
+}
+
 func (m *mockJWKCacheForLogout) Clear()   {}
 func (m *mockJWKCacheForLogout) Cleanup() {}
 func (m *mockJWKCacheForLogout) Close()   {}
@@ -726,6 +730,7 @@ func TestBackchannelLogoutIntegration(t *testing.T) {
 		"iss": "https://provider.example.com",
 		"aud": "test-client",
 		"iat": now,
+		"exp": time.Now().Add(time.Hour).Unix(),
 		"jti": "unique-id-123",
 		"events": map[string]interface{}{
 			"http://schemas.openid.net/event/backchannel-logout": map[string]interface{}{},
@@ -795,6 +800,10 @@ func (s *staticJWKCache) GetPublicKey(ctx context.Context, jwksURL, kid string, 
 		}
 	}
 	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
+}
+
+func (s *staticJWKCache) getPublicKeyFresh(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	return s.GetPublicKey(ctx, jwksURL, kid, httpClient)
 }
 
 func (s *staticJWKCache) Clear()   {}
@@ -1643,6 +1652,12 @@ func createSignedLogoutToken(t *testing.T, privateKey *ecdsa.PrivateKey, claims 
 	}
 	headerJSON, _ := json.Marshal(header)
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+
+	// OIDC Back-Channel Logout requires exp; default-inject a valid future
+	// one unless the caller supplies its own (e.g. an expired-exp test).
+	if _, ok := claims["exp"]; !ok {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
+	}
 
 	claimsJSON, _ := json.Marshal(claims)
 	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)

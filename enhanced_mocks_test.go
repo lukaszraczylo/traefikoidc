@@ -67,6 +67,10 @@ func (m *EnhancedMockJWKCache) GetPublicKey(ctx context.Context, jwksURL, kid st
 	return nil, fmt.Errorf("no matching public key found for kid: %s", kid)
 }
 
+func (m *EnhancedMockJWKCache) getPublicKeyFresh(ctx context.Context, jwksURL, kid string, httpClient *http.Client) (crypto.PublicKey, error) {
+	return m.GetPublicKey(ctx, jwksURL, kid, httpClient)
+}
+
 func (m *EnhancedMockJWKCache) Cleanup() {
 	atomic.AddInt32(&m.CleanupCalls, 1)
 	m.mu.Lock()

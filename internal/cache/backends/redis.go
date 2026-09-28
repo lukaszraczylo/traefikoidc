@@ -17,6 +17,15 @@ var (
 	ErrPoolExhausted = errors.New("connection pool exhausted")
 )
 
+// NoExpiryTTL is the sentinel RedisBackend.Get reports for a key that has
+// no associated expiry (Redis PTTL -1). It is distinct from a returned
+// ttl of 0, which means the key has under a millisecond left (or vanished
+// between GET and PTTL): the caller must not treat those two cases the
+// same way — folding "no expiry" into 0 made a caller that repopulates a
+// local copy on ttl<=0 re-cache a dying entry for its full DefaultTTL
+// (FIX-31).
+const NoExpiryTTL time.Duration = -1
+
 // RedisBackend implements a Redis-based cache backend using pure Go
 type RedisBackend struct {
 	config        *Config
@@ -95,7 +104,15 @@ func (r *RedisBackend) Set(ctx context.Context, key string, value []byte, ttl ti
 		return ErrBackendClosed
 	}
 
+	// A NEGATIVE TTL means "already expired" (the stack's convention for a
+	// value whose validity has passed). Previously ttl<=0 fell through to a
+	// bare SET with no expiry, silently making the entry permanent. Zero here
+	// is the documented "no expiry" contract (see SetManyNoTTL), so only
+	// strictly-negative TTLs are skipped.
 	prefixedKey := r.prefixKey(key)
+	if ttl < 0 {
+		return nil
+	}
 
 	// Execute with retry logic
 	return r.executeWithRetry(ctx, func(conn *RedisConn) error {
@@ -118,6 +135,157 @@ func (r *RedisBackend) Set(ctx context.Context, key string, value []byte, ttl ti
 
 		return err
 	})
+}
+
+// SetNX stores a value in Redis only if the key does not already exist,
+// atomically, using Redis SET key value NX PX <ttl-ms> — one server-side
+// command rather than a Get followed by a Set, so two callers racing the
+// same key (e.g. two Traefik replicas racing the same backchannel-logout
+// jti) can never both observe "absent". Backs UniversalCache.SetIfAbsent's
+// distributed case (FIX-17): CacheBackend has no such primitive, and
+// widening it would force every implementer to add an operation only this
+// one caller needs, so UniversalCache reaches this through an optional
+// interface type assertion instead.
+//
+// Returns (true, nil) when this call claimed the key, (false, nil) when the
+// key already existed (someone else claimed it first — not an error),
+// (false, ErrSetNXAmbiguous) when the command reached the wire but its
+// reply could not be read at all (timeout, EOF, connection reset) — Redis
+// may or may not have applied it — and (false, err) on any other genuine
+// backend failure, INCLUDING a definitive RESP '-' command-error reply
+// (-READONLY, -OOM, -MISCONF, ...): that proves Redis read and rejected the
+// command, so it is never ambiguous (R4 cache review).
+//
+// SetNX runs its own retry loop rather than executeWithRetry (FIX-17
+// round-2): Set's SETEX/PSETEX are idempotent, so retrying one after a lost
+// reply just repeats the same unconditional write. SET NX is not — retrying
+// it after a lost reply would see this call's OWN possible write and
+// misreport a first-ever claim as already-claimed. So SetNX retries a
+// failed connection acquisition (nothing was sent yet, safe to retry) but
+// never re-sends SET NX once doTracked reports the command was written.
+func (r *RedisBackend) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	if r.closed.Load() {
+		return false, ErrBackendClosed
+	}
+
+	// Mirrors Set's TTL convention: negative means "already expired", so
+	// there is nothing to claim.
+	prefixedKey := r.prefixKey(key)
+	if ttl < 0 {
+		return false, nil
+	}
+
+	var args []string
+	if ttl > 0 {
+		ttlMillis := ttl.Milliseconds()
+		if ttlMillis < 1 {
+			ttlMillis = 1
+		}
+		args = []string{prefixedKey, string(value), "NX", "PX", fmt.Sprintf("%d", ttlMillis)}
+	} else {
+		args = []string{prefixedKey, string(value), "NX"}
+	}
+
+	maxRetries := 3
+	baseDelay := 50 * time.Millisecond
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+
+		conn, err := r.pool.Get(ctx)
+		if err != nil {
+			if attempt == maxRetries-1 {
+				return false, fmt.Errorf("failed to get connection after %d attempts: %w", maxRetries, err)
+			}
+			delay := baseDelay * time.Duration(1<<uint(attempt))
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(delay):
+				continue
+			}
+		}
+
+		var (
+			resp  interface{}
+			sent  bool
+			doErr error
+		)
+		func() {
+			defer func() { r.pool.Put(conn) }()
+			resp, sent, doErr = conn.doTracked("SET", args...)
+		}()
+
+		if doErr == nil {
+			if _, strErr := RESPString(resp); strErr != nil {
+				return false, strErr
+			}
+			return true, nil
+		}
+
+		if errors.Is(doErr, ErrNilResponse) {
+			// NX condition failed: the key already existed before this
+			// call. A valid protocol outcome, not an error — the
+			// connection is healthy and nothing here should be retried.
+			return false, nil
+		}
+
+		if errors.Is(doErr, ErrCommandReply) {
+			// A RESP '-' reply (e.g. -READONLY, -OOM, -MISCONF) proves
+			// Redis read the command and refused it — unlike a lost reply,
+			// this is a DEFINITIVE outcome: the SET NX was never applied.
+			// Reporting it as ErrSetNXAmbiguous would make
+			// checkAndMarkLogoutJTIProcessed accept the caller's claim
+			// outright (the ambiguous branch exists precisely to avoid a
+			// false replay report for a write that may have landed), which
+			// here would let a captured logout token replay forever while
+			// Redis rejects writes. Surface it as a plain error instead, so
+			// the caller falls through to its own local fallback.
+			return false, doErr
+		}
+
+		if sent {
+			// The command reached the wire before reading its reply
+			// failed (timeout, EOF, connection reset): Redis may have
+			// applied it. This is checked BEFORE ctx.Err() (FIX-17
+			// round-3): UniversalCache.setIfAbsentBackend gives SetNX a
+			// 500ms context, and the pool's read deadline on this same
+			// write is also 500ms, started strictly after the ctx
+			// deadline began ticking — so when a reply is lost, ctx has
+			// almost always already expired by the time this line runs.
+			// Checking ctx.Err() first therefore reported
+			// context.DeadlineExceeded for what is actually an ambiguous
+			// outcome, and checkAndMarkLogoutJTIProcessed does not
+			// special-case a plain deadline error: it fell through to the
+			// mutex-guarded Get+Set fallback, whose Get saw this call's
+			// own possible write and misreported a first-ever logout
+			// token as a replay. Retrying here (instead of returning) would
+			// see this call's own possible write and misreport a
+			// first-ever claim as already-claimed, same reasoning as
+			// above — surface the ambiguity instead of guessing.
+			return false, ErrSetNXAmbiguous
+		}
+
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+
+		if attempt == maxRetries-1 || !isRetryableError(doErr) {
+			return false, doErr
+		}
+
+		delay := baseDelay * time.Duration(1<<uint(attempt))
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(delay):
+			continue
+		}
+	}
+
+	return false, fmt.Errorf("operation failed after %d attempts", maxRetries)
 }
 
 // Get retrieves a value from Redis
@@ -149,10 +317,14 @@ func (r *RedisBackend) Get(ctx context.Context, key string) ([]byte, time.Durati
 			return err
 		}
 
-		// Get TTL
-		ttlResp, err := conn.Do("TTL", prefixedKey)
+		// Get TTL with millisecond precision (PTTL, not TTL). TTL's second
+		// precision maps both "no expiry" (-1) and "under one second left"
+		// to a reported ttl of 0 once truncated to whole seconds, so a
+		// caller cannot tell them apart (FIX-31). PTTL keeps "no expiry"
+		// distinct via NoExpiryTTL.
+		ttlResp, err := conn.Do("PTTL", prefixedKey)
 		if err != nil {
-			// If TTL fails, still return the value
+			// If PTTL fails, still return the value; report no TTL info.
 			r.hits.Add(1)
 			resultValue = []byte(value)
 			resultTTL = 0
@@ -160,10 +332,18 @@ func (r *RedisBackend) Get(ctx context.Context, key string) ([]byte, time.Durati
 			return nil
 		}
 
-		ttlSeconds, _ := RESPInt(ttlResp)
+		ttlMillis, _ := RESPInt(ttlResp)
 		var ttl time.Duration
-		if ttlSeconds > 0 {
-			ttl = time.Duration(ttlSeconds) * time.Second
+		switch {
+		case ttlMillis == -1:
+			// Key exists with no associated expiry.
+			ttl = NoExpiryTTL
+		case ttlMillis > 0:
+			ttl = time.Duration(ttlMillis) * time.Millisecond
+		default:
+			// -2 (key vanished between GET and PTTL) or 0 (under 1ms
+			// left): report "expire now", not "no expiry".
+			ttl = 0
 		}
 
 		r.hits.Add(1)
@@ -376,18 +556,28 @@ func (r *RedisBackend) executeWithRetry(ctx context.Context, operation func(*Red
 			}
 		}
 
-		// Execute the operation
-		err = operation(conn)
-		r.pool.Put(conn)
+		// Execute the operation, guaranteeing the borrowed connection is
+		// returned to the pool even if the operation panics (previously a
+		// panic here leaked the connection and desynced the pool counters;
+		// other pool call sites use defer for this).
+		func() {
+			defer func() { r.pool.Put(conn) }()
+			err = operation(conn)
+		}()
+
+		// Check err == nil BEFORE ctx.Err(): the operation already completed
+		// against the connection (op returned), so a nil error means Redis
+		// applied it. Reporting ctx.Err() first would tell the caller (e.g.
+		// UniversalCache.Set) that a write failed when it actually landed,
+		// which previously triggered a Delete that erased the just-applied
+		// value (FIX-04).
+		if err == nil {
+			return nil
+		}
 
 		// Check context after operation - if canceled, don't bother retrying
 		if ctx.Err() != nil {
 			return ctx.Err()
-		}
-
-		// If successful, return
-		if err == nil {
-			return nil
 		}
 
 		// If error is not retryable or last attempt, fail
@@ -442,6 +632,13 @@ func (r *RedisBackend) SetMany(ctx context.Context, items map[string][]byte, ttl
 	}
 
 	if len(items) == 0 {
+		return nil
+	}
+
+	if ttl < 0 {
+		// Already-expired TTL: nothing to persist (see Set's guard). Avoids
+		// creating permanent entries for past-dated values via the multi path.
+		// Zero retains the "no expiry" contract (see SetManyNoTTL).
 		return nil
 	}
 
@@ -547,10 +744,22 @@ func (r *RedisBackend) GetMany(ctx context.Context, keys []string) (map[string][
 
 	// Process responses
 	result := make(map[string][]byte)
+	var firstErr error
 	for i, resp := range responses {
 		if resp == nil {
 			// Key doesn't exist
 			r.misses.Add(1)
+			continue
+		}
+
+		// A Redis command-error reply (e.g. LOADING, WRONGTYPE) is stored
+		// as an error value by Pipeline.Execute. It means the key lookup
+		// failed, not that the key is missing, so it must not be counted
+		// as a miss.
+		if respErr, ok := resp.(error); ok {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("GetMany: command error for key %q: %w", keys[i], respErr)
+			}
 			continue
 		}
 
@@ -563,6 +772,10 @@ func (r *RedisBackend) GetMany(ctx context.Context, keys []string) (map[string][
 
 		r.hits.Add(1)
 		result[keys[i]] = []byte(value)
+	}
+
+	if firstErr != nil {
+		return result, firstErr
 	}
 
 	return result, nil

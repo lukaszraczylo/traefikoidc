@@ -36,6 +36,9 @@ type ResourceManager struct {
 
 // GetResourceManager returns the global singleton ResourceManager instance
 func GetResourceManager() *ResourceManager {
+	resourceManagerMutex.Lock()
+	defer resourceManagerMutex.Unlock()
+
 	resourceManagerOnce.Do(func() {
 		globalResourceManager = &ResourceManager{
 			httpClients:  make(map[string]*http.Client),
@@ -120,16 +123,45 @@ func (rm *ResourceManager) RegisterBackgroundTask(name string, interval time.Dur
 	rm.tasksMu.Lock()
 	defer rm.tasksMu.Unlock()
 
-	// Check if task already exists
-	if _, exists := rm.tasks[name]; exists {
-		if rm.logger != nil {
-			rm.logger.Debugf("Background task %s already registered", name)
+	// If a task with this name already exists and is still running, keep it
+	// (idempotent re-registration from another middleware instance). Keep it
+	// when it has STARTED (started==1 && stopped==0).
+	//
+	// FIX-19: a task that is registered but has not started yet
+	// (started==0, stopped==0, startRefused==0) must ALSO be kept, not
+	// replaced. CreateSingletonTask runs Register -> IsTaskRunning ->
+	// StartBackgroundTask without holding tasksMu across the three calls, so
+	// a second concurrent caller can land here in the narrow window before
+	// the first caller's Start() has run. Replacing the existing object in
+	// that window orphans it: the first caller still starts and runs the
+	// object it holds a reference to, but that object is no longer the one
+	// in rm.tasks, so StopBackgroundTask/StopAllTasks/Shutdown never reach
+	// it and its ticker goroutine outlives the last Close.
+	//
+	// Replace only when the existing task is definitively no longer usable:
+	// stopped==1 (it was torn down — BackgroundTask.Start is
+	// sync.Once-guarded, so a stopped task can never start again), or
+	// startRefused==1 (its one Start attempt was rejected by the circuit
+	// breaker or concurrency limiter, so it will never transition to
+	// started==1 on its own).
+	if existing, exists := rm.tasks[name]; exists {
+		started := atomic.LoadInt32(&existing.started) == 1
+		stopped := atomic.LoadInt32(&existing.stopped) == 1
+		startRefused := atomic.LoadInt32(&existing.startRefused) == 1
+
+		if (started && !stopped) || (!stopped && !startRefused) {
+			if rm.logger != nil {
+				rm.logger.Debugf("Background task %s already registered", name)
+			}
+			return nil
 		}
-		// Return existing task without error for idempotency
-		return nil
+		// The existing task was stopped, or its Start attempt was refused.
+		// Reusing the same BackgroundTask object would leave it permanently
+		// dead: BackgroundTask.Start is guarded by sync.Once, so once
+		// consumed it can never start again. Replace it with a fresh task
+		// so re-registration actually resumes it.
 	}
 
-	// Create new task with WaitGroup for proper cleanup
 	task := NewBackgroundTask(name, interval, taskFunc, rm.logger, &rm.wg)
 	rm.tasks[name] = task
 
@@ -166,6 +198,24 @@ func (rm *ResourceManager) StopBackgroundTask(name string) error {
 
 	task.Stop()
 	return nil
+}
+
+// StopAllTasks stops every background task registered with this ResourceManager.
+// BackgroundTask.Stop is stopOnce-guarded, so repeated calls are safe. This is
+// the terminal path for process-global singleton tasks; it must be called only
+// when the last plugin instance is shutting down, otherwise it would kill
+// cleanup for surviving instances sharing the same singletons.
+func (rm *ResourceManager) StopAllTasks() {
+	rm.tasksMu.RLock()
+	tasks := make([]*BackgroundTask, 0, len(rm.tasks))
+	for _, task := range rm.tasks {
+		tasks = append(tasks, task)
+	}
+	rm.tasksMu.RUnlock()
+
+	for _, task := range tasks {
+		task.Stop()
+	}
 }
 
 // IsTaskRunning checks if a background task is running
@@ -268,14 +318,69 @@ func (rm *ResourceManager) cleanupInstance(instanceID string) {
 // instances alive in this process. Process-global singleton tasks (such as the
 // shared token-cleanup) must only be stopped when the LAST instance shuts down,
 // otherwise one instance's teardown would disable them for all survivors.
-var liveInstanceCount int32
+//
+// liveInstanceMu (FIX-35) serializes registerLiveInstance against
+// stopIfLastInstance. Close() decides once, early in its shutdown sequence,
+// whether it is the last instance (unregisterLiveInstance's return value),
+// but the actual process-global singleton stops happen much later, after
+// session/cache teardown. A concurrent New() (e.g. an overlapping Traefik
+// reload) can register and adopt those same singletons in between. Close()
+// must re-read the count fresh, under this same mutex, immediately before
+// each singleton stop, instead of trusting the stale early decision.
+var (
+	liveInstanceCount int32
+	liveInstanceMu    sync.Mutex
+)
 
-// registerLiveInstance records a newly constructed plugin instance.
-func registerLiveInstance() { atomic.AddInt32(&liveInstanceCount, 1) }
+// registerLiveInstance records a newly constructed plugin instance. New()
+// calls this before it adopts any process-global singleton task (memory
+// monitor, token cleanup, metadata refresh; FIX-35), so a concurrent Close()
+// elsewhere always sees this instance counted before it can decide, via
+// stopIfLastInstance, to stop those singletons.
+func registerLiveInstance() {
+	liveInstanceMu.Lock()
+	defer liveInstanceMu.Unlock()
+	atomic.AddInt32(&liveInstanceCount, 1)
+}
 
 // unregisterLiveInstance records a plugin instance shutting down and returns the
 // number of instances still alive afterwards.
-func unregisterLiveInstance() int32 { return atomic.AddInt32(&liveInstanceCount, -1) }
+func unregisterLiveInstance() int32 {
+	liveInstanceMu.Lock()
+	defer liveInstanceMu.Unlock()
+	return atomic.AddInt32(&liveInstanceCount, -1)
+}
+
+// stopIfLastInstance holds liveInstanceMu across BOTH the "is this the last
+// live instance" check and the stop action itself, and runs stop only when
+// the check passes.
+//
+// A separate count check followed by the stop would leave a check-then-stop
+// window open: the check releases liveInstanceMu as soon as it returns,
+// before the caller's stop actually runs. The singleton stops this guards (StopBackgroundTask,
+// StopAllTasks) can take real wall-clock time — BackgroundTask.Stop waits up
+// to 5s per task — during which a concurrent New() can register and adopt
+// the very singleton about to be stopped. stopIfLastInstance closes that
+// window: registerLiveInstance cannot complete while a stop triggered by
+// this function is still running, because both take the same liveInstanceMu.
+//
+// registerLiveInstance is the only other caller of liveInstanceMu besides
+// unregisterLiveInstance, and neither of them calls back into
+// stopIfLastInstance (main.go's New is the sole registerLiveInstance
+// caller, and no BackgroundTask taskFunc calls it), so this cannot deadlock.
+//
+// Returns whether stop was invoked.
+func stopIfLastInstance(stop func()) bool {
+	liveInstanceMu.Lock()
+	defer liveInstanceMu.Unlock()
+
+	if atomic.LoadInt32(&liveInstanceCount) > 0 {
+		return false
+	}
+
+	stop()
+	return true
+}
 
 // Shutdown gracefully shuts down all managed resources
 func (rm *ResourceManager) Shutdown(ctx context.Context) error {
@@ -405,10 +510,38 @@ func (p *GoroutinePool) worker(id int) {
 				}
 			}
 		case <-p.shutdownChan:
-			if p.logger != nil {
-				p.logger.Debugf("Worker %d shutting down", id)
+			// Drain any tasks still queued before exiting. Without this, a
+			// worker that randomly selects the (now closed) shutdownChan over a
+			// ready task would exit, and once all workers have exited the
+			// remaining buffered tasks are silently dropped — and their
+			// pendingTasks count is never decremented, so a concurrent Wait()
+			// blocks forever.
+			for {
+				select {
+				case task := <-p.taskQueue:
+					if task != nil {
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+									if p.logger != nil {
+										p.logger.Errorf("Worker %d panic recovered: %v", id, r)
+									}
+								}
+							}()
+							task()
+						}()
+
+						newCount := atomic.AddInt64(&p.pendingTasks, -1)
+						if newCount == 0 {
+							p.taskCond.L.Lock()
+							p.taskCond.Broadcast()
+							p.taskCond.L.Unlock()
+						}
+					}
+				default:
+					return
+				}
 			}
-			return
 		}
 	}
 }

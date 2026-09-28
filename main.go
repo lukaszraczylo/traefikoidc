@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -301,7 +302,8 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			defaultSystemScopes := []string{"openid", "profile", "email"}
 			return deduplicateScopes(mergeScopes(defaultSystemScopes, userProvidedScopes))
 		}(),
-		limiter:               rate.NewLimiter(rate.Every(time.Second), config.RateLimit),
+		limiter:               rate.NewLimiter(rate.Limit(config.RateLimit), config.RateLimit),
+		perSourceLimiter:      newPerSourceAuthLimiter(config.PerSourceLoginRateLimit),
 		tokenCache:            cacheManager.GetSharedTokenCache(),
 		httpClient:            httpClient,
 		tokenHTTPClient:       tokenHTTPClient,
@@ -324,28 +326,29 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 			}
 			return 0
 		}(),
-		tokenCleanupStopChan:      make(chan struct{}),
-		metadataRefreshStopChan:   make(chan struct{}),
-		ctx:                       pluginCtx,
-		cancelFunc:                cancelFunc,
-		suppressDiagnosticLogs:    isTestMode(),
-		securityHeadersApplier:    config.GetSecurityHeadersApplier(),
-		scopeFilter:               NewScopeFilter(logger), // NEW - for discovery-based scope filtering
-		dcrConfig:                 config.DynamicClientRegistration,
-		allowPrivateIPAddresses:   config.AllowPrivateIPAddresses,
-		allowLoopbackHosts:        isLoopbackProviderURL(config.ProviderURL),
-		minimalHeaders:            config.MinimalHeaders,
-		stripAuthCookies:          config.StripAuthCookies,
-		enableBackchannelLogout:   config.EnableBackchannelLogout,
-		enableFrontchannelLogout:  config.EnableFrontchannelLogout,
-		backchannelLogoutPath:     normalizeLogoutPath(config.BackchannelLogoutURL),
-		frontchannelLogoutPath:    normalizeLogoutPath(config.FrontchannelLogoutURL),
-		sessionInvalidationCache:  cacheManager.GetSharedSessionInvalidationCache(),
-		refreshResultCache:        cacheManager.GetSharedRefreshResultCache(),
-		enableBearerAuth:          config.EnableBearerAuth,
-		stripAuthorizationHeader:  config.StripAuthorizationHeader,
-		bearerEmitWWWAuthenticate: config.BearerEmitWWWAuthenticate,
-		bearerOverridesCookie:     config.BearerOverridesCookie,
+		tokenCleanupStopChan:          make(chan struct{}),
+		metadataRefreshStopChan:       make(chan struct{}),
+		ctx:                           pluginCtx,
+		cancelFunc:                    cancelFunc,
+		suppressDiagnosticLogs:        isTestMode(),
+		securityHeadersApplier:        config.GetSecurityHeadersApplier(),
+		scopeFilter:                   NewScopeFilter(logger), // NEW - for discovery-based scope filtering
+		dcrConfig:                     config.DynamicClientRegistration,
+		allowPrivateIPAddresses:       config.AllowPrivateIPAddresses,
+		allowUnauthenticatedPreflight: config.AllowUnauthenticatedPreflight,
+		allowLoopbackHosts:            isLoopbackProviderURL(config.ProviderURL),
+		minimalHeaders:                config.MinimalHeaders,
+		stripAuthCookies:              config.StripAuthCookies,
+		enableBackchannelLogout:       config.EnableBackchannelLogout,
+		enableFrontchannelLogout:      config.EnableFrontchannelLogout,
+		backchannelLogoutPath:         normalizeLogoutPath(config.BackchannelLogoutURL),
+		frontchannelLogoutPath:        normalizeLogoutPath(config.FrontchannelLogoutURL),
+		sessionInvalidationCache:      cacheManager.GetSharedSessionInvalidationCache(),
+		refreshResultCache:            cacheManager.GetSharedRefreshResultCache(),
+		enableBearerAuth:              config.EnableBearerAuth,
+		stripAuthorizationHeader:      config.StripAuthorizationHeader,
+		bearerEmitWWWAuthenticate:     config.BearerEmitWWWAuthenticate,
+		bearerOverridesCookie:         config.BearerOverridesCookie,
 		bearerIdentifierClaim: func() string {
 			if config.BearerIdentifierClaim != "" {
 				return config.BearerIdentifierClaim
@@ -439,6 +442,21 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	tokenResilienceConfig := DefaultTokenResilienceConfig()
 	t.tokenResilienceManager = NewTokenResilienceManager(tokenResilienceConfig, t.logger)
 
+	// FIX-18 (minor): every error return below this point previously left
+	// both managers' GracefulDegradation instances registered in gdInstances
+	// forever — nothing closes them before the pluginCtx.Done() cleanup
+	// goroutine is wired up further down, and that goroutine never runs when
+	// this function itself returns an error. initSucceeded is set true only
+	// immediately before the final successful return, so any earlier return
+	// runs this cleanup instead.
+	initSucceeded := false
+	defer func() {
+		if !initSucceeded {
+			t.errorRecoveryManager.Close()
+			t.tokenResilienceManager.Close()
+		}
+	}()
+
 	// Coalesces concurrent refresh-token grants per refresh_token to one upstream
 	// call, preventing the thundering herd that yields invalid_grant when the IdP
 	// rotates refresh tokens (Zitadel/Authentik default).
@@ -456,6 +474,11 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	t.extractClaimsFunc = extractClaims
 	t.initiateAuthenticationFunc = func(rw http.ResponseWriter, req *http.Request, session *SessionData, redirectURL string) {
 		t.defaultInitiateAuthentication(rw, req, session, redirectURL)
+	}
+	// Lazily build a client-assertion signer from the static key material,
+	// used only when DCR later provisions a private_key_jwt client (R162).
+	t.dcrClientAssertionBuilder = func() (*ClientAssertionSigner, error) {
+		return buildClientAssertionSignerFromConfig(config)
 	}
 
 	for k, v := range defaultExcludedURLs {
@@ -475,15 +498,24 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 		parsedTmpl, err := tmpl.Parse(header.Value)
 		if err != nil {
-			logger.Errorf("Failed to parse header template for %s: %v", header.Name, err)
-			continue
+			// Fail closed: a configured identity/security header that does not
+			// compile must stop startup rather than silently run the middleware
+			// without it (R141). Validate() gates non-empty templates with the
+			// same engine, so this is a final safety net.
+			return nil, fmt.Errorf("failed to parse header template for %s: %w", header.Name, err)
 		}
 
 		t.headerTemplates[header.Name] = parsedTmpl
 		logger.Debugf("Parsed template for header %s: %s", header.Name, header.Value)
 	}
 
-	startReplayCacheCleanup(pluginCtx, logger)
+	// Register this instance BEFORE adopting any process-global singleton
+	// task (FIX-35). A concurrent Close() elsewhere (an overlapping Traefik
+	// reload) decides whether it is the last live instance by reading this
+	// same counter; registering first guarantees that decision — made fresh,
+	// immediately before each singleton stop — always sees this instance
+	// counted before it can adopt a shared task below.
+	registerLiveInstance()
 
 	// Start memory monitoring for leak detection and performance insights.
 	// The interval is clamped to MinMemoryMonitorInterval (30s) inside
@@ -508,7 +540,8 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 
 	// Add reference for this instance
 	rm.AddReference(name)
-	registerLiveInstance()
+	// registerLiveInstance is now called earlier, before this instance
+	// adopts the memory-monitor singleton (FIX-35).
 
 	// Initialize metadata in a goroutine with proper tracking
 	if t.goroutineWG != nil {
@@ -535,6 +568,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		}()
 	}
 
+	initSucceeded = true
 	return t, nil
 }
 
@@ -578,6 +612,51 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	t.safeLogError("Received nil metadata during initialization")
 }
 
+// Discovered-endpoint names. jwks_uri, authorization and token have no
+// operator-configured source at all (the plugin has no config field that
+// can supply them), so a dropped instance of one of those three leaves
+// login broken with no way to recover it (FIX-26). revocation, end_session
+// and introspection DO each have a config override (config.RevocationURL,
+// config.OIDCEndSessionURL, config.IntrospectionURL — settings.go), but
+// only when the operator actually sets it.
+const (
+	discoveredEndpointNameJWKSURI       = "jwks_uri"
+	discoveredEndpointNameAuthorization = "authorization"
+	discoveredEndpointNameToken         = "token"
+	discoveredEndpointNameRevocation    = "revocation"
+	discoveredEndpointNameEndSession    = "end_session"
+	discoveredEndpointNameIntrospection = "introspection"
+)
+
+// discoveredEndpointHasNoOverride reports whether a scheme-downgrade drop of
+// the named discovered endpoint has no operator-configured override to fall
+// back on, and therefore genuinely breaks whatever depends on that endpoint
+// until the provider serves it over https.
+//
+// jwks_uri, authorization and token have no config field at all, so a
+// dropped instance always qualifies. revocation, end_session and
+// introspection each have one (configRevocationURL, configEndSessionURL,
+// configIntrospectionURL) that replaces the endpoint right after sanitize
+// runs (see updateMetadataEndpoints) -- but only once the operator has set
+// it. With no override configured, the drop is exactly as terminal as it is
+// for the three endpoints with no override at all, so it must qualify too
+// (re-review finding at main.go:658: the previous static answer ignored
+// whether an override was actually configured).
+func (t *TraefikOidc) discoveredEndpointHasNoOverride(name string) bool {
+	switch name {
+	case discoveredEndpointNameJWKSURI, discoveredEndpointNameAuthorization, discoveredEndpointNameToken:
+		return true
+	case discoveredEndpointNameRevocation:
+		return t.configRevocationURL == ""
+	case discoveredEndpointNameEndSession:
+		return t.configEndSessionURL == ""
+	case discoveredEndpointNameIntrospection:
+		return t.configIntrospectionURL == ""
+	default:
+		return false
+	}
+}
+
 // updateMetadataEndpoints updates internal endpoint URLs with discovered metadata.
 // It sets the authorization URL, token URL, JWKS URL, issuer URL, revocation URL,
 // end session URL, introspection URL, and registration URL based on the provider's metadata.
@@ -599,17 +678,31 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	sanitize := func(name, raw string) string {
 		if err := t.validateDiscoveredEndpoint(raw, allowLoopback); err != nil {
 			t.logger.Errorf("Ignoring discovered %s endpoint %q: %v", name, raw, err)
+			// R146's https-pin drop gets a second, distinctly-tagged line
+			// whenever this endpoint has no operator override actually
+			// configured right now (discoveredEndpointHasNoOverride):
+			// jwks_uri, authorization and token never have one. revocation,
+			// end_session and introspection do have one each
+			// (configRevocationURL/configEndSessionURL/
+			// configIntrospectionURL), which replaces the endpoint right
+			// after sanitize runs (see below) -- but only when the operator
+			// has actually set it. With no override set, the drop is just as
+			// terminal for these three as it is for the other three, so it
+			// gets the same loud line (FIX-26; re-review at main.go:658).
+			if errors.Is(err, ErrDiscoveredEndpointSchemeDowngrade) && t.discoveredEndpointHasNoOverride(name) {
+				t.logger.Errorf("SECURITY: dropped the discovered %s endpoint %q: it is plaintext http while providerURL %q is https, and this check has no override; requests needing the %s endpoint will fail until the provider serves it over https", name, raw, t.providerURL, name)
+			}
 			return ""
 		}
 		return raw
 	}
-	metadata.JWKSURL = sanitize("jwks_uri", metadata.JWKSURL)
-	metadata.AuthURL = sanitize("authorization", metadata.AuthURL)
-	metadata.TokenURL = sanitize("token", metadata.TokenURL)
-	metadata.RevokeURL = sanitize("revocation", metadata.RevokeURL)
-	metadata.EndSessionURL = sanitize("end_session", metadata.EndSessionURL)
+	metadata.JWKSURL = sanitize(discoveredEndpointNameJWKSURI, metadata.JWKSURL)
+	metadata.AuthURL = sanitize(discoveredEndpointNameAuthorization, metadata.AuthURL)
+	metadata.TokenURL = sanitize(discoveredEndpointNameToken, metadata.TokenURL)
+	metadata.RevokeURL = sanitize(discoveredEndpointNameRevocation, metadata.RevokeURL)
+	metadata.EndSessionURL = sanitize(discoveredEndpointNameEndSession, metadata.EndSessionURL)
 	metadata.RegistrationURL = sanitize("registration", metadata.RegistrationURL)
-	metadata.IntrospectionURL = sanitize("introspection", metadata.IntrospectionURL)
+	metadata.IntrospectionURL = sanitize(discoveredEndpointNameIntrospection, metadata.IntrospectionURL)
 	// The introspection request authenticates with the client secret via HTTP
 	// Basic, so the endpoint must live on the same host as the operator-
 	// configured provider; otherwise a poisoned discovery document could
@@ -617,6 +710,22 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 	if metadata.IntrospectionURL != "" && t.providerURL != "" && !sameHost(metadata.IntrospectionURL, t.providerURL) {
 		t.logger.Errorf("Ignoring introspection endpoint %q: host does not match configured providerURL", metadata.IntrospectionURL)
 		metadata.IntrospectionURL = ""
+	}
+	// Token and revocation endpoints are NOT same-host pinned: mainstream
+	// OIDC providers split them across hosts (e.g. Google's issuer is
+	// accounts.google.com but token_endpoint is oauth2.googleapis.com).
+	// A same-host pin here would clear the real token endpoint on those
+	// providers, leaving tokenURL empty and breaking the code exchange.
+	// SSRF defense for these (and every endpoint) is handled above by
+	// validateDiscoveredEndpoint (blocks private/loopback/cloud-metadata
+	// hosts), which is the appropriate gate. The client secret travels to
+	// the (TLS-verified, SSRF-filtered) endpoint the IdP advertises,
+	// matching standard OIDC behavior (R158).
+	if metadata.TokenURL != "" && t.providerURL != "" && !sameHost(metadata.TokenURL, t.providerURL) {
+		t.logger.Debugf("Accepted discovered token endpoint on a different host than providerURL: %s", metadata.TokenURL)
+	}
+	if metadata.RevokeURL != "" && t.providerURL != "" && !sameHost(metadata.RevokeURL, t.providerURL) {
+		t.logger.Debugf("Accepted discovered revocation endpoint on a different host than providerURL: %s", metadata.RevokeURL)
 	}
 
 	// Pin the discovered issuer to the operator-configured provider host. The
@@ -648,10 +757,32 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 
 	t.metadataMu.Lock()
 
-	t.jwksURL = metadata.JWKSURL
+	// Preserve the previously-good issuer when the discovered one is empty
+	// (a transiently-malformed discovery document on refresh, or a host
+	// mismatch nulled below). Unconditionally assigning the discovered
+	// value would wipe a working issuer to "" on a benign refresh,
+	// permanently bricking auth (503 + infinite recovery) until a later
+	// refresh happens to restore it (R124).
+	if discoveredIssuer == "" {
+		discoveredIssuer = t.issuerURL
+	}
+
+	// Preserve a previously-good endpoint when the discovered value is
+	// empty (a transiently-malformed discovery document on refresh, or an
+	// SSRF-sanitize blanking it). Mirror the issuer guard above (R124):
+	// unconditionally assigning the empty value would wipe a working
+	// jwks_uri (and therefore permanently break signature verification),
+	// auth, or token endpoint with no config override to recover (R151).
+	preserveGood := func(newV, cur string) string {
+		if newV == "" && cur != "" {
+			return cur
+		}
+		return newV
+	}
+	t.jwksURL = preserveGood(metadata.JWKSURL, t.jwksURL)
 	t.scopesSupported = metadata.ScopesSupported // Store supported scopes from discovery
-	t.authURL = metadata.AuthURL
-	t.tokenURL = metadata.TokenURL
+	t.authURL = preserveGood(metadata.AuthURL, t.authURL)
+	t.tokenURL = preserveGood(metadata.TokenURL, t.tokenURL)
 	t.issuerURL = discoveredIssuer
 	t.revocationURL = metadata.RevokeURL
 	t.endSessionURL = metadata.EndSessionURL
@@ -692,10 +823,42 @@ func (t *TraefikOidc) updateMetadataEndpoints(metadata *ProviderMetadata) {
 		t.logger.Debugf("Dynamic client registration endpoint discovered: %s", registrationURL)
 	}
 
-	// Perform Dynamic Client Registration if enabled and ClientID is not set
-	if t.dcrConfig != nil && t.dcrConfig.Enabled && t.clientID == "" {
+	// Perform Dynamic Client Registration if enabled and ClientID is not set.
+	// dcrMu serializes the check and the registration so the concurrent
+	// metadata-refresh goroutine can't pass the same gate and register a
+	// second client (and so the clientID read here can't race the write in
+	// performDynamicClientRegistration).
+	t.dcrMu.Lock()
+	// Snapshot clientID under metadataMu: DCR writes it under
+	// metadataMu.Lock, so the dcrMu-guarded read must also snapshot under
+	// RLock to avoid a lock-mismatch data race (R137).
+	if t.dcrConfig != nil && t.dcrConfig.Enabled && t.dcrRegistrationNeeded() {
 		t.performDynamicClientRegistration()
 	}
+	t.dcrMu.Unlock()
+}
+
+// dcrRegistrationNeeded reports whether a DCR (re-)registration is needed:
+// either no client is installed yet, or the installed client's secret has
+// already expired (or is within the same 5-minute buffer used by
+// areCredentialsValid when loading persisted credentials). Without the
+// expiry branch a provider that returns a finite client_secret_expires_at
+// would have its install be a one-shot: once the secret lapsed, the
+// 2-hour metadata refresh (the only path that re-runs this gate) saw
+// clientID != "" and never re-registered, so every token exchange then
+// failed invalid_client with no self-heal (R180).
+func (t *TraefikOidc) dcrRegistrationNeeded() bool {
+	t.metadataMu.RLock()
+	hasClient := t.clientID != ""
+	exp := t.clientSecretExpiresAt
+	t.metadataMu.RUnlock()
+	if !hasClient {
+		return true
+	}
+	if exp <= 0 {
+		return false // non-expiring secret → keep the installed client
+	}
+	return time.Now().Add(5 * time.Minute).After(time.Unix(exp, 0))
 }
 
 // performDynamicClientRegistration performs automatic client registration with the OIDC provider
@@ -710,6 +873,10 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 			t.dcrConfig,
 			t.providerURL,
 		)
+		// Feed the merged runtime auth scopes so registration may advertise
+		// them (buildRegistrationRequest) for IdPs that only grant
+		// registered scopes (R124).
+		t.dynamicClientRegistrar.scopes = append([]string(nil), t.scopes...)
 
 		// Set up storage backend for credentials persistence
 		if t.dcrConfig.PersistCredentials {
@@ -725,8 +892,13 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 		}
 	}
 
-	// Get registration endpoint (from metadata or config override)
+	// Get registration endpoint (from metadata or config override). Guarded
+	// by metadataMu because updateMetadataEndpoints (refresh loop / recovery
+	// goroutine) writes registrationURL under metadataMu.Lock concurrently
+	// (R117 data race otherwise).
+	t.metadataMu.RLock()
 	registrationEndpoint := t.registrationURL
+	t.metadataMu.RUnlock()
 	if t.dcrConfig.RegistrationEndpoint != "" {
 		registrationEndpoint = t.dcrConfig.RegistrationEndpoint
 	}
@@ -745,8 +917,40 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 	t.metadataMu.Lock()
 	t.clientID = resp.ClientID
 	t.clientSecret = resp.ClientSecret
+	t.clientSecretExpiresAt = resp.ClientSecretExpiresAt
+	// The IdP provisioned this client according to the auth method requested
+	// at registration (ClientMetadata.TokenEndpointAuthMethod, RFC 7591).
+	// Point the runtime at the SAME method, or token exchanges will
+	// authenticate with a method the registered client does not support
+	// and fail silently (R157). The IdP is authoritative here, so this
+	// overrides any clientAuthMethod inherited from the static config.
+	if t.dynamicClientRegistrar != nil {
+		t.clientAuthMethod = t.dynamicClientRegistrar.EffectiveTokenEndpointAuthMethod()
+	}
 	if t.audience == "" {
 		t.audience = resp.ClientID // Default audience to client ID
+	}
+	// R162: DCR can provision a client whose method is private_key_jwt
+	// (RFC 7591 ClientMetadata.TokenEndpointAuthMethod) even when the
+	// static config did not set ClientAuthMethod=private_key_jwt. In that
+	// case no ClientAssertionSigner was built at construction and every
+	// token exchange silently fell back to client_secret (empty for a
+	// secretless private_key_jwt client) and failed invalid_client.
+	// Reconcile: if the effective method is private_key_jwt but no
+	// signer exists, build one from the static key material, and log
+	// loudly (rather than silently) if that material is missing.
+	// Written while holding metadataMu so it matches every reader of
+	// t.clientAssertion (clientCredentials) which snapshots under
+	// metadataMu.RLock — writing it after Unlock was a lock-mismatch
+	// data race with the request path (R180).
+	if t.clientAuthMethod == "private_key_jwt" && t.clientAssertion == nil {
+		if t.dcrClientAssertionBuilder == nil {
+			t.logger.Errorf("DCR registered a private_key_jwt client but no client-assertion signer builder is configured; token exchanges will fail")
+		} else if signer, err := t.dcrClientAssertionBuilder(); err != nil {
+			t.logger.Errorf("DCR registered a private_key_jwt client but no client-assertion signer could be built: %v", err)
+		} else {
+			t.clientAssertion = signer
+		}
 	}
 	t.metadataMu.Unlock()
 

@@ -146,6 +146,16 @@ func (mc *MetadataCache) GetProviderMetadata(ctx context.Context, providerURL st
 		return nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}
 
+	// Require the core endpoints. An incomplete discovery document (missing
+	// authorization_endpoint / token_endpoint / jwks_uri) would otherwise be
+	// accepted, cached, and adopted as the working auth/token/JWKS URL, failing
+	// at runtime (wrong authorize redirect, token-exchange failure, or signature
+	// verification failure — jwksURL has no non-discovery source) instead of at
+	// startup.
+	if metadata.AuthURL == "" || metadata.TokenURL == "" || metadata.JWKSURL == "" {
+		return nil, fmt.Errorf("discovery document missing required endpoints (authorization_endpoint, token_endpoint or jwks_uri)")
+	}
+
 	// Pin the advertised issuer to the configured provider host. The issuer is
 	// the trust anchor for JWT issuer validation; rejecting a mismatch here
 	// ensures a poisoned discovery document advertising an attacker-chosen

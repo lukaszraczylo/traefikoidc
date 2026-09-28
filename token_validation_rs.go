@@ -38,9 +38,40 @@ func (t *TraefikOidc) validateGoogleTokensRS(rs *requestState) (bool, bool, bool
 	return t.validateStandardTokensRS(rs)
 }
 
+// accessTokenUnexpired reports whether a signature-verified access
+// token's time claims still hold. Used on the lenient-audience path where
+// jwt.Verify short-circuits at the aud check BEFORE reaching exp/iat/nbf
+// validation, leaving all time claims unvalidated. Re-applies the shared
+// verifyTimeClaims helper (jwt.go) — exp required, iat validated only when
+// present (RFC 7519 §4.1.6), nbf validated when present — so this path
+// cannot drift onto a stricter iat contract than jwt.Verify itself
+// (R126/FIX-27: this function once hard-required iat after jwt.Verify made
+// it optional, forcing refresh/re-auth for an otherwise-valid, iat-less
+// lenient-audience token).
+func (t *TraefikOidc) accessTokenUnexpired(token string) bool {
+	parsed, err := parseJWT(token)
+	if err != nil {
+		return false
+	}
+	return verifyTimeClaims(parsed.Claims) == nil
+}
+
 // validateTokenExpiryRS is the requestState-aware variant of validateTokenExpiry.
 // Reads rs.refreshToken instead of session.GetRefreshToken() (4 RLocks avoided).
 func (t *TraefikOidc) validateTokenExpiryRS(rs *requestState, token string) (bool, bool, bool) {
+	// Defense-in-depth (F2/R133): this is the final authenticated gate.
+	// Every current caller has already passed the blacklist check via
+	// verifyToken, but guard independently so a revoked-but-still-cached
+	// token can never be served authenticated if the call order changes.
+	if t.tokenBlacklist != nil {
+		if b, ok := t.tokenBlacklist.Get(token); ok && b != nil {
+			if rs.refreshToken != "" {
+				return false, true, false
+			}
+			return false, false, true
+		}
+	}
+
 	cachedClaims, found := t.tokenCache.Get(token)
 	if !found {
 		t.logger.Debug("Claims not found in cache after successful token verification")
@@ -62,7 +93,13 @@ func (t *TraefikOidc) validateTokenExpiryRS(rs *requestState, token string) (boo
 	expTimeObj := time.Unix(int64(expClaim), 0)
 	nowObj := time.Now()
 
-	if expTimeObj.Before(nowObj) {
+	// Apply the same clock-skew leeway as jwt.Verify's verifyExpiration
+	// (ClockSkewToleranceFuture). This is the final auth gate run after
+	// successful signature verification; without the leeway a token
+	// within the 2-minute post-exp window was granted by Verify but
+	// downgraded to here as expired, forcing a needless refresh or
+	// re-auth (R124).
+	if nowObj.After(expTimeObj.Add(ClockSkewToleranceFuture)) {
 		if rs.refreshToken != "" {
 			return false, true, false
 		}
@@ -127,16 +164,51 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 	if isOpaqueToken {
 		if t.allowOpaqueTokens {
 			if err := t.validateOpaqueToken(rs.accessToken); err != nil {
+				// validateOpaqueToken returns introspectToken's *HTTPError
+				// (a non-200 response from the introspection endpoint)
+				// UNWRAPPED (not via fmt.Errorf %w), specifically so a plain
+				// type assertion here is sufficient and yaegi-safe: under
+				// yaegi v0.16.1 errors.As(err, &target) panics whenever
+				// target's pointed-to type is interpreted (*HTTPError is
+				// declared in this plugin), and an interpreted *HTTPError
+				// wrapped with %w cannot be recovered by a manual
+				// errors.Unwrap walk under yaegi either (verified this
+				// session) — so the producer must not wrap it at all. See
+				// asHTTPError in error_recovery.go for the general pattern.
+				//
+				// HTTPError.Message embeds up to 10 KiB of the IdP's own
+				// response body. That body is attacker/IdP-controlled text,
+				// not a verdict on the presented token — a 401/403/429 whose
+				// body happens to contain "revoked" or similar must not be
+				// read as "token is not active" (FIX-13). Detect an
+				// *HTTPError specifically and route it straight to the
+				// requireTokenIntrospection/transient handling below,
+				// BEFORE the substring match runs. Only validateOpaqueToken's
+				// own generated messages (active=false, expired, nbf — never
+				// an *HTTPError) may still reach the substring classification.
+				_, isHTTPError := err.(*HTTPError)
 				errMsg := err.Error()
-				isTokenInvalid := strings.Contains(errMsg, "token is not active") ||
+				isTokenInvalid := !isHTTPError && (strings.Contains(errMsg, "token is not active") ||
 					strings.Contains(errMsg, "revoked") ||
-					strings.Contains(errMsg, "token has expired")
+					strings.Contains(errMsg, "token has expired"))
 				if isTokenInvalid {
 					if rs.refreshToken != "" {
 						return false, true, false
 					}
 					return false, false, true
 				}
+				// Any other introspection error — a network failure, or a
+				// 4xx from the introspection endpoint itself — is not a
+				// statement about the presented token. RFC 7662 s2.2 defines
+				// only a 200 response with active=false as "not active";
+				// s2.3 defines a 401 as the RESOURCE's (this plugin's) own
+				// client credentials being rejected, not the token, and a
+				// 408/429 as the endpoint throttling or timing out (FIX-13,
+				// supersedes R156's blanket 4xx-as-revoked classification).
+				// requireTokenIntrospection keeps the fail-closed behavior
+				// below; otherwise fall through to ID-token validation
+				// rather than forcing a refresh for a token that may still
+				// be perfectly valid.
 				if t.requireTokenIntrospection {
 					if rs.refreshToken != "" {
 						return false, true, false
@@ -190,7 +262,10 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 
 	// JWT access token present.
 	accessTokenValid := false
+	lenientAudienceOnly := false
+	var accessVerifyErr error
 	if err := t.verifyToken(rs.accessToken); err != nil {
+		accessVerifyErr = err
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "invalid audience") || strings.Contains(errMsg, "audience") {
 			if t.strictAudienceValidation {
@@ -199,7 +274,10 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 				}
 				return false, false, true
 			}
-			// Fall through to ID-token validation.
+			// Lenient audience validation: the token's signature verified; only
+			// the audience was left unchecked. Fall through to ID-token
+			// validation, remembering the access token was structurally valid.
+			lenientAudienceOnly = true
 		}
 	} else {
 		accessTokenValid = true
@@ -209,10 +287,33 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 		if accessTokenValid {
 			return t.validateTokenExpiryRS(rs, rs.accessToken)
 		}
-		if rs.refreshToken != "" {
-			return true, true, false
+		if lenientAudienceOnly {
+			// Access token signature verified; audience check was lenient and
+			// there is no ID token to compare against. jwt.Verify returns at
+			// the aud check BEFORE reaching the exp check, so expiry was never
+			// validated on this path — an expired, wrong-audience token would
+			// otherwise be accepted as authenticated. Require the token's time
+			// claims (exp, iat, nbf) to all still hold before trusting its
+			// claims for authorization.
+			if !t.accessTokenUnexpired(rs.accessToken) {
+				if rs.refreshToken != "" {
+					return false, true, false
+				}
+				return false, false, true
+			}
+			if rs.refreshToken != "" {
+				return true, true, false
+			}
+			return true, false, false
 		}
-		return true, false, false
+		// Access token failed verification (expired, bad signature, issuer, ...)
+		// and there is no ID token to corroborate it. Fail closed rather than
+		// trusting an unverified token: refresh if possible, otherwise force
+		// re-authentication.
+		if rs.refreshToken != "" {
+			return false, true, false
+		}
+		return false, false, true
 	}
 
 	if err := t.verifyToken(rs.idToken); err != nil {
@@ -231,6 +332,21 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 	if accessTokenValid {
 		return t.validateTokenExpiryRS(rs, rs.accessToken)
 	}
+	// Access token is a JWT whose verification failed, yet the session's
+	// ID token is still valid. If the failure was specifically EXPIRY —
+	// verifyToken checks the signature before exp, so "token has expired"
+	// implies the signature and other claims validated — the access token
+	// is unusable at the upstream resource. Refresh to obtain a fresh one
+	// rather than forwarding a stale access token (R131). Without this an
+	// expired access token (with a still-valid ID token) was authenticated
+	// with needsRefresh=false and forwarded as-is until the ID token
+	// itself neared expiry, giving the backend an expired bearer token.
+	if accessVerifyErr != nil && strings.Contains(accessVerifyErr.Error(), "token has expired") {
+		if rs.refreshToken != "" {
+			return true, true, false
+		}
+		return false, false, true
+	}
 	return t.validateTokenExpiryRS(rs, rs.idToken)
 }
 
@@ -241,7 +357,10 @@ func (t *TraefikOidc) validateAzureTokensRS(rs *requestState) (bool, bool, bool)
 		if rs.refreshToken != "" {
 			return false, true, false
 		}
-		return false, true, false
+		// No refresh token to use: match the standard path and fail without
+		// pretending refresh is possible (the previous copy-paste returned
+		// needsRefresh=true with nothing to refresh with).
+		return false, false, false
 	}
 
 	if rs.accessToken != "" {
@@ -255,6 +374,41 @@ func (t *TraefikOidc) validateAzureTokensRS(rs *requestState) (bool, bool, bool)
 						return false, false, true
 					}
 					return t.validateTokenExpiryRS(rs, rs.idToken)
+				}
+				// No ID token to corroborate the Azure token. Its signature
+				// can't be verified client-side, but it still carries exp;
+				// authenticate only while unexpired. Previously this
+				// returned authenticated=true with no expiry check, so an
+				// expired (or unparseable) Azure access token authenticated
+				// indefinitely until the session itself expired (R129).
+				if claims, err := extractClaims(rs.accessToken); err != nil {
+					if rs.refreshToken != "" {
+						return false, true, false
+					}
+					return false, false, true
+				} else {
+					// Defense-in-depth (mirrors validateTokenExpiryRS): a
+					// revoked-but-still-cached token must not authenticate
+					// through this unverifiable branch either (R147).
+					if t.tokenBlacklist != nil {
+						if b, ok := t.tokenBlacklist.Get(rs.accessToken); ok && b != nil {
+							if rs.refreshToken != "" {
+								return false, true, false
+							}
+							return false, false, true
+						}
+					}
+					// exp must be present and numeric to establish the token
+					// is current; an unverifiable token with no (or
+					// non-numeric) exp authenticates with zero verification,
+					// so fail closed when it can't be bounded (R130).
+					exp, ok := claims["exp"].(float64)
+					if !ok || time.Now().After(time.Unix(int64(exp), 0).Add(ClockSkewToleranceFuture)) {
+						if rs.refreshToken != "" {
+							return false, true, false
+						}
+						return false, false, true
+					}
 				}
 				return true, false, false
 			}
@@ -279,7 +433,17 @@ func (t *TraefikOidc) validateAzureTokensRS(rs *requestState) (bool, bool, bool)
 		if rs.idToken != "" {
 			return t.validateTokenExpiryRS(rs, rs.idToken)
 		}
-		return true, false, false
+		// Opaque access token with no ID token to corroborate it. Do not
+		// authenticate on an unverified (or unverifiable) token: refresh
+		// if a refresh token is available, otherwise force
+		// re-authentication. Mirrors validateStandardTokensRS, which
+		// documents this exact decision ("Do NOT authenticate on an
+		// unverified token"). The previous `return true, false, false`
+		// accepted any opaque value here with no verification (R99).
+		if rs.refreshToken != "" {
+			return false, true, false
+		}
+		return false, false, true
 	}
 
 	if rs.idToken != "" {

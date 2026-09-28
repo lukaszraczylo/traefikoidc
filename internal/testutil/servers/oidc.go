@@ -279,7 +279,7 @@ func (s *OIDCServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	redirectURL := fmt.Sprintf("%s?code=test-auth-code&state=%s", redirectURI, state)
-	http.Redirect(w, r, redirectURL, http.StatusFound)
+	http.Redirect(w, r, redirectURL, http.StatusFound) // #nosec G710 -- test-only mock IdP; isValidRedirectURI limits the target to this server
 }
 
 func (s *OIDCServer) handleUserinfo(w http.ResponseWriter, r *http.Request) {
@@ -342,7 +342,7 @@ func (s *OIDCServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid post_logout_redirect_uri", http.StatusBadRequest)
 			return
 		}
-		http.Redirect(w, r, postLogoutRedirect, http.StatusFound)
+		http.Redirect(w, r, postLogoutRedirect, http.StatusFound) // #nosec G710 -- test-only mock IdP; isValidRedirectURI limits the target to this server
 		return
 	}
 

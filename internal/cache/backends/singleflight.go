@@ -2,6 +2,7 @@ package backends
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,8 +81,22 @@ func (s *SingleflightCache) GetOrFetch(ctx context.Context, key string, fetcher 
 	s.calls[key] = call
 	s.mu.Unlock()
 
-	// Execute the fetcher
-	call.val, call.ttl, call.err = fetcher(ctx)
+	// Execute the fetcher. Recover any panic so call.wg.Done() below is
+	// always reached: a panicking fetcher would otherwise leave every
+	// waiter blocked forever on call.wg.Wait() and the call permanently
+	// wedged in s.calls (subsequent GetOrFetch calls for the key would
+	// block indefinitely). Routines here (BackgroundTask, Goroutine)
+	// treat panics as a normal failure mode, so this is reachable.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if call.err == nil {
+					call.err = fmt.Errorf("singleflight fetcher panicked: %v", r)
+				}
+			}
+		}()
+		call.val, call.ttl, call.err = fetcher(ctx)
+	}()
 	call.done = true
 
 	// If successful, store in cache

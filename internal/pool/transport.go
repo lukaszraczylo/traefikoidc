@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,7 +59,13 @@ var (
 	transportPoolOnce sync.Once
 )
 
-// GetTransportPool returns the global transport pool instance
+// GetTransportPool returns the global transport pool instance.
+//
+// The whole body runs inside transportPoolOnce.Do so every caller, including
+// the very first concurrent callers, only ever reads globalTransportPool
+// after Once establishes happens-before (FIX-39). A pre-check outside Do
+// would read the pointer while another goroutine's Do closure writes it,
+// which is a data race that also defeats Once's synchronization guarantee.
 func GetTransportPool() *TransportPool {
 	transportPoolOnce.Do(func() {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -101,7 +108,7 @@ func DefaultTransportConfig() TransportConfig {
 func (p *TransportPool) GetTransport(config TransportConfig) *http.Transport {
 	// Check client limit
 	if atomic.LoadInt32(&p.clientCount) >= p.maxClients {
-		return p.getExistingTransport()
+		return p.getExistingTransport(config)
 	}
 
 	key := p.configKey(config)
@@ -163,18 +170,39 @@ func (p *TransportPool) ReleaseTransport(transport *http.Transport) {
 }
 
 // getExistingTransport returns any available transport when limit is reached
-func (p *TransportPool) getExistingTransport() *http.Transport {
+func (p *TransportPool) getExistingTransport(config TransportConfig) *http.Transport {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
+	// Prefer a transport whose TLS settings (verification, min version)
+	// match the request. Reusing a mismatched transport at cap could hand a
+	// strict-verifying caller an InsecureSkipVerify transport (silent cert
+	// verification bypass) or an insecure caller a verifying one (R146).
 	for _, shared := range p.transports {
-		if shared != nil && shared.transport != nil {
+		if shared != nil && shared.transport != nil && p.tlsMatches(config, shared.config) {
 			atomic.AddInt32(&shared.refCount, 1)
 			shared.lastUsed = time.Now()
 			return shared.transport
 		}
 	}
+	// No TLS-matching pooled transport: return nil so the caller falls back
+	// to a safe basic client (http.DefaultTransport verifies certs) rather
+	// than receiving a mismatched peer. Bounded by the cap (R146).
 	return nil
+}
+
+// tlsMatches reports whether two transports share the same TLS posture
+// (certificate verification and minimum protocol version), normalized for
+// createTransport's 0-means-TLS1.2 default.
+func (p *TransportPool) tlsMatches(a, b TransportConfig) bool {
+	amin, bmin := a.MinTLSVersion, b.MinTLSVersion
+	if amin == 0 {
+		amin = tls.VersionTLS12
+	}
+	if bmin == 0 {
+		bmin = tls.VersionTLS12
+	}
+	return a.InsecureSkipVerify == b.InsecureSkipVerify && amin == bmin
 }
 
 // createTransport creates a new HTTP transport with the given config
@@ -193,8 +221,6 @@ func (p *TransportPool) createTransport(config TransportConfig) *http.Transport 
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 		},
-		// #nosec G402 -- PreferServerCipherSuites is deprecated in Go 1.17+ but setting it is harmless
-		PreferServerCipherSuites: true,
 		// #nosec G402 -- InsecureSkipVerify is configurable for testing/dev environments
 		InsecureSkipVerify: config.InsecureSkipVerify,
 	}
@@ -230,9 +256,15 @@ func (p *TransportPool) configKey(config TransportConfig) string {
 	sb := Get().GetStringBuilder()
 	defer Get().PutStringBuilder(sb)
 
-	sb.WriteByte(byte(config.MaxConnsPerHost))
-	sb.WriteByte(byte(config.MaxIdleConnsPerHost))
-	sb.WriteByte(byte(config.MaxIdleConns))
+	// Write the int fields verbatim, not byte()s: a config value >=256 would
+	// otherwise truncate and make two distinct configs collide on one key,
+	// silently sharing a single transport with the wrong settings.
+	sb.WriteString(strconv.Itoa(config.MaxConnsPerHost))
+	sb.WriteByte('|')
+	sb.WriteString(strconv.Itoa(config.MaxIdleConnsPerHost))
+	sb.WriteByte('|')
+	sb.WriteString(strconv.Itoa(config.MaxIdleConns))
+	sb.WriteByte('|')
 	if config.ForceHTTP2 {
 		sb.WriteByte(1)
 	} else {
@@ -252,6 +284,28 @@ func (p *TransportPool) configKey(config TransportConfig) string {
 		sb.WriteByte(1)
 	} else {
 		sb.WriteByte(0)
+	}
+	// Include MinTLSVersion and every timeout so two configs differing only
+	// in TLS minimum version or timeouts do NOT collide on one key and
+	// silently share a transport with whoever-arrived-first's settings
+	// (a possible TLS-version downgrade). Mirror http_client_pool.go's
+	// all-field key (R146).
+	sb.WriteByte('|')
+	if config.MinTLSVersion == 0 {
+		sb.WriteString("tls12")
+	} else {
+		sb.WriteString(strconv.Itoa(int(config.MinTLSVersion)))
+	}
+	for _, d := range []time.Duration{
+		config.DialTimeout,
+		config.TLSHandshakeTimeout,
+		config.ResponseHeaderTimeout,
+		config.ExpectContinueTimeout,
+		config.IdleConnTimeout,
+		config.KeepAlive,
+	} {
+		sb.WriteByte('|')
+		sb.WriteString(strconv.FormatInt(int64(d), 10))
 	}
 
 	return sb.String()

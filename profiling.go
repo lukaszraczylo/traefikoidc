@@ -35,6 +35,10 @@ type MemorySnapshot struct {
 	HeapProfile      []byte
 	GoroutineProfile []byte
 	RuntimeStats     runtime.MemStats
+	// Goroutines is the goroutine count (runtime.NumGoroutine()) captured at
+	// snapshot time, so leak analysis can diff a baseline against a later
+	// snapshot instead of sampling "now" twice (R118).
+	Goroutines int
 }
 
 // LeakAnalysis contains the results of memory leak detection and analysis.
@@ -118,10 +122,22 @@ func NewProfilingManager(logger *Logger) *ProfilingManager {
 // TakeSnapshot captures a comprehensive snapshot of current memory statistics.
 // Includes runtime stats, heap profile, goroutine profile, and custom metrics.
 func (pm *ProfilingManager) TakeSnapshot() (*MemorySnapshot, error) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.takeSnapshot()
+}
+
+// takeSnapshot implements TakeSnapshot assuming the caller already holds the
+// lock (either RLock for the public API, or the write Lock during
+// Start/StopProfiling). Calling the public TakeSnapshot from Start/Stop
+// while holding pm.mu.Lock() would self-deadlock (an RWMutex is not
+// recursively re-entrant on the write side) — R118.
+func (pm *ProfilingManager) takeSnapshot() (*MemorySnapshot, error) { // nolint:unparam // error return kept for the exported TakeSnapshot contract
 	var buf bytes.Buffer
 	snapshot := &MemorySnapshot{
 		Timestamp:     time.Now(),
 		CustomMetrics: make(map[string]interface{}),
+		Goroutines:    runtime.NumGoroutine(),
 	}
 
 	runtime.ReadMemStats(&snapshot.RuntimeStats)
@@ -146,13 +162,11 @@ func (pm *ProfilingManager) TakeSnapshot() (*MemorySnapshot, error) {
 		}
 	}
 
-	pm.mu.RLock()
 	for name, profiler := range pm.profilers {
 		if customStats := profiler.GetCurrentStats(); customStats != nil {
 			snapshot.CustomMetrics[name] = customStats
 		}
 	}
-	pm.mu.RUnlock()
 
 	return snapshot, nil
 }
@@ -170,7 +184,7 @@ func (pm *ProfilingManager) StartProfiling(config ProfilingConfig) error {
 	pm.isProfiling = true
 	pm.startTime = time.Now()
 
-	baseline, err := pm.TakeSnapshot()
+	baseline, err := pm.takeSnapshot() // lock already held -> use unlocked variant
 	if err != nil {
 		pm.isProfiling = false
 		return fmt.Errorf("failed to take baseline snapshot: %w", err)
@@ -190,7 +204,7 @@ func (pm *ProfilingManager) StopProfiling() (*MemorySnapshot, error) {
 		return nil, fmt.Errorf("profiling not in progress")
 	}
 
-	finalSnapshot, err := pm.TakeSnapshot()
+	finalSnapshot, err := pm.takeSnapshot() // lock already held -> use unlocked variant
 	if err != nil {
 		pm.logger.Errorf("Failed to take final snapshot: %v", err)
 	}
@@ -225,8 +239,12 @@ func (pm *ProfilingManager) AnalyzeLeaks(baseline, current *MemorySnapshot) *Lea
 	memoryIncrease := current.RuntimeStats.Alloc - baseline.RuntimeStats.Alloc
 	analysis.MemoryIncrease = memoryIncrease
 
+	// Diff against the goroutine count captured when the baseline snapshot
+	// was taken, not a live double-sample at analysis time. Sampling "now"
+	// for both values made the increase always 0 and the goroutine-leak
+	// branch permanently dead (R118).
+	baselineGoroutines := baseline.Goroutines
 	currentGoroutines := runtime.NumGoroutine()
-	baselineGoroutines := runtime.NumGoroutine()
 	goroutineIncrease := currentGoroutines - baselineGoroutines
 	analysis.GoroutineIncrease = goroutineIncrease
 

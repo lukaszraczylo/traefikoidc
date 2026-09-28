@@ -63,6 +63,14 @@ func (m *GoroutineManager) StartGoroutine(name string, fn func(context.Context))
 			m.wg.Done()
 			m.mu.Lock()
 			managedGoroutine.running = false
+			// Prune the map entry once this goroutine has finished so that
+			// finished goroutines don't accumulate unboundedly (R157). Only
+			// delete when the current entry still IS the finishing
+			// goroutine: a concurrent Start with the same name may have
+			// already replaced it with a live one.
+			if cur, ok := m.goroutines[goroutineName]; ok && cur == managedGoroutine {
+				delete(m.goroutines, goroutineName)
+			}
 			m.mu.Unlock()
 
 			// Recover from panics

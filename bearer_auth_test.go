@@ -222,7 +222,8 @@ func TestResolveBearerIdentifier(t *testing.T) {
 		{name: "explicit sub", claims: map[string]interface{}{"sub": "abc"}, claim: "sub", want: "abc"},
 		{name: "custom client_id claim", claims: map[string]interface{}{"client_id": "svc"}, claim: "client_id", want: "svc"},
 		{name: "missing claim", claims: map[string]interface{}{"other": "x"}, claim: "sub", wantErr: true},
-		{name: "non-string claim", claims: map[string]interface{}{"sub": 123}, claim: "sub", wantErr: true},
+		{name: "numeric claim", claims: map[string]interface{}{"sub": 123}, claim: "sub", want: "123"}, // R102: scalar numbers stringified, not rejected
+		{name: "object claim", claims: map[string]interface{}{"sub": map[string]interface{}{"a": 1}}, claim: "sub", wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -612,6 +613,43 @@ func TestServeHTTP_Bearer_ThrottleTrips429(t *testing.T) {
 	}
 	if ra := rw.Header().Get("Retry-After"); ra == "" {
 		t.Fatalf("expected Retry-After header on 429")
+	}
+}
+
+func TestServeHTTP_Bearer_Introspection503_NotThrottleFailure(t *testing.T) {
+	t.Parallel()
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("next must not run: introspection 503 should reject request")
+	})
+	oidc := makeBearerOIDC(t, next)
+	oidc.requireTokenIntrospection = true
+	// Unreachable introspection endpoint -> every request returns 503.
+	oidc.introspectionURL = "http://127.0.0.1:1/"
+	oidc.httpClient = &http.Client{Timeout: 500 * time.Millisecond}
+	oidc.bearerFailureTracker = newBearerFailureTracker(3, 60*time.Second, 60*time.Second)
+
+	claims := defaultBearerClaims()
+	token := makeBearerJWT(t, defaultBearerHeader(), claims)
+	seedVerified(t, oidc, token, claims)
+
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/work", nil)
+		req.RemoteAddr = "10.0.0.7:1234"
+		req.Header.Set("Authorization", "Bearer "+token)
+		rw := httptest.NewRecorder()
+		oidc.ServeHTTP(rw, req)
+		return rw
+	}
+
+	// Four requests during an introspection outage. Each is a 503 and the
+	// per-IP failure count must stay at 0 so the threshold (3) never trips.
+	// On OLD code each 503 was counted as a throttle failure, so the 4th
+	// request would come back 429 (penalty box) instead of 503.
+	for i := 0; i < 4; i++ {
+		rw := send()
+		if rw.Code != http.StatusServiceUnavailable {
+			t.Fatalf("iteration %d: status=%d, want %d", i, rw.Code, http.StatusServiceUnavailable)
+		}
 	}
 }
 

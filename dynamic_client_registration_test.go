@@ -541,6 +541,7 @@ func TestCredentialsValidation(t *testing.T) {
 			name: "valid non-expiring credentials",
 			response: &ClientRegistrationResponse{
 				ClientID:              "test-client-id",
+				ClientSecret:          "test-client-secret",
 				ClientSecretExpiresAt: 0, // Never expires
 			},
 			expected: true,
@@ -549,6 +550,7 @@ func TestCredentialsValidation(t *testing.T) {
 			name: "valid future-expiring credentials",
 			response: &ClientRegistrationResponse{
 				ClientID:              "test-client-id",
+				ClientSecret:          "test-client-secret",
 				ClientSecretExpiresAt: time.Now().Add(1 * time.Hour).Unix(),
 			},
 			expected: true,
@@ -598,7 +600,7 @@ func TestBuildRegistrationRequest(t *testing.T) {
 				"redirect_uris":              []interface{}{"https://example.com/callback"},
 				"response_types":             []interface{}{"code"},
 				"grant_types":                []interface{}{"authorization_code", "refresh_token"},
-				"token_endpoint_auth_method": "client_secret_basic",
+				"token_endpoint_auth_method": "client_secret_post",
 			},
 			expectError: false,
 		},

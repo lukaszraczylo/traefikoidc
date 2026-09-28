@@ -64,6 +64,26 @@ func (h *HealthCheckBackend) Get(ctx context.Context, key string) ([]byte, time.
 	return value, ttl, exists, err
 }
 
+// SetNX forwards to the wrapped backend's SetNX when it provides one and
+// tracks health from the outcome. Round-2 fix for FIX-17's cross-replica
+// gap: without this passthrough, UniversalCache.SetIfAbsent's
+// optional-interface type assertion against a HealthCheckBackend-wrapped
+// Redis backend always failed, silently degrading the backchannel-logout
+// jti replay check to a per-process-only guarantee for any deployment with
+// enableHealthCheck on (recommended in docs/REDIS.md). When the wrapped
+// backend does not implement SetNX at all, reports
+// backends.ErrSetNXUnsupported rather than guessing.
+func (h *HealthCheckBackend) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	nx, ok := h.backend.(backendSetNXer)
+	if !ok {
+		return false, backends.ErrSetNXUnsupported
+	}
+
+	claimed, err := nx.SetNX(ctx, key, value, ttl)
+	h.recordResult(err == nil)
+	return claimed, err
+}
+
 // Delete removes a key and tracks health
 func (h *HealthCheckBackend) Delete(ctx context.Context, key string) (bool, error) {
 	deleted, err := h.backend.Delete(ctx, key)

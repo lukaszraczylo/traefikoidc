@@ -10,6 +10,31 @@ import (
 	"time"
 )
 
+// waitForRefreshDrain polls until refreshToken's entry is gone from rc's
+// in-flight map, instead of sleeping a fixed margin (FIX-22). Even with
+// DeduplicationCleanupDelay=0, executeRefreshAsync's close(operation.done)
+// and its synchronous performCleanup call are two separate statements in the
+// same deferred closure: a waiter unblocked by close(operation.done) can run
+// concurrently with (and observe the map entry before) that same goroutine's
+// next statement. Actively polling for the entry's removal — rather than
+// guessing a sleep long enough to outrun that window — makes the next
+// CoordinateRefresh call for the same token deterministically start a new
+// operation instead of occasionally joining the one that just finished.
+func waitForRefreshDrain(t *testing.T, rc *RefreshCoordinator, refreshToken string) {
+	t.Helper()
+	tokenHash := rc.hashRefreshToken(refreshToken)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := rc.inFlightRefreshes.Load(tokenHash); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refresh operation for token %q never drained from the in-flight map", refreshToken)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // TestConcurrentRefreshDeduplication verifies that concurrent refresh attempts
 // for the same token are deduplicated and only one refresh operation occurs
 func TestConcurrentRefreshDeduplication(t *testing.T) {
@@ -130,6 +155,11 @@ func TestRefreshRateLimiting(t *testing.T) {
 	config.MaxRefreshAttempts = 3
 	config.RefreshAttemptWindow = 1 * time.Second
 	config.RefreshCooldownPeriod = 2 * time.Second
+	// Immediate cleanup for deterministic test behavior (FIX-22 pattern,
+	// matching TestCircuitBreakerProtection below): removes the in-flight
+	// entry synchronously before CoordinateRefresh returns, instead of
+	// racing the default 100ms cleanup timer with a fixed sleep margin.
+	config.DeduplicationCleanupDelay = 0
 
 	coordinator := NewRefreshCoordinator(config, logger)
 	defer coordinator.Shutdown()
@@ -161,8 +191,13 @@ func TestRefreshRateLimiting(t *testing.T) {
 			}
 		}
 		attempts++
-		// Add delay to ensure operations complete and aren't deduplicated
-		time.Sleep(150 * time.Millisecond)
+		// Wait for the operation to actually drain from the in-flight map
+		// (FIX-22 pattern) instead of sleeping a fixed margin against the
+		// dedup cleanup timer: with DeduplicationCleanupDelay=0 the timer is
+		// gone, but performCleanup still runs after close(operation.done) in
+		// the same deferred closure, so a fixed sleep could still race it
+		// under load.
+		waitForRefreshDrain(t, coordinator, refreshToken)
 	}
 
 	// Verify that cooldown was triggered after max attempts.
@@ -203,6 +238,10 @@ func TestRefreshRateLimiting(t *testing.T) {
 func TestCircuitBreakerProtection(t *testing.T) {
 	logger := GetSingletonNoOpLogger()
 	config := DefaultRefreshCoordinatorConfig()
+	// Immediate cleanup for deterministic test behavior (FIX-22): removes
+	// the in-flight entry synchronously before CoordinateRefresh returns,
+	// instead of racing the 100ms default cleanup timer with a fixed sleep.
+	config.DeduplicationCleanupDelay = 0
 	coordinator := NewRefreshCoordinator(config, logger)
 	defer coordinator.Shutdown()
 
@@ -215,7 +254,11 @@ func TestCircuitBreakerProtection(t *testing.T) {
 		return nil, fmt.Errorf("service unavailable")
 	}
 
-	// Cause circuit breaker to trip
+	// Cause circuit breaker to trip with genuinely distinct failing
+	// operations. DeduplicationCleanupDelay=0 (set above), combined with
+	// polling for the in-flight entry's removal below, guarantees each
+	// same-token call is not absorbed as a join on the previous operation
+	// (FIX-22: no fixed sleep).
 	var tripCount int
 	for i := 0; i < 5; i++ {
 		ctx := context.Background()
@@ -225,6 +268,7 @@ func TestCircuitBreakerProtection(t *testing.T) {
 			"refresh_token",
 			refreshFunc,
 		)
+		waitForRefreshDrain(t, coordinator, "refresh_token")
 
 		if err != nil && err.Error() == "refresh circuit breaker is open due to repeated failures" {
 			tripCount++
@@ -758,5 +802,408 @@ func TestNoGoroutineExplosionWithTimers(t *testing.T) {
 	if finalIncrease > 20 {
 		t.Errorf("Goroutine leak detected: started with %d, ended with %d (increase of %d)",
 			initialGoroutines, finalGoroutines, finalIncrease)
+	}
+}
+
+// TestFix36_CoordinateRefreshRejectedAfterShutdown guards the FIX-36 fix:
+// CoordinateRefresh called wg.Add(1) unconditionally, with no check on
+// rc.stopChan, so a call arriving after Shutdown still registered and ran a
+// brand-new refresh operation instead of being rejected.
+func TestFix36_CoordinateRefreshRejectedAfterShutdown(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	coordinator := NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), logger)
+	coordinator.Shutdown()
+
+	var ran int32
+	_, err := coordinator.CoordinateRefresh(context.Background(), "fix36-session", "fix36-token", func() (*TokenResponse, error) {
+		atomic.StoreInt32(&ran, 1)
+		return &TokenResponse{AccessToken: "should-not-run"}, nil
+	})
+
+	if err == nil {
+		t.Fatal("CoordinateRefresh called after Shutdown must return an error instead of running a new refresh")
+	}
+	if atomic.LoadInt32(&ran) == 1 {
+		t.Fatal("refreshFunc must not run for a CoordinateRefresh call rejected after Shutdown")
+	}
+}
+
+// TestFix36_ShutdownDeliversResultForRefreshCompletingWithinDrainCap pins the
+// DECIDED FIX-36 contract: a refresh already sent to the IdP may finish and
+// deliver its result to its waiters. Shutdown waits for in-flight refreshes
+// up to shutdownRefreshDrainTimeout before giving up, instead of canceling
+// them the instant Shutdown is called.
+//
+// This supersedes the old "Shutdown cancels immediately, waiter always gets
+// an error" contract that this test, review_r63's
+// TestRefreshCoordinatorShutdownReleasesWaiterOnInflight, and review_r154's
+// TestRefreshCoordinator_ShutdownWaitsForInFlight used to pin — all three
+// were rewritten to the drain-cap contract. Discarding a refresh the IdP
+// already completed loses a rotated (one-time-use) refresh token, forcing a
+// re-login; see refresh_coordinator.go's Shutdown comment.
+//
+// refreshFunc blocks on a channel released well inside the cap (not a fixed
+// sleep) instead of using a fixed sleep, so no goroutine is left running
+// past this test even on failure — release fires unconditionally via
+// t.Cleanup.
+//
+// Fails on pre-fix code: Shutdown cancels rc.ctx immediately, so the waiter
+// gets "refresh coordinator is shutting down" instead of its tokens.
+func TestFix36_ShutdownDeliversResultForRefreshCompletingWithinDrainCap(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	cfg := DefaultRefreshCoordinatorConfig()
+	cfg.RefreshTimeout = 30 * time.Second
+	rc := NewRefreshCoordinator(cfg, logger)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFn)
+
+	type result struct {
+		resp *TokenResponse
+		err  error
+	}
+	waiterCh := make(chan result, 1)
+	go func() {
+		resp, err := rc.CoordinateRefresh(context.Background(), "fix36-cap-session", "fix36-cap-token",
+			func() (*TokenResponse, error) {
+				close(started)
+				<-release
+				return &TokenResponse{AccessToken: "delivered-within-cap"}, nil
+			})
+		waiterCh <- result{resp, err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh never started")
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		rc.Shutdown()
+		close(shutdownDone)
+	}()
+
+	// Wait deterministically for Shutdown to have actually started (closed
+	// stopChan) before releasing the refresh, instead of a fixed sleep that
+	// could let releaseFn fire before Shutdown even begins its bounded wait —
+	// which would let this test pass even on the reverted (cancel-immediately)
+	// code, since the refresh would already be done before Shutdown ran.
+	select {
+	case <-rc.stopChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown never closed stopChan")
+	}
+	releaseFn()
+
+	select {
+	case <-shutdownDone:
+	case <-time.After(shutdownRefreshDrainTimeout):
+		t.Fatal("Shutdown did not return after the in-flight refresh completed")
+	}
+
+	select {
+	case res := <-waiterCh:
+		if res.err != nil {
+			t.Fatalf("waiter of a refresh that completed within the drain cap must get its tokens, got error: %v", res.err)
+		}
+		if res.resp == nil || res.resp.AccessToken != "delivered-within-cap" {
+			t.Fatalf("waiter got unexpected result: %+v", res.resp)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("waiter did not get a result after Shutdown returned")
+	}
+}
+
+// TestFix36_ShutdownReturnsNearCapWhenRefreshExceedsIt pins the other half
+// of the DECIDED FIX-36 contract: a refresh still running once
+// shutdownRefreshDrainTimeout elapses is abandoned — Shutdown returns near
+// the cap instead of waiting indefinitely, and its waiter gets the shutdown
+// error.
+//
+// refreshFunc blocks on a channel released via t.Cleanup (not a fixed
+// sleep) so the untracked inner goroutine (see executeRefreshAsync) does not
+// keep running past this test even though it never completes on its own.
+func TestFix36_ShutdownReturnsNearCapWhenRefreshExceedsIt(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	cfg := DefaultRefreshCoordinatorConfig()
+	cfg.RefreshTimeout = shutdownRefreshDrainTimeout + 30*time.Second // keep RefreshTimeout out of the way; only the drain cap should bound Shutdown
+	rc := NewRefreshCoordinator(cfg, logger)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	waiterErrCh := make(chan error, 1)
+	go func() {
+		_, err := rc.CoordinateRefresh(context.Background(), "fix36-exceeds-cap-session", "fix36-exceeds-cap-token",
+			func() (*TokenResponse, error) {
+				close(started)
+				<-release
+				return &TokenResponse{AccessToken: "too-late"}, nil
+			})
+		waiterErrCh <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh never started")
+	}
+
+	shutdownStart := time.Now()
+	rc.Shutdown()
+	elapsed := time.Since(shutdownStart)
+
+	if elapsed < shutdownRefreshDrainTimeout {
+		t.Fatalf("Shutdown returned after %v, want at least the %v drain cap", elapsed, shutdownRefreshDrainTimeout)
+	}
+	if margin := elapsed - shutdownRefreshDrainTimeout; margin > 2*time.Second {
+		t.Fatalf("Shutdown took %v past the %v drain cap, want it to return near the cap", margin, shutdownRefreshDrainTimeout)
+	}
+
+	select {
+	case err := <-waiterErrCh:
+		if err == nil {
+			t.Fatal("waiter of a refresh that outlives the shutdown drain cap must get an error")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("waiter did not get a result within 1s of Shutdown returning")
+	}
+}
+
+// TestFix36_CoordinateRefreshRejectedAfterShutdownStillImmediate pins that
+// the drain-cap change above does not weaken the other half of FIX-36: a
+// CoordinateRefresh call arriving after Shutdown has started is still
+// rejected before wg.Add, without waiting for the drain cap. See
+// TestFix36_CoordinateRefreshRejectedAfterShutdown for the simple
+// after-Shutdown-completes case; this one calls CoordinateRefresh WHILE
+// Shutdown is in its bounded wait for a different in-flight refresh.
+func TestFix36_CoordinateRefreshRejectedAfterShutdownStillImmediate(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	cfg := DefaultRefreshCoordinatorConfig()
+	cfg.RefreshTimeout = shutdownRefreshDrainTimeout + 30*time.Second
+	rc := NewRefreshCoordinator(cfg, logger)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	go func() {
+		_, _ = rc.CoordinateRefresh(context.Background(), "fix36-parallel-session", "fix36-parallel-token",
+			func() (*TokenResponse, error) {
+				close(started)
+				<-release
+				return &TokenResponse{}, nil
+			})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh never started")
+	}
+
+	go rc.Shutdown()
+	// Wait deterministically for Shutdown to close stopChan, instead of a
+	// fixed sleep: if Shutdown were scheduled late, a short sleep could let
+	// the CoordinateRefresh call below run before Shutdown even starts,
+	// which would get it wrongly accepted instead of rejected.
+	select {
+	case <-rc.stopChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown never closed stopChan")
+	}
+
+	rejectStart := time.Now()
+	var ran int32
+	_, err := rc.CoordinateRefresh(context.Background(), "fix36-rejected-session", "fix36-rejected-token",
+		func() (*TokenResponse, error) {
+			atomic.StoreInt32(&ran, 1)
+			return &TokenResponse{AccessToken: "should-not-run"}, nil
+		})
+	if elapsed := time.Since(rejectStart); elapsed > time.Second {
+		t.Fatalf("CoordinateRefresh took %v to reject after Shutdown started, want near-immediate", elapsed)
+	}
+	if err == nil {
+		t.Fatal("CoordinateRefresh called while Shutdown is draining must still be rejected")
+	}
+	if atomic.LoadInt32(&ran) == 1 {
+		t.Fatal("refreshFunc must not run for a CoordinateRefresh call rejected while Shutdown is draining")
+	}
+}
+
+// TestFix36_ExecuteRefreshAsyncSkipsRefreshFuncWhenAlreadyCanceled pins the
+// case where rc.ctx is already canceled (Shutdown ran, or raced ahead of
+// CoordinateRefresh's own stopChan check) before executeRefreshAsync's inner
+// goroutine starts. That goroutine must not call refreshFunc at all: the
+// result would only be discarded (the outer select already took the
+// refreshCtx.Done() branch), and for a rotating IdP refresh-token grant,
+// discarding a successful response still consumes the one-time-use refresh
+// token, leaving the caller and the IdP out of sync.
+//
+// Calling rc.cancel() directly (rather than rc.Shutdown()) isolates this
+// from the stopChan-reject path added by FIX-36: it exercises the case
+// where CoordinateRefresh's own stopChan check has already passed and the
+// operation is genuinely running under an already-canceled rc.ctx.
+func TestFix36_ExecuteRefreshAsyncSkipsRefreshFuncWhenAlreadyCanceled(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	rc := NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), logger)
+	rc.cancel()
+
+	var called int32
+	_, err := rc.CoordinateRefresh(context.Background(), "fix36-precanceled-session", "fix36-precanceled-token",
+		func() (*TokenResponse, error) {
+			atomic.StoreInt32(&called, 1)
+			return &TokenResponse{AccessToken: "should-be-discarded"}, nil
+		})
+	if err == nil {
+		t.Fatal("waiter of an operation whose context was already canceled must get an error, not a nil result")
+	}
+
+	// Give the untracked inner goroutine time to run refreshFunc if the fix
+	// is absent, before asserting it never did.
+	time.Sleep(200 * time.Millisecond)
+	if atomic.LoadInt32(&called) != 0 {
+		t.Fatal("refreshFunc must not be called when rc.ctx is already canceled before the refresh starts")
+	}
+}
+
+// TestFix36_PreStartGateStopsRefreshAfterShutdownCloses pins round-4's fix to
+// the gap TestFix36_ExecuteRefreshAsyncSkipsRefreshFuncWhenAlreadyCanceled
+// hides: that test cancels rc.ctx directly, but Shutdown itself does NOT
+// cancel rc.ctx up front (it waits up to shutdownRefreshDrainTimeout so an
+// in-flight refresh can still deliver its result — see Shutdown's doc). So
+// rc.ctx.Err() alone stays nil for up to the whole drain cap after Shutdown
+// has started, and executeRefreshAsync's inner goroutine used to check only
+// that — a refresh whose wg.Add ran just before Shutdown closed stopChan, but
+// whose goroutine reached the pre-refreshFunc gate afterward, still ran
+// refreshFunc and spent the IdP grant for nothing.
+//
+// This test builds that exact ordering deterministically instead of racing
+// timers: it holds a separate in-flight refresh (op A) blocked so Shutdown is
+// guaranteed to still be draining (rc.ctx not yet canceled) for the whole
+// test, then replicates CoordinateRefresh's own wg.Add + getOrCreateOperation
+// sequence for op B by hand so the test controls exactly when Shutdown's
+// stopChan close happens relative to it — strictly after wg.Add, strictly
+// before the call into executeRefreshAsync that performs the pre-start gate
+// check.
+//
+// Fails on pre-fix code: the inner goroutine only checks rc.ctx.Err(), which
+// is nil (op A is still blocked, so Shutdown has not hit the cap or finished
+// draining), so refreshFunc runs and calledB becomes 1.
+func TestFix36_PreStartGateStopsRefreshAfterShutdownCloses(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	cfg := DefaultRefreshCoordinatorConfig()
+	cfg.RefreshTimeout = shutdownRefreshDrainTimeout + 30*time.Second
+	rc := NewRefreshCoordinator(cfg, logger)
+
+	// Op A: a real in-flight refresh that Shutdown must wait on, so rc.ctx
+	// stays un-canceled for the whole test (otherwise a fast Shutdown could
+	// cancel rc.ctx before we reach the point under test, masking the gap
+	// this test targets).
+	aStarted := make(chan struct{})
+	aRelease := make(chan struct{})
+	var aReleaseOnce sync.Once
+	t.Cleanup(func() { aReleaseOnce.Do(func() { close(aRelease) }) })
+	go func() {
+		_, _ = rc.CoordinateRefresh(context.Background(), "fix36-gate-a-session", "fix36-gate-a-token",
+			func() (*TokenResponse, error) {
+				close(aStarted)
+				<-aRelease
+				return &TokenResponse{}, nil
+			})
+	}()
+	select {
+	case <-aStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("op A never started")
+	}
+
+	// Register op B exactly like CoordinateRefresh does: check stopChan (open)
+	// then wg.Add(1), under lifecycleMu.RLock — this is the state a real
+	// CoordinateRefresh call for B would be in if it ran just before Shutdown.
+	rc.lifecycleMu.RLock()
+	select {
+	case <-rc.stopChan:
+		rc.lifecycleMu.RUnlock()
+		t.Fatal("stopChan closed before Shutdown was even called")
+	default:
+	}
+	rc.wg.Add(1)
+	rc.lifecycleMu.RUnlock()
+
+	operation, isNew, err := rc.getOrCreateOperation(context.Background(), "fix36-gate-b-session", "fix36-gate-b-hash", "fix36-gate-b-token")
+	if err != nil || !isNew {
+		t.Fatalf("getOrCreateOperation setup failed: isNew=%v err=%v", isNew, err)
+	}
+
+	// Now start Shutdown and wait — deterministically, on the real channel,
+	// not a sleep — for it to close stopChan. Shutdown is still blocked
+	// draining op A at this point, so rc.ctx remains un-canceled.
+	shutdownDone := make(chan struct{})
+	go func() {
+		rc.Shutdown()
+		close(shutdownDone)
+	}()
+	select {
+	case <-rc.stopChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown never closed stopChan")
+	}
+
+	// Op B's goroutine reaches executeRefreshAsync's pre-start gate only now:
+	// strictly after stopChan closed, while rc.ctx is still un-canceled
+	// because op A is still blocked. A refresh not yet started must not run.
+	var calledB int32
+	rc.executeRefreshAsync(operation, "fix36-gate-b-session", "fix36-gate-b-hash", func() (*TokenResponse, error) {
+		atomic.StoreInt32(&calledB, 1)
+		return &TokenResponse{AccessToken: "should-not-run"}, nil
+	})
+	rc.wg.Done() // mirrors the `defer rc.wg.Done()` around the real goroutine in CoordinateRefresh
+
+	if atomic.LoadInt32(&calledB) != 0 {
+		t.Fatal("refreshFunc for an operation not yet started must not run once Shutdown has closed stopChan, even while rc.ctx is still un-canceled")
+	}
+	operation.mutex.RLock()
+	res := operation.result
+	operation.mutex.RUnlock()
+	if res == nil || res.err == nil {
+		t.Fatal("an operation skipped by the pre-start gate must resolve with a shutdown error, not a nil error")
+	}
+
+	aReleaseOnce.Do(func() { close(aRelease) })
+	select {
+	case <-shutdownDone:
+	case <-time.After(shutdownRefreshDrainTimeout + 2*time.Second):
+		t.Fatal("Shutdown did not return after op A was released")
+	}
+}
+
+// TestFix36_ShutdownCancelsContextOnEveryPath pins round-4's second fix:
+// Shutdown must cancel rc.ctx before it returns on every path, including the
+// clean-drain fast path where nothing was in flight (Shutdown's own wg.Wait()
+// returns before shutdownRefreshDrainTimeout elapses). Pre-fix, Shutdown only
+// called rc.cancel() after the drain cap elapsed, so rc.ctx was never
+// canceled by a clean Shutdown — silently leaving the pre-start gate in
+// executeRefreshAsync's inner goroutine dead: any check against rc.ctx.Err()
+// after such a Shutdown would always see nil.
+//
+// Fails on pre-fix code: rc.ctx.Err() is nil after Shutdown returns here,
+// because nothing was in flight to hit the drain-cap cancellation path.
+func TestFix36_ShutdownCancelsContextOnEveryPath(t *testing.T) {
+	logger := GetSingletonNoOpLogger()
+	rc := NewRefreshCoordinator(DefaultRefreshCoordinatorConfig(), logger)
+
+	rc.Shutdown()
+
+	if rc.ctx.Err() == nil {
+		t.Fatal("rc.ctx must be canceled after Shutdown returns even when nothing was in flight (clean-drain fast path)")
 	}
 }

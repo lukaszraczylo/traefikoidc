@@ -67,6 +67,24 @@ func NewConnectionPool(config *PoolConfig) (*ConnectionPool, error) {
 	return pool, nil
 }
 
+// reserveConnectionSlot atomically reserves capacity for one new connection,
+// returning false when the pool is already at MaxConnections. The
+// reservation is released via totalConns.Add(-1) if the dial fails.
+func (p *ConnectionPool) reserveConnectionSlot() bool {
+	// Compare in int64: narrowing MaxConnections to int32 could wrap a
+	// large configured value to a negative limit and refuse every connection.
+	maxConns := int64(p.config.MaxConnections)
+	for {
+		cur := p.totalConns.Load()
+		if int64(cur) >= maxConns {
+			return false
+		}
+		if p.totalConns.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
 // Get retrieves a connection from the pool or creates a new one
 func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 	if p.closed.Load() {
@@ -83,6 +101,11 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 
 		select {
 		case conn = <-p.connections:
+			if conn == nil {
+				// Pool channel was closed concurrently (Close) - receiving from a
+				// closed channel yields the zero value.
+				return nil, ErrBackendClosed
+			}
 			// Reuse existing connection - validate if health check enabled
 			if p.config.EnableHealthCheck && !p.isConnectionHealthy(conn) {
 				// Connection is stale, close it and try again
@@ -97,11 +120,15 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 			return nil, ctx.Err()
 
 		default:
-			// No available connection, create new one if under limit
-			// #nosec G115 -- MaxConnections is a small config value that fits in int32
-			if p.totalConns.Load() < int32(p.config.MaxConnections) {
+			// No available connection, create new one if under limit.
+			// Reserve capacity atomically before dialing: checking
+			// totalConns then dialing is not atomic, so concurrent Gets
+			// could each pass the check and spike the live socket count
+			// far above MaxConnections (FD / Redis maxclients exhaustion).
+			if p.reserveConnectionSlot() {
 				conn, err = p.createConnection(ctx)
 				if err != nil {
+					p.totalConns.Add(-1) // release the reserved slot
 					// If this is the last attempt, return error
 					if attempt == maxAttempts-1 {
 						return nil, err
@@ -111,13 +138,17 @@ func (p *ConnectionPool) Get(ctx context.Context) (*RedisConn, error) {
 					continue
 				}
 				p.activeConns.Add(1)
-				p.totalConns.Add(1)
 				return conn, nil
 			}
 
 			// Pool exhausted, wait for a connection with timeout
 			select {
 			case conn = <-p.connections:
+				if conn == nil {
+					// Pool channel was closed concurrently (Close) - receiving from a
+					// closed channel yields the zero value.
+					return nil, ErrBackendClosed
+				}
 				// Validate connection if health check enabled
 				if p.config.EnableHealthCheck && !p.isConnectionHealthy(conn) {
 					_ = conn.Close()
@@ -147,6 +178,13 @@ func (p *ConnectionPool) Put(conn *RedisConn) {
 
 	p.puts.Add(1)
 	p.activeConns.Add(-1)
+
+	// Hold p.mu so this is mutually exclusive with Close (which closes
+	// p.connections under the same lock). Without it, a Put that passed
+	// the closed check could send on p.connections just after Close
+	// closed it, panicking "send on closed channel" at shutdown.
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	if p.closed.Load() || conn.closed.Load() {
 		_ = conn.Close()
@@ -260,10 +298,23 @@ type RedisConn struct {
 	mu           sync.Mutex
 }
 
-// Do executes a Redis command and returns the response
+// Do executes a Redis command and returns the response.
 func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
+	resp, _, err := c.doTracked(command, args...)
+	return resp, err
+}
+
+// doTracked is Do's implementation. It additionally reports whether the
+// command was already written to the connection when it failed: SetNX uses
+// this to tell "definitely not applied" (the write itself failed) from
+// "outcome unknown, may have applied" (the write succeeded but reading the
+// reply failed). SET NX is not safe to retry blindly the way Set's
+// idempotent SETEX/PSETEX is — a retried SET NX after a lost reply sees its
+// own possible write and reports "already claimed" for what may have been a
+// first-ever claim (FIX-17 round-2).
+func (c *RedisConn) doTracked(command string, args ...string) (interface{}, bool, error) {
 	if c.closed.Load() {
-		return nil, ErrBackendClosed
+		return nil, false, ErrBackendClosed
 	}
 
 	c.mu.Lock()
@@ -273,7 +324,7 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	// maxSafeArgs is set to (1<<20)-1 = 1,048,575 which is more than any reasonable Redis command
 	const maxSafeArgs = (1 << 20) - 1
 	if len(args) > maxSafeArgs {
-		return nil, errors.New("too many arguments: exceeds maximum safe count")
+		return nil, false, errors.New("too many arguments: exceeds maximum safe count")
 	}
 
 	// Build command arguments
@@ -283,11 +334,11 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	for _, s := range args {
 		// Protect against possible overflow
 		if len(s) > maxTotalArgBytes-totalBytes {
-			return nil, errors.New("arguments too large (would overflow maximum allowed total size)")
+			return nil, false, errors.New("arguments too large (would overflow maximum allowed total size)")
 		}
 		totalBytes += len(s)
 		if totalBytes > maxTotalArgBytes {
-			return nil, errors.New("total argument size exceeds maximum allowed")
+			return nil, false, errors.New("total argument size exceeds maximum allowed")
 		}
 	}
 	// Build command slice: prepend command to args
@@ -305,7 +356,7 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	writer.Release() // Return to pool immediately after use
 	if err != nil {
 		c.closed.Store(true)
-		return nil, err
+		return nil, false, err
 	}
 
 	// Set read timeout
@@ -318,13 +369,17 @@ func (c *RedisConn) Do(command string, args ...string) (interface{}, error) {
 	resp, err := reader.ReadResponse()
 	reader.Release() // Return to pool immediately after use
 	if err != nil {
-		if !errors.Is(err, ErrNilResponse) {
+		// A nil response or a Redis command error reply leaves the
+		// connection healthy — only an IO/parse error closes it.
+		if !errors.Is(err, ErrNilResponse) && !errors.Is(err, ErrCommandReply) {
 			c.closed.Store(true)
 		}
-		return nil, err
+		// The write above already succeeded, so the command reached the
+		// wire even though its reply did not come back.
+		return nil, true, err
 	}
 
-	return resp, nil
+	return resp, true, nil
 }
 
 // Close closes the connection
@@ -451,6 +506,14 @@ func (p *Pipeline) Execute() ([]interface{}, error) {
 			// For nil responses, store nil instead of erroring
 			if errors.Is(err, ErrNilResponse) {
 				responses[i] = nil
+				continue
+			}
+			if errors.Is(err, ErrCommandReply) {
+				// A Redis command error reply: the connection is healthy
+				// and the remaining replies are still readable. Store the
+				// error value so per-command validation upstream can
+				// report it without aborting the batch.
+				responses[i] = err
 				continue
 			}
 			p.conn.closed.Store(true)

@@ -35,4 +35,21 @@ var (
 
 	// ErrDeserializationFailed is returned when deserialization fails
 	ErrDeserializationFailed = errors.New("deserialization failed")
+
+	// ErrSetNXUnsupported is returned by a CacheBackend wrapper's SetNX when
+	// the backend it wraps does not itself implement SetNX (FIX-17 round-2).
+	// Compared with == only: no errors.As, no fmt.Errorf %w — an interpreted
+	// value wrapped with %w loses its type under yaegi v0.16.1, and
+	// errors.As with an interpreted target type panics there.
+	ErrSetNXUnsupported = errors.New("cache backend does not support atomic SetNX")
+
+	// ErrSetNXAmbiguous is returned by RedisBackend.SetNX when the SET NX
+	// command was already written to the connection but its reply could not
+	// be read (timeout, EOF, connection reset): Redis may or may not have
+	// applied it. Unlike Set's idempotent SETEX/PSETEX, retrying SET NX
+	// blindly here would see the caller's own possible write and misreport
+	// a first-ever claim as already-claimed, so SetNX surfaces the
+	// ambiguity instead of guessing (FIX-17 round-2). Compared with == only,
+	// for the same yaegi reason as ErrSetNXUnsupported.
+	ErrSetNXAmbiguous = errors.New("SET NX outcome unknown: reply lost after the command was sent")
 )

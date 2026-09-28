@@ -1,4 +1,4 @@
 docker/
-.claude/*.out
+.claude/
 *.test
 .leann/

@@ -191,12 +191,23 @@ type CircuitBreaker struct {
 	maxFailures int
 	// timeout is how long to wait before allowing requests in half-open state
 	timeout time.Duration
-	// resetTimeout is how long to wait before transitioning from open to half-open
+	// resetTimeout is how long to stay in half-open (after the open timeout)
+	// before a successful response fully closes the circuit
 	resetTimeout time.Duration
 	// state tracks the current circuit breaker state
 	state CircuitBreakerState
 	// failures counts consecutive failures
 	failures int64
+	// halfOpenSince is when the circuit entered half-open; used to enforce
+	// resetTimeout before a success can fully close it
+	halfOpenSince time.Time
+	// openedAt is when the circuit last transitioned into the Open state
+	// (Closed->Open or HalfOpen->Open, set in recordFailure). allowRequest
+	// and IsAvailable gate the Open->HalfOpen transition on openedAt instead
+	// of the promoted lastFailureTime, so a request rejected while already
+	// open cannot re-arm the open timer and keep the circuit open forever
+	// under steady traffic (FIX-01).
+	openedAt time.Time
 }
 
 // CircuitBreakerConfig holds configuration parameters for circuit breakers.
@@ -239,12 +250,32 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 	cb.RecordRequest()
 
 	if !cb.allowRequest() {
+		// A request rejected while the circuit is open is an admission
+		// outcome, not a never-started request: count it in total_failures
+		// so GetBaseMetrics' success_rate (successes/total_requests)
+		// reflects actual admission (R180). This intentionally bypasses the
+		// promoted BaseRecoveryMechanism.RecordFailure(), which also sets
+		// lastFailureTime -- allowRequest's Open->HalfOpen timer used to
+		// read that same field, so every rejection re-armed it and the
+		// circuit never left Open under steady traffic (FIX-01). The open
+		// timer now runs off cb.openedAt instead, set only on a genuine
+		// Closed->Open or HalfOpen->Open transition in recordFailure.
+		atomic.AddInt64(&cb.totalFailures, 1)
 		return fmt.Errorf("circuit breaker is open")
 	}
 
 	err := fn()
 	if err != nil {
-		cb.recordFailure()
+		// A terminal client error (HTTPError 4xx other than 429) reflects a
+		// per-user problem such as invalid_grant, not a downstream-service
+		// failure. It must not trip the state machine: in particular it
+		// must not reopen a half-open circuit, or the 15s/30s half-open
+		// hold (resetTimeout) extends an outage on any single per-user
+		// error (FIX-09). It is still recorded in the base metrics below,
+		// since it is a real error returned to the caller.
+		if !isTerminalClientError(err) {
+			cb.recordFailure()
+		}
 		cb.RecordFailure()
 		return err
 	}
@@ -252,6 +283,37 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 	cb.recordSuccess()
 	cb.RecordSuccess()
 	return nil
+}
+
+// isTerminalClientError reports whether err is an HTTPError whose status
+// code is a client error (4xx) other than 429 Too Many Requests or 408
+// Request Timeout. Such errors indicate the request itself was rejected by
+// the far end (for example a replayed authorization code), not that the far
+// end is unhealthy, so the circuit breaker's failure-counting state machine
+// ignores them (FIX-09). 429 and 408 are excluded because they are the
+// service itself signaling it is overloaded or slow, a genuine health
+// signal, not a per-request rejection — the same classification FIX-13
+// applies in token_validation_rs.go and bearer_auth.go, and that
+// internal/recovery/base.go and metrics.go apply via their retryable-status
+// checks.
+//
+// This uses a plain type assertion, not errors.As. Under yaegi v0.16.1 (the
+// interpreter Traefik uses to load this plugin, pinned in Makefile:9),
+// errors.As(err, &target) panics with "errors: *target must be interface
+// or implement error" whenever target's pointed-to type (*HTTPError here)
+// is itself interpreted, regardless of err's own concrete type. This
+// function runs on every fn() error in ExecuteWithContext, on the
+// default-on token-exchange/refresh path, so that panic reaches production
+// (FIX-09). The production error also reaches the breaker unwrapped
+// (helpers.go returns *HTTPError directly), so a type assertion is
+// sufficient and needs no Unwrap chain walk.
+func isTerminalClientError(err error) bool {
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
+		return false
+	}
+	return httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 &&
+		httpErr.StatusCode != 429 && httpErr.StatusCode != 408
 }
 
 // Execute executes a function through the circuit breaker without context.
@@ -273,8 +335,9 @@ func (cb *CircuitBreaker) allowRequest() bool {
 		return true
 
 	case CircuitBreakerOpen:
-		if now.Sub(cb.lastFailureTime) > cb.timeout {
+		if now.Sub(cb.openedAt) > cb.timeout {
 			cb.state = CircuitBreakerHalfOpen
+			cb.halfOpenSince = now
 			cb.logger.Infof("Circuit breaker transitioning to half-open state")
 			return true
 		}
@@ -300,11 +363,13 @@ func (cb *CircuitBreaker) recordFailure() {
 	case CircuitBreakerClosed:
 		if cb.failures >= int64(cb.maxFailures) {
 			cb.state = CircuitBreakerOpen
+			cb.openedAt = time.Now()
 			cb.LogError("Circuit breaker opened after %d failures", cb.failures)
 		}
 
 	case CircuitBreakerHalfOpen:
 		cb.state = CircuitBreakerOpen
+		cb.openedAt = time.Now()
 		cb.LogError("Circuit breaker returned to open state after failure in half-open")
 	}
 }
@@ -317,6 +382,15 @@ func (cb *CircuitBreaker) recordSuccess() {
 
 	switch cb.state {
 	case CircuitBreakerHalfOpen:
+		// Honor resetTimeout: do not fully close until the circuit has been
+		// in half-open for at least resetTimeout. This provides the
+		// documented open -> half-open -> (reset cooldown) -> closed
+		// hysteresis instead of closing on the very first half-open
+		// success, which would let a stray success immediately reopen
+		// (bounce). While in half-open requests are still allowed as probes.
+		if time.Since(cb.halfOpenSince) < cb.resetTimeout {
+			return
+		}
 		cb.failures = 0
 		cb.state = CircuitBreakerClosed
 		cb.LogInfo("Circuit breaker closed after successful request in half-open state")
@@ -348,7 +422,24 @@ func (cb *CircuitBreaker) Reset() {
 // IsAvailable returns whether the circuit breaker is currently allowing requests.
 // This provides a quick way to check if the service is available.
 func (cb *CircuitBreaker) IsAvailable() bool {
-	return cb.allowRequest()
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+
+	switch cb.state {
+	case CircuitBreakerClosed:
+		return true
+	case CircuitBreakerHalfOpen:
+		return true
+	case CircuitBreakerOpen:
+		// Read-only availability probe: report that a request would be
+		// admitted only after the open timeout has elapsed, but do NOT
+		// transition to half-open — IsAvailable must not take a permit or
+		// mutate circuit state. Real traffic admission is gated by
+		// allowRequest (triggerRequest) which performs the transition.
+		return time.Since(cb.openedAt) > cb.timeout
+	default:
+		return false
+	}
 }
 
 // GetMetrics returns comprehensive metrics about the circuit breaker.
@@ -507,10 +598,155 @@ func (re *RetryExecutor) ExecuteWithContext(ctx context.Context, fn func() error
 }
 
 // Execute runs the given function with retry logic (for backward compatibility)
-// Execute executes a function with retry logic (backward compatibility).
+// Execute runs a function with retry logic (backward compatibility).
 // This method provides the same functionality as ExecuteWithContext.
 func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
 	return re.ExecuteWithContext(ctx, fn)
+}
+
+// singleUseRetryableErrors are error fragments that prove the request was NEVER
+// sent to the server (dial/connect failures). Retrying those is safe.
+var singleUseRetryableErrors = []string{
+	"connection refused",
+	"network unreachable",
+	"no route to host",
+	"temporary failure",
+}
+
+// isNeverSentError reports whether err proves a single-use request was never
+// sent to the server, so retrying it cannot re-present already-consumed
+// input (an authorization code or a rotated refresh token).
+//
+// A *HTTPError means a response WAS received: the request definitely
+// reached the endpoint, regardless of what its body says. Before this
+// check, ExecuteSingleUseWithContext substring-matched singleUseRetryableErrors
+// against the raw error text, and helpers.go's token-endpoint HTTPError
+// carries up to 10 KiB of the response body in its Message -- an IdP 500
+// whose body happened to mention "connection refused" was retried, re-
+// sending a consumed code or a rotated refresh token (FIX-14).
+//
+// A *net.OpError is NOT proof by itself: Go's net package uses that same
+// type for a "dial" failure before any request reaches the wire, but also
+// for a "read" or "write" failure AFTER the connection is already
+// established, when the request may already have reached the IdP. Only Op
+// "dial" (a failed connect) or "proxyconnect" (net/http's failed CONNECT to
+// an HTTP proxy) prove the request never went out, so the fragment match is
+// scoped to those two.
+func isNeverSentError(err error) bool {
+	// Plain type assertion, not errors.As: under yaegi v0.16.1 (the
+	// interpreter Traefik uses to load this plugin, pinned in Makefile:9),
+	// errors.As(err, &target) panics with "errors: *target must be
+	// interface or implement error" whenever target's pointed-to type
+	// (*HTTPError here) is itself interpreted, regardless of err's own
+	// concrete type. ExecuteSingleUseWithContext calls this on every fn()
+	// error, on the default-on authorization-code-exchange/refresh path,
+	// so that panic reaches production (FIX-14). The production error
+	// reaches here unwrapped (helpers.go returns *HTTPError directly), so
+	// a type assertion is sufficient and needs no Unwrap chain walk.
+	if _, ok := err.(*HTTPError); ok {
+		return false
+	}
+
+	// errors.As against the compiled *net.OpError type is yaegi-safe: the
+	// panic above is specific to an interpreted target type, and
+	// *net.OpError is a native stdlib type.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && (opErr.Op == "dial" || opErr.Op == "proxyconnect") {
+		return isSubstringMatch(opErr.Error(), singleUseRetryableErrors)
+	}
+
+	return false
+}
+
+// ExecuteSingleUseWithContext retries only on errors that prove the request was
+// never sent (connect/dial failures). It intentionally does NOT retry on
+// "timeout": for a single-use operation such as the authorization-code
+// exchange, a timeout may mean the provider already consumed the one-time code,
+// so re-sending it would surface invalid_grant permanently even though the
+// first attempt succeeded.
+func (re *RetryExecutor) ExecuteSingleUseWithContext(ctx context.Context, fn func() error) error {
+	re.RecordRequest()
+	var lastErr error
+
+	for attempt := 1; attempt <= re.config.MaxAttempts; attempt++ {
+		err := fn()
+		if err == nil {
+			if attempt > 1 {
+				re.LogInfo("Operation succeeded after %d attempts", attempt)
+			}
+			re.RecordSuccess()
+			return nil
+		}
+
+		lastErr = err
+
+		if !isNeverSentError(err) {
+			re.RecordFailure()
+			return err
+		}
+
+		if attempt == re.config.MaxAttempts {
+			re.RecordFailure()
+			break
+		}
+
+		delay := re.calculateDelay(attempt)
+		if attempt == 1 || attempt%3 == 0 {
+			re.LogDebug("Retrying single-use operation after %v (attempt %d/%d): %v",
+				delay, attempt, re.config.MaxAttempts, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			re.RecordFailure()
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+
+	finalErr := fmt.Errorf("operation failed after %d attempts: %w", re.config.MaxAttempts, lastErr)
+	return finalErr
+}
+
+// isSubstringMatch reports whether s contains any of the given fragments.
+func isSubstringMatch(s string, fragments []string) bool {
+	lower := strings.ToLower(s)
+	for _, frag := range fragments {
+		if strings.Contains(lower, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// asHTTPError reports whether err is, or (via a chain of Unwrap() error
+// methods) wraps, an *HTTPError. It exists because errors.As cannot be used
+// here: under yaegi v0.16.1 (the interpreter Traefik uses to load this
+// plugin, pinned in Makefile:9), errors.As(err, &target) panics with
+// "errors: *target must be interface or implement error" whenever target's
+// pointed-to type is itself interpreted, and *HTTPError is declared in this
+// plugin so it is always interpreted at runtime — regardless of err's own
+// concrete type (see isTerminalClientError above for the same hazard on a
+// path that does not need the Unwrap walk).
+//
+// This manually reimplements errors.As's single-chain Unwrap() walk using
+// only type assertions and errors.Unwrap, both yaegi-safe, so native
+// classification is byte-for-byte identical to errors.As (see
+// TestIsRetryableError_WrappedTransient). The one place native and yaegi
+// genuinely diverge: an interpreted *HTTPError wrapped with
+// fmt.Errorf("...%w", e) is found by this walk in native Go but NOT under
+// yaegi (an interpreter quirk with wrapped interpreted-type targets,
+// verified this session) — so every producer feeding isRetryableError must
+// keep returning an *HTTPError unwrapped (exchangeTokens already does; see
+// helpers.go).
+func asHTTPError(err error) (*HTTPError, bool) {
+	for err != nil {
+		if httpErr, ok := err.(*HTTPError); ok {
+			return httpErr, true
+		}
+		err = errors.Unwrap(err)
+	}
+	return nil, false
 }
 
 // isRetryableError checks if an error should trigger a retry
@@ -520,6 +756,17 @@ func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
 // and EOF errors that occur during service initialization.
 func (re *RetryExecutor) isRetryableError(err error) bool {
 	if err == nil {
+		return false
+	}
+
+	// A terminal HTTP error (a real status that is neither 5xx nor 429)
+	// must be classified by its status BEFORE any message-substring scan.
+	// Otherwise a 4xx whose provider message merely contains a
+	// retryable-looking word — e.g. "certificate"/"tls" (isCertificateError),
+	// "EOF" (isEOFError), or a generic "timeout" — would be reclassified
+	// retryable and retried to MaxAttempts on a permanent error, repeating
+	// the failing request (R123, R157).
+	if statusHTTP, ok := asHTTPError(err); ok && statusHTTP.StatusCode != 0 && statusHTTP.StatusCode < 500 && statusHTTP.StatusCode != 429 {
 		return false
 	}
 
@@ -547,7 +794,8 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	if netErr, ok := err.(net.Error); ok {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
 		if netErr.Timeout() {
 			return true
 		}
@@ -568,8 +816,19 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	if httpErr, ok := err.(*HTTPError); ok {
-		return httpErr.StatusCode >= 500 || httpErr.StatusCode == 429
+	// asHTTPError (not errors.As) so retry classification survives error
+	// wrapping: a transient or 5xx/429 error returned as fmt.Errorf("...:
+	// %w", err) from an upstream layer must still be retried. Direct type
+	// assertions on the top-level error silently misclassified wrapped
+	// transient errors as permanent, giving up before any retry (R111).
+	// errors.As itself cannot be used under yaegi -- see asHTTPError's doc
+	// comment.
+	if httpErr, ok := asHTTPError(err); ok {
+		status := httpErr.StatusCode
+		// A 0 StatusCode means the producer used HTTPError purely as a
+		// message carrier (no real HTTP status). Treat it as unknown
+		// (non-retryable) rather than spuriously matching 5xx (R118).
+		return status != 0 && (status >= 500 || status == 429)
 	}
 
 	return false
@@ -762,6 +1021,10 @@ type GracefulDegradation struct {
 	config           GracefulDegradationConfig
 	mutex            sync.RWMutex
 	shutdownOnce     sync.Once
+	// beforeSharedTaskStop is a test seam, nil in production. Close calls it
+	// after deciding this is the last live instance and before stopping the
+	// shared health-check task.
+	beforeSharedTaskStop func()
 }
 
 // GracefulDegradationConfig holds configuration for graceful degradation behavior.
@@ -788,6 +1051,53 @@ func DefaultGracefulDegradationConfig() GracefulDegradationConfig {
 // NewGracefulDegradation creates a new graceful degradation manager
 // NewGracefulDegradation creates a new graceful degradation mechanism.
 // Initializes fallback and health check maps and starts background health monitoring.
+// gdInstances tracks live GracefulDegradation instances so the single shared
+// health-check task can run every instance's health checks (not just the first)
+// and so the task is only stopped when the last instance closes.
+var gdInstances = struct {
+	sync.RWMutex
+	set map[*GracefulDegradation]struct{}
+}{set: make(map[*GracefulDegradation]struct{})}
+
+// globalHealthCheckMu serializes the global pass. globalPerformHealthChecks
+// runs from more than one goroutine — the shared singleton task's run loop
+// AND the once-guarded StartBackgroundTask path both drive it — so without
+// this, any health check registered via the public RegisterHealthCheck
+// API would be invoked concurrently (a latent production race, and the
+// source of an intermittent full-suite race in tests). Serializing the
+// whole pass keeps registered health checks single-threaded (R189).
+var globalHealthCheckMu sync.Mutex
+
+// gdLifecycleMu serializes GracefulDegradation registration with the
+// last-instance check and shared-task stop in Close. Without it, an instance
+// created after Close decided it was the last one, but before the stop, adopted
+// the still-running task, and the stop then killed the task that the new live
+// instance relies on. With it, a new instance either counts toward the
+// last-instance check or registers after the stop, and its routine replaces
+// the stopped task. The health-check pass never takes this lock, so Close can
+// hold it while BackgroundTask.Stop waits for an in-progress pass.
+var gdLifecycleMu sync.Mutex
+
+// globalPerformHealthChecks runs the health check pass for every live
+// GracefulDegradation instance. The shared singleton task calls this, so a
+// health check registered on ANY instance is exercised, and closing one
+// instance does not stall recovery for the others.
+func globalPerformHealthChecks() {
+	globalHealthCheckMu.Lock()
+	defer globalHealthCheckMu.Unlock()
+
+	gdInstances.RLock()
+	instances := make([]*GracefulDegradation, 0, len(gdInstances.set))
+	for gd := range gdInstances.set {
+		instances = append(instances, gd)
+	}
+	gdInstances.RUnlock()
+
+	for _, gd := range instances {
+		gd.performHealthChecks()
+	}
+}
+
 func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *GracefulDegradation {
 	gd := &GracefulDegradation{
 		BaseRecoveryMechanism: NewBaseRecoveryMechanism("graceful-degradation", logger),
@@ -798,6 +1108,22 @@ func NewGracefulDegradation(config GracefulDegradationConfig, logger *Logger) *G
 	}
 
 	gd.stopChan = make(chan struct{})
+
+	// Register synchronously, before the health-check goroutine starts
+	// (FIX-18). Registration used to happen only inside startHealthCheckRoutine,
+	// which runs in its own goroutine, so a Close() called immediately after
+	// NewGracefulDegradation returned could race ahead of it: Close's
+	// gdInstances.delete would find nothing to remove, and the goroutine's
+	// later add would then register an already-closed gd permanently.
+	// startHealthCheckRoutine no longer touches gdInstances at all — this is
+	// now the ONLY place a GracefulDegradation is added to the set, so there
+	// is no second, racing registration left to worry about.
+	gdLifecycleMu.Lock()
+	gdInstances.Lock()
+	gdInstances.set[gd] = struct{}{}
+	gdInstances.Unlock()
+	gdLifecycleMu.Unlock()
+
 	go gd.startHealthCheckRoutine()
 
 	return gd
@@ -902,25 +1228,54 @@ func (gd *GracefulDegradation) executeFallback(serviceName string) (interface{},
 	return fallback()
 }
 
-// startHealthCheckRoutine starts the background health check routine
+// startHealthCheckRoutine starts the background health check routine.
+//
+// FIX-18: this runs in its own goroutine, started by NewGracefulDegradation
+// right after it registers gd in gdInstances. A Close() called immediately
+// after NewGracefulDegradation returns can race ahead of this goroutine
+// getting scheduled at all. Take gd.mutex up front and re-check gd.stopChan
+// before doing anything else: if Close() already closed it, this goroutine
+// must not create (or adopt) the shared health-check task for an
+// already-closed instance — that would leak the process-global task
+// forever, since nothing would ever be left registered to stop it.
 func (gd *GracefulDegradation) startHealthCheckRoutine() {
-	// Use singleton task registry to prevent multiple instances
+	gd.mutex.Lock()
+
+	select {
+	case <-gd.stopChan:
+		// Close() already ran before this goroutine got scheduled. Do not
+		// register or start the shared task on behalf of a closed instance.
+		gd.mutex.Unlock()
+		return
+	default:
+	}
+
+	// Use the singleton task registry so multiple GracefulDegradation
+	// instances share one health-check goroutine. The task function is the
+	// global pass over every live instance, not this instance's own health
+	// checks — otherwise only the first instance's checks would run.
+	//
+	// gd.mutex stays held through CreateSingletonTask and the healthCheckTask
+	// assignment below: CreateSingletonTask only touches the global task
+	// registry (a different lock), never gd.mutex, so this cannot deadlock,
+	// and it keeps the stopChan check and the assignment atomic with respect
+	// to a concurrent Close().
 	registry := GetGlobalTaskRegistry()
 
 	task, err := registry.CreateSingletonTask(
 		"graceful-degradation-health-check",
 		gd.config.HealthCheckInterval,
-		gd.performHealthChecks,
+		globalPerformHealthChecks,
 		gd.BaseRecoveryMechanism.logger,
 		nil, // No specific wait group
 	)
 
 	if err != nil {
+		gd.mutex.Unlock()
 		gd.BaseRecoveryMechanism.logger.Errorf("Failed to create health check task: %v", err)
 		return
 	}
 
-	gd.mutex.Lock()
 	gd.healthCheckTask = task
 	gd.mutex.Unlock()
 
@@ -972,25 +1327,58 @@ func (gd *GracefulDegradation) Reset() {
 	gd.LogInfo("Graceful degradation state has been reset")
 }
 
-// Close shuts down the graceful degradation system and cleans up resources
+// Close shuts down the graceful degradation system and cleans up resources.
 func (gd *GracefulDegradation) Close() {
 	gd.shutdownOnce.Do(func() {
-		// Signal shutdown
+		// Signal shutdown under gd.mutex. startHealthCheckRoutine checks
+		// stopChan and creates or adopts the shared task under the same
+		// lock, so an in-flight routine finishes before this instance
+		// unregisters below. Without the lock, a routine that passed its
+		// check could reach the task registry after the last Close stopped
+		// the task, and RegisterBackgroundTask would start a fresh task
+		// that no live instance can stop. Release the lock before the stop:
+		// BackgroundTask.Stop waits for a health-check pass that takes gd.mutex.
+		gd.mutex.Lock()
 		select {
 		case <-gd.stopChan:
 			// Already closed
 		default:
 			close(gd.stopChan)
 		}
-
-		// Stop health check task
-		gd.mutex.Lock()
-		task := gd.healthCheckTask
 		gd.mutex.Unlock()
 
-		if task != nil {
-			task.Stop()
-			// Don't set to nil to avoid race conditions
+		// Stop the shared health-check task only when this was the last live
+		// instance. The task is process-global and shared by every
+		// GracefulDegradation instance; stopping it on any one instance's
+		// close would kill health checks / recovery for all surviving
+		// instances (mirror of the singleton-token-cleanup lastInstance gate).
+		// Hold gdLifecycleMu across the last-instance check and the stop, so a
+		// concurrent NewGracefulDegradation cannot register in between and
+		// adopt a task that is about to stop.
+		gdLifecycleMu.Lock()
+		defer gdLifecycleMu.Unlock()
+
+		gdInstances.Lock()
+		delete(gdInstances.set, gd)
+		lastInstance := len(gdInstances.set) == 0
+		gdInstances.Unlock()
+
+		if lastInstance {
+			if gd.beforeSharedTaskStop != nil {
+				gd.beforeSharedTaskStop()
+			}
+			// Stop by name through the resource manager rather than reading
+			// this instance's own gd.healthCheckTask field: with two or more
+			// GracefulDegradation instances, the shared task can already be
+			// running — created by a SIBLING instance's startHealthCheckRoutine
+			// goroutine — while THIS instance's own goroutine has not yet run
+			// and populated its local healthCheckTask field. Reading that
+			// still-nil local field here would skip the stop and leak the
+			// task forever even though this genuinely is the last instance.
+			// StopBackgroundTask looks up the registry's current entry
+			// directly, so it is correct regardless of which instance's
+			// goroutine happened to create the task (FIX-18).
+			_ = GetResourceManager().StopBackgroundTask("graceful-degradation-health-check")
 		}
 
 		gd.logger.Debug("GracefulDegradation shut down successfully")
@@ -1050,6 +1438,21 @@ func NewErrorRecoveryManager(logger *Logger) *ErrorRecoveryManager {
 	}
 }
 
+// Close shuts down the resources owned by this ErrorRecoveryManager,
+// currently its GracefulDegradation instance (which unregisters from
+// gdInstances and, if this was the last live instance, stops the shared
+// health-check task). Safe to call multiple times; safe on a nil receiver.
+// FIX-18: every caller that constructs an ErrorRecoveryManager must call
+// Close, or its GracefulDegradation leaks in gdInstances forever.
+func (erm *ErrorRecoveryManager) Close() {
+	if erm == nil {
+		return
+	}
+	if erm.gracefulDegradation != nil {
+		erm.gracefulDegradation.Close()
+	}
+}
+
 // GetCircuitBreaker gets or creates a circuit breaker for a service
 // GetCircuitBreaker returns the circuit breaker for a specific service.
 // Creates a new circuit breaker if one doesn't exist for the service.
@@ -1072,8 +1475,14 @@ func (erm *ErrorRecoveryManager) GetCircuitBreaker(serviceName string) *CircuitB
 func (erm *ErrorRecoveryManager) ExecuteWithRecovery(ctx context.Context, serviceName string, fn func() error) error {
 	cb := erm.GetCircuitBreaker(serviceName)
 
-	return erm.retryExecutor.Execute(ctx, func() error {
-		return cb.Execute(fn)
+	// Retry INNER, circuit OUTER (matching TokenResilienceManager and the
+	// documented R106 compositing rule). Wrapping cb around the whole retry
+	// run means one logical call counts as a single circuit failure even
+	// when it was retried internally; the previous nesting (cb inside the
+	// retry loop) recorded each retry attempt as a separate failure and
+	// could open the circuit after only one flaky-but-retryable call (R144).
+	return cb.ExecuteWithContext(ctx, func() error {
+		return erm.retryExecutor.Execute(ctx, fn)
 	})
 }
 

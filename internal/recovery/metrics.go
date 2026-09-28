@@ -3,6 +3,8 @@ package recovery
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -129,6 +131,42 @@ func (re *RetryExecutor) Execute(ctx context.Context, fn func() error) error {
 	return re.ExecuteWithContext(ctx, fn)
 }
 
+// asHTTPError reports whether err is, or (via a chain of Unwrap() error
+// methods) wraps, an *HTTPError. It exists because errors.As cannot be used
+// here: under yaegi v0.16.1 (the interpreter Traefik uses to load the
+// traefikoidc plugin, which imports this package transitively via
+// internal/utils), errors.As(err, &target) panics with "errors: *target must
+// be interface or implement error" whenever target's pointed-to type is
+// itself interpreted, and *HTTPError is declared in this package so it is
+// always interpreted at runtime, regardless of err's own concrete type.
+//
+// This manually reimplements errors.As's single-chain Unwrap() walk using
+// only type assertions and errors.Unwrap, both yaegi-safe, so native
+// classification is byte-for-byte identical to errors.As (see
+// TestR175_WrappedRetryableErrorIsRetried). See asOIDCError for the *OIDCError
+// equivalent.
+func asHTTPError(err error) (*HTTPError, bool) {
+	for err != nil {
+		if httpErr, ok := err.(*HTTPError); ok {
+			return httpErr, true
+		}
+		err = errors.Unwrap(err)
+	}
+	return nil, false
+}
+
+// asOIDCError is asHTTPError's counterpart for *OIDCError. See asHTTPError's
+// doc comment for why this exists instead of errors.As.
+func asOIDCError(err error) (*OIDCError, bool) {
+	for err != nil {
+		if oidcErr, ok := err.(*OIDCError); ok {
+			return oidcErr, true
+		}
+		err = errors.Unwrap(err)
+	}
+	return nil, false
+}
+
 // isRetryableError determines if an error should trigger a retry
 func (re *RetryExecutor) isRetryableError(err error) bool {
 	if err == nil {
@@ -144,8 +182,13 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	// Check for HTTP errors
-	if httpErr, ok := err.(*HTTPError); ok {
+	// Check for HTTP errors. Use asHTTPError (not errors.As -- see its doc
+	// comment) so an error that wraps an *HTTPError — e.g. fmt.Errorf("token
+	// exchange failed: %w", httpErr) — is still recognized as retryable: a
+	// wrapped retryable error must not be misclassified as terminal and bail
+	// after one attempt, defeating retry despite the production wrapping
+	// pattern.
+	if httpErr, ok := asHTTPError(err); ok {
 		for _, code := range re.config.RetryableStatusCodes {
 			if httpErr.StatusCode == code {
 				return true
@@ -157,13 +200,13 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 		}
 	}
 
-	// Check for OIDC errors
-	if oidcErr, ok := err.(*OIDCError); ok {
+	// Check for OIDC errors (unwrapped or wrapped).
+	if oidcErr, ok := asOIDCError(err); ok {
 		return oidcErr.IsRetryable()
 	}
 
 	// Check for context errors (don't retry these)
-	if err == context.Canceled || err == context.DeadlineExceeded {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
@@ -186,6 +229,12 @@ func (re *RetryExecutor) calculateDelay(attempt int) time.Duration {
 	if re.config.RandomizationFactor > 0 {
 		jitter := delay * re.config.RandomizationFactor
 		minDelay := delay - jitter
+		// A RandomizationFactor > 1 makes minDelay negative, which turns
+		// time.After(negative) into an immediate (zero) backoff and defeats
+		// the retry spacing (R150). Clamp to zero so backoff stays bounded.
+		if minDelay < 0 {
+			minDelay = 0
+		}
 		maxDelay := delay + jitter
 		delay = minDelay + rand.Float64()*(maxDelay-minDelay)
 	}
@@ -376,9 +425,13 @@ func (rm *RecoveryMetrics) HTTPMetricsHandler() http.HandlerFunc {
 			"health":  health,
 		}
 
-		// Would normally use json.Marshal here, but keeping it simple for the module
+		body, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "failed to marshal metrics", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "%v", response)
+		_, _ = w.Write(body)
 	}
 }

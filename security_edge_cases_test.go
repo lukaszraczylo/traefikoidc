@@ -279,7 +279,11 @@ func TestJWTFutureToken(t *testing.T) {
 	}
 }
 
-// TestJWTReplayAttack tests the plugin's protection against token replay attacks
+// TestJWTReplayAttack covers what replay protection remains after FIX-17
+// removed jwt.Verify's replay-check branch entirely: VerifyToken must not
+// self-record a token's jti into the per-instance tokenBlacklist (that would
+// cause a false "replay" once the raw-token cache evicts the entry), and
+// direct Verify calls perform no jti tracking of their own.
 func TestJWTReplayAttack(t *testing.T) {
 	// Create cleanup helper
 	tc := newTestCleanup(t)
@@ -359,29 +363,23 @@ func TestJWTReplayAttack(t *testing.T) {
 		t.Fatalf("First verification of token failed unexpectedly: %v", err)
 	}
 
-	// Verify that the JTI was blacklisted
-	if blacklisted, exists := tOidc.tokenBlacklist.Get(fixedJTI); !exists || blacklisted == nil {
-		t.Fatalf("JTI was not added to blacklist after first verification")
+	if blacklisted, exists := tOidc.tokenBlacklist.Get(fixedJTI); exists && blacklisted != nil {
+		t.Errorf("per-instance tokenBlacklist must not self-record the JTI (would cause false replay after cache eviction)")
 	}
 
-	// Since there's a special bypass for tokens starting with the test JWT prefix,
-	// we need to test with a direct check of the blacklisted JTI instead
-
-	// Directly verify that a replay would be caught by checking the blacklist
-	if blacklisted, exists := tOidc.tokenBlacklist.Get(fixedJTI); !exists || blacklisted == nil {
-		t.Errorf("JTI was not properly blacklisted for replay protection")
+	// FIX-17: jwt.Verify performs no replay detection at all (the branch and
+	// the shared cache it read from were removed outright, not merely left
+	// unreachable). A repeated jti presented directly to Verify must not be
+	// rejected.
+	replayed, err := parseJWT(replayJWT)
+	if err != nil {
+		t.Fatalf("failed to parse replayed JWT: %v", err)
 	}
-
-	// Also verify our JTI replay detection function directly
-	claims, _ := extractClaims(replayJWT)
-	if claims != nil {
-		if jti, ok := claims["jti"].(string); ok && jti != "" {
-			if blacklisted, exists := tOidc.tokenBlacklist.Get(jti); exists && blacklisted != nil {
-				t.Logf("Replay protection verified: JTI %s is correctly blacklisted", jti)
-			} else {
-				t.Errorf("JTI %s was not found in blacklist", jti)
-			}
-		}
+	if err := replayed.Verify("https://test-issuer.com", "test-client-id"); err != nil {
+		t.Fatalf("first direct Verify call should succeed, got: %v", err)
+	}
+	if err := replayed.Verify("https://test-issuer.com", "test-client-id"); err != nil {
+		t.Errorf("Verify must not detect replay on a repeated jti (FIX-17), got: %v", err)
 	}
 }
 
@@ -410,11 +408,6 @@ func TestMissingClaims(t *testing.T) {
 			name:          "Missing Expiration",
 			omittedClaims: []string{"exp"},
 			expectedError: "missing or invalid 'exp'",
-		},
-		{
-			name:          "Missing IssuedAt",
-			omittedClaims: []string{"iat"},
-			expectedError: "missing or invalid 'iat'",
 		},
 		{
 			name:          "Missing Subject",
@@ -460,6 +453,27 @@ func TestMissingClaims(t *testing.T) {
 			}
 		})
 	}
+
+	// R126: iat is OPTIONAL per RFC 7519 §4.1.6, so a token that omits it
+	// must still verify (previously it was rejected as "missing or invalid
+	// 'iat'").
+	t.Run("Missing IssuedAt is optional", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"iss":   "https://test-issuer.com",
+			"aud":   "test-client-id",
+			"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
+			"sub":   "test-subject",
+			"email": "user@example.com",
+			"jti":   generateRandomString(16),
+		}
+		validJWT, err := createTestJWT(ts.rsaPrivateKey, "RS256", "test-key-id", claims)
+		if err != nil {
+			t.Fatalf("Failed to create JWT without iat: %v", err)
+		}
+		if err := ts.tOidc.VerifyToken(validJWT); err != nil {
+			t.Fatalf("token without optional iat should verify, got: %v", err)
+		}
+	})
 }
 
 // TestSessionFixationAttack tests the plugin's resistance to session fixation attacks
@@ -1597,4 +1611,81 @@ func TestInvalidRedirectURI(t *testing.T) {
 	if location != "" && !strings.Contains(location, "/legitimate-redirect") {
 		t.Errorf("Expected redirect to /legitimate-redirect, but got: %s", location)
 	}
+}
+
+// Review regression: RSA signature verification must reject tokens signed
+// with keys below the NIST 2048-bit minimum modulus size.
+func TestJWTRSAKeySizeMinimum(t *testing.T) {
+	tc := newTestCleanup(t)
+	logger := NewLogger("debug")
+
+	mkToidc := func(pub *rsa.PublicKey) *TraefikOidc {
+		jwk := JWK{
+			Kty: "RSA",
+			Kid: "test-key-id",
+			Alg: "RS256",
+			N:   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+			E:   base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}), // 65537
+		}
+		o := &TraefikOidc{
+			issuerURL:         "https://test-issuer.com",
+			clientID:          "test-client-id",
+			audience:          "test-client-id",
+			clientSecret:      "test-client-secret",
+			jwkCache:          &MockJWKCache{JWKS: &JWKSet{Keys: []JWK{jwk}}, Err: nil},
+			jwksURL:           "https://test-jwks-url.com",
+			tokenBlacklist:    tc.addCache(NewCache()),
+			tokenCache:        tc.addTokenCache(NewTokenCache()),
+			limiter:           rate.NewLimiter(rate.Every(time.Second), 10),
+			logger:            logger,
+			excludedURLs:      map[string]struct{}{},
+			httpClient:        &http.Client{},
+			extractClaimsFunc: extractClaims,
+		}
+		o.jwtVerifier = o
+		o.tokenVerifier = o
+		return o
+	}
+
+	claims := func() map[string]interface{} {
+		return map[string]interface{}{
+			"iss": "https://test-issuer.com",
+			"aud": "test-client-id",
+			"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+			"iat": float64(time.Now().Add(-2 * time.Minute).Unix()),
+			"sub": "test-subject",
+			"jti": "rsa-keysize-" + generateRandomString(8),
+		}
+	}
+
+	t.Run("weak 1024-bit RSA key rejected", func(t *testing.T) {
+		weak, err := rsa.GenerateKey(rand.Reader, 1024)
+		if err != nil {
+			t.Fatalf("failed to generate weak key: %v", err)
+		}
+		o := mkToidc(&weak.PublicKey)
+		tok, err := createTestJWT(weak, "RS256", "test-key-id", claims())
+		if err != nil {
+			t.Fatalf("failed to create JWT: %v", err)
+		}
+		err = o.VerifyToken(tok)
+		if err == nil {
+			t.Fatal("expected 1024-bit RSA token to be rejected, but verification succeeded")
+		}
+	})
+
+	t.Run("2048-bit RSA key accepted", func(t *testing.T) {
+		strong, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("failed to generate strong key: %v", err)
+		}
+		o := mkToidc(&strong.PublicKey)
+		tok, err := createTestJWT(strong, "RS256", "test-key-id", claims())
+		if err != nil {
+			t.Fatalf("failed to create JWT: %v", err)
+		}
+		if err = o.VerifyToken(tok); err != nil {
+			t.Fatalf("expected 2048-bit RSA token to verify, got: %v", err)
+		}
+	})
 }

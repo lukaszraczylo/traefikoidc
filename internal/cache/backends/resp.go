@@ -20,6 +20,11 @@ import (
 var (
 	ErrInvalidRESP = errors.New("invalid RESP response")
 	ErrNilResponse = errors.New("nil response")
+	// ErrCommandReply marks a RESP '-' (Redis command error) reply, e.g.
+	// WRONGTYPE or OOM. It is a valid protocol response — the connection
+	// is healthy and any remaining pipelined replies are still readable —
+	// as opposed to an IO/parse error which means the connection is dead.
+	ErrCommandReply = errors.New("redis command error reply")
 )
 
 // RESPWriter writes RESP protocol messages
@@ -110,7 +115,9 @@ func (r *RESPReader) readError() error {
 	if err != nil {
 		return err
 	}
-	return errors.New(line)
+	// Wrap so callers can distinguish a Redis command error reply (healthy
+	// connection) from an IO/parse error (dead connection).
+	return fmt.Errorf("%w: %s", ErrCommandReply, line)
 }
 
 // readInteger reads an integer (:1000\r\n)
@@ -170,11 +177,26 @@ func (r *RESPReader) readArray() (interface{}, error) {
 		return nil, ErrNilResponse
 	}
 
-	// Read each element
+	// Read each element. A nested "-ERR" reply and a nested nil value
+	// ("$-1" or "*-1") are both valid protocol values, not connection-level
+	// failures: store the element (the error, or nil) and keep reading so
+	// every element is drained off the wire. Leaving unread elements on the
+	// connection would let the next command's reader pick up this array's
+	// leftover bytes as its own reply (response desync) once Do returns the
+	// connection to the pool. Any other error (IO or protocol) still aborts
+	// the array, since the connection is no longer trustworthy.
 	result := make([]interface{}, length)
 	for i := 0; i < length; i++ {
 		elem, err := r.ReadResponse()
 		if err != nil {
+			if errors.Is(err, ErrCommandReply) {
+				result[i] = err
+				continue
+			}
+			if errors.Is(err, ErrNilResponse) {
+				result[i] = nil
+				continue
+			}
 			return nil, err
 		}
 		result[i] = elem

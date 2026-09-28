@@ -51,10 +51,10 @@ func TestIssue135_SignerRSAFamily(t *testing.T) {
 	pemBytes := encodeRSAPKCS8(t, rsaKey)
 
 	cases := []struct {
-		alg      string
-		hashFn   func([]byte) []byte
-		isPS     bool
-		hash     crypto.Hash
+		alg    string
+		hashFn func([]byte) []byte
+		isPS   bool
+		hash   crypto.Hash
 	}{
 		{"RS256", func(b []byte) []byte { h := sha256.Sum256(b); return h[:] }, false, crypto.SHA256},
 		{"RS384", func(b []byte) []byte { h := sha512.Sum384(b); return h[:] }, false, crypto.SHA384},
@@ -200,32 +200,32 @@ func TestIssue135_SignerRejectsAlgKeyMismatch(t *testing.T) {
 		wantErr  string
 	}{
 		{
-			name:    "RSA key with ES256",
+			name:     "RSA key with ES256",
 			pemBytes: rsaPEM,
-			alg:     "ES256",
-			kid:     "k1",
-			wantErr: "EC key",
+			alg:      "ES256",
+			kid:      "k1",
+			wantErr:  "EC key",
 		},
 		{
-			name:    "EC key with RS256",
+			name:     "EC key with RS256",
 			pemBytes: ecPEM,
-			alg:     "RS256",
-			kid:     "k1",
-			wantErr: "RSA key",
+			alg:      "RS256",
+			kid:      "k1",
+			wantErr:  "RSA key",
 		},
 		{
-			name:    "unknown alg HS256",
+			name:     "unknown alg HS256",
 			pemBytes: rsaPEM,
-			alg:     "HS256",
-			kid:     "k1",
-			wantErr: "unsupported",
+			alg:      "HS256",
+			kid:      "k1",
+			wantErr:  "unsupported",
 		},
 		{
-			name:    "empty kid",
+			name:     "empty kid",
 			pemBytes: rsaPEM,
-			alg:     "RS256",
-			kid:     "",
-			wantErr: "kid must not be empty",
+			alg:      "RS256",
+			kid:      "",
+			wantErr:  "kid must not be empty",
 		},
 	}
 
@@ -330,9 +330,9 @@ func TestIssue135_ConfigValidation(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		mutate   func(*Config)
-		wantErr  string // empty = expect nil error
+		name    string
+		mutate  func(*Config)
+		wantErr string // empty = expect nil error
 	}{
 		{
 			name:    "default empty method + secret ok",
@@ -440,7 +440,7 @@ func TestIssue135_ConfigKeyPathLoadsFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(keyFile, pemBytes, 0o600))
 
 	cfg := &Config{
-		ClientAuthMethod:    "private_key_jwt",
+		ClientAuthMethod:       "private_key_jwt",
 		ClientAssertionKeyPath: keyFile,
 		ClientAssertionKeyID:   "file-kid",
 		ClientAssertionAlg:     "RS256",
@@ -741,8 +741,8 @@ func TestIssue135_RevocationUsesAssertion(t *testing.T) {
 	pemBytes := encodeRSAPKCS8(t, rsaKey)
 
 	const (
-		tokenEndpoint      = "https://idp.example.com/token"  // audience for assertion
-		clientIDVal        = "revoke-client"
+		tokenEndpoint = "https://idp.example.com/token" // audience for assertion
+		clientIDVal   = "revoke-client"
 	)
 
 	var capturedForm url.Values
@@ -922,4 +922,3 @@ func assertValidRSAJWT(t *testing.T, key *rsa.PrivateKey, signer *ClientAssertio
 	digest := sha256SumBytes([]byte(sigInput))
 	assert.NoError(t, rsa.VerifyPKCS1v15(&key.PublicKey, crypto.SHA256, digest, sigBytes))
 }
-

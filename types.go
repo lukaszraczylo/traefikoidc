@@ -25,6 +25,21 @@ type CacheInterface interface {
 	GetStats() map[string]any // For testing and monitoring
 }
 
+// AtomicSetIfAbsentCache is an optional capability a CacheInterface
+// implementation can provide: an atomic check-and-set, in place of a
+// separate Get followed by a Set. CacheInterface itself is not widened to
+// require it — most of the CacheInterface test doubles across the suite
+// have no need for it, and every one of them would otherwise need a new
+// method — so a caller that wants the atomic primitive type-asserts a
+// CacheInterface value to this interface instead (see logout.go's
+// checkAndMarkLogoutJTIProcessed, FIX-17). CacheInterfaceWrapper (backed by
+// UniversalCache) implements it.
+type AtomicSetIfAbsentCache interface {
+	// SetIfAbsent stores value under key only if key is not already
+	// present, and reports whether this call performed the store.
+	SetIfAbsent(key string, value any, ttl time.Duration) (bool, error)
+}
+
 // TokenVerifier interface defines token verification capabilities.
 // Implementations should validate token format, signature, and claims.
 type TokenVerifier interface {
@@ -116,6 +131,7 @@ type TraefikOidc struct {
 	introspectionCache           CacheInterface
 	initComplete                 chan struct{}
 	limiter                      *rate.Limiter
+	perSourceLimiter             *perSourceAuthLimiter // optional per-external-source auth throttle (R185), nil when disabled
 	headerTemplates              map[string]*template.Template
 	sessionManager               *SessionManager
 	tokenCleanupStopChan         chan struct{}
@@ -160,7 +176,20 @@ type TraefikOidc struct {
 	clientSecret                 string
 	clientAuthMethod             string
 	clientAssertion              *ClientAssertionSigner
-	registrationURL              string
+	// clientSecretExpiresAt is the RFC 7591 userinfo client_secret_expires_at
+	// (unix seconds) returned at DCR registration, or 0 when the IdP
+	// grants a non-expiring secret. Guarded by metadataMu like the other
+	// DCR-installed credential fields; used by dcrRegistrationNeeded to
+	// re-register a client whose secret has lapsed (R180).
+	clientSecretExpiresAt int64
+
+	// dcrClientAssertionBuilder lazily builds a client-assertion signer
+	// from the static config's key material. Used when DCR provisions a
+	// private_key_jwt client but no signer was built at construction
+	// (because the static ClientAuthMethod was not private_key_jwt); see
+	// R162 / updateMetadataEndpoints.
+	dcrClientAssertionBuilder func() (*ClientAssertionSigner, error)
+	registrationURL           string
 	// configRevocationURL, configEndSessionURL, and configIntrospectionURL
 	// hold operator-configured endpoint overrides (Config.RevocationURL,
 	// Config.OIDCEndSessionURL, Config.IntrospectionURL). They are set once at
@@ -192,6 +221,7 @@ type TraefikOidc struct {
 	refreshGracePeriod        time.Duration
 	maxRefreshTokenAge        time.Duration
 	metadataMu                sync.RWMutex
+	dcrMu                     sync.Mutex
 	shutdownOnce              sync.Once
 	sessionInvalidationCache  CacheInterface
 	refreshResultCache        CacheInterface
@@ -201,6 +231,10 @@ type TraefikOidc struct {
 	enableFrontchannelLogout  bool
 	requireTokenIntrospection bool
 	allowPrivateIPAddresses   bool
+	// allowUnauthenticatedPreflight mirrors Config.AllowUnauthenticatedPreflight
+	// (default false): gates whether shouldBypassAuth's genuine-preflight
+	// check (middleware.go) bypasses OIDC auth at all.
+	allowUnauthenticatedPreflight bool
 	// allowLoopbackHosts permits loopback/localhost hosts in outbound URL
 	// validation (validateHost). Derived at construction time from a loopback
 	// providerURL (local development), never operator-set directly. Mirrors

@@ -96,6 +96,11 @@ For each token / revocation request the plugin builds a JWS with:
 
 When `clientAuthMethod: private_key_jwt`, `clientSecret` is optional.
 
+With `clientAssertionAlg` set to `RS256`, `RS384`, `RS512`, `PS256`, `PS384`,
+or `PS512`, the RSA key must be 2048 bits or larger (RFC 7518 §3.3). The
+plugin rejects a smaller key at startup instead of at every token exchange.
+There is no override for this check.
+
 **Example — inline PEM:**
 
 ```yaml
@@ -179,7 +184,7 @@ clientSecret: your-client-secret
 | `forceHTTPS` | bool | `true` | Force HTTPS for redirect URIs (set `false` only for plaintext HTTP local dev) |
 | `rateLimit` | int | `100` | Maximum requests per second |
 | `excludedURLs` | []string | none | Paths that bypass authentication, matched at a path-segment or file-extension boundary |
-| `revocationURL` | string | auto-discovered | Token revocation endpoint. Takes precedence over the discovered value. |
+| `revocationURL` | string | auto-discovered | Token revocation endpoint. Takes precedence over the discovered value. See [Logout Behavior](#logout-behavior) for what happens at logout when this is set. |
 | `oidcEndSessionURL` | string | auto-discovered | Provider's end session endpoint. Takes precedence over the discovered value. |
 | `introspectionURL` | string | auto-discovered | RFC 7662 token introspection endpoint. Set this when your IdP omits `introspection_endpoint` from discovery. Takes precedence over the discovered value. |
 | `enablePKCE` | bool | `false` | Enable PKCE for authorization code flow |
@@ -189,6 +194,41 @@ clientSecret: your-client-secret
 | `clientAssertionKeyPath` | string | none | Path to PEM private key on disk for `private_key_jwt`. Mutually exclusive with `clientAssertionPrivateKey`. |
 | `clientAssertionKeyID` | string | none | `kid` header for `private_key_jwt` assertions. Required when `clientAuthMethod: private_key_jwt`. |
 | `clientAssertionAlg` | string | `RS256` | Signing algorithm for `private_key_jwt`. One of `RS256/384/512`, `PS256/384/512`, `ES256/384/512`. |
+| `extraAuthParams` | map | none | Extra query parameters appended to the authorization request (e.g. re-selective prompt). |
+| `perSourceLoginRateLimit` | int | `0` (off) | Throttle OIDC auth events (callback + login initiation) per external client source, in auth events per minute. Keys and classifies the source by RemoteAddr only, never `X-Forwarded-For`, so a client cannot spoof it. Internal/loopback sources are never throttled. RemoteAddr is the TCP peer. Behind a load balancer or CDN, the limiter keys on the proxy address: a private address is never throttled, and a public address puts every client in one shared bucket. |
+| `stripAuthCookies` | bool | `false` | Strip OIDC session cookies from the hop to the backend (mitigates HTTP 431). |
+| `enableBackchannelLogout` | bool | `false` | Enable OIDC back-channel logout (IdP-initiated, server-to-server). |
+| `backchannelLogoutURL` | string | derived | Back-channel logout endpoint path. |
+| `enableFrontchannelLogout` | bool | `false` | Enable OIDC front-channel logout (browser iframe logout). |
+| `frontchannelLogoutURL` | string | derived | Front-channel logout endpoint path. |
+| `caCertPath` / `caCertPEM` | string | none | Custom CA bundle for OIDC TLS verification (filesystem path, or inline PEM). Mutually exclusive with `insecureSkipVerify`. |
+| `insecureSkipVerify` | bool | `false` | Disable TLS verification for the OIDC client (load balancer / mTLS edge). Emits a loud warning at startup. |
+
+### Logout Behavior
+
+A request to `logoutURL` clears the session, redirects the browser, and
+also revokes the session's tokens.
+
+1. The plugin blacklists the access, ID, and refresh tokens locally, so this
+   instance rejects them immediately.
+2. If `revocationURL` is set or discovered, the plugin also revokes the
+   access token and the refresh token at the provider (RFC 7009). Each
+   revocation call times out after 3 seconds. The two calls run one after
+   the other, so together they can delay the logout redirect by up to about
+   6 seconds. A revocation failure logs at error level and does not stop
+   the redirect. Deployments with no revocation endpoint log nothing for
+   this step.
+3. The plugin redirects to `oidcEndSessionURL` (RP-initiated logout) only
+   when `oidcEndSessionURL` is set or discovered and the session still
+   holds an ID token. Otherwise it redirects to `postLogoutRedirectURI`.
+4. When the plugin uses `oidcEndSessionURL`, it also sends
+   `post_logout_redirect_uri`. An absolute `postLogoutRedirectURI` value is
+   sent unchanged. A relative value, or the default `/`, is joined to the
+   origin of the redirect URI recorded at login. The plugin does not use
+   the logout request's `Host` header for this, because a client can spoof
+   it. The plugin omits the parameter only for a session created before
+   that origin was recorded. The provider then decides where to send the
+   user.
 
 ### TLS Termination at Load Balancer
 
@@ -272,6 +312,56 @@ strictAudienceValidation: true
 |-----------|------|---------|-------------|
 | `disableReplayDetection` | bool | `false` | Disable JTI-based replay attack detection |
 | `allowPrivateIPAddresses` | bool | `false` | Allow private IPs in provider URLs |
+| `allowUnauthenticatedPreflight` | bool | `false` | Bypass auth for a genuine CORS preflight (`OPTIONS` with `Origin` + `Access-Control-Request-Method`); response body is still discarded. Default requires auth for every `OPTIONS` request. |
+
+### Discovered Endpoint Validation
+
+When `providerURL` is `https://`, the plugin drops any endpoint the
+`.well-known/openid-configuration` document advertises as plain `http://`
+(authorization, token, jwks_uri, revocation, end_session, introspection,
+registration). A dropped credential-bearing endpoint would otherwise send
+the client secret or a token over an unauthenticated channel. There is no
+configuration flag to disable this check.
+
+A dropped endpoint logs an `ERROR`-level line naming it, and a dropped
+`token`, `jwks_uri`, or `authorization` endpoint — the three logins cannot
+function without — additionally logs a `SECURITY:`-prefixed line, because a
+blank endpoint otherwise fails every login with no other signal:
+
+```
+SECURITY: dropped the discovered token endpoint "http://idp.example.com/token": it is plaintext http while providerURL "https://idp.example.com" is https, and this check has no override; requests needing the token endpoint will fail until the provider serves it over https
+```
+
+The `revocationURL`, `oidcEndSessionURL` and `introspectionURL` config
+fields can supply those three endpoints directly, and when you set one of
+them, a plaintext-`http://` drop of the matching discovered endpoint does
+not break anything — the override replaces the endpoint right after
+sanitize runs and the `SECURITY:` line does not fire for it.
+
+Leave the override unset, though, and a drop is exactly as terminal as it is
+for `token`, `jwks_uri` and `authorization`: RP-initiated logout falls back
+to a local-only redirect (the IdP session stays alive), provider-side
+revocation is skipped, or `requireTokenIntrospection` breaks — all with no
+signal beyond the generic `ERROR` line. So `revocation`, `end_session` and
+`introspection` log the same `SECURITY:` line too, whenever the matching
+override is not set. `registration` never logs the `SECURITY:` line, under
+any configuration — it is not covered by this check. Dynamic Client
+Registration reads its own, separate override
+(`dynamicClientRegistration.registrationEndpoint`), independently of this
+discovery step, but only when you set it: leave it unset and a
+plaintext-`http://` drop of the discovered registration endpoint makes
+Dynamic Client Registration fail with only the generic `ERROR` line above —
+no `SECURITY:`-tagged signal, unlike `revocation`, `end_session` and
+`introspection`.
+
+`token`, `jwks_uri` and `authorization` log the `SECURITY:` line
+unconditionally — these three have no config field that can supply them at
+all, so a drop always breaks login regardless of any other setting.
+
+If your IdP's discovery document ever advertises an `http://` endpoint under
+an `https://` `providerURL`, fix the discovery document (for example, a
+TLS-terminating proxy in front of the IdP that does not forward
+`X-Forwarded-Proto`) rather than relying on the plugin to relax the check.
 
 ### Bearer-token (M2M) authentication
 
@@ -287,7 +377,7 @@ guidance.
 | `stripAuthorizationHeader` | bool | `true` | Strip `Authorization` from forwarded requests after successful bearer auth. |
 | `bearerEmitWWWAuthenticate` | bool | `true` | Emit RFC 6750 `WWW-Authenticate: Bearer error="..."` hints on 401. |
 | `bearerOverridesCookie` | bool | `false` | Cookie wins when both bearer and cookie are present (default). Set true for bearer-wins. |
-| `maxTokenAgeSeconds` | int64 | `86400` | Upper bound on `iat` claim age (24h). 0 disables the check. |
+| `maxTokenAgeSeconds` | int64 | `86400` | Upper bound on `iat` claim age (24h). `0` and unset both map to the 24h default; no value disables the check, and a bearer token or opaque-introspection response without `iat` is rejected. |
 | `maxIdentifierLength` | int | `256` | Length cap on the sanitised principal identifier. |
 | `bearerFailureThreshold` | int | `20` | Consecutive 401s from one source IP that trip the throttle. |
 | `bearerFailureWindowSeconds` | int | `60` | Rolling window for counting 401s. |
@@ -304,6 +394,7 @@ guidance.
 | `maxRefreshTokenAgeSeconds` | int | `21600` | Heuristic max age (in seconds) of a stored refresh token. Once exceeded, requests treat the RT as expired up front (returns 401 to AJAX, triggers full re-auth on navigations) instead of grant-spamming the IdP with `invalid_grant` retries. IdPs do not advertise RT TTL on the wire, so this is intentionally a conservative heuristic — tune to match your provider. Set `0` to disable. Default `21600` (6h). |
 | `cookieDomain` | string | auto-detected | Domain for session cookies |
 | `cookiePrefix` | string | `_oidc_raczylo_` | Prefix for cookie names |
+| `cookiePath` | string | `/` | Path prefix for session cookies. Set it to the middleware's path (for example `/app`) so the browser does not send OIDC cookies to unprotected paths (avoids HTTP 431). |
 
 ### Multi-Subdomain Setup
 

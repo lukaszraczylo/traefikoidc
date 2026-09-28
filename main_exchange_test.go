@@ -79,7 +79,7 @@ func TestExchangeCodeForToken_Comprehensive(t *testing.T) {
 			grantType:    "authorization_code",
 			code:         "valid_auth_code_pkce",
 			redirectURL:  "https://example.com/callback",
-			codeVerifier: "test_verifier_string_that_is_long_enough",
+			codeVerifier: "test_verifier_string_that_is_long_enough", // trufflehog:ignore synthetic PKCE test value
 			setupMock: func(server *httptest.Server) *TraefikOidc {
 				return &TraefikOidc{
 					tokenURL:     server.URL + "/token",
