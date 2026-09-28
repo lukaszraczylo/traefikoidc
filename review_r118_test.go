@@ -2,8 +2,6 @@ package traefikoidc
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -63,24 +61,6 @@ func TestIsRetryableError_HTTPErrorStatus(t *testing.T) {
 }
 
 // --- R118 fix C: bypass role gate must fall back to access-token claims ---
-
-// tokenWithGroups builds a JWT whose signature segment is long enough to pass
-// the session chunk manager's format validation (>=10 chars) so the access
-// token round-trips through Set/GetAccessToken.
-func tokenWithGroups(t *testing.T, claims map[string]interface{}) string {
-	t.Helper()
-	hdr, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT"})
-	pl, _ := json.Marshal(claims)
-	// Varied (non-repeating) signature bytes so the session chunk manager's
-	// repeated-character heuristic does not reject it.
-	sigBytes := make([]byte, 32)
-	for i := range sigBytes {
-		sigBytes[i] = byte(i + 1)
-	}
-	sig := base64.RawURLEncoding.EncodeToString(sigBytes)
-	return base64.RawURLEncoding.EncodeToString(hdr) + "." +
-		base64.RawURLEncoding.EncodeToString(pl) + "." + sig
-}
 
 // TestApplyBypassUserHeaders_AccessTokenGroupFallback regresses R118: the
 // SSE/WebSocket bypass role gate read only the session's ID token, while the

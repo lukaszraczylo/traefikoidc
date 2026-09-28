@@ -296,6 +296,19 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 		return false, http.StatusUnauthorized
 	}
 
+	// Mirror the normal path's IdP-initiated logout check: this path forwards
+	// configured headers (often a shared proxy secret), so a logged-out cookie
+	// must not keep opening streams until the absolute session timeout.
+	if t.enableBackchannelLogout || t.enableFrontchannelLogout {
+		if idToken := session.GetIDToken(); idToken != "" {
+			sid, sub, _ := t.extractSessionInfo(idToken)
+			if t.isSessionInvalidated(sid, sub, t.sessionCreatedAtForInvalidation(idToken, session)) {
+				t.logger.Infof("User %s session invalidated via IdP-initiated logout (bypass)", userIdentifier)
+				return false, http.StatusUnauthorized
+			}
+		}
+	}
+
 	// Enforce the user allowlist, mirroring the normal path's authorization
 	// check (isAllowedUser). Without this, an authenticated user not in
 	// allowedUsers (or whose domain is not in allowedUserDomains) could
@@ -314,19 +327,18 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 	// fallback, opaque-ID-token providers (groups only in the access token)
 	// were granted on normal requests but 403'd on the streaming bypass
 	// (R118).
+	var claims map[string]interface{}
+	var claimsErr error
+	if len(t.allowedRolesAndGroups) > 0 || len(t.headerTemplates) > 0 {
+		claims, claimsErr = t.bypassSessionClaims(session)
+	}
+
 	if len(t.allowedRolesAndGroups) > 0 {
-		var groupClaims map[string]interface{}
-		var claimsErr error
-		if idToken := session.GetIDToken(); idToken != "" {
-			groupClaims, claimsErr = session.GetIDTokenClaims(t.extractClaimsFunc)
-		} else if accessToken := session.GetAccessToken(); accessToken != "" {
-			groupClaims, claimsErr = t.extractClaimsFunc(accessToken)
-		}
-		if claimsErr != nil || groupClaims == nil {
+		if claimsErr != nil || claims == nil {
 			t.logger.Debugf("%s bypass: cannot read claims for role check (err=%v): %s", reason, claimsErr, userIdentifier)
 			return false, http.StatusForbidden
 		}
-		groups, roles, extErr := t.extractGroupsAndRolesFromClaims(groupClaims)
+		groups, roles, extErr := t.extractGroupsAndRolesFromClaims(claims)
 		if extErr != nil {
 			t.logger.Debugf("%s bypass: role extraction failed for %s: %v", reason, userIdentifier, extErr)
 			return false, http.StatusForbidden
@@ -351,8 +363,8 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 	// only sets X-Forwarded-User / X-Auth-Request-User (never groups/roles),
 	// forged group/role headers would otherwise survive to the backend,
 	// which commonly trusts them for downstream authorization. Must precede
-	// the sanitize gate so even the drop-on-unsafe early return has already
-	// cleared forged values (R100).
+	// the sanitize gate so forged values are cleared even when the
+	// identifier is dropped as unsafe (R100).
 	stripIdentityHeaders(req)
 
 	// Sanitize the claim-derived identifier before it is injected as a
@@ -361,18 +373,52 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 	// or delimiter characters that would otherwise inject or confuse
 	// downstream header parsing. On failure, drop the header but still
 	// honor the bypass (the identity headers are decoration here).
-	safeIdentifier, ok := sanitizeHeaderClaimValue(userIdentifier, t.headerClaimMaxLen())
-	if !ok {
+	if safeIdentifier, ok := sanitizeHeaderClaimValue(userIdentifier, t.headerClaimMaxLen()); ok {
+		req.Header.Set("X-Forwarded-User", safeIdentifier)
+		if !t.minimalHeaders {
+			req.Header.Set("X-Auth-Request-User", safeIdentifier)
+		}
+		t.logger.Debugf("%s bypass: forwarded user %s from session", reason, safeIdentifier)
+	} else {
 		t.logger.Debugf("%s bypass: dropping unsafe user-identifier header: %s", reason, headerClaimValueReason(userIdentifier, t.headerClaimMaxLen()))
-		return true, 0
 	}
 
-	req.Header.Set("X-Forwarded-User", safeIdentifier)
-	if !t.minimalHeaders {
-		req.Header.Set("X-Auth-Request-User", safeIdentifier)
+	// Backends that authenticate the proxy via configured headers (shared
+	// secret, user/groups) need them on the upgrade too (#162). Claims are
+	// cookie-sealed but not re-verified here; see the doc comment above.
+	if len(t.headerTemplates) > 0 {
+		if claimsErr != nil {
+			t.logger.Debugf("%s bypass: rendering header templates without claims: %v", reason, claimsErr)
+		}
+		t.applyHeaderTemplates(req, &principal{
+			Source:       sourceSession,
+			Identifier:   userIdentifier,
+			AccessToken:  session.GetAccessToken(),
+			IDToken:      session.GetIDToken(),
+			RefreshToken: session.GetRefreshToken(),
+			Claims:       claims,
+		})
 	}
-	t.logger.Debugf("%s bypass: forwarded user %s from session", reason, safeIdentifier)
 	return true, 0
+}
+
+// bypassSessionClaims returns the session's ID-token claims, falling back to
+// access-token claims when there is no ID token, matching the source the
+// normal authorization path uses (R118).
+func (t *TraefikOidc) bypassSessionClaims(session *SessionData) (map[string]interface{}, error) {
+	if t.extractClaimsFunc == nil {
+		return nil, nil
+	}
+	// Explicit assignments, not tail-call returns: yaegi can zero
+	// multi-value tail-call results (see issue151_regression_test.go).
+	var claims map[string]interface{}
+	var err error
+	if session.GetIDToken() != "" {
+		claims, err = session.GetIDTokenClaims(t.extractClaimsFunc)
+	} else if accessToken := session.GetAccessToken(); accessToken != "" {
+		claims, err = t.extractClaimsFunc(accessToken)
+	}
+	return claims, err
 }
 
 // ServeHTTP implements the main middleware logic for processing HTTP requests.
@@ -1248,6 +1294,64 @@ func joinBoundedClaimHeader(values []string) string {
 	return b.String()
 }
 
+// applyHeaderTemplates renders the configured header templates for p onto req.
+func (t *TraefikOidc) applyHeaderTemplates(req *http.Request, p *principal) {
+	if len(t.headerTemplates) == 0 {
+		return
+	}
+	// p.Claims may be nil (e.g. session without an ID token). Templates
+	// referencing .Claims.* will simply produce empty values — matches
+	// the prior behavior. Bearer-source principals always carry access-
+	// token claims (post-verifyToken).
+	templateData := map[string]interface{}{
+		"AccessToken":  p.AccessToken,
+		"IDToken":      p.IDToken,
+		"IdToken":      p.IDToken, // documented spelling (README/CONFIGURATION); alias so {{.IdToken}} renders (issue #149 review)
+		"RefreshToken": p.RefreshToken,
+		"Claims":       p.Claims,
+	}
+
+	for headerName, tmpl := range t.headerTemplates {
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, templateData); err != nil {
+			t.logger.Errorf("Failed to execute template for header %s: %v", headerName, err)
+			continue
+		}
+		headerValue := buf.String()
+		// Go's text/template renders a missing key in an interface-valued
+		// map as the literal "<no value>" even with missingkey=zero
+		// (zero only applies to typed keys). Replace that sentinel so an
+		// optional claim the provider did not emit (e.g. email) does not
+		// leak "<no value>" into the downstream header.
+		if strings.Contains(headerValue, noValueSentinel) {
+			headerValue = stripNoValueSentinels(headerValue)
+		}
+		// Skip an empty render: Setting "" would clobber an identity
+		// header (X-Forwarded-User / X-Auth-Request-*) the caller already
+		// injected with the authenticated value, silently
+		// dropping the user identity at the backend.
+		if headerValue == "" {
+			t.logger.Debugf("Skipping templated header %s: rendered value is empty", headerName)
+			continue
+		}
+		// Sanitize the rendered output: template inputs are claim-derived
+		// and attacker-influenceable, so reject control chars (header
+		// injection), bidi-override runes, the , ; = delimiters, and an
+		// over-long value. Fail closed by dropping the header rather than
+		// forwarding a tainted value. Do not log the value (it commonly
+		// carries the access token); log only name + reason.
+		if reason := headerValueReason(headerValue, headerTemplateMaxLen); reason != "" {
+			t.logger.Debugf("Dropping templated header %s: value failed sanitization (%s)", headerName, reason)
+			continue
+		}
+		req.Header.Set(headerName, headerValue)
+		// Do not log the value: templated headers commonly carry the access
+		// token (e.g. "Authorization: Bearer {{.AccessToken}}"), and logging
+		// it — even at debug — leaks credentials into logs.
+		t.logger.Debugf("Set templated header %s (%d bytes)", headerName, len(headerValue))
+	}
+}
+
 func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Request, p *principal) {
 	// This middleware fully owns the identity headers it injects upstream.
 	// Unconditionally remove any inbound values with the same names first:
@@ -1383,59 +1487,7 @@ func (t *TraefikOidc) forwardAuthorized(rw http.ResponseWriter, req *http.Reques
 		req.Header.Del("Authorization")
 	}
 
-	if len(t.headerTemplates) > 0 {
-		// p.Claims may be nil (e.g. session without an ID token). Templates
-		// referencing .Claims.* will simply produce empty values — matches
-		// the prior behavior. Bearer-source principals always carry access-
-		// token claims (post-verifyToken).
-		templateData := map[string]interface{}{
-			"AccessToken":  p.AccessToken,
-			"IDToken":      p.IDToken,
-			"IdToken":      p.IDToken, // documented spelling (README/CONFIGURATION); alias so {{.IdToken}} renders (issue #149 review)
-			"RefreshToken": p.RefreshToken,
-			"Claims":       p.Claims,
-		}
-
-		for headerName, tmpl := range t.headerTemplates {
-			var buf bytes.Buffer
-			if err := tmpl.Execute(&buf, templateData); err != nil {
-				t.logger.Errorf("Failed to execute template for header %s: %v", headerName, err)
-				continue
-			}
-			headerValue := buf.String()
-			// Go's text/template renders a missing key in an interface-valued
-			// map as the literal "<no value>" even with missingkey=zero
-			// (zero only applies to typed keys). Replace that sentinel so an
-			// optional claim the provider did not emit (e.g. email) does not
-			// leak "<no value>" into the downstream header.
-			if strings.Contains(headerValue, noValueSentinel) {
-				headerValue = stripNoValueSentinels(headerValue)
-			}
-			// Skip an empty render: Setting "" would clobber an identity
-			// header (X-Forwarded-User / X-Auth-Request-*) already injected
-			// earlier in this function with the authenticated value, silently
-			// dropping the user identity at the backend.
-			if headerValue == "" {
-				t.logger.Debugf("Skipping templated header %s: rendered value is empty", headerName)
-				continue
-			}
-			// Sanitize the rendered output: template inputs are claim-derived
-			// and attacker-influenceable, so reject control chars (header
-			// injection), bidi-override runes, the , ; = delimiters, and an
-			// over-long value. Fail closed by dropping the header rather than
-			// forwarding a tainted value. Do not log the value (it commonly
-			// carries the access token); log only name + reason.
-			if reason := headerValueReason(headerValue, headerTemplateMaxLen); reason != "" {
-				t.logger.Debugf("Dropping templated header %s: value failed sanitization (%s)", headerName, reason)
-				continue
-			}
-			req.Header.Set(headerName, headerValue)
-			// Do not log the value: templated headers commonly carry the access
-			// token (e.g. "Authorization: Bearer {{.AccessToken}}"), and logging
-			// it — even at debug — leaks credentials into logs.
-			t.logger.Debugf("Set templated header %s (%d bytes)", headerName, len(headerValue))
-		}
-	}
+	t.applyHeaderTemplates(req, p)
 
 	// Strip OIDC session cookies before forwarding to the backend to prevent
 	// HTTP 431 "Request Header Fields Too Large" errors (GitHub issue #122).

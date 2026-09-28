@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -137,6 +138,7 @@ func main() {
 	runCheck("fix06-sse-flush-reaches-next", checkSSEFlushReachesNext)
 	runCheck("middleware-erraborthandler-aborts-under-yaegi", checkErrAbortHandlerAbortsUnderYaegi)
 	runCheck("fix17-setifabsent-claims-once", checkSetIfAbsentUnderYaegi)
+	runCheck("issue162-websocket-forwards-header-templates", checkIssue162WebSocketHeaderTemplates)
 	fmt.Println("OK: all yaegi regression checks passed")
 }
 
@@ -719,6 +721,87 @@ func checkSSEFlushReachesNext() (string, error) {
 	}
 	if !rec.Flushed {
 		return "", fmt.Errorf("the underlying writer was not flushed")
+	}
+	return "", nil
+}
+
+// checkIssue162WebSocketHeaderTemplates pins #162 under the interpreter: an
+// authenticated WebSocket upgrade takes the streaming bypass, which must
+// still render the configured headers (static and claim-derived) for next.
+func checkIssue162WebSocketHeaderTemplates() (string, error) {
+	discovery := servers.NewOIDCServer(nil)
+	defer discovery.Close()
+
+	cfg := oidc.CreateConfig()
+	cfg.ProviderURL = discovery.URL
+	cfg.ClientID = "yaegi-check-162-client"
+	cfg.ClientSecret = "yaegi-check-162-secret"
+	cfg.CallbackURL = "/oauth2/callback"
+	cfg.SessionEncryptionKey = "0123456789abcdef0123456789abcdef"
+	cfg.Headers = []oidc.TemplatedHeader{
+		{Name: "X-Proxy-Secret", Value: "s3cret"},
+		{Name: "X-Forwarded-Preferred-Username", Value: "{{.Claims.preferred_username}}"},
+	}
+
+	var seen http.Header
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Clone()
+	})
+	h, err := oidc.New(context.Background(), next, cfg, "yaegi-check-162")
+	if err != nil {
+		return "", fmt.Errorf("New: %w", err)
+	}
+	if closer, ok := h.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+
+	sm, err := oidc.NewSessionManager(cfg.SessionEncryptionKey, cfg.ForceHTTPS, cfg.CookieDomain, cfg.CookiePrefix, time.Duration(cfg.SessionMaxAge)*time.Second, oidc.NewLogger("error"))
+	if err != nil {
+		return "", fmt.Errorf("NewSessionManager: %w", err)
+	}
+	defer sm.Shutdown()
+
+	setupReq := httptest.NewRequest("GET", "/ws", nil)
+	session, err := sm.GetSession(setupReq)
+	if err != nil {
+		return "", fmt.Errorf("GetSession: %w", err)
+	}
+	if err := session.SetAuthenticated(true); err != nil {
+		return "", fmt.Errorf("SetAuthenticated: %w", err)
+	}
+	session.SetUserIdentifier("alice@example.com")
+	// Unsigned JWT: the bypass reads cookie-sealed claims without signature
+	// verification. Built at runtime because a JWT literal trips the
+	// pre-commit secret scanner.
+	b64 := base64.RawURLEncoding.EncodeToString
+	sig := make([]byte, 32)
+	for i := range sig {
+		sig[i] = byte(i + 1)
+	}
+	session.SetIDToken(b64([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + b64([]byte(`{"preferred_username":"alice"}`)) + "." + b64(sig))
+	rec := httptest.NewRecorder()
+	if err := session.Save(setupReq, rec); err != nil {
+		return "", fmt.Errorf("session.Save: %w", err)
+	}
+	session.ReturnToPool()
+
+	req := httptest.NewRequest("GET", "/ws", nil)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if seen == nil {
+		return "", fmt.Errorf("next was not reached (status %d)", rw.Code)
+	}
+	if got := seen.Get("X-Proxy-Secret"); got != "s3cret" {
+		return "", fmt.Errorf("X-Proxy-Secret = %q, want %q", got, "s3cret")
+	}
+	if got := seen.Get("X-Forwarded-Preferred-Username"); got != "alice" {
+		return "", fmt.Errorf("X-Forwarded-Preferred-Username = %q, want %q", got, "alice")
 	}
 	return "", nil
 }

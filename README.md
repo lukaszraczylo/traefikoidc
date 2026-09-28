@@ -304,9 +304,11 @@ WebSocket upgrade. The middleware handles this automatically:
 - They are **not** unauthenticated — a valid encrypted session cookie is
   required, otherwise the request is rejected. The session must already exist
   (i.e. the user logged in via a normal HTTP page first).
-- `X-Forwarded-User` is forwarded from the session.
+- `X-Forwarded-User` and the configured `headers` are forwarded from the
+  session. Header templates render from the claims in the session cookie.
 - Validation is cookie-only (no JWK fetch), so streaming keeps working during
-  brief IdP outages.
+  brief IdP outages. Back-channel and front-channel logout still apply: a
+  session that the IdP logged out is rejected.
 
 No configuration needed — this is implicit behavior.
 
