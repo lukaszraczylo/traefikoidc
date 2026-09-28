@@ -53,7 +53,7 @@ func TestApplyBypassUserHeaders_ClearsForgedIdentityHeaders(t *testing.T) {
 		logger:         NewLogger("debug"),
 	}
 
-	if ok, _ := oidc.applyBypassUserHeaders(req, "test"); !ok {
+	if ok, _ := oidc.applyBypassUserHeaders(httptest.NewRecorder(), req, "test"); !ok {
 		t.Fatalf("applyBypassUserHeaders returned false; bypass should be honored")
 	}
 
@@ -110,7 +110,7 @@ func TestApplyBypassUserHeaders_UnsafeIdentifierClearsForgedValue(t *testing.T) 
 		logger:         NewLogger("debug"),
 	}
 
-	if ok, _ := oidc.applyBypassUserHeaders(req, "test"); !ok {
+	if ok, _ := oidc.applyBypassUserHeaders(httptest.NewRecorder(), req, "test"); !ok {
 		t.Fatalf("applyBypassUserHeaders returned false; bypass should be honored")
 	}
 	if v := req.Header.Get("X-Forwarded-User"); v != "" {

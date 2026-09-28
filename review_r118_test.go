@@ -100,7 +100,7 @@ func TestApplyBypassUserHeaders_AccessTokenGroupFallback(t *testing.T) {
 		allowedRolesAndGroups: map[string]struct{}{"team-a": {}},
 	}
 
-	ok, status := oidc.applyBypassUserHeaders(req, "test")
+	ok, status := oidc.applyBypassUserHeaders(httptest.NewRecorder(), req, "test")
 	if !ok {
 		t.Fatalf("bypass role gate denied access-token group; got status %d, want granted", status)
 	}

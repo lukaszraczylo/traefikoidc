@@ -273,7 +273,7 @@ func stripIdentityHeaders(req *http.Request) {
 	}
 }
 
-func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (bool, int) {
+func (t *TraefikOidc) applyBypassUserHeaders(rw http.ResponseWriter, req *http.Request, reason string) (bool, int) {
 	if t.sessionManager == nil {
 		return false, http.StatusUnauthorized
 	}
@@ -294,6 +294,17 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 	if userIdentifier == "" {
 		t.logger.Debugf("%s bypass: rejecting request, session has no user identifier", reason)
 		return false, http.StatusUnauthorized
+	}
+
+	// Opt-in: refresh an expired session so an IdP-revoked grant stops opening
+	// streams. Only a definitive rejection (refreshToken clears the session on
+	// invalid_grant) denies; IdP outages keep forwarding as before. The full
+	// coordinator wait is kept so a rotated refresh token is never dropped.
+	if t.streamingRefresh && bypassTokenExpired(session) {
+		if !t.refreshToken(rw, req, session) && !session.GetAuthenticated() {
+			t.logger.Infof("User %s refresh rejected by IdP (bypass)", userIdentifier)
+			return false, http.StatusUnauthorized
+		}
 	}
 
 	// Mirror the normal path's IdP-initiated logout check: this path forwards
@@ -400,6 +411,25 @@ func (t *TraefikOidc) applyBypassUserHeaders(req *http.Request, reason string) (
 		})
 	}
 	return true, 0
+}
+
+// bypassTokenExpired reports whether the session's access token, or its ID
+// token when the access token carries no readable exp (opaque), has expired.
+// exp is read unverified: the cookie is sealed and a verified refresh follows.
+func bypassTokenExpired(session *SessionData) bool {
+	for _, token := range []string{session.GetAccessToken(), session.GetIDToken()} {
+		if token == "" {
+			continue
+		}
+		jwt, err := parseJWT(token)
+		if err != nil {
+			continue
+		}
+		if exp, ok := jwt.Claims["exp"].(float64); ok {
+			return !time.Now().Before(time.Unix(int64(exp), 0))
+		}
+	}
+	return false
 }
 
 // bypassSessionClaims returns the session's ID-token claims, falling back to
@@ -640,7 +670,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			// Otherwise an unauthenticated client could hit the backend
 			// just by setting Accept: text/event-stream or sending a
 			// WebSocket upgrade.
-			if ok, status := t.applyBypassUserHeaders(req, reason); !ok {
+			if ok, status := t.applyBypassUserHeaders(rw, req, reason); !ok {
 				msg := "Authentication required"
 				if status == http.StatusForbidden {
 					msg = "Access denied"

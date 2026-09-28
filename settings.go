@@ -115,8 +115,12 @@ type Config struct {
 	// or not, like any other method. Enable only if your backend itself
 	// answers CORS preflights and must see them unauthenticated.
 	AllowUnauthenticatedPreflight bool `json:"allowUnauthenticatedPreflight,omitempty"`
-	MinimalHeaders                bool `json:"minimalHeaders,omitempty"`
-	StripAuthCookies              bool `json:"stripAuthCookies,omitempty"`
+	// StreamingRefresh refreshes an expired session on the SSE/WebSocket
+	// bypass and rejects the request when the IdP revokes the grant.
+	// Default false: the bypass trusts the session cookie until it expires.
+	StreamingRefresh bool `json:"streamingRefresh,omitempty"`
+	MinimalHeaders   bool `json:"minimalHeaders,omitempty"`
+	StripAuthCookies bool `json:"stripAuthCookies,omitempty"`
 	// CookiePath restricts session cookies to a specific path prefix instead of "/".
 	// When traefikoidc protects some but not all paths on a domain, set this to the
 	// middleware's path prefix (e.g. "/app-protegido") so the browser does not send

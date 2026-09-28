@@ -17,6 +17,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   never reads a preflight body (`settings.go`, `middleware.go`, FIX-02).
   See the option table in [CONFIGURATION.md](docs/CONFIGURATION.md).
 
+- **`streamingRefresh` (default `false`).** SSE and WebSocket requests do
+  not check the token expiry, so a session stays usable for streaming until
+  the session cookie expires. Set the option to `true` to refresh an expired
+  token on these requests. If the IdP rejects the refresh with
+  `invalid_grant`, the request gets `401`. If the IdP cannot be reached, the
+  request is forwarded as before. The request waits for the full refresh, so
+  a rotated refresh token is never lost (`middleware.go`).
+
 ### Changed
 
 - **Opaque bearer tokens when all three bearer flags are set.** A deployment

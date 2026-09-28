@@ -336,6 +336,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		dcrConfig:                     config.DynamicClientRegistration,
 		allowPrivateIPAddresses:       config.AllowPrivateIPAddresses,
 		allowUnauthenticatedPreflight: config.AllowUnauthenticatedPreflight,
+		streamingRefresh:              config.StreamingRefresh,
 		allowLoopbackHosts:            isLoopbackProviderURL(config.ProviderURL),
 		minimalHeaders:                config.MinimalHeaders,
 		stripAuthCookies:              config.StripAuthCookies,

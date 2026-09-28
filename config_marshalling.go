@@ -76,6 +76,7 @@ func (c Config) configToMap() map[string]interface{} {
 	result["enablePKCE"] = c.EnablePKCE
 	result["allowPrivateIPAddresses"] = c.AllowPrivateIPAddresses
 	result["allowUnauthenticatedPreflight"] = c.AllowUnauthenticatedPreflight
+	result["streamingRefresh"] = c.StreamingRefresh
 	result["minimalHeaders"] = c.MinimalHeaders
 	result["stripAuthCookies"] = c.StripAuthCookies
 	result["cookiePath"] = c.CookiePath

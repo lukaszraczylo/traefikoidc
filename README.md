@@ -139,6 +139,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `disableReplayDetection` | `false` | Disable JTI cache. Use Redis instead for multi-replica. |
 | `allowPrivateIPAddresses` | `false` | Permit private-IP `providerURL` (internal Keycloak, etc.). |
 | `allowUnauthenticatedPreflight` | `false` | Bypass auth for a genuine CORS preflight (`OPTIONS` + `Origin` + `Access-Control-Request-Method`); the response body is still discarded. Default requires auth for every `OPTIONS` request, preflight or not. |
+| `streamingRefresh` | `false` | Refresh an expired session on SSE/WebSocket requests. Reject the request when the IdP revokes the grant. |
 | `minimalHeaders` | `false` | Reduce forwarded headers (mitigates HTTP 431). |
 | `stripAuthCookies` | `false` | Strip OIDC cookies from backend hop (mitigates HTTP 431). |
 | `caCertPath` / `caCertPEM` | none | Trust an internal CA for the provider's TLS. |
@@ -309,6 +310,11 @@ WebSocket upgrade. The middleware handles this automatically:
 - Validation is cookie-only (no JWK fetch), so streaming keeps working during
   brief IdP outages. Back-channel and front-channel logout still apply: a
   session that the IdP logged out is rejected.
+- By default, the token expiry is not checked, so a session stays usable
+  for streaming until the session cookie expires. Set `streamingRefresh: true`
+  to refresh an expired token on the request. If the IdP rejects the refresh
+  (`invalid_grant`), the request gets `401`. If the IdP cannot be reached,
+  the request is forwarded as before.
 
 No configuration needed — this is implicit behavior.
 

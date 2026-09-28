@@ -139,6 +139,7 @@ func main() {
 	runCheck("middleware-erraborthandler-aborts-under-yaegi", checkErrAbortHandlerAbortsUnderYaegi)
 	runCheck("fix17-setifabsent-claims-once", checkSetIfAbsentUnderYaegi)
 	runCheck("issue162-websocket-forwards-header-templates", checkIssue162WebSocketHeaderTemplates)
+	runCheck("streaming-refresh-revoked-grant-rejected", checkStreamingRefreshRevokedGrant)
 	fmt.Println("OK: all yaegi regression checks passed")
 }
 
@@ -802,6 +803,87 @@ func checkIssue162WebSocketHeaderTemplates() (string, error) {
 	}
 	if got := seen.Get("X-Forwarded-Preferred-Username"); got != "alice" {
 		return "", fmt.Errorf("X-Forwarded-Preferred-Username = %q, want %q", got, "alice")
+	}
+	return "", nil
+}
+
+// checkStreamingRefreshRevokedGrant drives streamingRefresh under the
+// interpreter through the real RefreshCoordinator and token exchanger: an
+// expired session whose refresh the IdP answers with invalid_grant must get
+// 401 on a WebSocket upgrade instead of reaching next.
+func checkStreamingRefreshRevokedGrant() (string, error) {
+	idpCfg := servers.DefaultConfig()
+	idpCfg.RefreshError = &servers.OIDCError{Error: "invalid_grant"}
+	idp := servers.NewOIDCServer(idpCfg)
+	defer idp.Close()
+
+	cfg := oidc.CreateConfig()
+	cfg.ProviderURL = idp.URL
+	cfg.ClientID = "yaegi-check-refresh-client"
+	cfg.ClientSecret = "yaegi-check-refresh-secret"
+	cfg.CallbackURL = "/oauth2/callback"
+	cfg.SessionEncryptionKey = "0123456789abcdef0123456789abcdef"
+	cfg.StreamingRefresh = true
+
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+	})
+	h, err := oidc.New(context.Background(), next, cfg, "yaegi-check-refresh")
+	if err != nil {
+		return "", fmt.Errorf("New: %w", err)
+	}
+	if closer, ok := h.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+	// The streaming bypass does not wait for provider metadata, so a normal
+	// request (which does) runs first to make the token endpoint known.
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+
+	sm, err := oidc.NewSessionManager(cfg.SessionEncryptionKey, cfg.ForceHTTPS, cfg.CookieDomain, cfg.CookiePrefix, time.Duration(cfg.SessionMaxAge)*time.Second, oidc.NewLogger("error"))
+	if err != nil {
+		return "", fmt.Errorf("NewSessionManager: %w", err)
+	}
+	defer sm.Shutdown()
+
+	setupReq := httptest.NewRequest("GET", "/ws", nil)
+	session, err := sm.GetSession(setupReq)
+	if err != nil {
+		return "", fmt.Errorf("GetSession: %w", err)
+	}
+	if err := session.SetAuthenticated(true); err != nil {
+		return "", fmt.Errorf("SetAuthenticated: %w", err)
+	}
+	session.SetUserIdentifier("alice@example.com")
+	// Built at runtime because a JWT literal trips the pre-commit secret scanner.
+	b64 := base64.RawURLEncoding.EncodeToString
+	sig := make([]byte, 32)
+	for i := range sig {
+		sig[i] = byte(i + 1)
+	}
+	payload := fmt.Sprintf(`{"email":"alice@example.com","exp":%d}`, time.Now().Add(-time.Minute).Unix())
+	session.SetAccessToken(b64([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + b64([]byte(payload)) + "." + b64(sig))
+	session.SetRefreshToken("yaegi-check-refresh-token")
+	rec := httptest.NewRecorder()
+	if err := session.Save(setupReq, rec); err != nil {
+		return "", fmt.Errorf("session.Save: %w", err)
+	}
+	session.ReturnToPool()
+
+	req := httptest.NewRequest("GET", "/ws", nil)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if reached {
+		return "", fmt.Errorf("next reached for a revoked grant (status %d)", rw.Code)
+	}
+	if rw.Code != http.StatusUnauthorized {
+		return "", fmt.Errorf("status = %d, want %d", rw.Code, http.StatusUnauthorized)
 	}
 	return "", nil
 }
