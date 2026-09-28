@@ -322,7 +322,8 @@ WebSocket upgrade. The middleware handles this automatically:
   for streaming until the session cookie expires. Set `streamingRefresh: true`
   to refresh an expired token on the request. If the IdP rejects the refresh
   (`invalid_grant`), the request gets `401`. If the IdP cannot be reached,
-  the request is forwarded as before.
+  the request is forwarded as before. On a WebSocket upgrade, the refreshed
+  session cookie arrives on the `101 Switching Protocols` response.
 
 No configuration needed — this is implicit behavior.
 
