@@ -90,9 +90,14 @@ type TokenRetrievalResult struct {
 // and error handling to ensure data integrity and prevent security vulnerabilities
 // throughout the process.
 type ChunkManager struct {
-	lastCleanup    time.Time
-	ctx            context.Context
-	mutex          *sync.RWMutex
+	lastCleanup time.Time
+	ctx         context.Context
+	mutex       *sync.RWMutex
+	// contentValid holds keys of tokens that passed every content-only check.
+	// Browsers resend the same cookie, and re-running those checks on every
+	// request dominated per-request cost under yaegi. Guarded by contentMu.
+	contentValid   map[string]struct{}
+	contentMu      sync.Mutex
 	cancel         context.CancelFunc
 	sessionMap     map[string]*SessionEntry
 	logger         *Logger
@@ -128,14 +133,15 @@ func NewChunkManager(logger *Logger) *ChunkManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cm := &ChunkManager{
-		logger:      logger,
-		mutex:       &sync.RWMutex{},
-		ctx:         ctx,
-		cancel:      cancel,
-		sessionMap:  make(map[string]*SessionEntry),
-		maxSessions: 200,              // CRITICAL FIX: Reduced from 1000 to 200 per instance
-		sessionTTL:  15 * time.Minute, // CRITICAL FIX: Reduced from 24h to 15 minutes
-		lastCleanup: time.Now(),
+		logger:       logger,
+		mutex:        &sync.RWMutex{},
+		ctx:          ctx,
+		cancel:       cancel,
+		sessionMap:   make(map[string]*SessionEntry),
+		contentValid: make(map[string]struct{}),
+		maxSessions:  200,              // CRITICAL FIX: Reduced from 1000 to 200 per instance
+		sessionTTL:   15 * time.Minute, // CRITICAL FIX: Reduced from 24h to 15 minutes
+		lastCleanup:  time.Now(),
 	}
 
 	// Start background cleanup routine
@@ -294,14 +300,21 @@ func (cm *ChunkManager) processSingleToken(token string, compressed bool, config
 // Returns:
 //   - TokenRetrievalResult with the validated token or validation error.
 func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRetrievalResult {
-	if sizeErr := cm.validateTokenSize(token, config); sizeErr != nil {
-		return TokenRetrievalResult{Token: "", Error: sizeErr}
-	}
+	// Content-only checks depend on the token string alone, so a token that
+	// passed them once skips them. Expiry and freshness always run.
+	key := contentValidKey(token, config)
+	cached := cm.isContentValid(key)
 
-	cm.validateChunkingEfficiency(token, config)
+	if !cached {
+		if sizeErr := cm.validateTokenSize(token, config); sizeErr != nil {
+			return TokenRetrievalResult{Token: "", Error: sizeErr}
+		}
 
-	if contentErr := cm.validateTokenContent(token, config); contentErr != nil {
-		return TokenRetrievalResult{Token: "", Error: contentErr}
+		cm.validateChunkingEfficiency(token, config)
+
+		if contentErr := cm.validateTokenContent(token, config); contentErr != nil {
+			return TokenRetrievalResult{Token: "", Error: contentErr}
+		}
 	}
 
 	if expErr := cm.validateTokenExpiration(token, config); expErr != nil {
@@ -314,6 +327,10 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 
 	// Determine if token is opaque or JWT based on format
 	// JWT tokens have exactly 2 dots (3 parts: header.payload.signature)
+	if cached {
+		return TokenRetrievalResult{Token: token, Error: nil}
+	}
+
 	dotCount := strings.Count(token, ".")
 	isJWT := dotCount == 2
 
@@ -339,6 +356,7 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 		}
 	}
 
+	cm.markContentValid(key)
 	return TokenRetrievalResult{Token: token, Error: nil}
 }
 
@@ -351,6 +369,33 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 //
 // Returns:
 //   - TokenRetrievalResult with the reassembled token or error.
+//
+// contentValidCacheMax bounds contentValid; the map is cleared when full.
+const contentValidCacheMax = 4096
+
+// contentValidKey keys a token by type and SHA-256 so the cache does not
+// retain token values.
+func contentValidKey(token string, config TokenConfig) string {
+	sum := sha256.Sum256([]byte(token))
+	return config.Type + ":" + string(sum[:])
+}
+
+func (cm *ChunkManager) isContentValid(key string) bool {
+	cm.contentMu.Lock()
+	_, ok := cm.contentValid[key]
+	cm.contentMu.Unlock()
+	return ok
+}
+
+func (cm *ChunkManager) markContentValid(key string) {
+	cm.contentMu.Lock()
+	if len(cm.contentValid) >= contentValidCacheMax {
+		cm.contentValid = make(map[string]struct{})
+	}
+	cm.contentValid[key] = struct{}{}
+	cm.contentMu.Unlock()
+}
+
 func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, config TokenConfig) TokenRetrievalResult {
 	if len(chunks) > config.MaxChunks {
 		err := fmt.Errorf("too many %s token chunks (%d, max: %d)", config.Type, len(chunks), config.MaxChunks)
