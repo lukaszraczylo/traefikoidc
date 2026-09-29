@@ -720,9 +720,10 @@ func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConf
 		return err
 	}
 
-	// Check for control characters (ASCII 0-31 and 127)
-	for i, char := range token {
-		if char < 32 || char == 127 {
+	// Check for control characters (ASCII 0-31 and 127). Byte loop: bytes of
+	// a multi-byte rune are >= 0x80, and i is a byte offset either way.
+	for i := 0; i < len(token); i++ {
+		if char := token[i]; char < 32 || char == 127 {
 			err := fmt.Errorf("%s token contains control character at position %d", config.Type, i)
 			return err
 		}
