@@ -505,7 +505,9 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 			return err
 		}
 
-		for _, char := range part {
+		// Byte loop: a multi-byte rune fails on its first byte either way.
+		for j := 0; j < len(part); j++ {
+			char := part[j]
 			if !((char >= 'A' && char <= 'Z') ||
 				(char >= 'a' && char <= 'z') ||
 				(char >= '0' && char <= '9') ||
