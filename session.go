@@ -1418,6 +1418,13 @@ type SessionData struct {
 	// timed against the new owner's own writes.
 	sessionOwner atomic.Uint64
 
+	// idTokenMemoRaw and idTokenMemo cache getIDTokenUnsafe's validated result
+	// for an unchunked, uncompressed stored token, keyed by the stored value.
+	// A request reads the ID token twice, and each read re-ran full chunk
+	// validation. Cleared by Reset so no result outlives its request.
+	idTokenMemoRaw string
+	idTokenMemo    string
+
 	// cachedClaimsToken is the ID token string whose claims were last parsed and
 	// cached. A lazy, per-request cache to avoid re-parsing the JWT on every
 	// authenticated request (e.g. for headerTemplates). Protected by sessionMutex.
@@ -2094,6 +2101,8 @@ func (sd *SessionData) Reset() {
 	sd.cachedClaimsToken = ""
 	sd.cachedClaims = nil
 	sd.cachedClaimsErr = nil
+	sd.idTokenMemoRaw = ""
+	sd.idTokenMemo = ""
 
 	// Reset the refresh mutex to ensure clean state
 	// Note: We don't need to lock it since sessionMutex is already held
@@ -3025,6 +3034,11 @@ func (sd *SessionData) getIDTokenUnsafe() string {
 		return token
 	}
 
+	memoable := token != "" && !compressed && len(sd.idTokenChunks) == 0
+	if memoable && token == sd.idTokenMemoRaw {
+		return sd.idTokenMemo
+	}
+
 	result := sd.manager.chunkManager.GetToken(
 		token,
 		compressed,
@@ -3032,11 +3046,14 @@ func (sd *SessionData) getIDTokenUnsafe() string {
 		IDTokenConfig,
 	)
 
+	validated := result.Token
 	if result.Error != nil {
-		return ""
+		validated = ""
 	}
-
-	return result.Token
+	if memoable {
+		sd.idTokenMemoRaw, sd.idTokenMemo = token, validated
+	}
+	return validated
 }
 
 // getRefreshTokenUnsafe retrieves the refresh token without acquiring locks.
