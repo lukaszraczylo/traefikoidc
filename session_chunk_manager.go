@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/sessions"
 	"github.com/lukaszraczylo/traefikoidc/internal/pool"
@@ -921,7 +922,13 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 	currentRepeated := 1
 	var lastChar rune
 
-	for i, char := range token {
+	// Index loops, not range: under yaegi, ranging over a string allocates
+	// O(n²) bytes, which dominated per-request cost for 1-2 KB tokens.
+	for i := 0; i < len(token); {
+		char, size := rune(token[i]), 1
+		if char >= utf8.RuneSelf {
+			char, size = utf8.DecodeRuneInString(token[i:])
+		}
 		if i > 0 && char == lastChar {
 			currentRepeated++
 			if currentRepeated > maxRepeated {
@@ -931,6 +938,7 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 			currentRepeated = 1
 		}
 		lastChar = char
+		i += size
 	}
 
 	threshold := 20
@@ -941,8 +949,13 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 	}
 
 	charFreq := make(map[rune]int)
-	for _, char := range token {
+	for i := 0; i < len(token); {
+		char, size := rune(token[i]), 1
+		if char >= utf8.RuneSelf {
+			char, size = utf8.DecodeRuneInString(token[i:])
+		}
 		charFreq[char]++
+		i += size
 	}
 
 	tokenLen := len(token)
