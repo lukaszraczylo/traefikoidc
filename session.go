@@ -193,8 +193,10 @@ func compressCombinedPayload(payload *combinedSessionPayload) (string, error) {
 }
 
 // decompressCombinedPayload decompresses a base64+gzip encoded combined session payload.
+// readers pools *gzip.Reader values: a new reader allocates its 32 KB window,
+// which is a large per-request cost under yaegi.
 // Returns the deserialized payload and any error encountered.
-func decompressCombinedPayload(compressed string) (*combinedSessionPayload, error) {
+func decompressCombinedPayload(compressed string, readers *sync.Pool) (*combinedSessionPayload, error) {
 	if compressed == "" {
 		return nil, fmt.Errorf("empty compressed data")
 	}
@@ -204,11 +206,16 @@ func decompressCombinedPayload(compressed string) (*combinedSessionPayload, erro
 		return nil, fmt.Errorf("failed to decode base64: %w", err)
 	}
 
-	gr, err := gzip.NewReader(bytes.NewReader(data))
+	gr, _ := readers.Get().(*gzip.Reader)
+	if gr == nil {
+		gr, err = gzip.NewReader(bytes.NewReader(data))
+	} else {
+		err = gr.Reset(bytes.NewReader(data))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer func() { _ = gr.Close() }()
+	defer readers.Put(gr)
 
 	// Limit decompressed size to prevent zip bombs
 	limitedReader := io.LimitReader(gr, 512*1024) // 512KB max
@@ -408,6 +415,7 @@ func decompressTokenInternal(compressed string) string {
 // session object reuse and supports both HTTP and HTTPS schemes.
 type SessionManager struct {
 	sessionPool    sync.Pool
+	gzipReaders    sync.Pool
 	ctx            context.Context
 	store          sessions.Store
 	logger         *Logger
@@ -1265,7 +1273,7 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 		return false
 	}
 
-	payload, err := decompressCombinedPayload(compressed)
+	payload, err := decompressCombinedPayload(compressed, &sm.gzipReaders)
 	if err != nil {
 		sm.logger.Debugf("Failed to decompress combined payload: %v", err)
 		return false
