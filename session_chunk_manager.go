@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/sessions"
 	"github.com/lukaszraczylo/traefikoidc/internal/pool"
@@ -89,9 +90,14 @@ type TokenRetrievalResult struct {
 // and error handling to ensure data integrity and prevent security vulnerabilities
 // throughout the process.
 type ChunkManager struct {
-	lastCleanup    time.Time
-	ctx            context.Context
-	mutex          *sync.RWMutex
+	lastCleanup time.Time
+	ctx         context.Context
+	mutex       *sync.RWMutex
+	// contentValid holds keys of tokens that passed every content-only check.
+	// Browsers resend the same cookie, and re-running those checks on every
+	// request dominated per-request cost under yaegi. Guarded by contentMu.
+	contentValid   map[string]tokenTimes
+	contentMu      sync.Mutex
 	cancel         context.CancelFunc
 	sessionMap     map[string]*SessionEntry
 	logger         *Logger
@@ -127,14 +133,15 @@ func NewChunkManager(logger *Logger) *ChunkManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cm := &ChunkManager{
-		logger:      logger,
-		mutex:       &sync.RWMutex{},
-		ctx:         ctx,
-		cancel:      cancel,
-		sessionMap:  make(map[string]*SessionEntry),
-		maxSessions: 200,              // CRITICAL FIX: Reduced from 1000 to 200 per instance
-		sessionTTL:  15 * time.Minute, // CRITICAL FIX: Reduced from 24h to 15 minutes
-		lastCleanup: time.Now(),
+		logger:       logger,
+		mutex:        &sync.RWMutex{},
+		ctx:          ctx,
+		cancel:       cancel,
+		sessionMap:   make(map[string]*SessionEntry),
+		contentValid: make(map[string]tokenTimes),
+		maxSessions:  200,              // CRITICAL FIX: Reduced from 1000 to 200 per instance
+		sessionTTL:   15 * time.Minute, // CRITICAL FIX: Reduced from 24h to 15 minutes
+		lastCleanup:  time.Now(),
 	}
 
 	// Start background cleanup routine
@@ -293,26 +300,38 @@ func (cm *ChunkManager) processSingleToken(token string, compressed bool, config
 // Returns:
 //   - TokenRetrievalResult with the validated token or validation error.
 func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRetrievalResult {
-	if sizeErr := cm.validateTokenSize(token, config); sizeErr != nil {
-		return TokenRetrievalResult{Token: "", Error: sizeErr}
+	// Content-only checks depend on the token string alone, so a token that
+	// passed them once skips them. Expiry and freshness always run.
+	key := contentValidKey(token, config)
+	times, cached := cm.cachedTokenTimes(key)
+
+	if !cached {
+		if sizeErr := cm.validateTokenSize(token, config); sizeErr != nil {
+			return TokenRetrievalResult{Token: "", Error: sizeErr}
+		}
+
+		cm.validateChunkingEfficiency(token, config)
+
+		if contentErr := cm.validateTokenContent(token, config); contentErr != nil {
+			return TokenRetrievalResult{Token: "", Error: contentErr}
+		}
+		times = cm.tokenTimesOf(token)
 	}
 
-	cm.validateChunkingEfficiency(token, config)
-
-	if contentErr := cm.validateTokenContent(token, config); contentErr != nil {
-		return TokenRetrievalResult{Token: "", Error: contentErr}
-	}
-
-	if expErr := cm.validateTokenExpiration(token, config); expErr != nil {
+	if expErr := cm.validateTokenExpiration(times, config); expErr != nil {
 		return TokenRetrievalResult{Token: "", Error: expErr}
 	}
 
-	if freshnessErr := cm.validateTokenFreshness(token, config); freshnessErr != nil {
+	if freshnessErr := cm.validateTokenFreshness(times, config); freshnessErr != nil {
 		return TokenRetrievalResult{Token: "", Error: freshnessErr}
 	}
 
 	// Determine if token is opaque or JWT based on format
 	// JWT tokens have exactly 2 dots (3 parts: header.payload.signature)
+	if cached {
+		return TokenRetrievalResult{Token: token, Error: nil}
+	}
+
 	dotCount := strings.Count(token, ".")
 	isJWT := dotCount == 2
 
@@ -338,6 +357,7 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 		}
 	}
 
+	cm.markContentValid(key, times)
 	return TokenRetrievalResult{Token: token, Error: nil}
 }
 
@@ -350,6 +370,53 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 //
 // Returns:
 //   - TokenRetrievalResult with the reassembled token or error.
+//
+// tokenTimes holds a token's parsed exp and iat claims. They are part of the
+// token content, so a content-cache entry keeps them to avoid re-parsing the
+// payload on every request. The checks that use them still run each time.
+type tokenTimes struct {
+	exp, iat       *time.Time
+	expErr, iatErr error
+	jwt            bool
+}
+
+// tokenTimesOf parses exp and iat from a JWT-shaped token.
+func (cm *ChunkManager) tokenTimesOf(token string) tokenTimes {
+	if !strings.Contains(token, ".") {
+		return tokenTimes{}
+	}
+	t := tokenTimes{jwt: true}
+	t.exp, t.expErr = cm.extractJWTExpiration(token)
+	t.iat, t.iatErr = cm.extractJWTIssuedAt(token)
+	return t
+}
+
+// contentValidCacheMax bounds contentValid; the map is cleared when full.
+const contentValidCacheMax = 4096
+
+// contentValidKey keys a token by type and SHA-256 so the cache does not
+// retain token values.
+func contentValidKey(token string, config TokenConfig) string {
+	sum := sha256.Sum256([]byte(token))
+	return config.Type + ":" + string(sum[:])
+}
+
+func (cm *ChunkManager) cachedTokenTimes(key string) (tokenTimes, bool) {
+	cm.contentMu.Lock()
+	t, ok := cm.contentValid[key]
+	cm.contentMu.Unlock()
+	return t, ok
+}
+
+func (cm *ChunkManager) markContentValid(key string, t tokenTimes) {
+	cm.contentMu.Lock()
+	if len(cm.contentValid) >= contentValidCacheMax {
+		cm.contentValid = make(map[string]tokenTimes)
+	}
+	cm.contentValid[key] = t
+	cm.contentMu.Unlock()
+}
+
 func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, config TokenConfig) TokenRetrievalResult {
 	if len(chunks) > config.MaxChunks {
 		err := fmt.Errorf("too many %s token chunks (%d, max: %d)", config.Type, len(chunks), config.MaxChunks)
@@ -504,7 +571,9 @@ func (cm *ChunkManager) validateJWTFormat(token string, tokenType string) error 
 			return err
 		}
 
-		for _, char := range part {
+		// Byte loop: a multi-byte rune fails on its first byte either way.
+		for j := 0; j < len(part); j++ {
+			char := part[j]
 			if !((char >= 'A' && char <= 'Z') ||
 				(char >= 'a' && char <= 'z') ||
 				(char >= '0' && char <= '9') ||
@@ -717,9 +786,10 @@ func (cm *ChunkManager) validateTokenSanitization(token string, config TokenConf
 		return err
 	}
 
-	// Check for control characters (ASCII 0-31 and 127)
-	for i, char := range token {
-		if char < 32 || char == 127 {
+	// Check for control characters (ASCII 0-31 and 127). Byte loop: bytes of
+	// a multi-byte rune are >= 0x80, and i is a byte offset either way.
+	for i := 0; i < len(token); i++ {
+		if char := token[i]; char < 32 || char == 127 {
 			err := fmt.Errorf("%s token contains control character at position %d", config.Type, i)
 			return err
 		}
@@ -921,7 +991,13 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 	currentRepeated := 1
 	var lastChar rune
 
-	for i, char := range token {
+	// Index loops, not range: under yaegi, ranging over a string allocates
+	// O(n²) bytes, which dominated per-request cost for 1-2 KB tokens.
+	for i := 0; i < len(token); {
+		char, size := rune(token[i]), 1
+		if char >= utf8.RuneSelf {
+			char, size = utf8.DecodeRuneInString(token[i:])
+		}
 		if i > 0 && char == lastChar {
 			currentRepeated++
 			if currentRepeated > maxRepeated {
@@ -931,6 +1007,7 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 			currentRepeated = 1
 		}
 		lastChar = char
+		i += size
 	}
 
 	threshold := 20
@@ -941,8 +1018,13 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 	}
 
 	charFreq := make(map[rune]int)
-	for _, char := range token {
+	for i := 0; i < len(token); {
+		char, size := rune(token[i]), 1
+		if char >= utf8.RuneSelf {
+			char, size = utf8.DecodeRuneInString(token[i:])
+		}
 		charFreq[char]++
+		i += size
 	}
 
 	tokenLen := len(token)
@@ -963,21 +1045,21 @@ func (cm *ChunkManager) detectRepeatedCharacters(token string, config TokenConfi
 // It extracts and checks JWT expiration claims to ensure tokens are not expired
 // and detects tokens with suspicious expiration times.
 // Parameters:
-//   - token: The token to check expiration for.
+//   - times: The token's parsed claims (see tokenTimesOf).
 //   - config: Token configuration for error context.
 //
 // Returns:
 //   - An error if the token is expired or has invalid expiration, nil if valid.
 //
 //nolint:unparam // error return kept for API consistency and future use
-func (cm *ChunkManager) validateTokenExpiration(token string, config TokenConfig) error {
-	if !strings.Contains(token, ".") {
+func (cm *ChunkManager) validateTokenExpiration(times tokenTimes, config TokenConfig) error {
+	if !times.jwt {
 		return nil
 	}
 
-	expiration, err := cm.extractJWTExpiration(token)
-	if err != nil {
-		cm.logger.Debugf("Could not extract expiration from %s token: %v", config.Type, err)
+	expiration := times.exp
+	if times.expErr != nil {
+		cm.logger.Debugf("Could not extract expiration from %s token: %v", config.Type, times.expErr)
 		return nil
 	}
 
@@ -1062,19 +1144,19 @@ func (cm *ChunkManager) extractJWTExpiration(token string) (*time.Time, error) {
 // It examines the 'iat' (issued at) claim to detect tokens issued too far
 // in the future or suspiciously old tokens that might indicate replay attacks.
 // Parameters:
-//   - token: The token to check freshness for.
+//   - times: The token's parsed claims (see tokenTimesOf).
 //   - config: Token configuration for error context.
 //
 // Returns:
 //   - An error if the token freshness is suspicious, nil if acceptable.
-func (cm *ChunkManager) validateTokenFreshness(token string, config TokenConfig) error {
-	if !strings.Contains(token, ".") {
+func (cm *ChunkManager) validateTokenFreshness(times tokenTimes, config TokenConfig) error {
+	if !times.jwt {
 		return nil
 	}
 
-	issuedAt, err := cm.extractJWTIssuedAt(token)
-	if err != nil {
-		cm.logger.Debugf("Could not extract issued time from %s token: %v", config.Type, err)
+	issuedAt := times.iat
+	if times.iatErr != nil {
+		cm.logger.Debugf("Could not extract issued time from %s token: %v", config.Type, times.iatErr)
 		return nil
 	}
 

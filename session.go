@@ -193,8 +193,10 @@ func compressCombinedPayload(payload *combinedSessionPayload) (string, error) {
 }
 
 // decompressCombinedPayload decompresses a base64+gzip encoded combined session payload.
+// readers pools *gzip.Reader values: a new reader allocates its 32 KB window,
+// which is a large per-request cost under yaegi.
 // Returns the deserialized payload and any error encountered.
-func decompressCombinedPayload(compressed string) (*combinedSessionPayload, error) {
+func decompressCombinedPayload(compressed string, readers *sync.Pool) (*combinedSessionPayload, error) {
 	if compressed == "" {
 		return nil, fmt.Errorf("empty compressed data")
 	}
@@ -204,11 +206,16 @@ func decompressCombinedPayload(compressed string) (*combinedSessionPayload, erro
 		return nil, fmt.Errorf("failed to decode base64: %w", err)
 	}
 
-	gr, err := gzip.NewReader(bytes.NewReader(data))
+	gr, _ := readers.Get().(*gzip.Reader)
+	if gr == nil {
+		gr, err = gzip.NewReader(bytes.NewReader(data))
+	} else {
+		err = gr.Reset(bytes.NewReader(data))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer func() { _ = gr.Close() }()
+	defer readers.Put(gr)
 
 	// Limit decompressed size to prevent zip bombs
 	limitedReader := io.LimitReader(gr, 512*1024) // 512KB max
@@ -408,6 +415,7 @@ func decompressTokenInternal(compressed string) string {
 // session object reuse and supports both HTTP and HTTPS schemes.
 type SessionManager struct {
 	sessionPool    sync.Pool
+	gzipReaders    sync.Pool
 	ctx            context.Context
 	store          sessions.Store
 	logger         *Logger
@@ -1265,7 +1273,7 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 		return false
 	}
 
-	payload, err := decompressCombinedPayload(compressed)
+	payload, err := decompressCombinedPayload(compressed, &sm.gzipReaders)
 	if err != nil {
 		sm.logger.Debugf("Failed to decompress combined payload: %v", err)
 		return false
@@ -1409,6 +1417,13 @@ type SessionData struct {
 	// older generation can ever match again, regardless of how the CAS is
 	// timed against the new owner's own writes.
 	sessionOwner atomic.Uint64
+
+	// idTokenMemoRaw and idTokenMemo cache getIDTokenUnsafe's validated result
+	// for an unchunked, uncompressed stored token, keyed by the stored value.
+	// A request reads the ID token twice, and each read re-ran full chunk
+	// validation. Cleared by Reset so no result outlives its request.
+	idTokenMemoRaw string
+	idTokenMemo    string
 
 	// cachedClaimsToken is the ID token string whose claims were last parsed and
 	// cached. A lazy, per-request cache to avoid re-parsing the JWT on every
@@ -2086,6 +2101,8 @@ func (sd *SessionData) Reset() {
 	sd.cachedClaimsToken = ""
 	sd.cachedClaims = nil
 	sd.cachedClaimsErr = nil
+	sd.idTokenMemoRaw = ""
+	sd.idTokenMemo = ""
 
 	// Reset the refresh mutex to ensure clean state
 	// Note: We don't need to lock it since sessionMutex is already held
@@ -3017,6 +3034,11 @@ func (sd *SessionData) getIDTokenUnsafe() string {
 		return token
 	}
 
+	memoable := token != "" && !compressed && len(sd.idTokenChunks) == 0
+	if memoable && token == sd.idTokenMemoRaw {
+		return sd.idTokenMemo
+	}
+
 	result := sd.manager.chunkManager.GetToken(
 		token,
 		compressed,
@@ -3024,11 +3046,14 @@ func (sd *SessionData) getIDTokenUnsafe() string {
 		IDTokenConfig,
 	)
 
+	validated := result.Token
 	if result.Error != nil {
-		return ""
+		validated = ""
 	}
-
-	return result.Token
+	if memoable {
+		sd.idTokenMemoRaw, sd.idTokenMemo = token, validated
+	}
+	return validated
 }
 
 // getRefreshTokenUnsafe retrieves the refresh token without acquiring locks.
