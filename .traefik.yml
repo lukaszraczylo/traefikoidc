@@ -72,6 +72,13 @@ testData:
       value: "{{.Claims.email}}"
     - name: Authorization
       value: "Bearer {{.AccessToken}}"
+    # Object/array claim as one JSON header; the claim must be whitelisted.
+    - name: X-Tenant
+      value: '{{get .Claims "tenant" | toJson}}'
+
+  # Extends the built-in claim whitelist for templated headers.
+  allowedClaims:
+    - tenant
 
   # Security headers (default profile is enabled out of the box)
   securityHeaders:

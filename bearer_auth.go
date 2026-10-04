@@ -223,6 +223,9 @@ func headerInjectionRuneReason(r rune) string {
 	return ""
 }
 
+// headerReasonTooLong is the headerValueReason result for an over-long value.
+const headerReasonTooLong = "exceeds max length"
+
 // headerValueReason reports why value is unsafe to forward as a free-form HTTP
 // header value, or "" if acceptable. It rejects values over maxLen (maxLen<=0
 // disables the check) and values containing control or bidi-override runes, but
@@ -230,7 +233,7 @@ func headerInjectionRuneReason(r rune) string {
 // never includes the value, so it is safe to log.
 func headerValueReason(value string, maxLen int) string {
 	if maxLen > 0 && len(value) > maxLen {
-		return "exceeds max length"
+		return headerReasonTooLong
 	}
 	for _, r := range value {
 		if reason := headerInjectionRuneReason(r); reason != "" {

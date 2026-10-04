@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -85,8 +86,10 @@ var defaultExcludedURLs = map[string]struct{}{
 
 // headerTemplateFuncMap returns the function map available to custom header
 // value templates, gated by the effective claims whitelist (built-in +
-// config.AllowedClaims). It exposes exactly two helpers:
+// config.AllowedClaims). It exposes exactly three helpers:
 //   - default: substitute a fallback when a value is nil/empty.
+//   - toJson: serialize a value (e.g. an object claim) to compact JSON; nil and
+//     "" yield "" so an absent claim skips the header instead of sending `""`.
 //   - get: safe map access RESTRICTED to whitelisted claim keys, so it cannot be
 //     used to read a non-whitelisted claim, a raw token, or the whole data map
 //     (issue #149 review). This is the sole runtime enforcement of the claims
@@ -101,6 +104,16 @@ func headerTemplateFuncMap(allowedClaims map[string]bool) template.FuncMap {
 				return defaultVal
 			}
 			return val
+		},
+		"toJson": func(val interface{}) (string, error) {
+			if val == nil || val == "" {
+				return "", nil
+			}
+			b, err := json.Marshal(val)
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
 		},
 		"get": func(m interface{}, key string) interface{} {
 			if !allowedClaims[key] {

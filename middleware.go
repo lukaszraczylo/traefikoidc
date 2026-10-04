@@ -1371,7 +1371,11 @@ func (t *TraefikOidc) applyHeaderTemplates(req *http.Request, p *principal) {
 		// forwarding a tainted value. Do not log the value (it commonly
 		// carries the access token); log only name + reason.
 		if reason := headerValueReason(headerValue, headerTemplateMaxLen); reason != "" {
-			t.logger.Debugf("Dropping templated header %s: value failed sanitization (%s)", headerName, reason)
+			if reason == headerReasonTooLong {
+				t.logger.Errorf("Dropping templated header %s: rendered value exceeds %d bytes", headerName, headerTemplateMaxLen)
+			} else {
+				t.logger.Debugf("Dropping templated header %s: value failed sanitization (%s)", headerName, reason)
+			}
 			continue
 		}
 		req.Header.Set(headerName, headerValue)

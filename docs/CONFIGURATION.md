@@ -571,7 +571,7 @@ be emitted — the standard OIDC claims plus common provider claims (`email`,
 `phone_number`, `email_verified`, `updated_at`; the authoritative list is
 `safeClaimsFields` in `template_validation.go`). Rejected: rendering the whole
 context (`{{.}}`, `{{$}}`) or the whole claims map (`{{.Claims}}`), any claim not
-on the list, functions other than `get`/`default`, and `range`/`with` that do not
+on the list, functions other than `get`/`default`/`toJson`, and `range`/`with` that do not
 target a specific listed claim (e.g. `{{range .Claims}}` is rejected; `{{range
 .Claims.groups}}` is allowed).
 
@@ -591,6 +591,21 @@ Listed names apply to both direct access (`{{.Claims.employee_id}}`) and
 `get` (`{{get .Claims "employee_id"}}`). Subfields of a whitelisted map-valued
 claim (e.g. `realm_access.roles`) are already accessible without listing them
 individually.
+
+**`toJson`** forwards an object or array claim as one JSON header:
+
+```yaml
+allowedClaims:
+  - tenant
+headers:
+  - name: "X-Tenant"
+    value: "{{get .Claims \"tenant\" | toJson}}"
+```
+
+It only serializes values the template can already reach, so the whitelist
+still applies; `{{toJson .Claims}}` is rejected. Control characters are
+JSON-escaped, and values over 8192 bytes or with bidi-override characters are
+dropped; an oversize value is logged at error level (header name only).
 
 ---
 

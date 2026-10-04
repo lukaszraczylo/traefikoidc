@@ -441,8 +441,34 @@ headers:
 Rendering the whole context (`{{.}}`, `{{$}}`), the whole claims map
 (`{{.Claims}}`), or any non-listed claim is rejected — this prevents a template
 from accidentally forwarding raw tokens or unlisted claims. `range`/`with` must
-target a specific listed claim (e.g. `{{range .Claims.groups}}`); `get`/`default`
-are the only functions allowed.
+target a specific listed claim (e.g. `{{range .Claims.groups}}`); `get`, `default`
+and `toJson` are the only functions allowed.
+
+### Forwarding an object claim as JSON
+
+`toJson` serializes a claim (object, array or scalar) to compact JSON, so a
+backend can parse the whole claim itself instead of the middleware flattening
+it into one header per key:
+
+```yaml
+allowedClaims:
+  - tenant
+headers:
+  - name: X-Tenant
+    value: '{{get .Claims "tenant" | toJson}}'   # {"id":"t-1","plan":"pro"}
+  - name: X-Groups
+    value: "{{toJson .Claims.groups}}"           # ["admin","users"]
+```
+
+- The claim must be on the whitelist (built-in or `allowedClaims`).
+  `{{toJson .Claims}}`, `{{toJson .}}` and non-listed claims are rejected.
+- An absent or empty claim skips the header instead of sending `""`.
+- Control characters are JSON-escaped, so a claim cannot inject extra header
+  lines.
+- A rendered value over 8192 bytes, or one with bidi-override characters, is
+  dropped. The oversize case is logged at error level (header name only, never
+  the value); keep the claim small, since proxies commonly cap headers at
+  8-16 KB.
 
 > **File-provider users: escape the braces.** Traefik's file provider runs
 > every dynamic configuration file through Go templating before the plugin

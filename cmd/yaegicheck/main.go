@@ -139,6 +139,7 @@ func main() {
 	runCheck("middleware-erraborthandler-aborts-under-yaegi", checkErrAbortHandlerAbortsUnderYaegi)
 	runCheck("fix17-setifabsent-claims-once", checkSetIfAbsentUnderYaegi)
 	runCheck("issue162-websocket-forwards-header-templates", checkIssue162WebSocketHeaderTemplates)
+	runCheck("tojson-header-template", checkToJsonHeaderTemplate)
 	runCheck("streaming-refresh-revoked-grant-rejected", checkStreamingRefreshRevokedGrant)
 	fmt.Println("OK: all yaegi regression checks passed")
 }
@@ -803,6 +804,99 @@ func checkIssue162WebSocketHeaderTemplates() (string, error) {
 	}
 	if got := seen.Get("X-Forwarded-Preferred-Username"); got != "alice" {
 		return "", fmt.Errorf("X-Forwarded-Preferred-Username = %q, want %q", got, "alice")
+	}
+	return "", nil
+}
+
+// checkToJsonHeaderTemplate pins the toJson template helper under the
+// interpreter: its (string, error) closure, json.Marshal of an object claim,
+// the nil/absent-claim skip and the validator's rejection of a whole-claims dump.
+func checkToJsonHeaderTemplate() (string, error) {
+	discovery := servers.NewOIDCServer(nil)
+	defer discovery.Close()
+
+	cfg := oidc.CreateConfig()
+	cfg.ProviderURL = discovery.URL
+	cfg.ClientID = "yaegi-check-tojson-client"
+	cfg.ClientSecret = "yaegi-check-tojson-secret"
+	cfg.CallbackURL = "/oauth2/callback"
+	cfg.SessionEncryptionKey = "0123456789abcdef0123456789abcdef"
+	cfg.AllowedClaims = []string{"tenant"}
+	cfg.Headers = []oidc.TemplatedHeader{
+		{Name: "X-Tenant", Value: `{{ get .Claims "tenant" | toJson }}`},
+		{Name: "X-Groups", Value: "{{ toJson .Claims.groups }}"},
+		{Name: "X-Missing", Value: "{{ toJson .Claims.department }}"},
+	}
+	if err := cfg.Validate(); err != nil {
+		return "", fmt.Errorf("toJson headers must validate: %w", err)
+	}
+
+	bad := oidc.CreateConfig()
+	*bad = *cfg
+	bad.Headers = []oidc.TemplatedHeader{{Name: "X-All", Value: "{{ toJson .Claims }}"}}
+	if err := bad.Validate(); err == nil {
+		return "", fmt.Errorf("toJson of the whole claims map must fail validation")
+	}
+
+	var seen http.Header
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Clone()
+	})
+	h, err := oidc.New(context.Background(), next, cfg, "yaegi-check-tojson")
+	if err != nil {
+		return "", fmt.Errorf("New: %w", err)
+	}
+	if closer, ok := h.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+
+	sm, err := oidc.NewSessionManager(cfg.SessionEncryptionKey, cfg.ForceHTTPS, cfg.CookieDomain, cfg.CookiePrefix, time.Duration(cfg.SessionMaxAge)*time.Second, oidc.NewLogger("error"))
+	if err != nil {
+		return "", fmt.Errorf("NewSessionManager: %w", err)
+	}
+	defer sm.Shutdown()
+
+	setupReq := httptest.NewRequest("GET", "/ws", nil)
+	session, err := sm.GetSession(setupReq)
+	if err != nil {
+		return "", fmt.Errorf("GetSession: %w", err)
+	}
+	if err := session.SetAuthenticated(true); err != nil {
+		return "", fmt.Errorf("SetAuthenticated: %w", err)
+	}
+	session.SetUserIdentifier("alice@example.com")
+	b64 := base64.RawURLEncoding.EncodeToString
+	sig := make([]byte, 32)
+	for i := range sig {
+		sig[i] = byte(i + 1)
+	}
+	session.SetIDToken(b64([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + b64([]byte(`{"tenant":{"id":"t-1","plan":"pro"},"groups":["a","b"]}`)) + "." + b64(sig))
+	rec := httptest.NewRecorder()
+	if err := session.Save(setupReq, rec); err != nil {
+		return "", fmt.Errorf("session.Save: %w", err)
+	}
+	session.ReturnToPool()
+
+	req := httptest.NewRequest("GET", "/ws", nil)
+	for _, c := range rec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if seen == nil {
+		return "", fmt.Errorf("next was not reached (status %d)", rw.Code)
+	}
+	if got, want := seen.Get("X-Tenant"), `{"id":"t-1","plan":"pro"}`; got != want {
+		return "", fmt.Errorf("X-Tenant = %q, want %q", got, want)
+	}
+	if got, want := seen.Get("X-Groups"), `["a","b"]`; got != want {
+		return "", fmt.Errorf("X-Groups = %q, want %q", got, want)
+	}
+	if got := seen.Get("X-Missing"); got != "" {
+		return "", fmt.Errorf("X-Missing = %q, want header skipped", got)
 	}
 	return "", nil
 }
