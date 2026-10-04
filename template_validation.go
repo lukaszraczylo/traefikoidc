@@ -22,6 +22,7 @@ var allowedRootTokenFields = map[string]bool{
 var validateTemplateParseFuncs = map[string]any{
 	"get":     struct{}{},
 	"default": struct{}{},
+	"toJson":  struct{}{},
 }
 
 // claimsWhitelist returns the effective set of claim field names a header
@@ -183,12 +184,14 @@ func (v *templateValidator) validateCommand(cmd *parse.CommandNode, dotIsRoot bo
 	return nil
 }
 
-// validateFunctionCall allows only get/default. get's map argument must be a
+// validateFunctionCall allows only get/default/toJson. get's map argument must be a
 // claims reference (never the root) and default's arguments are validated as
 // values; the runtime get additionally enforces the key whitelist.
 func (v *templateValidator) validateFunctionCall(name string, args []parse.Node, dotIsRoot bool) error {
 	switch name {
-	case "default":
+	case "default", "toJson":
+		// toJson only serializes what its (validated) arguments or piped input
+		// already expose; it cannot reach anything a direct reference could not.
 		for _, arg := range args {
 			if err := v.validateValue(arg, dotIsRoot); err != nil {
 				return err
