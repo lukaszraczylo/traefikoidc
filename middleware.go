@@ -158,6 +158,15 @@ func (w *optionsPreflightWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
+const (
+	// maxInitWaiters bounds requests parked on initComplete so a boot-time
+	// flood with the IdP down cannot hold unbounded connections for 30s each.
+	maxInitWaiters = 512
+	// initWaitRetryAfter is the Retry-After value (seconds) sent when the
+	// init-wait queue is full.
+	initWaitRetryAfter = "5"
+)
+
 // bypassReason describes why a request is being forwarded without OIDC auth.
 // It is only used for logging and to decide whether extra side-effects
 // (propagating the user header from an existing session) should run.
@@ -701,6 +710,13 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// Log waiting for initialization to help diagnose hanging requests
 	t.logger.Debug("Waiting for OIDC provider initialization...")
 
+	if atomic.AddInt32(&t.initWaiters, 1) > maxInitWaiters {
+		atomic.AddInt32(&t.initWaiters, -1)
+		rw.Header().Set("Retry-After", initWaitRetryAfter)
+		t.sendErrorResponse(rw, req, "OIDC provider initialization in progress - please try again later", http.StatusServiceUnavailable)
+		return
+	}
+
 	// time.NewTimer + Stop avoids leaking a goroutine+channel for 30s on every
 	// request when initComplete fires quickly (would happen with time.After).
 	initTimer := time.NewTimer(30 * time.Second)
@@ -708,6 +724,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	select {
 	case <-t.initComplete:
+		atomic.AddInt32(&t.initWaiters, -1)
 		// Read issuerURL via atomic snapshot when available — replaces the
 		// metadataMu.RLock that previously fired on every non-bypass request.
 		// Under Yaegi each RLock acquisition costs 1-5ms of interpreter
@@ -744,10 +761,12 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			return
 		}
 	case <-req.Context().Done():
+		atomic.AddInt32(&t.initWaiters, -1)
 		t.logger.Debug("Request canceled while waiting for OIDC initialization")
 		t.sendErrorResponse(rw, req, "Request canceled", http.StatusRequestTimeout)
 		return
 	case <-initTimer.C:
+		atomic.AddInt32(&t.initWaiters, -1)
 		t.logger.Error("Timeout waiting for OIDC initialization")
 		t.sendErrorResponse(rw, req, "Timeout waiting for OIDC provider initialization - please try again later", http.StatusServiceUnavailable)
 		return

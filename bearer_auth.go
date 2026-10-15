@@ -371,6 +371,11 @@ func enforceIatAge(claims map[string]interface{}, maxAge time.Duration) *bearerE
 	if time.Since(iat) > maxAge {
 		return newBearerError(bearerErrInvalidToken, "token iat outside age bound")
 	}
+	// The opaque introspection path never runs jwt.Verify, so a future iat
+	// would otherwise defeat the age bound for the token's whole lifetime.
+	if time.Until(iat) > ClockSkewToleranceFuture {
+		return newBearerError(bearerErrInvalidToken, "token iat in the future")
+	}
 	return nil
 }
 

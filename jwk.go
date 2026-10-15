@@ -389,6 +389,13 @@ func (c *JWKCache) getPublicKeyFresh(ctx context.Context, jwksURL, kid string, h
 
 	if withinCooldown {
 		// Serve the cached keyset; do not fetch upstream again.
+		if v, found := c.cache.GetLocal(jwksURL + parsedKeysSuffix); found {
+			if pj, ok := v.(*parsedJWKS); ok {
+				if k, ok := pj.keys[kid]; ok {
+					return k, nil
+				}
+			}
+		}
 		if cached, found := c.cache.GetLocal(jwksURL); found {
 			if jwks, ok := cached.(*JWKSet); ok {
 				if k, ok := buildParsedJWKS(jwks).keys[kid]; ok {

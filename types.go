@@ -111,6 +111,9 @@ type TraefikOidc struct {
 	// recovery attempt. Stored atomically so the hot ServeHTTP path can
 	// throttle retries without acquiring metadataRetryMutex on every request.
 	lastMetadataRetryNano int64
+	// initWaiters counts requests parked on initComplete; bounded by
+	// maxInitWaiters so a boot-time flood cannot hold unbounded connections.
+	initWaiters int32
 	// firstRequestStarted is 0 until the very first non-health request fires
 	// the background-task bootstrap; then it flips to 1 via CAS. Replaces the
 	// firstRequestMutex + firstRequestReceived combo which previously took
@@ -224,6 +227,7 @@ type TraefikOidc struct {
 	dcrMu                     sync.Mutex
 	shutdownOnce              sync.Once
 	sessionInvalidationCache  CacheInterface
+	frontchannelMarkers       markerQuota
 	refreshResultCache        CacheInterface
 	minimalHeaders            bool
 	stripAuthCookies          bool

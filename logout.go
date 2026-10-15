@@ -51,7 +51,42 @@ const (
 	// sessionInvalidationTTL is how long to remember invalidated sessions
 	// Should be at least as long as your session max age
 	sessionInvalidationTTL = 25 * time.Hour
+
+	// maxFrontchannelMarkers caps the sid markers the unauthenticated
+	// front-channel endpoint may keep in the shared invalidation cache, so
+	// a flood cannot LRU-evict signed backchannel and jti replay markers.
+	maxFrontchannelMarkers = 1000
 )
+
+// markerQuota is a FIFO of cache keys written on behalf of one untrusted
+// source. The zero value is ready to use.
+type markerQuota struct {
+	set  map[string]struct{}
+	keys []string
+	mu   sync.Mutex
+}
+
+// admit records key and returns the oldest key to drop once more than limit
+// keys are held, or "" when none must go. Re-admitting a held key is a no-op.
+func (q *markerQuota) admit(key string, limit int) string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.set == nil {
+		q.set = make(map[string]struct{})
+	}
+	if _, ok := q.set[key]; ok {
+		return ""
+	}
+	q.set[key] = struct{}{}
+	q.keys = append(q.keys, key)
+	if len(q.keys) <= limit {
+		return ""
+	}
+	oldest := q.keys[0]
+	q.keys = q.keys[1:]
+	delete(q.set, oldest)
+	return oldest
+}
 
 // LogoutTokenClaims represents the claims in an OIDC logout token
 // as defined in OpenID Connect Back-Channel Logout 1.0
@@ -189,6 +224,10 @@ func (t *TraefikOidc) handleFrontchannelLogout(rw http.ResponseWriter, req *http
 		t.logger.Errorf("Front-channel logout: failed to invalidate session: %v", err)
 		http.Error(rw, "Failed to invalidate session", http.StatusInternalServerError)
 		return
+	}
+
+	if evicted := t.frontchannelMarkers.admit(t.buildSessionInvalidationKey("sid", sid), maxFrontchannelMarkers); evicted != "" {
+		t.sessionInvalidationCache.Delete(evicted)
 	}
 
 	t.logger.Infof("Front-channel logout: successfully invalidated session (sid=%s)", sid)

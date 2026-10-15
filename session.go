@@ -116,6 +116,10 @@ const (
 	defaultCookiePrefix  = "_oidc_raczylo_"
 )
 
+// maxCleanupCookies bounds the cookie names CleanupOldCookies emits deletion
+// headers for per response (up to 4 Set-Cookie headers each).
+const maxCleanupCookies = 32
+
 const (
 	// maxCookieSize is the maximum raw data size per chunk before securecookie encoding.
 	//
@@ -937,6 +941,9 @@ func (sm *SessionManager) EnhanceSessionSecurity(options *sessions.Options, r *h
 			// service). Keep it unless it is a strict parent of the serving
 			// host, which would scope the token-bearing cookie to sibling
 			// subdomains — then fall back to the serving host.
+			// DNS names and the cookie Domain attribute are case-insensitive.
+			host = strings.ToLower(host)
+			fh = strings.ToLower(fh)
 			if !strings.HasSuffix(host, "."+fh) {
 				host = fh
 			}
@@ -1024,6 +1031,7 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 	}
 
 	processedCookies := make(map[string]bool)
+	deletedCookies := 0
 
 	for _, cookie := range cookies {
 		// Check if cookie belongs to this middleware instance using the configured prefix
@@ -1037,7 +1045,8 @@ func (sm *SessionManager) CleanupOldCookies(w http.ResponseWriter, r *http.Reque
 			shouldCleanup := currentDomain != "" && !sm.cleanupDone
 			sm.cleanupMutex.RUnlock()
 
-			if shouldCleanup {
+			if shouldCleanup && deletedCookies < maxCleanupCookies {
+				deletedCookies++
 				for _, domain := range domainsToClean {
 					if domain == currentDomain || domain == "."+currentDomain || "."+domain == currentDomain {
 						continue
