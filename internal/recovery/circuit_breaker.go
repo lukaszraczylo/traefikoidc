@@ -93,8 +93,16 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 		return fmt.Errorf("circuit breaker is open")
 	}
 
-	// Execute the function
+	// A panicking fn must still settle the breaker, otherwise a half-open
+	// probe slot leaks until the next open->half-open transition.
+	panicked := true
+	defer func() {
+		if panicked {
+			cb.recordFailure()
+		}
+	}()
 	err := fn()
+	panicked = false
 
 	if err != nil {
 		cb.recordFailure()
