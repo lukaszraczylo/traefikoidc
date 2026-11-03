@@ -53,7 +53,7 @@ type IntrospectionResponse struct {
 func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, error) {
 	// Check cache first
 	if t.introspectionCache != nil {
-		if cached, found := t.introspectionCache.Get(token); found {
+		if cached, found := t.introspectionCache.Get(t.introspectionKey(token)); found {
 			if response, ok := cached.(*IntrospectionResponse); ok {
 				t.logger.Debugf("Using cached introspection result for token")
 				return response, nil
@@ -173,7 +173,7 @@ func (t *TraefikOidc) introspectToken(token string) (*IntrospectionResponse, err
 				cacheDuration = untilExp
 			}
 		}
-		t.introspectionCache.Set(token, &introspectionResp, cacheDuration)
+		t.introspectionCache.Set(t.introspectionKey(token), &introspectionResp, cacheDuration)
 		t.logger.Debugf("Cached introspection result for %v", cacheDuration)
 	}
 
@@ -279,4 +279,13 @@ func (t *TraefikOidc) validateOpaqueToken(token string) error {
 
 	t.logger.Debugf("Opaque token validation successful via introspection")
 	return nil
+}
+
+// introspectionKey scopes an introspection verdict to this instance's
+// provider, client and audience, like the verified-token cache.
+func (t *TraefikOidc) introspectionKey(token string) string {
+	if ns := t.tokenCache.Namespace(); ns != "" {
+		return ns + "|" + token
+	}
+	return token
 }

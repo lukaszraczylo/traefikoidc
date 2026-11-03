@@ -812,7 +812,7 @@ func (t *TraefikOidc) RevokeToken(token string) {
 	// from the introspection cache after revocation. Next request
 	// re-introspects and sees active=false.
 	if t.introspectionCache != nil {
-		t.introspectionCache.Delete(token)
+		t.introspectionCache.Delete(t.introspectionKey(token))
 	}
 
 	d := blacklistDuration(token)

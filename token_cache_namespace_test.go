@@ -54,3 +54,16 @@ func TestTokenCacheEmptyNamespaceKeepsLegacyKey(t *testing.T) {
 		t.Fatal("namespace-less caches must keep sharing the legacy key")
 	}
 }
+
+func TestIntrospectionKeyScopedPerInstance(t *testing.T) {
+	a := &TraefikOidc{tokenCache: &TokenCache{}}
+	b := &TraefikOidc{tokenCache: &TokenCache{}}
+	a.tokenCache.SetNamespace("p|app-a|app-a")
+	b.tokenCache.SetNamespace("p|app-b|app-b")
+	if a.introspectionKey("tok") == b.introspectionKey("tok") {
+		t.Fatal("different instances share an introspection cache key")
+	}
+	if got := (&TraefikOidc{}).introspectionKey("tok"); got != "tok" {
+		t.Fatalf("namespace-less key = %q, want raw token", got)
+	}
+}

@@ -309,6 +309,15 @@ func (tc *TokenCache) SetNamespace(ns string) {
 	tc.ns.Store(ns)
 }
 
+// Namespace returns the scope set by SetNamespace, or "" when none is set.
+func (tc *TokenCache) Namespace() string {
+	if tc == nil {
+		return ""
+	}
+	ns, _ := tc.ns.Load().(string)
+	return ns
+}
+
 func (tc *TokenCache) key(token string) string {
 	if ns, _ := tc.ns.Load().(string); ns != "" {
 		return "t-" + ns + "|" + token
