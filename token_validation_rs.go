@@ -15,6 +15,7 @@ package traefikoidc
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 )
@@ -266,8 +267,7 @@ func (t *TraefikOidc) validateStandardTokensRS(rs *requestState) (bool, bool, bo
 	var accessVerifyErr error
 	if err := t.verifyToken(rs.accessToken); err != nil {
 		accessVerifyErr = err
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "invalid audience") || strings.Contains(errMsg, "audience") {
+		if errors.Is(err, errInvalidAudience) {
 			if t.strictAudienceValidation {
 				if rs.refreshToken != "" {
 					return false, true, false

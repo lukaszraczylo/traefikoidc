@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -195,11 +196,16 @@ func (j *JWT) Verify(issuerURL, expectedAudience string) error {
 //
 // Returns:
 //   - An error if the claim type is invalid or the expected audience is not present
+//
+// errInvalidAudience marks a token whose aud does not match; callers match it
+// with errors.Is, never by message text.
+var errInvalidAudience = errors.New("invalid audience")
+
 func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 	switch aud := tokenAudience.(type) {
 	case string:
 		if aud != expectedAudience {
-			return fmt.Errorf("invalid audience")
+			return errInvalidAudience
 		}
 	case []interface{}:
 		found := false
@@ -210,7 +216,7 @@ func verifyAudience(tokenAudience interface{}, expectedAudience string) error {
 			}
 		}
 		if !found {
-			return fmt.Errorf("invalid audience")
+			return errInvalidAudience
 		}
 	default:
 		return fmt.Errorf("invalid 'aud' claim type")
