@@ -2302,6 +2302,13 @@ func (sd *SessionData) SetAccessToken(token string) {
 			return
 		}
 
+		// Chunk cookies bind to the request; without one the store cannot
+		// complete, so keep the previous token.
+		if sd.request == nil {
+			sd.manager.logger.Error("SetAccessToken: sd.request is nil, cannot create chunk sessions")
+			return
+		}
+
 		// Validation passed: now it is safe to clear the existing token
 		// before storing the new chunked one.
 		sd.clearAccessTokenChunks()
@@ -2937,6 +2944,9 @@ func (sd *SessionData) GetIncomingPath() string {
 	return path
 }
 
+// maxIncomingPathLen bounds the post-login redirect path kept in the session.
+const maxIncomingPathLen = 2048
+
 // SetIncomingPath stores the original request URI for post-authentication redirect.
 // This allows the user to be redirected to their originally requested resource
 // after completing the authentication flow.
@@ -2945,6 +2955,11 @@ func (sd *SessionData) GetIncomingPath() string {
 func (sd *SessionData) SetIncomingPath(path string) {
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
+	// The path becomes cookie bytes on every later request; an oversized one
+	// would bloat the Cookie header or fail the save. Fall back to "/".
+	if len(path) > maxIncomingPathLen {
+		path = ""
+	}
 	currentVal, _ := sd.mainSession.Values["incoming_path"].(string)
 	if currentVal != path {
 		sd.mainSession.Values["incoming_path"] = path

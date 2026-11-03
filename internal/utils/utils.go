@@ -142,7 +142,7 @@ func DetermineScheme(req *http.Request, forceHTTPS bool) string {
 	// "X-Forwarded-Proto: ftp") would otherwise be emitted verbatim into
 	// redirect_uri as a broken or weakened scheme. Invalid values fall
 	// through to the TLS check (R103).
-	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme == "https" || scheme == "http" {
+	if scheme := strings.ToLower(req.Header.Get("X-Forwarded-Proto")); scheme == "https" || scheme == "http" {
 		return scheme
 	}
 
