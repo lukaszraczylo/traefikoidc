@@ -617,6 +617,11 @@ func (t *TraefikOidc) isSessionInvalidated(sid, sub string, sessionCreatedAt tim
 
 // buildSessionInvalidationKey creates a cache key for session invalidation
 func (t *TraefikOidc) buildSessionInvalidationKey(keyType, value string) string {
+	// sub, sid and jti are unique only within an issuer; the cache is shared by
+	// every instance, so scope the key to this instance's provider and client.
+	if ns := t.tokenCache.Namespace(); ns != "" {
+		return fmt.Sprintf("session_invalidation:%s|%s:%s", ns, keyType, value)
+	}
 	return fmt.Sprintf("session_invalidation:%s:%s", keyType, value)
 }
 
