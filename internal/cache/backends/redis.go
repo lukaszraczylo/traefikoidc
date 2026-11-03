@@ -120,15 +120,8 @@ func (r *RedisBackend) Set(ctx context.Context, key string, value []byte, ttl ti
 
 		// Use PSETEX for millisecond precision, SETEX for second precision
 		if ttl > 0 {
-			ttlMillis := ttl.Milliseconds()
-			if ttlMillis < 1000 {
-				// Use PSETEX for sub-second TTLs (millisecond precision)
-				_, err = conn.Do("PSETEX", prefixedKey, fmt.Sprintf("%d", ttlMillis), string(value))
-			} else {
-				// Use SETEX for larger TTLs (second precision)
-				ttlSeconds := int(ttl.Seconds())
-				_, err = conn.Do("SETEX", prefixedKey, fmt.Sprintf("%d", ttlSeconds), string(value))
-			}
+			cmd, arg := ttlCommand(ttl)
+			_, err = conn.Do(cmd, prefixedKey, arg, string(value))
 		} else {
 			_, err = conn.Do("SET", prefixedKey, string(value))
 		}
@@ -624,6 +617,19 @@ func isRetryableError(err error) bool {
 	return false
 }
 
+// ttlCommand picks SETEX for whole seconds and PSETEX otherwise. The expiry is
+// rounded up to a millisecond and is never zero, so a key never dies early.
+func ttlCommand(ttl time.Duration) (cmd, arg string) {
+	ms := (ttl + time.Millisecond - 1).Milliseconds()
+	if ms < 1 {
+		ms = 1
+	}
+	if ms >= 1000 && ms%1000 == 0 {
+		return "SETEX", fmt.Sprintf("%d", ms/1000)
+	}
+	return "PSETEX", fmt.Sprintf("%d", ms)
+}
+
 // SetMany stores multiple values in Redis using pipelining for efficiency
 // This reduces N round-trips to a single round-trip
 func (r *RedisBackend) SetMany(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
@@ -658,20 +664,16 @@ func (r *RedisBackend) SetMany(ctx context.Context, items map[string][]byte, ttl
 	pipeline := conn.NewPipeline()
 
 	// Queue all SET commands
-	ttlSeconds := int(ttl.Seconds())
-	ttlMillis := ttl.Milliseconds()
+	var ttlCmd, ttlArg string
+	if ttl > 0 {
+		ttlCmd, ttlArg = ttlCommand(ttl)
+	}
 
 	for key, value := range items {
 		prefixedKey := r.prefixKey(key)
 
 		if ttl > 0 {
-			if ttlMillis < 1000 {
-				// Use PSETEX for sub-second TTLs
-				pipeline.Queue("PSETEX", prefixedKey, fmt.Sprintf("%d", ttlMillis), string(value))
-			} else {
-				// Use SETEX for larger TTLs
-				pipeline.Queue("SETEX", prefixedKey, fmt.Sprintf("%d", ttlSeconds), string(value))
-			}
+			pipeline.Queue(ttlCmd, prefixedKey, ttlArg, string(value))
 		} else {
 			pipeline.Queue("SET", prefixedKey, string(value))
 		}
