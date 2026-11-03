@@ -548,6 +548,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	logger.Debugf("TraefikOidc.New: logoutURLPath configured as: %q", t.logoutURLPath)
 
 	t.providerURL = config.ProviderURL
+	t.tokenCache.SetNamespace(t.tokenCacheNamespace())
 
 	// Use singleton resource manager for metadata initialization
 	rm := GetResourceManager()
@@ -944,6 +945,7 @@ func (t *TraefikOidc) performDynamicClientRegistration() {
 	if t.audience == "" {
 		t.audience = resp.ClientID // Default audience to client ID
 	}
+	t.tokenCache.SetNamespace(t.tokenCacheNamespace())
 	// R162: DCR can provision a client whose method is private_key_jwt
 	// (RFC 7591 ClientMetadata.TokenEndpointAuthMethod) even when the
 	// static config did not set ClientAuthMethod=private_key_jwt. In that
@@ -1082,4 +1084,9 @@ func buildFullURL(scheme, host, path string) string {
 	}
 
 	return fmt.Sprintf("%s://%s%s", scheme, host, path)
+}
+
+// tokenCacheNamespace identifies the verification context of this instance.
+func (t *TraefikOidc) tokenCacheNamespace() string {
+	return t.providerURL + "|" + t.clientID + "|" + t.audience
 }

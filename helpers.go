@@ -13,6 +13,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -293,8 +294,26 @@ func extractClaims(tokenString string) (map[string]interface{}, error) {
 // TokenCache provides a specialized cache for JWT tokens and their parsed claims.
 // It wraps the UniversalCache with token-specific operations.
 type TokenCache struct {
+	// ns scopes entries to one middleware instance (issuer|client|audience)
+	// so a verdict cached by one instance cannot satisfy another.
+	ns atomic.Value
 	// cache is the underlying universal cache implementation
 	cache *UniversalCache
+}
+
+// SetNamespace sets the verification context that scopes this cache's keys.
+func (tc *TokenCache) SetNamespace(ns string) {
+	if tc == nil {
+		return
+	}
+	tc.ns.Store(ns)
+}
+
+func (tc *TokenCache) key(token string) string {
+	if ns, _ := tc.ns.Load().(string); ns != "" {
+		return "t-" + ns + "|" + token
+	}
+	return "t-" + token
 }
 
 // NewTokenCache creates and initializes a new TokenCache.
@@ -313,7 +332,7 @@ func NewTokenCache() *TokenCache {
 //   - claims: Parsed claims from the token
 //   - expiration: The duration for which the cache entry should be valid
 func (tc *TokenCache) Set(token string, claims map[string]interface{}, expiration time.Duration) {
-	token = "t-" + token
+	token = tc.key(token)
 	_ = tc.cache.Set(token, claims, expiration) // Safe to ignore: cache failures are non-critical
 }
 
@@ -325,7 +344,7 @@ func (tc *TokenCache) Set(token string, claims map[string]interface{}, expiratio
 //   - map[string]interface{}: The cached claims if found
 //   - A boolean indicating whether the token was found in the cache (true if found, false otherwise)
 func (tc *TokenCache) Get(token string) (map[string]interface{}, bool) {
-	token = "t-" + token
+	token = tc.key(token)
 	value, found := tc.cache.Get(token)
 	if !found {
 		return nil, false
@@ -338,7 +357,7 @@ func (tc *TokenCache) Get(token string) (map[string]interface{}, bool) {
 // Parameters:
 //   - token: The raw token string to remove from the cache
 func (tc *TokenCache) Delete(token string) {
-	token = "t-" + token
+	token = tc.key(token)
 	tc.cache.Delete(token)
 }
 
