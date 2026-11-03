@@ -445,9 +445,10 @@ func (cm *ChunkManager) processChunkedToken(chunks map[int]*sessions.Session, co
 				// not clear cookies above n). token_total is the authoritative
 				// count; drop the excess rather than failing — which forced a
 				// re-auth and discarded the still-valid new token (R129).
-				n := len(chunks)
-				for i := total; i < n; i++ {
-					delete(chunks, i)
+				for i := range chunks {
+					if i >= total {
+						delete(chunks, i)
+					}
 				}
 			}
 			if len(chunks) < total {

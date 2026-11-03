@@ -823,13 +823,16 @@ func (rc *RefreshCoordinator) cleanupRoutine() {
 // cleanupStaleEntries removes outdated tracking entries. Lock-free iteration
 // via sync.Map.Range; safe to race with concurrent reads/writes.
 func (rc *RefreshCoordinator) cleanupStaleEntries() {
-	cutoff := time.Now().Add(-2 * rc.config.RefreshAttemptWindow).UnixNano()
+	now := time.Now()
+	cutoff := now.Add(-2 * rc.config.RefreshAttemptWindow).UnixNano()
+	nowNano := now.UnixNano()
 	rc.sessionRefreshAttempts.Range(func(key, value interface{}) bool {
 		tracker := trackerFromMapValue(value)
 		if tracker == nil {
 			return true
 		}
-		if tracker.stateOf().lastAttemptNano < cutoff {
+		st := tracker.stateOf()
+		if st.lastAttemptNano < cutoff && st.cooldownEndNano <= nowNano {
 			// Compare-and-delete to avoid evicting a tracker that was just
 			// re-used by a concurrent caller. We compare by pointer identity.
 			rc.sessionRefreshAttempts.CompareAndDelete(key, value)
