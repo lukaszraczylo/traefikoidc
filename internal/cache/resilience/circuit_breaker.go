@@ -81,6 +81,7 @@ type CircuitBreaker struct {
 	stateMu             sync.RWMutex
 	timeMu              sync.RWMutex
 	halfOpenRequests    atomic.Int32
+	halfOpenSuccesses   atomic.Int32
 	consecutiveFailures atomic.Int32
 	state               atomic.Int32
 }
@@ -170,12 +171,12 @@ func (cb *CircuitBreaker) RecordSuccess() {
 
 	case StateHalfOpen:
 		// If we've had enough successful requests, close the circuit
-		successfulRequests := cb.halfOpenRequests.Load()
-		// #nosec G115 -- HalfOpenMaxRequests is a small config value that fits in int32
-		if successfulRequests >= int32(cb.config.HalfOpenMaxRequests) {
+		successfulRequests := cb.halfOpenSuccesses.Add(1)
+		if int64(successfulRequests) >= int64(cb.config.HalfOpenMaxRequests) {
 			cb.setState(StateClosed)
 			cb.consecutiveFailures.Store(0)
 			cb.halfOpenRequests.Store(0)
+			cb.halfOpenSuccesses.Store(0)
 		}
 	}
 }
@@ -216,6 +217,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 func (cb *CircuitBreaker) openCircuit() {
 	cb.setState(StateOpen)
 	cb.halfOpenRequests.Store(0)
+	cb.halfOpenSuccesses.Store(0)
 
 	cb.timeMu.Lock()
 	cb.nextRetryTime = time.Now().Add(cb.config.Timeout)
@@ -251,6 +253,7 @@ func (cb *CircuitBreaker) Reset() {
 	cb.totalRequests.Store(0)
 	cb.totalFailures.Store(0)
 	cb.halfOpenRequests.Store(0)
+	cb.halfOpenSuccesses.Store(0)
 	cb.rejectedRequests.Store(0)
 	cb.stateTransitions.Store(0)
 

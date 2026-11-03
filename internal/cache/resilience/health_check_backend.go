@@ -168,11 +168,12 @@ func (h *HealthCheckBackend) IsHealthy() bool {
 func (h *HealthCheckBackend) recordResult(success bool) {
 	// #nosec G115 -- threshold config values are small integers that fit in int32
 	if success {
-		fails := h.consecutiveFails.Swap(0)
+		h.consecutiveFails.Store(0)
 		oks := h.consecutiveOK.Add(1)
 
-		// Check if we should transition to healthy
-		if fails > 0 && oks >= int32(h.config.HealthyThreshold) {
+		// Promote on a success streak. Keyed on the status, not on the fail
+		// counter, which the first success of the streak already zeroed.
+		if HealthStatus(h.status.Load()) != HealthHealthy && oks >= int32(h.config.HealthyThreshold) {
 			oldStatus := HealthStatus(h.status.Swap(int32(HealthHealthy)))
 			if oldStatus != HealthHealthy && h.config.OnStatusChange != nil {
 				h.config.OnStatusChange(oldStatus, HealthHealthy)
