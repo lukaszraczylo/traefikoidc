@@ -672,7 +672,6 @@ func (rc *RefreshCoordinator) isInCooldown(sessionID string) bool {
 			}
 			return &attemptState{
 				windowStartNano: nowNano,
-				attempts:        1,
 			}
 		})
 		return false
@@ -686,7 +685,7 @@ func (rc *RefreshCoordinator) isInCooldown(sessionID string) bool {
 			}
 			next := *s
 			next.windowStartNano = nowNano
-			next.attempts = 1
+			next.attempts = 0
 			return &next
 		})
 		return false
@@ -939,18 +938,26 @@ func (cb *RefreshCircuitBreaker) AllowRequest() bool {
 		return true
 	case 1: // open
 		lastFail := atomic.LoadInt64(&cb.lastFailureNano)
-		if time.Duration(time.Now().UnixNano()-lastFail) > cb.config.OpenDuration {
-			// Transition to half-open; first CAS winner gets the probe.
-			if atomic.CompareAndSwapInt32(&cb.state, 1, 2) {
-				return true
-			}
-		}
-		return false
-	case 2: // half-open
-		return true
+		return cb.claimProbe(lastFail)
+	case 2: // half-open: one probe at a time; a stale probe is replaced
+		return cb.claimProbe(atomic.LoadInt64(&cb.lastFailureNano))
 	default:
 		return false
 	}
+}
+
+// claimProbe admits one probe when OpenDuration has passed since lastFail.
+// The CAS on lastFailureNano makes the claim exclusive and restarts the clock.
+func (cb *RefreshCircuitBreaker) claimProbe(lastFail int64) bool {
+	now := time.Now().UnixNano()
+	if time.Duration(now-lastFail) <= cb.config.OpenDuration {
+		return false
+	}
+	if !atomic.CompareAndSwapInt64(&cb.lastFailureNano, lastFail, now) {
+		return false
+	}
+	atomic.StoreInt32(&cb.state, 2)
+	return true
 }
 
 // RecordSuccess records a successful operation. Lock-free.
