@@ -62,10 +62,11 @@ func (l *perSourceAuthLimiter) allow(req *http.Request) bool {
 	if now.Sub(l.lastSweep) >= time.Minute {
 		l.sweep(now)
 	}
-	e := l.entries[ip]
+	key := limiterKey(ip)
+	e := l.entries[key]
 	if e == nil {
 		e = &perSourceAuthEntry{limiter: rate.NewLimiter(l.limit, l.burst)}
-		l.entries[ip] = e
+		l.entries[key] = e
 	}
 	e.lastSeen = now
 	return e.limiter.Allow()
@@ -114,4 +115,20 @@ func isInternalSource(ip string) bool {
 	}
 	return p.IsLoopback() || p.IsPrivate() || p.IsLinkLocalUnicast() ||
 		p.IsLinkLocalMulticast() || p.IsUnspecified()
+}
+
+// ipv6PrefixBits is the IPv6 prefix that shares one bucket: a host holds a
+// whole /64, so per-address keys would give it 2^64 buckets.
+const ipv6PrefixBits = 64
+
+// limiterKey maps a source IP to its bucket key (IPv6 collapses to its /64).
+func limiterKey(ip string) string {
+	p := net.ParseIP(ip)
+	if p == nil {
+		return ip
+	}
+	if p.To4() != nil {
+		return p.String()
+	}
+	return (&net.IPNet{IP: p.Mask(net.CIDRMask(ipv6PrefixBits, 128)), Mask: net.CIDRMask(ipv6PrefixBits, 128)}).String()
 }
