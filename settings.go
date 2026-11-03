@@ -659,6 +659,24 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("sessionMaxAge is too large; must be at most %d seconds", math.MaxInt64/int64(time.Second))
 	}
 
+	// Bearer durations are int64 seconds * time.Second at startup (main.go); an
+	// unbounded value wraps negative or to zero and disables the age check
+	// and failure throttle.
+	for name, v := range map[string]int64{
+		"maxTokenAgeSeconds":          c.MaxTokenAgeSeconds,
+		"bearerFailureWindowSeconds":  int64(c.BearerFailureWindowSeconds),
+		"bearerFailurePenaltySeconds": int64(c.BearerFailurePenaltySeconds),
+	} {
+		if v > maxDurationSeconds {
+			return fmt.Errorf("%s is too large; must be at most %d seconds", name, maxDurationSeconds)
+		}
+	}
+	// The throttle sweep cutoff adds window and penalty.
+	if int64(c.BearerFailureWindowSeconds) > 0 && int64(c.BearerFailurePenaltySeconds) > 0 &&
+		int64(c.BearerFailureWindowSeconds)+int64(c.BearerFailurePenaltySeconds) > maxDurationSeconds {
+		return fmt.Errorf("bearerFailureWindowSeconds plus bearerFailurePenaltySeconds is too large")
+	}
+
 	// Validate audience if specified
 	if c.Audience != "" {
 		// Validate audience format - should be a valid identifier or URL
@@ -1228,6 +1246,14 @@ func (c *Config) GetSecurityHeadersApplier() func(http.ResponseWriter, *http.Req
 }
 
 // isOriginAllowed checks if an origin is in the allowed list
+const (
+	// maxDurationSeconds is the largest whole-second value whose
+	// time.Duration product with time.Second does not overflow int64.
+	maxDurationSeconds = math.MaxInt64 / int64(time.Second)
+	// maxRedisPoolSize bounds the eagerly allocated connection channel.
+	maxRedisPoolSize = 10000
+)
+
 // Validate checks if the Redis configuration is valid
 func (rc *RedisConfig) Validate() error {
 	if !rc.Enabled {
@@ -1253,6 +1279,9 @@ func (rc *RedisConfig) Validate() error {
 	// Validate connection settings
 	if rc.PoolSize < 0 {
 		return fmt.Errorf("pool size cannot be negative")
+	}
+	if rc.PoolSize > maxRedisPoolSize {
+		return fmt.Errorf("pool size is too large; must be at most %d", maxRedisPoolSize)
 	}
 	if rc.ConnectTimeout < 0 {
 		return fmt.Errorf("connect timeout cannot be negative")
@@ -1285,6 +1314,21 @@ func (rc *RedisConfig) Validate() error {
 	// Validate health check settings
 	if rc.HealthCheckInterval < 0 {
 		return fmt.Errorf("health check interval cannot be negative")
+	}
+
+	// Seconds become time.Duration (x * time.Second) and the threshold is
+	// narrowed to int32 in the breaker; out-of-range values wrap, which
+	// panics time.NewTicker or trips the breaker on the first failure.
+	for name, v := range map[string]int{
+		"health check interval":   rc.HealthCheckInterval,
+		"circuit breaker timeout": rc.CircuitBreakerTimeout,
+	} {
+		if int64(v) > maxDurationSeconds {
+			return fmt.Errorf("%s is too large; must be at most %d seconds", name, maxDurationSeconds)
+		}
+	}
+	if rc.CircuitBreakerThreshold > math.MaxInt32 {
+		return fmt.Errorf("circuit breaker threshold is too large; must be at most %d", math.MaxInt32)
 	}
 
 	return nil
