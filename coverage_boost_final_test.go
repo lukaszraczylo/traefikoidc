@@ -921,82 +921,6 @@ func TestMemoryTestOrchestrator_StopLeakDetection_CoverageBoost(t *testing.T) {
 // CHUNK MANAGER TESTS
 // =============================================================================
 
-func TestChunkManager_GetSessionCount_CoverageBoost(t *testing.T) {
-	logger := NewLogger("debug")
-	cm := NewChunkManager(logger)
-	if cm == nil {
-		t.Fatal("Expected non-nil ChunkManager")
-	}
-	defer cm.Shutdown()
-
-	// Test GetSessionCount
-	count := cm.GetSessionCount()
-	if count != 0 {
-		t.Errorf("Expected 0 sessions, got %d", count)
-	}
-}
-
-func TestChunkManager_GetMemoryStats_CoverageBoost(t *testing.T) {
-	logger := NewLogger("debug")
-	cm := NewChunkManager(logger)
-	if cm == nil {
-		t.Fatal("Expected non-nil ChunkManager")
-	}
-	defer cm.Shutdown()
-
-	// Test GetMemoryStats
-	stats := cm.GetMemoryStats()
-	if stats == nil {
-		t.Fatal("Expected non-nil stats")
-	}
-
-	// Verify expected keys exist
-	if _, ok := stats["active_sessions"]; !ok {
-		t.Error("Expected active_sessions key in stats")
-	}
-	if _, ok := stats["max_sessions"]; !ok {
-		t.Error("Expected max_sessions key in stats")
-	}
-	if _, ok := stats["bytes_allocated"]; !ok {
-		t.Error("Expected bytes_allocated key in stats")
-	}
-}
-
-func TestChunkManager_CanCreateSession_CoverageBoost(t *testing.T) {
-	logger := NewLogger("debug")
-	cm := NewChunkManager(logger)
-	if cm == nil {
-		t.Fatal("Expected non-nil ChunkManager")
-	}
-	defer cm.Shutdown()
-
-	// Test CanCreateSession - should be true initially
-	canCreate, err := cm.CanCreateSession()
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if !canCreate {
-		t.Error("Expected CanCreateSession to return true when empty")
-	}
-}
-
-func TestChunkManager_EmergencyCleanup_CoverageBoost(t *testing.T) {
-	logger := NewLogger("debug")
-	cm := NewChunkManager(logger)
-	if cm == nil {
-		t.Fatal("Expected non-nil ChunkManager")
-	}
-	defer cm.Shutdown()
-
-	// Test EmergencyCleanup - should not panic on empty session map
-	cm.EmergencyCleanup()
-
-	// Verify no sessions exist
-	if cm.GetSessionCount() != 0 {
-		t.Error("Expected 0 sessions after cleanup")
-	}
-}
-
 func TestChunkManager_CleanupExpiredSessions_CoverageBoost(t *testing.T) {
 	logger := NewLogger("debug")
 	cm := NewChunkManager(logger)
@@ -1008,8 +932,7 @@ func TestChunkManager_CleanupExpiredSessions_CoverageBoost(t *testing.T) {
 	// Test CleanupExpiredSessions - should not panic on empty session map
 	cm.CleanupExpiredSessions()
 
-	// Verify no sessions exist
-	if cm.GetSessionCount() != 0 {
+	if len(cm.sessionMap) != 0 {
 		t.Error("Expected 0 sessions after cleanup")
 	}
 }
