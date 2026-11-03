@@ -322,6 +322,9 @@ func verifyTimeClaims(claims map[string]interface{}) error {
 	return nil
 }
 
+// ecdsaAlgBits maps an ES* algorithm to its curve size (RFC 7518 3.4).
+var ecdsaAlgBits = map[string]int{"ES256": 256, "ES384": 384, "ES512": 521}
+
 // verifySignatureWithKey verifies a JWT signature using an already-parsed
 // public key, skipping the PEM-encode/decode round trip. This is the hot
 // path used by VerifyJWTSignatureAndClaims and verifyLogoutTokenSignature.
@@ -369,7 +372,13 @@ func verifySignatureWithKey(tokenString string, pubKey crypto.PublicKey, alg str
 		if strings.HasPrefix(alg, "ES") {
 			var r, s big.Int
 			sigLen := len(signature)
-			if sigLen%2 != 0 {
+			// RFC 7518 3.4: the curve is fixed by the algorithm and the
+			// signature is R||S at exactly the curve's octet length.
+			bits := ecdsaAlgBits[alg]
+			if bits == 0 || pubKey.Curve.Params().BitSize != bits {
+				return fmt.Errorf("ECDSA key curve does not match algorithm %s", alg)
+			}
+			if sigLen != 2*((bits+7)/8) {
 				return fmt.Errorf("invalid ECDSA signature length")
 			}
 			r.SetBytes(signature[:sigLen/2])
