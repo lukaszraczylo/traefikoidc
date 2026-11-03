@@ -558,9 +558,10 @@ func clientIPForBearer(req *http.Request) string {
 	}
 	host, _, err := net.SplitHostPort(req.RemoteAddr)
 	if err != nil {
-		return req.RemoteAddr
+		host = req.RemoteAddr
 	}
-	return host
+	// One IPv6 /64 shares a key, so a single host cannot mint 2^64 entries.
+	return limiterKey(host)
 }
 
 // --- Bearer auth entrypoint ---
