@@ -1054,8 +1054,7 @@ func (t *TraefikOidc) processAuthorizedRequestRS(rw http.ResponseWriter, req *ht
 	idToken := rs.idToken
 	if t.enableBackchannelLogout || t.enableFrontchannelLogout {
 		if idToken != "" {
-			sid, sub, _ := t.extractSessionInfo(idToken)
-			createdAt := t.sessionCreatedAtForInvalidation(idToken, session)
+			sid, sub, createdAt := t.invalidationInputs(idToken, session)
 			if t.isSessionInvalidated(sid, sub, createdAt) {
 				t.logger.Infof("Session for user %s has been invalidated via IdP-initiated logout", userIdentifier)
 				if err := session.Clear(req, rw); err != nil {
@@ -1147,8 +1146,7 @@ func (t *TraefikOidc) processAuthorizedRequest(rw http.ResponseWriter, req *http
 	if t.enableBackchannelLogout || t.enableFrontchannelLogout {
 		idToken := session.GetIDToken()
 		if idToken != "" {
-			sid, sub, _ := t.extractSessionInfo(idToken)
-			createdAt := t.sessionCreatedAtForInvalidation(idToken, session)
+			sid, sub, createdAt := t.invalidationInputs(idToken, session)
 			if t.isSessionInvalidated(sid, sub, createdAt) {
 				t.logger.Infof("Session for user %s has been invalidated via IdP-initiated logout", userIdentifier)
 				// Clear the session and redirect to login

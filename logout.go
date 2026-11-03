@@ -639,6 +639,22 @@ func (t *TraefikOidc) sessionCreatedAtForInvalidation(idToken string, session *S
 	return time.Time{} // zero: treated as invalidated -> safe re-auth
 }
 
+// invalidationInputs returns sid, sub and the creation time for the IdP-logout
+// check from one parseJWT call, with the same results as extractSessionInfo
+// and sessionCreatedAtForInvalidation called separately.
+func (t *TraefikOidc) invalidationInputs(idToken string, session *SessionData) (sid, sub string, createdAt time.Time) {
+	jwt, err := parseJWT(idToken)
+	if err != nil {
+		return "", "", t.sessionCreatedAtForInvalidation("", session)
+	}
+	sid, _ = jwt.Claims["sid"].(string)
+	sub, _ = jwt.Claims["sub"].(string)
+	if iat, ok := jwt.Claims["iat"].(float64); ok {
+		return sid, sub, time.Unix(int64(iat), 0)
+	}
+	return sid, sub, t.sessionCreatedAtForInvalidation("", session)
+}
+
 // extractSessionInfo extracts sid and sub from an ID token for session tracking
 func (t *TraefikOidc) extractSessionInfo(idToken string) (sid, sub string, createdAt time.Time) {
 	if idToken == "" {
