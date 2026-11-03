@@ -1341,6 +1341,23 @@ func joinBoundedClaimHeader(values []string) string {
 	return b.String()
 }
 
+// dropInboundTemplated removes a client-supplied value for a header the
+// middleware owns, so a skipped render leaves it absent instead of forwarding
+// the client's. Identity headers (already stripped and re-injected) and
+// Authorization (the inbound bearer credential) are left alone.
+func dropInboundTemplated(req *http.Request, name string) {
+	canon := http.CanonicalHeaderKey(name)
+	if canon == "Authorization" {
+		return
+	}
+	for _, h := range identityHeaders {
+		if canon == http.CanonicalHeaderKey(h) {
+			return
+		}
+	}
+	req.Header.Del(canon)
+}
+
 // applyHeaderTemplates renders the configured header templates for p onto req.
 func (t *TraefikOidc) applyHeaderTemplates(req *http.Request, p *principal) {
 	if len(t.headerTemplates) == 0 {
@@ -1359,6 +1376,7 @@ func (t *TraefikOidc) applyHeaderTemplates(req *http.Request, p *principal) {
 	}
 
 	for headerName, tmpl := range t.headerTemplates {
+		dropInboundTemplated(req, headerName)
 		var buf bytes.Buffer
 		if err := tmpl.Execute(&buf, templateData); err != nil {
 			t.logger.Errorf("Failed to execute template for header %s: %v", headerName, err)
