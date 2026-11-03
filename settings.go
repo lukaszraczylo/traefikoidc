@@ -954,6 +954,7 @@ func isValidSecureURL(s string) bool {
 // isLoopbackHost reports whether host is "localhost" or a loopback IP literal
 // (127.0.0.0/8 or ::1).
 func isLoopbackHost(host string) bool {
+	host = canonicalHost(host)
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}

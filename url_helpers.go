@@ -453,6 +453,15 @@ func sameHost(a, b string) bool {
 	return strings.EqualFold(ua.Host, ub.Host)
 }
 
+// canonicalHost drops the root dot ("localhost." is localhost) and an IPv6
+// zone id so the blocklists see one spelling per host.
+func canonicalHost(host string) string {
+	if i := strings.IndexByte(host, '%'); i > 0 && net.ParseIP(host[:i]) != nil {
+		host = host[:i]
+	}
+	return strings.TrimRight(host, ".")
+}
+
 // validateHost validates a hostname or IP address for security.
 // It prevents access to localhost, private networks, and known metadata endpoints.
 // When allowPrivateIPAddresses is enabled, private IP checks are skipped.
@@ -462,13 +471,14 @@ func sameHost(a, b string) bool {
 // Returns:
 //   - An error if the host is dangerous or not allowed, nil if safe.
 func (t *TraefikOidc) validateHost(host string) error {
-	hostname := host
-	if strings.Contains(host, ":") {
+	hostname := canonicalHost(host)
+	if net.ParseIP(hostname) == nil && strings.Contains(hostname, ":") {
 		var err error
-		hostname, _, err = net.SplitHostPort(host)
+		hostname, _, err = net.SplitHostPort(hostname)
 		if err != nil {
 			return fmt.Errorf("invalid host format: %w", err)
 		}
+		hostname = canonicalHost(hostname)
 	}
 
 	ip := net.ParseIP(hostname)
