@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"math/big"
 	"strings"
 	"time"
@@ -231,6 +232,9 @@ func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 	return nil
 }
 
+// maxClaimUnix is 9999-12-31T23:59:59Z, the largest time claim accepted.
+const maxClaimUnix = 253402300799
+
 // verifyTimeConstraint validates time-based JWT claims with clock skew tolerance.
 // It handles both future constraints (exp) and past constraints (iat, nbf).
 // Parameters:
@@ -241,6 +245,10 @@ func verifyIssuer(tokenIssuer, expectedIssuer string) error {
 // Returns:
 //   - An error describing the failure (e.g., "token has expired", "token used before issued")
 func verifyTimeConstraint(unixTime float64, claimName string, future bool) error {
+	// int64(float64) wraps out of range, which put a far-future nbf/iat in the past.
+	if math.IsNaN(unixTime) || math.IsInf(unixTime, 0) || math.Abs(unixTime) > maxClaimUnix {
+		return fmt.Errorf("token %s claim out of range", claimName)
+	}
 	claimTime := time.Unix(int64(unixTime), 0)
 	now := time.Now()
 

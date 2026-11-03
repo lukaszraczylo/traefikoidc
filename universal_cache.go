@@ -380,6 +380,10 @@ func (c *UniversalCache) setLocalLocked(key string, value interface{}, ttl time.
 		growth = size - existing.Size
 	}
 
+	if c.rejectOversized(key, size) {
+		return
+	}
+
 	// Check memory limits
 	if c.config.MaxMemoryBytes > 0 {
 		// Evict items if necessary to make room
@@ -712,6 +716,9 @@ func (c *UniversalCache) getLocal(key string) (interface{}, bool) {
 			if gracePeriod, ok := item.Metadata["grace_period_active"].(bool); ok && gracePeriod {
 				if c.shouldExtendGracePeriod(item, now) {
 					newExpiry := c.calculateNewExpiry(item, now)
+					if _, set := item.Metadata[graceOriginKey]; !set {
+						item.Metadata[graceOriginKey] = item.ExpiresAt
+					}
 					item.ExpiresAt = newExpiry
 					c.logger.Infof("UniversalCache[%s]: Extended grace period for key=%s until %v",
 						c.config.Type, key, newExpiry)
@@ -915,11 +922,29 @@ func (c *UniversalCache) evictOldest() {
 	}
 }
 
+// rejectOversized drops a value larger than the whole memory cap instead of
+// flushing every other entry to fit it. A stale copy under the key is removed.
+// Caller holds c.mu.
+func (c *UniversalCache) rejectOversized(key string, size int64) bool {
+	if c.config.MaxMemoryBytes <= 0 || size <= c.config.MaxMemoryBytes {
+		return false
+	}
+	if existing, ok := c.items[key]; ok {
+		c.removeItem(key, existing)
+	}
+	c.logger.Infof("UniversalCache[%s]: dropped oversized value key=%s size=%d cap=%d",
+		c.config.Type, key, size, c.config.MaxMemoryBytes)
+	return true
+}
+
 // SetMaxSize sets the maximum size and evicts items if necessary
 func (c *UniversalCache) SetMaxSize(newSize int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if newSize < 1 {
+		newSize = 1 // a non-positive bound would spin the eviction loop forever
+	}
 	oldSize := c.config.MaxSize
 	c.config.MaxSize = newSize
 
@@ -1021,6 +1046,9 @@ func (c *UniversalCache) estimateSize(value interface{}) int64 {
 	}
 }
 
+// graceOriginKey holds the item's first expiry once grace has started.
+const graceOriginKey = "grace_origin"
+
 // shouldExtendGracePeriod determines if grace period should be extended
 func (c *UniversalCache) shouldExtendGracePeriod(item *CacheItem, now time.Time) bool {
 	if c.config.MetadataConfig == nil {
@@ -1040,8 +1068,12 @@ func (c *UniversalCache) shouldExtendGracePeriod(item *CacheItem, now time.Time)
 		}
 	}
 
-	// Calculate how long since the item originally expired
-	timeSinceExpiry := now.Sub(item.ExpiresAt)
+	// Measure from the first expiry: later extensions overwrite ExpiresAt.
+	origin := item.ExpiresAt
+	if o, ok := item.Metadata[graceOriginKey].(time.Time); ok {
+		origin = o
+	}
+	timeSinceExpiry := now.Sub(origin)
 	return timeSinceExpiry <= maxGrace
 }
 
@@ -1521,6 +1553,10 @@ func (c *UniversalCache) updateLocalCache(key string, value interface{}, ttl tim
 	growth := size
 	if existing, exists := c.items[key]; exists {
 		growth = size - existing.Size
+	}
+
+	if c.rejectOversized(key, size) {
+		return nil
 	}
 
 	// Check memory limits
