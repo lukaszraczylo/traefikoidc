@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -27,6 +28,38 @@ type TokenConfig struct {
 	MaxChunkSize      int
 	AllowOpaqueTokens bool
 	RequireJWTFormat  bool
+	// AlwaysOpaque skips JWT checks even when the value contains dots.
+	AlwaysOpaque bool
+	// FallbackToOpaque validates a dotted token as opaque when it fails JWT
+	// validation. Entra ID refresh tokens have two dots but are not JWTs.
+	FallbackToOpaque bool
+}
+
+// claimsJWT reports whether the first segment decodes to a JSON header with an
+// "alg" member. A token that does so claims to be a JWT, so a malformed one
+// must stay rejected rather than fall back to opaque validation.
+func claimsJWT(token string) bool {
+	seg, _, _ := strings.Cut(token, ".")
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(seg, "="))
+	if err != nil {
+		return false
+	}
+	var header map[string]any
+	if json.Unmarshal(raw, &header) != nil {
+		return false
+	}
+	_, ok := header["alg"]
+	return ok
+}
+
+// jwtShaped reports whether token must pass JWT validation.
+func (c TokenConfig) jwtShaped(token string) bool {
+	return c.RequireJWTFormat || (c.AllowOpaqueTokens && !c.AlwaysOpaque && strings.Contains(token, "."))
+}
+
+// opaqueShaped reports whether token must pass opaque-token validation.
+func (c TokenConfig) opaqueShaped(token string) bool {
+	return c.AllowOpaqueTokens && (c.AlwaysOpaque || !strings.Contains(token, "."))
 }
 
 // Global session tracking to prevent memory leaks across all instances
@@ -63,6 +96,7 @@ var (
 		MaxChunkSize:      maxCookieSize,
 		AllowOpaqueTokens: true,
 		RequireJWTFormat:  false,
+		FallbackToOpaque:  true,
 	}
 
 	IDTokenConfig = TokenConfig{
@@ -299,6 +333,9 @@ func (cm *ChunkManager) processSingleToken(token string, compressed bool, config
 // Returns:
 //   - TokenRetrievalResult with the validated token or validation error.
 func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRetrievalResult {
+	if config.FallbackToOpaque && strings.Contains(token, ".") && !claimsJWT(token) {
+		config.AlwaysOpaque = true
+	}
 	// Content-only checks depend on the token string alone, so a token that
 	// passed them once skips them. Expiry and freshness always run.
 	key := contentValidKey(token, config)
@@ -314,7 +351,9 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 		if contentErr := cm.validateTokenContent(token, config); contentErr != nil {
 			return TokenRetrievalResult{Token: "", Error: contentErr}
 		}
-		times = cm.tokenTimesOf(token)
+		if !config.AlwaysOpaque {
+			times = cm.tokenTimesOf(token)
+		}
 	}
 
 	if expErr := cm.validateTokenExpiration(times, config); expErr != nil {
@@ -331,8 +370,7 @@ func (cm *ChunkManager) validateToken(token string, config TokenConfig) TokenRet
 		return TokenRetrievalResult{Token: token, Error: nil}
 	}
 
-	dotCount := strings.Count(token, ".")
-	isJWT := dotCount == 2
+	isJWT := strings.Count(token, ".") == 2 && !config.AlwaysOpaque
 
 	if config.RequireJWTFormat && !config.AllowOpaqueTokens {
 		// Only accept JWT format tokens
@@ -684,7 +722,7 @@ func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) erro
 		return err
 	}
 
-	if config.RequireJWTFormat || (config.AllowOpaqueTokens && strings.Contains(token, ".")) {
+	if config.jwtShaped(token) {
 		parts := strings.Split(token, ".")
 		if len(parts) == 3 {
 			headerLen := len(parts[0])
@@ -708,7 +746,7 @@ func (cm *ChunkManager) validateTokenSize(token string, config TokenConfig) erro
 		}
 	}
 
-	if config.AllowOpaqueTokens && !strings.Contains(token, ".") {
+	if config.opaqueShaped(token) {
 		if tokenLen > config.MaxLength {
 			err := fmt.Errorf("%s opaque token unusually large (%d bytes)", config.Type, tokenLen)
 			return err
@@ -751,13 +789,13 @@ func (cm *ChunkManager) validateTokenContent(token string, config TokenConfig) e
 		return err
 	}
 
-	if config.RequireJWTFormat || (config.AllowOpaqueTokens && strings.Contains(token, ".")) {
+	if config.jwtShaped(token) {
 		if err := cm.validateJWTContent(token, config); err != nil {
 			return err
 		}
 	}
 
-	if config.AllowOpaqueTokens && !strings.Contains(token, ".") {
+	if config.opaqueShaped(token) {
 		if err := cm.validateOpaqueTokenContent(token, config); err != nil {
 			return err
 		}
