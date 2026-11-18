@@ -233,6 +233,8 @@ type TraefikOidc struct {
 	stripAuthCookies          bool
 	enableBackchannelLogout   bool
 	enableFrontchannelLogout  bool
+	tmbSessionURLPath         string
+	tmbClaims                 []string
 	requireTokenIntrospection bool
 	allowPrivateIPAddresses   bool
 	// allowUnauthenticatedPreflight mirrors Config.AllowUnauthenticatedPreflight

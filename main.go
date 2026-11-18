@@ -355,6 +355,8 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 		stripAuthCookies:              config.StripAuthCookies,
 		enableBackchannelLogout:       config.EnableBackchannelLogout,
 		enableFrontchannelLogout:      config.EnableFrontchannelLogout,
+		tmbSessionURLPath:             config.TMBSessionURL,
+		tmbClaims:                     config.TMBClaims,
 		backchannelLogoutPath:         normalizeLogoutPath(config.BackchannelLogoutURL),
 		frontchannelLogoutPath:        normalizeLogoutPath(config.FrontchannelLogoutURL),
 		sessionInvalidationCache:      cacheManager.GetSharedSessionInvalidationCache(),

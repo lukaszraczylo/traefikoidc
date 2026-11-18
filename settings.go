@@ -91,7 +91,8 @@ type Config struct {
 	SessionMaxAge             int `json:"sessionMaxAge"`
 	RateLimit                 int `json:"rateLimit"`
 	// PerSourceLoginRateLimit throttles OIDC authentication events
-	// (authorization-code callback + login initiation) per client source IP,
+	// (authorization-code callback, login initiation and forced refreshes at
+	// the token-mediating endpoint) per client source IP,
 	// for external (non-internal) sources only. Internal / loopback /
 	// link-local sources (reverse proxies, in-cluster callers) are trusted
 	// and never throttled. Value = max auth events per minute per external
@@ -132,6 +133,16 @@ type Config struct {
 	EnableFrontchannelLogout bool   `json:"enableFrontchannelLogout,omitempty"`
 	BackchannelLogoutURL     string `json:"backchannelLogoutURL,omitempty"`
 	FrontchannelLogoutURL    string `json:"frontchannelLogoutURL,omitempty"`
+	// TMBSessionURL is the path of the token-mediating backend endpoint
+	// (draft-ietf-oauth-browser-based-apps), authenticated by the session
+	// cookie: GET returns session information and the access token, POST
+	// forces a token refresh first. Setting it enables the endpoint; unset
+	// (default) leaves it off. See docs/TMB.md.
+	TMBSessionURL string `json:"tmbSessionURL,omitempty"`
+	// TMBClaims lists the ID-token claims the endpoint returns in `claims`.
+	// Default empty: nothing beyond user_identifier (userIdentifierClaim),
+	// groups and roles (groupClaimName, roleClaimName) and expires_at.
+	TMBClaims []string `json:"tmbClaims,omitempty"`
 	// CACertPath is an optional filesystem path to a PEM-encoded CA bundle used
 	// to verify the OIDC provider's TLS certificate. Use this when the provider
 	// is signed by an internal/private CA that is not in the system trust store.
@@ -514,6 +525,42 @@ func (c *Config) Validate() error {
 		}
 		if strings.ContainsAny(c.LogoutURL, "?#") {
 			return fmt.Errorf("logoutURL must not contain a query string or fragment")
+		}
+	}
+
+	for _, name := range c.TMBClaims {
+		if name == "" || len(name) > 128 {
+			return fmt.Errorf("tmbClaims entries must be non-empty claim names of at most 128 characters")
+		}
+	}
+
+	// The token-mediating endpoint path is matched by exact request-path
+	// comparison, so it must be a bare absolute path and must not shadow
+	// another endpoint of this middleware.
+	if c.TMBSessionURL != "" {
+		if !strings.HasPrefix(c.TMBSessionURL, "/") {
+			return fmt.Errorf("tmbSessionURL must start with /")
+		}
+		if strings.ContainsAny(c.TMBSessionURL, "?#\\") || strings.HasPrefix(c.TMBSessionURL, "//") {
+			return fmt.Errorf("tmbSessionURL must be a plain absolute path: no query string, fragment, backslash or leading //")
+		}
+		// The logout, back-channel and front-channel handlers run before the
+		// TMB endpoint, so a path they own would silently never reach it.
+		// Compare against the effective logout path (its default derives
+		// from callbackURL) and the normalized channel paths.
+		logoutPath := c.LogoutURL
+		if logoutPath == "" {
+			logoutPath = c.CallbackURL + "/logout"
+		}
+		for _, owned := range []string{
+			c.CallbackURL,
+			logoutPath,
+			normalizeLogoutPath(c.BackchannelLogoutURL),
+			normalizeLogoutPath(c.FrontchannelLogoutURL),
+		} {
+			if owned != "" && c.TMBSessionURL == owned {
+				return fmt.Errorf("tmbSessionURL %q is already used by the callback, logout, back-channel or front-channel logout endpoint", c.TMBSessionURL)
+			}
 		}
 	}
 

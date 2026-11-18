@@ -24,6 +24,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ import (
 
 	oidc "github.com/lukaszraczylo/traefikoidc"
 	recovery "github.com/lukaszraczylo/traefikoidc/internal/recovery"
+	fixtures "github.com/lukaszraczylo/traefikoidc/internal/testutil/fixtures"
 	servers "github.com/lukaszraczylo/traefikoidc/internal/testutil/servers"
 )
 
@@ -141,6 +143,8 @@ func main() {
 	runCheck("issue162-websocket-forwards-header-templates", checkIssue162WebSocketHeaderTemplates)
 	runCheck("tojson-header-template", checkToJsonHeaderTemplate)
 	runCheck("streaming-refresh-revoked-grant-rejected", checkStreamingRefreshRevokedGrant)
+	runCheck("tmb-endpoints-invalid-session", checkTMBEndpointsUnderYaegi)
+	runCheck("tmb-endpoint-get-and-forced-refresh", checkTMBSuccessUnderYaegi)
 	fmt.Println("OK: all yaegi regression checks passed")
 }
 
@@ -978,6 +982,264 @@ func checkStreamingRefreshRevokedGrant() (string, error) {
 	}
 	if rw.Code != http.StatusUnauthorized {
 		return "", fmt.Errorf("status = %d, want %d", rw.Code, http.StatusUnauthorized)
+	}
+	return "", nil
+}
+
+// checkTMBEndpointsUnderYaegi drives the token-mediating endpoints through the real
+// middleware under the interpreter: with no session cookie, and with a
+// session whose refresh the IdP rejects (invalid_grant), both endpoints must
+// answer a JSON 401 invalid_session, never redirect and never reach next.
+func checkTMBEndpointsUnderYaegi() (string, error) {
+	idpCfg := servers.DefaultConfig()
+	idpCfg.RefreshError = &servers.OIDCError{Error: "invalid_grant"}
+	idp := servers.NewOIDCServer(idpCfg)
+	defer idp.Close()
+
+	cfg := oidc.CreateConfig()
+	cfg.ProviderURL = idp.URL
+	cfg.ClientID = "yaegi-check-tmb-client"
+	cfg.ClientSecret = "yaegi-check-tmb-secret"
+	cfg.CallbackURL = "/oauth2/callback"
+	cfg.SessionEncryptionKey = "0123456789abcdef0123456789abcdef"
+	cfg.TMBSessionURL = "/auth/session"
+
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+	})
+	h, err := oidc.New(context.Background(), next, cfg, "yaegi-check-tmb")
+	if err != nil {
+		return "", fmt.Errorf("New: %w", err)
+	}
+	if closer, ok := h.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+	// A normal request first, so provider metadata (token endpoint) is known.
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	reached = false
+
+	expect := func(label string, req *http.Request) error {
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		if reached {
+			return fmt.Errorf("%s: next reached", label)
+		}
+		if rw.Code != http.StatusUnauthorized {
+			return fmt.Errorf("%s: status = %d, want 401 (body %q)", label, rw.Code, rw.Body.String())
+		}
+		if loc := rw.Header().Get("Location"); loc != "" {
+			return fmt.Errorf("%s: unexpected redirect to %q", label, loc)
+		}
+		var body map[string]interface{}
+		if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+			return fmt.Errorf("%s: body is not JSON: %v", label, err)
+		}
+		if body["error"] != "invalid_session" {
+			return fmt.Errorf("%s: error = %v, want invalid_session", label, body["error"])
+		}
+		return nil
+	}
+
+	for _, method := range []string{"GET", "POST"} {
+		if err := expect("no-cookie "+method, httptest.NewRequest(method, "/auth/session", nil)); err != nil {
+			return "", err
+		}
+	}
+
+	sm, err := oidc.NewSessionManager(cfg.SessionEncryptionKey, cfg.ForceHTTPS, cfg.CookieDomain, cfg.CookiePrefix, time.Duration(cfg.SessionMaxAge)*time.Second, oidc.NewLogger("error"))
+	if err != nil {
+		return "", fmt.Errorf("NewSessionManager: %w", err)
+	}
+	defer sm.Shutdown()
+	setupReq := httptest.NewRequest("GET", "/", nil)
+	session, err := sm.GetSession(setupReq)
+	if err != nil {
+		return "", fmt.Errorf("GetSession: %w", err)
+	}
+	if err := session.SetAuthenticated(true); err != nil {
+		return "", fmt.Errorf("SetAuthenticated: %w", err)
+	}
+	session.SetUserIdentifier("alice@example.com")
+	// Built at runtime because a JWT literal trips the pre-commit secret scanner.
+	b64 := base64.RawURLEncoding.EncodeToString
+	sig := make([]byte, 32)
+	for i := range sig {
+		sig[i] = byte(i + 1)
+	}
+	payload := fmt.Sprintf(`{"email":"alice@example.com","exp":%d}`, time.Now().Add(-time.Minute).Unix())
+	session.SetAccessToken(b64([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + b64([]byte(payload)) + "." + b64(sig))
+	session.SetRefreshToken("yaegi-check-bff-refresh-token")
+	rec := httptest.NewRecorder()
+	if err := session.Save(setupReq, rec); err != nil {
+		return "", fmt.Errorf("session.Save: %w", err)
+	}
+	session.ReturnToPool()
+	cookies := rec.Result().Cookies()
+
+	for _, method := range []string{"GET", "POST"} {
+		req := httptest.NewRequest(method, "/auth/session", nil)
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		if err := expect("revoked-refresh "+method, req); err != nil {
+			return "", err
+		}
+	}
+	return "", nil
+}
+
+// checkTMBSuccessUnderYaegi drives the 200 paths of the token-mediating
+// endpoint under the interpreter, with tokens the fake IdP's JWKS really
+// verifies: GET builds the body (claim extraction, groups, expires_in, JSON
+// encoding), POST forces a refresh grant against the fake IdP, and the
+// refreshed tokens are served by the next GET from the rotated cookie.
+func checkTMBSuccessUnderYaegi() (string, error) {
+	const clientID = "yaegi-check-tmb-ok-client"
+	fx, err := fixtures.NewTokenFixture()
+	if err != nil {
+		return "", fmt.Errorf("NewTokenFixture: %w", err)
+	}
+	idpCfg := servers.DefaultConfig()
+	idpCfg.TokenFixture = fx
+	idp := servers.NewOIDCServer(idpCfg)
+	defer idp.Close()
+	fx.Issuer = idp.Config.Issuer
+	fx.Audience = clientID
+
+	mint := func(jtiSuffix string) (string, error) {
+		return fx.ValidToken(map[string]interface{}{
+			"email":  "user@example.com",
+			"groups": []string{"admins"},
+			"jti":    "yaegi-tmb-" + jtiSuffix,
+		})
+	}
+	accessTok, err := mint("access")
+	if err != nil {
+		return "", fmt.Errorf("mint access: %w", err)
+	}
+	idTok, err := mint("id")
+	if err != nil {
+		return "", fmt.Errorf("mint id: %w", err)
+	}
+	newAccessTok, err := mint("access-new")
+	if err != nil {
+		return "", fmt.Errorf("mint new access: %w", err)
+	}
+	newIDTok, err := mint("id-new")
+	if err != nil {
+		return "", fmt.Errorf("mint new id: %w", err)
+	}
+	idp.Config.RefreshResponse = map[string]interface{}{
+		"access_token":  newAccessTok,
+		"id_token":      newIDTok,
+		"refresh_token": "yaegi-check-tmb-rotated-refresh-token-0123456789",
+		"token_type":    "Bearer",
+		"expires_in":    3600,
+	}
+
+	cfg := oidc.CreateConfig()
+	cfg.ProviderURL = idp.URL
+	cfg.ClientID = clientID
+	cfg.ClientSecret = "yaegi-check-tmb-ok-secret"
+	cfg.CallbackURL = "/oauth2/callback"
+	cfg.SessionEncryptionKey = "0123456789abcdef0123456789abcdef"
+	cfg.TMBSessionURL = "/auth/session"
+	cfg.TMBClaims = []string{"email"}
+
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true })
+	h, err := oidc.New(context.Background(), next, cfg, "yaegi-check-tmb-ok")
+	if err != nil {
+		return "", fmt.Errorf("New: %w", err)
+	}
+	if closer, ok := h.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	reached = false
+
+	sm, err := oidc.NewSessionManager(cfg.SessionEncryptionKey, cfg.ForceHTTPS, cfg.CookieDomain, cfg.CookiePrefix, time.Duration(cfg.SessionMaxAge)*time.Second, oidc.NewLogger("error"))
+	if err != nil {
+		return "", fmt.Errorf("NewSessionManager: %w", err)
+	}
+	defer sm.Shutdown()
+	setupReq := httptest.NewRequest("GET", "/", nil)
+	session, err := sm.GetSession(setupReq)
+	if err != nil {
+		return "", fmt.Errorf("GetSession: %w", err)
+	}
+	if err := session.SetAuthenticated(true); err != nil {
+		return "", fmt.Errorf("SetAuthenticated: %w", err)
+	}
+	session.SetUserIdentifier("user@example.com")
+	session.SetAccessToken(accessTok)
+	session.SetIDToken(idTok)
+	session.SetRefreshToken("yaegi-check-tmb-refresh-token-0123456789")
+	rec := httptest.NewRecorder()
+	if err := session.Save(setupReq, rec); err != nil {
+		return "", fmt.Errorf("session.Save: %w", err)
+	}
+	session.ReturnToPool()
+	cookies := rec.Result().Cookies()
+
+	call := func(method string, jar []*http.Cookie) (map[string]interface{}, []*http.Cookie, error) {
+		req := httptest.NewRequest(method, "/auth/session", nil)
+		for _, c := range jar {
+			req.AddCookie(c)
+		}
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		if reached {
+			return nil, nil, fmt.Errorf("%s: next reached", method)
+		}
+		if rw.Code != http.StatusOK {
+			return nil, nil, fmt.Errorf("%s: status = %d, want 200 (body %q)", method, rw.Code, rw.Body.String())
+		}
+		var body map[string]interface{}
+		if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+			return nil, nil, fmt.Errorf("%s: body is not JSON: %v", method, err)
+		}
+		return body, rw.Result().Cookies(), nil
+	}
+
+	body, _, err := call("GET", cookies)
+	if err != nil {
+		return "", err
+	}
+	if body["access_token"] != accessTok || body["user_identifier"] != "user@example.com" {
+		return "", fmt.Errorf("GET: unexpected identity/token in %v", body)
+	}
+	claims, _ := body["claims"].(map[string]interface{})
+	if len(claims) != 1 || claims["email"] != "user@example.com" {
+		return "", fmt.Errorf("GET: claims = %v, want only the configured email", body["claims"])
+	}
+	groups, _ := body["groups"].([]interface{})
+	if len(groups) != 1 || groups[0] != "admins" {
+		return "", fmt.Errorf("GET: groups = %v, want [admins]", body["groups"])
+	}
+	if exp, _ := body["expires_in"].(float64); exp < 3000 || exp > 3600 {
+		return "", fmt.Errorf("GET: expires_in = %v, want about 3600", body["expires_in"])
+	}
+	for _, k := range []string{"refresh_token", "id_token"} {
+		if _, found := body[k]; found {
+			return "", fmt.Errorf("GET: %s must never be returned", k)
+		}
+	}
+
+	body, rotated, err := call("POST", cookies)
+	if err != nil {
+		return "", err
+	}
+	if body["access_token"] != newAccessTok {
+		return "", fmt.Errorf("POST: access_token was not the refreshed one")
+	}
+	body, _, err = call("GET", append(append([]*http.Cookie{}, cookies...), rotated...))
+	if err != nil {
+		return "", err
+	}
+	if body["access_token"] != newAccessTok {
+		return "", fmt.Errorf("GET after POST: refreshed token was not persisted in the session")
 	}
 	return "", nil
 }
