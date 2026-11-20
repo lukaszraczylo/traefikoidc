@@ -153,6 +153,7 @@ type combinedSessionPayload struct {
 	Ip string                 `json:"ip,omitempty"`
 	Ru string                 `json:"ru,omitempty"` // redirect_uri used at initiate; reused at callback so a per-request rebuild can't drift (R136)
 	Ca int64                  `json:"ca,omitempty"`
+	Ea int64                  `json:"ea,omitempty"` // access-token expiry (unix); a dedicated field because JSON would turn an int64 in X into a float64
 	Rc int                    `json:"rc,omitempty"`
 	Au bool                   `json:"au,omitempty"`
 }
@@ -172,7 +173,14 @@ var knownSessionKeys = map[string]bool{
 	"redirect_url":    true,
 	"created_at":      true,
 	"redirect_count":  true,
+
+	"access_token_expires_at": true,
 }
+
+// accessTokenExpiresAtKey holds the access token's expiry (unix seconds) in
+// mainSession.Values. It describes the stored access token only and is dropped
+// whenever that token changes (see SetAccessToken).
+const accessTokenExpiresAtKey = "access_token_expires_at"
 
 // compressCombinedPayload compresses the combined session payload using gzip.
 // It serializes the payload to JSON, compresses it, and returns base64-encoded data.
@@ -1305,6 +1313,9 @@ func (sm *SessionManager) loadFromCombinedCookies(r *http.Request, sessionData *
 	sessionData.mainSession.Values["redirect_url"] = payload.Ru
 	sessionData.mainSession.Values["created_at"] = payload.Ca
 	sessionData.mainSession.Values["redirect_count"] = payload.Rc
+	if payload.Ea > 0 {
+		sessionData.mainSession.Values[accessTokenExpiresAtKey] = payload.Ea
+	}
 
 	// Restore extra custom session values
 	for key, val := range payload.X {
@@ -1519,6 +1530,7 @@ func (sd *SessionData) saveCombined(r *http.Request, w http.ResponseWriter, opti
 		Ip: sd.getIncomingPathUnsafe(),
 		Ru: sd.getRedirectURLUnsafe(),
 		Ca: sd.getCreatedAtUnsafe(),
+		Ea: sd.getAccessTokenExpiresAtUnsafe(),
 		Rc: sd.getRedirectCountUnsafe(),
 	}
 	// Persist the refresh token's issued_at so maxRefreshTokenAge keeps
@@ -2212,6 +2224,10 @@ func (sd *SessionData) SetAccessToken(token string) {
 		return
 	}
 	sd.dirty = true
+	// The recorded expiry belongs to the token being replaced.
+	if sd.mainSession != nil {
+		delete(sd.mainSession.Values, accessTokenExpiresAtKey)
+	}
 
 	// Debug: Check if accessSession is properly initialized
 	if sd.accessSession == nil {
@@ -3144,6 +3160,47 @@ func (sd *SessionData) getIncomingPathUnsafe() string {
 func (sd *SessionData) getCreatedAtUnsafe() int64 {
 	createdAt, _ := sd.mainSession.Values["created_at"].(int64)
 	return createdAt
+}
+
+// getAccessTokenExpiresAtUnsafe returns the stored access-token expiry (unix
+// seconds), or 0 when none is known, without acquiring locks.
+func (sd *SessionData) getAccessTokenExpiresAtUnsafe() int64 {
+	if sd.mainSession == nil {
+		return 0
+	}
+	exp, _ := sd.mainSession.Values[accessTokenExpiresAtKey].(int64)
+	return exp
+}
+
+// GetAccessTokenExpiresAt returns when the stored access token expires (unix
+// seconds), as recorded from the token response or the token's own exp claim
+// at login or refresh. It returns 0 when unknown, e.g. for sessions created
+// before the expiry was recorded.
+func (sd *SessionData) GetAccessTokenExpiresAt() int64 {
+	sd.sessionMutex.RLock()
+	defer sd.sessionMutex.RUnlock()
+	return sd.getAccessTokenExpiresAtUnsafe()
+}
+
+// SetAccessTokenExpiresAt records when the current access token expires (unix
+// seconds). Call it after SetAccessToken: storing a different access token
+// drops the previous expiry. A value <= 0 clears it.
+func (sd *SessionData) SetAccessTokenExpiresAt(expiresAt int64) {
+	sd.sessionMutex.Lock()
+	defer sd.sessionMutex.Unlock()
+
+	if sd.mainSession == nil {
+		return
+	}
+	if sd.getAccessTokenExpiresAtUnsafe() == expiresAt {
+		return
+	}
+	sd.dirty = true
+	if expiresAt <= 0 {
+		delete(sd.mainSession.Values, accessTokenExpiresAtKey)
+		return
+	}
+	sd.mainSession.Values[accessTokenExpiresAtKey] = expiresAt
 }
 
 // getRedirectCountUnsafe retrieves the redirect count without acquiring locks.

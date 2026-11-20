@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/suite"
 )
@@ -683,6 +684,60 @@ func (s *AuthFlowBehaviourSuite) TestHandleCallback_SuccessfulAuthentication() {
 	// Verify mocks were called
 	mockExchanger.AssertExchangeCalled(s.T())
 	mockVerifier.AssertVerifyTokenCalled(s.T())
+}
+
+// TestHandleCallback_RecordsAccessTokenExpiry checks that a successful login
+// records the access token's expiry from the token response's expires_in.
+func (s *AuthFlowBehaviourSuite) TestHandleCallback_RecordsAccessTokenExpiry() {
+	sessionManager, err := NewSessionManager("test-encryption-key-32-bytes-long!!", false, "", "", 0, s.logger)
+	s.Require().NoError(err)
+	defer sessionManager.Shutdown()
+
+	s.tOidc.sessionManager = sessionManager
+	s.tOidc.allowedUsers = nil
+
+	nonce := "test-nonce-12345"
+	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZW1haWwiOiJ0ZXN0QGV4YW1wbGUuY29tIiwibm9uY2UiOiJ0ZXN0LW5vbmNlLTEyMzQ1IiwiaWF0IjoxNTE2MjM5MDIyfQ.signature"
+	const opaqueAccessToken = "opaque-access-token-0123456789abcdef"
+	s.tOidc.tokenExchanger = &EnhancedMockTokenExchanger{
+		ExchangeResponse: &TokenResponse{
+			AccessToken:  opaqueAccessToken, // opaque: only expires_in can say when it expires
+			RefreshToken: "refresh-token-value-0123456789abcdef",
+			IDToken:      idToken,
+			ExpiresIn:    1800,
+		},
+	}
+	s.tOidc.tokenVerifier = &EnhancedMockTokenVerifier{}
+	s.tOidc.extractClaimsFunc = func(token string) (map[string]interface{}, error) {
+		return map[string]interface{}{"sub": "1234567890", "email": "test@example.com", "nonce": nonce}, nil
+	}
+
+	csrfToken := "valid-csrf-token"
+	req := httptest.NewRequest(http.MethodGet, "/callback?code=auth-code&state="+csrfToken, nil)
+	rw := httptest.NewRecorder()
+	session, err := sessionManager.GetSession(req)
+	s.Require().NoError(err)
+	session.SetCSRF(csrfToken)
+	session.SetNonce(nonce)
+	s.Require().NoError(session.Save(req, rw))
+	session.returnToPoolSafely()
+
+	req2 := httptest.NewRequest(http.MethodGet, "/callback?code=auth-code&state="+csrfToken, nil)
+	for _, cookie := range rw.Result().Cookies() {
+		req2.AddCookie(cookie)
+	}
+	rw2 := httptest.NewRecorder()
+	s.tOidc.handleCallback(rw2, req2, "https://example.com/callback")
+	s.Require().Equal(http.StatusFound, rw2.Code)
+
+	req3 := httptest.NewRequest(http.MethodGet, "/", nil)
+	for _, cookie := range rw2.Result().Cookies() {
+		req3.AddCookie(cookie)
+	}
+	loaded, err := sessionManager.GetSession(req3)
+	s.Require().NoError(err)
+	s.Equal(opaqueAccessToken, loaded.GetAccessToken())
+	s.InDelta(time.Now().Add(30*time.Minute).Unix(), loaded.GetAccessTokenExpiresAt(), 5)
 }
 
 // TestHandleExpiredToken tests expired token handling

@@ -69,25 +69,33 @@ not send the cookie to it.
   "user_identifier": "user-1",
   "claims": {"email": "u@example.com", "name": "U One"},
   "groups": ["admins"],
-  "expires_at": 1767225600,
   "access_token": "…",
-  "expires_in": 3540
+  "expires_at": 1767225600
 }
 ```
 
 - `user_identifier` is the claim named by `userIdentifierClaim`. `groups` and
   `roles` use `groupClaimName` / `roleClaimName` and are omitted when empty.
-  `expires_at` is the `exp` of the ID token, or of the access token when the
-  session has no ID token (providers that issue none).
 - `claims` holds exactly the claims listed in `tmbClaims`, with their values as
   they appear in the token (arrays and objects included). A claim the token
   lacks is omitted, and `claims` itself is omitted when nothing is listed.
-- `access_token` is the session's access token. `expires_in` is derived from
-  its `exp` claim and omitted for opaque tokens. The refresh token and ID token
+- `access_token` is the session's access token. The refresh token and ID token
   are never returned.
-- A `GET` has no side effects on the session, except that a token within
-  `refreshGracePeriod` of expiry is refreshed first, as for any other request.
-  Query parameters are ignored.
+- `expires_at` (unix seconds) is when the access token expires, not the ID
+  token, which may expire at a different time. The plugin records it at login
+  and at every refresh, from the token response's `expires_in` and otherwise
+  from the token's own `exp` claim, so opaque access tokens are covered when the
+  IdP sends `expires_in`. A session that predates the record falls back to the
+  `exp` claim. The field is omitted when the expiry is unknown.
+- A `GET` has no side effects on the session, except that the access token is
+  refreshed first when its expiry is within `refreshGracePeriod` or past. This
+  goes beyond the plugin's usual rule, which for an opaque access token follows
+  the ID token's expiry and could hand out a token that has already expired.
+  If an expired token cannot be refreshed, the endpoint does not return it: it
+  answers `401 invalid_session` when there is no refresh token to try or the IdP
+  rejected it, and `502 server_error` when the IdP could not be reached. A token
+  that is merely due keeps being served if its early refresh fails. Query
+  parameters are ignored.
 
 ## `POST`: force a refresh
 
@@ -105,18 +113,18 @@ token's claims. Each forced refresh is one IdP call, so it is subject to
 
 | Status | `error` | Cause |
 |--------|---------|-------|
-| 401 | `invalid_session` | No valid authenticated session (missing, expired or logged out), or the IdP rejected the refresh token on `POST` (the session is ended). No `WWW-Authenticate` header is sent: the session cookie has no HTTP auth scheme, as for the plugin's other `401`s. |
+| 401 | `invalid_session` | No valid authenticated session (missing, expired or logged out); the IdP rejected the refresh token (the session is ended); or the access token has expired and there is no refresh token to renew it. No `WWW-Authenticate` header is sent: the session cookie has no HTTP auth scheme, as for the plugin's other `401`s. |
 | 401 | `backend_not_ready` | `POST` but the session has no refresh token, so it cannot be refreshed and the user has to authenticate again. The session is left as is; `GET` keeps working until the access token expires. |
 | 403 | `access_denied` | The user fails `allowedUsers` or `allowedRolesAndGroups`. |
 | 403 | `invalid_request` | Cross-origin request. |
 | 405 | `invalid_request` | Method other than `GET` or `POST`. |
 | 429 | `rate_limited` | `POST` from an external source over `perSourceLoginRateLimit`; `Retry-After: 1` is set and no refresh is attempted. |
-| 502 | `server_error` | `POST` and the token endpoint was unreachable or failed; the session is kept. |
+| 502 | `server_error` | The token endpoint was unreachable or failed on a `POST`, or on a `GET` whose access token had already expired; the session is kept. |
 
 ## SPA flow
 
 Read the session once on load and keep the access token in memory. When the API
-answers `401` or `expires_in` runs out, `POST` to get a fresh one. The endpoint
+answers `401` or `expires_at` is near, `POST` to get a fresh one. The endpoint
 never redirects: on any `401` from this endpoint (`invalid_session` or
 `backend_not_ready`), navigate the page to a protected URL so the normal login
 redirect runs. No page reload is needed otherwise.

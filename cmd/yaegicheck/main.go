@@ -1091,7 +1091,7 @@ func checkTMBEndpointsUnderYaegi() (string, error) {
 
 // checkTMBSuccessUnderYaegi drives the 200 paths of the token-mediating
 // endpoint under the interpreter, with tokens the fake IdP's JWKS really
-// verifies: GET builds the body (claim extraction, groups, expires_in, JSON
+// verifies: GET builds the body (claim extraction, groups, expires_at, JSON
 // encoding), POST forces a refresh grant against the fake IdP, and the
 // refreshed tokens are served by the next GET from the rotated cookie.
 func checkTMBSuccessUnderYaegi() (string, error) {
@@ -1218,8 +1218,12 @@ func checkTMBSuccessUnderYaegi() (string, error) {
 	if len(groups) != 1 || groups[0] != "admins" {
 		return "", fmt.Errorf("GET: groups = %v, want [admins]", body["groups"])
 	}
-	if exp, _ := body["expires_in"].(float64); exp < 3000 || exp > 3600 {
-		return "", fmt.Errorf("GET: expires_in = %v, want about 3600", body["expires_in"])
+	left := body["expires_at"].(float64) - float64(time.Now().Unix())
+	if left < 3000 || left > 3700 {
+		return "", fmt.Errorf("GET: expires_at = %v, want about an hour from now", body["expires_at"])
+	}
+	if _, found := body["expires_in"]; found {
+		return "", fmt.Errorf("GET: expires_in must not be returned")
 	}
 	for _, k := range []string{"refresh_token", "id_token"} {
 		if _, found := body[k]; found {

@@ -127,14 +127,28 @@ func (t *TraefikOidc) handleTMB(rw http.ResponseWriter, req *http.Request) {
 // refresh happened. It answers invalid_session itself and returns ok=false
 // when no valid session exists. It never redirects: this endpoint is for
 // XHR/fetch.
+//
+// The plugin's own refresh decision follows the ID token when the access token
+// is opaque, so it can hand out an access token that has already expired. This
+// endpoint returns the access token, so it also refreshes when the recorded
+// access-token expiry is inside refreshGracePeriod, and it never answers 200
+// with an access token known to be expired.
 func (t *TraefikOidc) tmbEstablishSession(rw http.ResponseWriter, req *http.Request, session *SessionData, rs *requestState) (refreshed, ok bool) {
 	authenticated, needsRefresh, expired := t.isUserAuthenticatedRS(rs)
 	if expired {
 		writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
 		return false, false
 	}
-	if needsRefresh && rs.refreshToken != "" && !t.isRefreshTokenExpired(session) &&
-		!(authenticated && t.shouldSkipGraceRefresh(session)) {
+
+	now := time.Now()
+	exp := tmbAccessTokenExpiry(rs)
+	accessDue := exp > 0 && time.Unix(exp, 0).Sub(now) <= t.refreshGracePeriod
+	accessExpired := exp > 0 && exp <= now.Unix()
+
+	attempted := false
+	if (needsRefresh || accessDue) && rs.refreshToken != "" && !t.isRefreshTokenExpired(session) &&
+		!(authenticated && !accessDue && t.shouldSkipGraceRefresh(session)) {
+		attempted = true
 		if t.refreshToken(rw, req, session) {
 			rs.captureSession(session)
 			authenticated, refreshed = true, true
@@ -142,6 +156,16 @@ func (t *TraefikOidc) tmbEstablishSession(rw http.ResponseWriter, req *http.Requ
 	}
 	if !authenticated {
 		writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
+		return false, false
+	}
+	if accessExpired && !refreshed {
+		switch {
+		case !attempted || !session.GetAuthenticated():
+			// Nothing to renew it with, or the IdP rejected the refresh token.
+			writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
+		default:
+			writeTMBError(rw, http.StatusBadGateway, "server_error", "access token expired and could not be refreshed")
+		}
 		return false, false
 	}
 	return refreshed, true
@@ -222,22 +246,15 @@ func (t *TraefikOidc) tmbAuthorize(rw http.ResponseWriter, session *SessionData)
 	return claims, groups, roles, true
 }
 
-// tmbTokenExpiresIn derives expires_in from a JWT access token's exp claim.
-// It returns false for opaque tokens.
-func tmbTokenExpiresIn(token string) (int64, bool) {
-	parsed, err := parseJWT(token)
-	if err != nil {
-		return 0, false
+// tmbAccessTokenExpiry returns when the session's access token expires (unix
+// seconds): the expiry recorded at login or refresh (from the token response),
+// else the token's own exp claim for sessions that predate the record. It
+// returns 0 when unknown (an opaque token with no recorded expiry).
+func tmbAccessTokenExpiry(rs *requestState) int64 {
+	if rs.accessTokenExpiresAt > 0 {
+		return rs.accessTokenExpiresAt
 	}
-	exp, ok := parsed.Claims["exp"].(float64)
-	if !ok {
-		return 0, false
-	}
-	left := int64(exp) - time.Now().Unix()
-	if left < 0 {
-		left = 0
-	}
-	return left, true
+	return jwtExpiry(rs.accessToken)
 }
 
 // writeTMBSession answers 200 with the session information and the access
@@ -264,13 +281,10 @@ func (t *TraefikOidc) writeTMBSession(rw http.ResponseWriter, session *SessionDa
 	if len(roles) > 0 {
 		out["roles"] = roles
 	}
-	if exp, ok := claims["exp"].(float64); ok {
-		out["expires_at"] = int64(exp)
-	}
 	if rs.accessToken != "" {
 		out["access_token"] = rs.accessToken
-		if n, ok := tmbTokenExpiresIn(rs.accessToken); ok {
-			out["expires_in"] = n
+		if exp := tmbAccessTokenExpiry(rs); exp > 0 {
+			out["expires_at"] = exp
 		}
 	}
 	writeTMBJSON(rw, http.StatusOK, out)

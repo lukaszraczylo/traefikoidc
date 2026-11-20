@@ -39,6 +39,10 @@ type requestState struct {
 	userIdentifier   string
 	createdAtUnixSec int64
 
+	// accessTokenExpiresAt is the recorded access-token expiry (unix); 0 when
+	// unknown.
+	accessTokenExpiresAt int64
+
 	// Output: scheme/host/redirect path determined at top of ServeHTTP.
 	scheme      string
 	host        string
@@ -66,6 +70,7 @@ func (rs *requestState) captureSession(sd *SessionData) *requestState {
 	rs.refreshToken = sd.getRefreshTokenUnsafe()
 	rs.userIdentifier = sd.getUserIdentifierUnsafe()
 	rs.createdAtUnixSec = sd.getCreatedAtUnsafe()
+	rs.accessTokenExpiresAt = sd.getAccessTokenExpiresAtUnsafe()
 	sd.sessionMutex.RUnlock()
 	return rs
 }

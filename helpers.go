@@ -93,6 +93,34 @@ type TokenResponse struct {
 	ExpiresIn int `json:"expires_in"`
 }
 
+// jwtExpiry returns the exp claim of a JWT (unix seconds), or 0 when token is
+// not a JWT or carries no numeric exp.
+func jwtExpiry(token string) int64 {
+	parsed, err := parseJWT(token)
+	if err != nil {
+		return 0
+	}
+	exp, ok := parsed.Claims["exp"].(float64)
+	if !ok {
+		return 0
+	}
+	return int64(exp)
+}
+
+// accessTokenExpiry returns when the access token in a token response expires
+// (unix seconds): from the response's expires_in when the IdP sent one,
+// otherwise from the token's own exp claim. It returns 0 when neither is known
+// (an opaque token without expires_in).
+func accessTokenExpiry(tr *TokenResponse, now time.Time) int64 {
+	if tr == nil {
+		return 0
+	}
+	if tr.ExpiresIn > 0 {
+		return now.Unix() + int64(tr.ExpiresIn)
+	}
+	return jwtExpiry(tr.AccessToken)
+}
+
 // exchangeTokens performs OAuth 2.0 token exchange with the authorization server.
 // It supports both authorization code and refresh token grant types with PKCE support.
 // Parameters:

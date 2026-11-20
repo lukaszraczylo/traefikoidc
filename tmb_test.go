@@ -60,6 +60,7 @@ type tmbEnv struct {
 	cookies   []*http.Cookie
 	access    string // the session's access token
 	newAccess string // what a refresh grant returns
+	newID     string // the ID token a refresh grant returns
 }
 
 func newTMBEnv(t *testing.T, opts ...func(*TraefikOidc)) *tmbEnv {
@@ -130,7 +131,7 @@ func newTMBEnv(t *testing.T, opts ...func(*TraefikOidc)) *tmbEnv {
 	session.SetUserIdentifier("user-1")
 	require.NoError(t, session.Save(base, rec))
 
-	return &tmbEnv{oidc: oidc, idp: idp, cookies: rec.Result().Cookies(), access: access, newAccess: newAccess}
+	return &tmbEnv{oidc: oidc, idp: idp, cookies: rec.Result().Cookies(), access: access, newAccess: newAccess, newID: newID}
 }
 
 func requestWithCookies(cs []*http.Cookie) *http.Request {
@@ -181,7 +182,8 @@ func TestTMBGet_ReturnsSessionAndAccessToken(t *testing.T) {
 	assert.Equal(t, map[string]interface{}{"email": "u@example.com", "name": "U One"}, body["claims"])
 	assert.Contains(t, body, "expires_at")
 	assert.Equal(t, e.access, body["access_token"])
-	assert.InDelta(t, 3600, body["expires_in"], 5)
+	assert.InDelta(t, time.Now().Add(time.Hour).Unix(), body["expires_at"], 5, "the access token's expiry")
+	assert.NotContains(t, body, "expires_in", "expiry is reported once, as an absolute time")
 	assert.NotContains(t, rec.Body.String(), tmbTestRefresh, "the refresh token must never be returned")
 
 	h := rec.Header()
@@ -191,6 +193,155 @@ func TestTMBGet_ReturnsSessionAndAccessToken(t *testing.T) {
 	assert.Equal(t, "same-origin", h.Get("Cross-Origin-Resource-Policy"))
 	assert.Empty(t, h.Get("Access-Control-Allow-Origin"))
 	assert.Zero(t, e.idp.calls(), "GET does not call the IdP while the token is fresh")
+}
+
+// setRefreshResponse makes the fake token endpoint answer the next grants with
+// the given access token and expires_in (the refreshed ID token is valid).
+func (e *tmbEnv) setRefreshResponse(t *testing.T, accessToken string, expiresIn int) {
+	t.Helper()
+	body, err := json.Marshal(map[string]interface{}{
+		"access_token":  accessToken,
+		"id_token":      e.newID,
+		"refresh_token": tmbTestRotated,
+		"expires_in":    expiresIn,
+	})
+	require.NoError(t, err)
+	e.idp.mu.Lock()
+	e.idp.body = string(body)
+	e.idp.mu.Unlock()
+}
+
+func TestTMB_ReportsTheAccessTokenExpiry(t *testing.T) {
+	t.Run("a session without a recorded expiry falls back to the token's exp claim", func(t *testing.T) {
+		e := newTMBEnv(t)
+		body := decodeTMB(t, e.get(tmbPath, nil))
+		assert.InDelta(t, time.Now().Add(time.Hour).Unix(), body["expires_at"], 5)
+	})
+	t.Run("a recorded expiry wins over the token's exp claim", func(t *testing.T) {
+		e := newTMBEnv(t)
+		want := time.Now().Add(2 * time.Minute).Unix()
+		session, err := e.oidc.sessionManager.GetSession(requestWithCookies(e.cookies))
+		require.NoError(t, err)
+		session.SetAccessTokenExpiresAt(want)
+		saved := httptest.NewRecorder()
+		require.NoError(t, session.Save(requestWithCookies(e.cookies), saved))
+		e.cookies = saved.Result().Cookies()
+
+		body := decodeTMB(t, e.get(tmbPath, nil))
+		assert.EqualValues(t, want, body["expires_at"], "the ID token and the JWT expire in an hour; the recorded value is used")
+	})
+	t.Run("POST reports the token response's expires_in and the next GET keeps it", func(t *testing.T) {
+		e := newTMBEnv(t)
+		e.setRefreshResponse(t, e.newAccess, 1800) // the refreshed JWT itself is good for 2 h
+		rec := e.post(tmbPath, nil)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		body := decodeTMB(t, rec)
+		assert.InDelta(t, time.Now().Add(30*time.Minute).Unix(), body["expires_at"], 5)
+
+		next := requestWithCookies(e.cookies)
+		for _, c := range rec.Result().Cookies() {
+			next.AddCookie(c)
+		}
+		session, err := e.oidc.sessionManager.GetSession(next)
+		require.NoError(t, err)
+		assert.InDelta(t, time.Now().Add(30*time.Minute).Unix(), session.GetAccessTokenExpiresAt(), 5)
+	})
+	t.Run("an opaque access token gets its expiry from expires_in", func(t *testing.T) {
+		e := newTMBEnv(t)
+		e.setRefreshResponse(t, "opaque-access-token-0123456789abcdef", 1800)
+		body := decodeTMB(t, e.post(tmbPath, nil))
+		assert.Equal(t, "opaque-access-token-0123456789abcdef", body["access_token"])
+		assert.InDelta(t, time.Now().Add(30*time.Minute).Unix(), body["expires_at"], 5)
+	})
+	t.Run("an opaque token with no expiry information reports none", func(t *testing.T) {
+		e := newTMBEnv(t)
+		e.setRefreshResponse(t, "opaque-access-token-0123456789abcdef", 0)
+		body := decodeTMB(t, e.post(tmbPath, nil))
+		assert.Equal(t, "opaque-access-token-0123456789abcdef", body["access_token"])
+		assert.NotContains(t, body, "expires_at")
+	})
+}
+
+// mutateSession rewrites the session behind the env's cookies.
+func (e *tmbEnv) mutateSession(t *testing.T, fn func(*SessionData)) {
+	t.Helper()
+	session, err := e.oidc.sessionManager.GetSession(requestWithCookies(e.cookies))
+	require.NoError(t, err)
+	fn(session)
+	saved := httptest.NewRecorder()
+	require.NoError(t, session.Save(requestWithCookies(e.cookies), saved))
+	e.cookies = saved.Result().Cookies()
+}
+
+// An opaque access token is judged by the ID token (valid for an hour here), so
+// the plugin's own refresh logic keeps serving it; the endpoint hands out the
+// access token and must look at the access token's own expiry.
+func TestTMB_RefreshesAnAccessTokenThatIsDue(t *testing.T) {
+	const opaque = "opaque-access-token-0123456789abcdef"
+	setup := func(t *testing.T, remaining time.Duration, opts ...func(*SessionData)) *tmbEnv {
+		e := newTMBEnv(t)
+		e.mutateSession(t, func(sd *SessionData) {
+			sd.SetAccessToken(opaque)
+			sd.SetAccessTokenExpiresAt(time.Now().Add(remaining).Unix())
+			for _, opt := range opts {
+				opt(sd)
+			}
+		})
+		return e
+	}
+
+	t.Run("a token with plenty of life left is served as is", func(t *testing.T) {
+		e := setup(t, 30*time.Minute)
+		rec := e.get(tmbPath, nil)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Equal(t, opaque, decodeTMB(t, rec)["access_token"])
+		assert.Zero(t, e.idp.calls())
+	})
+	t.Run("one inside the grace window is refreshed before being returned", func(t *testing.T) {
+		e := setup(t, 20*time.Second) // the env's grace period is one minute
+		rec := e.get(tmbPath, nil)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Equal(t, e.newAccess, decodeTMB(t, rec)["access_token"])
+		assert.Equal(t, 1, e.idp.calls())
+		assert.Equal(t, "refresh_token", e.idp.last(t).Get("grant_type"))
+	})
+	t.Run("one that has already expired is refreshed too", func(t *testing.T) {
+		e := setup(t, -10*time.Second)
+		rec := e.get(tmbPath, nil)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Equal(t, e.newAccess, decodeTMB(t, rec)["access_token"])
+	})
+	t.Run("an expired token the IdP cannot refresh right now is never served", func(t *testing.T) {
+		e := setup(t, -10*time.Second)
+		e.idp.status, e.idp.body = http.StatusInternalServerError, `oops`
+		rec := e.get(tmbPath, nil)
+		assert.Equal(t, http.StatusBadGateway, rec.Code)
+		assert.Equal(t, "server_error", decodeTMB(t, rec)["error"])
+		assert.NotContains(t, rec.Body.String(), "access_token")
+	})
+	t.Run("an expired token with no refresh token means logging in again", func(t *testing.T) {
+		e := setup(t, -10*time.Second, func(sd *SessionData) { sd.SetRefreshToken("") })
+		rec := e.get(tmbPath, nil)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+		assert.Equal(t, "invalid_session", decodeTMB(t, rec)["error"])
+		assert.NotContains(t, rec.Body.String(), "access_token")
+		assert.Zero(t, e.idp.calls())
+	})
+	t.Run("an expired token whose refresh token is rejected ends the session", func(t *testing.T) {
+		e := setup(t, -10*time.Second)
+		e.idp.status, e.idp.body = http.StatusBadRequest, `{"error":"invalid_grant"}`
+		rec := e.get(tmbPath, nil)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+		assert.Equal(t, "invalid_session", decodeTMB(t, rec)["error"])
+		assert.NotContains(t, rec.Body.String(), "access_token")
+	})
+	t.Run("a token due inside the grace window is still served if the refresh fails", func(t *testing.T) {
+		e := setup(t, 20*time.Second)
+		e.idp.status, e.idp.body = http.StatusInternalServerError, `oops`
+		rec := e.get(tmbPath, nil)
+		require.Equal(t, http.StatusOK, rec.Code, "the token is still valid, so the failed early refresh is not fatal")
+		assert.Equal(t, opaque, decodeTMB(t, rec)["access_token"])
+	})
 }
 
 func TestTMB_ClaimsAreOptIn(t *testing.T) {
@@ -232,7 +383,7 @@ func TestTMBPost_ForcesRefresh(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	body := decodeTMB(t, rec)
 	assert.Equal(t, e.newAccess, body["access_token"])
-	assert.InDelta(t, 7200, body["expires_in"], 5)
+	assert.InDelta(t, time.Now().Add(2*time.Hour).Unix(), body["expires_at"], 5)
 	assert.Equal(t, "user-1", body["user_identifier"], "POST returns the same body shape as GET")
 	assert.Equal(t, []interface{}{"admins"}, body["groups"])
 
