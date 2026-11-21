@@ -215,12 +215,9 @@ func (t *TraefikOidc) tmbAuthorize(rw http.ResponseWriter, session *SessionData)
 		}
 	}
 
-	var claims map[string]interface{}
-	if idToken != "" {
-		claims, _ = session.GetIDTokenClaims(t.extractClaimsFunc)
-	} else if at := session.GetAccessToken(); at != "" {
-		claims, _ = t.extractClaimsFunc(at)
-	}
+	// A claims parse error leaves claims nil, which the roles/groups gate
+	// below rejects when it is configured.
+	claims, _ := t.bypassSessionClaims(session)
 	var groups, roles []string
 	if claims != nil {
 		var err error
