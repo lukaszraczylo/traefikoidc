@@ -1,0 +1,288 @@
+package traefikoidc
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/lukaszraczylo/traefikoidc/internal/utils"
+)
+
+// Token-mediating backend endpoint (draft-ietf-oauth-browser-based-apps,
+// "Token-Mediating Backend"). The spec defines no paths or formats, so the
+// endpoint is served only at the path configured in tmbSessionURL,
+// authenticated by the regular session cookie, and is never reachable by
+// bearer auth. GET reads the session and its access token; POST forces a
+// refresh first and returns the same body.
+
+// isTMBPath reports whether path is the configured token-mediating endpoint.
+func (t *TraefikOidc) isTMBPath(path string) bool {
+	return t.tmbSessionURLPath != "" && path == t.tmbSessionURLPath
+}
+
+func writeTMBJSON(rw http.ResponseWriter, status int, body map[string]interface{}) {
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(status)
+	_ = json.NewEncoder(rw).Encode(body) // Safe to ignore: response write
+}
+
+func writeTMBError(rw http.ResponseWriter, status int, code, description string) {
+	body := map[string]interface{}{"error": code}
+	if description != "" {
+		body["error_description"] = description
+	}
+	writeTMBJSON(rw, status, body)
+}
+
+// tmbCrossSite reports whether the request was issued from another origin.
+// Browsers label cross-origin requests with Sec-Fetch-Site and Origin, and no
+// CORS headers are ever emitted. Requests carrying neither header
+// (non-browser clients) pass.
+func tmbCrossSite(req *http.Request) bool {
+	switch strings.ToLower(req.Header.Get("Sec-Fetch-Site")) {
+	case "cross-site", "same-site":
+		return true
+	}
+	if origin := req.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || !strings.EqualFold(u.Host, utils.DetermineHost(req)) {
+			return true
+		}
+	}
+	return false
+}
+
+// handleTMB serves the token-mediating endpoint. Callers must have verified
+// isTMBPath.
+func (t *TraefikOidc) handleTMB(rw http.ResponseWriter, req *http.Request) {
+	h := rw.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cross-Origin-Resource-Policy", "same-origin")
+	// The endpoint is same-origin only. The middleware-wide security headers
+	// may already have added CORS headers (securityHeaders.corsEnabled); drop
+	// them so a cross-origin page can never be granted read access.
+	for name := range h {
+		if strings.HasPrefix(strings.ToLower(name), "access-control-") {
+			h.Del(name)
+		}
+	}
+
+	if req.Method != http.MethodGet && req.Method != http.MethodPost {
+		h.Set("Allow", "GET, POST")
+		writeTMBError(rw, http.StatusMethodNotAllowed, "invalid_request", "only GET and POST are supported")
+		return
+	}
+	if tmbCrossSite(req) {
+		writeTMBError(rw, http.StatusForbidden, "invalid_request", "cross-origin requests are not allowed")
+		return
+	}
+
+	session, err := t.sessionManager.GetSession(req)
+	if err != nil || session == nil {
+		t.logger.Errorf("Token-mediating endpoint: no usable session: %v", err)
+		writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
+		return
+	}
+	gen := session.ownerGeneration()
+	defer session.returnToPoolIfOwner(gen)
+
+	rs := (&requestState{metadata: t.metadataSnap()}).captureSession(session)
+	refreshed, ok := t.tmbEstablishSession(rw, req, session, rs)
+	if !ok {
+		return
+	}
+
+	claims, groups, roles, ok := t.tmbAuthorize(rw, session)
+	if !ok {
+		return
+	}
+
+	// POST forces a refresh, unless this request already refreshed. The
+	// refresh runs only after the user passed the authorization gates, and
+	// the gates are re-applied to the refreshed token's claims.
+	if req.Method == http.MethodPost && !refreshed {
+		// Each forced refresh is an IdP round trip, so it shares the optional
+		// per-source throttle of the other auth gates (perSourceLoginRateLimit).
+		if t.perSourceLimiter != nil && !t.perSourceLimiter.allow(req) {
+			rw.Header().Set("Retry-After", "1")
+			writeTMBError(rw, http.StatusTooManyRequests, "rate_limited", "too many refresh requests, try again shortly")
+			return
+		}
+		if !t.tmbForceRefresh(rw, req, session, rs) {
+			return
+		}
+		if claims, groups, roles, ok = t.tmbAuthorize(rw, session); !ok {
+			return
+		}
+	}
+
+	t.writeTMBSession(rw, session, rs, claims, groups, roles)
+}
+
+// tmbEstablishSession ensures the session holds a valid, authenticated token
+// set, refreshing it when due, and updates rs to match. It reports whether a
+// refresh happened. It answers invalid_session itself and returns ok=false
+// when no valid session exists. It never redirects: this endpoint is for
+// XHR/fetch.
+//
+// The plugin's own refresh decision follows the ID token when the access token
+// is opaque, so it can hand out an access token that has already expired. This
+// endpoint returns the access token, so it also refreshes when the recorded
+// access-token expiry is inside refreshGracePeriod, and it never answers 200
+// with an access token known to be expired.
+func (t *TraefikOidc) tmbEstablishSession(rw http.ResponseWriter, req *http.Request, session *SessionData, rs *requestState) (refreshed, ok bool) {
+	authenticated, needsRefresh, expired := t.isUserAuthenticatedRS(rs)
+	if expired {
+		writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
+		return false, false
+	}
+
+	now := time.Now()
+	exp := tmbAccessTokenExpiry(rs)
+	accessDue := exp > 0 && time.Unix(exp, 0).Sub(now) <= t.refreshGracePeriod
+	accessExpired := exp > 0 && exp <= now.Unix()
+
+	attempted := false
+	if (needsRefresh || accessDue) && rs.refreshToken != "" && !t.isRefreshTokenExpired(session) &&
+		!(authenticated && !accessDue && t.shouldSkipGraceRefresh(session)) {
+		attempted = true
+		if t.refreshToken(rw, req, session) {
+			rs.captureSession(session)
+			authenticated, refreshed = true, true
+		}
+	}
+	if !authenticated {
+		writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
+		return false, false
+	}
+	if accessExpired && !refreshed {
+		switch {
+		case !attempted || !session.GetAuthenticated():
+			// Nothing to renew it with, or the IdP rejected the refresh token.
+			writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
+		default:
+			writeTMBError(rw, http.StatusBadGateway, "server_error", "access token expired and could not be refreshed")
+		}
+		return false, false
+	}
+	return refreshed, true
+}
+
+// tmbForceRefresh runs a refresh-token grant through the existing refresh
+// path and updates rs. It answers the error itself and returns false on
+// failure.
+func (t *TraefikOidc) tmbForceRefresh(rw http.ResponseWriter, req *http.Request, session *SessionData, rs *requestState) bool {
+	if rs.refreshToken == "" {
+		writeTMBError(rw, http.StatusUnauthorized, "backend_not_ready", "")
+		return false
+	}
+	if !t.refreshToken(rw, req, session) {
+		// A rejected refresh token clears the session; any other failure
+		// (IdP unreachable, 5xx) leaves it intact.
+		if !session.GetAuthenticated() {
+			writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
+		} else {
+			writeTMBError(rw, http.StatusBadGateway, "server_error", "token refresh failed")
+		}
+		return false
+	}
+	rs.captureSession(session)
+	return true
+}
+
+// tmbAuthorize applies the same post-authentication gates as the normal
+// request path (identifier present, allowed user, IdP-initiated logout
+// invalidation, allowed roles/groups) and returns the token claims.
+func (t *TraefikOidc) tmbAuthorize(rw http.ResponseWriter, session *SessionData) (map[string]interface{}, []string, []string, bool) {
+	identifier := session.GetUserIdentifier()
+	if identifier == "" {
+		writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
+		return nil, nil, nil, false
+	}
+	if !t.isAllowedUser(identifier) {
+		writeTMBError(rw, http.StatusForbidden, "access_denied", "")
+		return nil, nil, nil, false
+	}
+	idToken := session.GetIDToken()
+	if idToken != "" && (t.enableBackchannelLogout || t.enableFrontchannelLogout) {
+		sid, sub, createdAt := t.invalidationInputs(idToken, session)
+		if t.isSessionInvalidated(sid, sub, createdAt) {
+			writeTMBError(rw, http.StatusUnauthorized, "invalid_session", "")
+			return nil, nil, nil, false
+		}
+	}
+
+	// A claims parse error leaves claims nil, which the roles/groups gate
+	// below rejects when it is configured.
+	claims, _ := t.bypassSessionClaims(session)
+	var groups, roles []string
+	if claims != nil {
+		var err error
+		groups, roles, err = t.extractGroupsAndRolesFromClaims(claims)
+		if err != nil && len(t.allowedRolesAndGroups) > 0 {
+			writeTMBError(rw, http.StatusForbidden, "access_denied", "")
+			return nil, nil, nil, false
+		}
+	}
+	if len(t.allowedRolesAndGroups) > 0 {
+		allowed := false
+		for _, g := range append(append([]string{}, groups...), roles...) {
+			if _, ok := t.allowedRolesAndGroups[g]; ok {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			writeTMBError(rw, http.StatusForbidden, "access_denied", "")
+			return nil, nil, nil, false
+		}
+	}
+	return claims, groups, roles, true
+}
+
+// tmbAccessTokenExpiry returns when the session's access token expires (unix
+// seconds): the expiry recorded at login or refresh (from the token response),
+// else the token's own exp claim for sessions that predate the record. It
+// returns 0 when unknown (an opaque token with no recorded expiry).
+func tmbAccessTokenExpiry(rs *requestState) int64 {
+	if rs.accessTokenExpiresAt > 0 {
+		return rs.accessTokenExpiresAt
+	}
+	return jwtExpiry(rs.accessToken)
+}
+
+// writeTMBSession answers 200 with the session information and the access
+// token.
+func (t *TraefikOidc) writeTMBSession(rw http.ResponseWriter, session *SessionData, rs *requestState, claims map[string]interface{}, groups, roles []string) {
+	out := map[string]interface{}{
+		"authenticated":   true,
+		"user_identifier": session.GetUserIdentifier(),
+	}
+	// Only the claims the operator listed in tmbClaims, as they appear in the
+	// token; absent or null claims are left out.
+	shown := map[string]interface{}{}
+	for _, name := range t.tmbClaims {
+		if v, ok := claims[name]; ok && v != nil {
+			shown[name] = v
+		}
+	}
+	if len(shown) > 0 {
+		out["claims"] = shown
+	}
+	if len(groups) > 0 {
+		out["groups"] = groups
+	}
+	if len(roles) > 0 {
+		out["roles"] = roles
+	}
+	if rs.accessToken != "" {
+		out["access_token"] = rs.accessToken
+		if exp := tmbAccessTokenExpiry(rs); exp > 0 {
+			out["expires_at"] = exp
+		}
+	}
+	writeTMBJSON(rw, http.StatusOK, out)
+}

@@ -82,6 +82,8 @@ func (c Config) configToMap() map[string]interface{} {
 	result["cookiePath"] = c.CookiePath
 	result["enableBackchannelLogout"] = c.EnableBackchannelLogout
 	result["enableFrontchannelLogout"] = c.EnableFrontchannelLogout
+	result["tmbSessionURL"] = c.TMBSessionURL
+	result["tmbClaims"] = c.TMBClaims
 	result["backchannelLogoutURL"] = c.BackchannelLogoutURL
 	result["frontchannelLogoutURL"] = c.FrontchannelLogoutURL
 	result["caCertPath"] = c.CACertPath

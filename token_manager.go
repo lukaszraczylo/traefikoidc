@@ -622,6 +622,7 @@ func (t *TraefikOidc) refreshToken(rw http.ResponseWriter, req *http.Request, se
 
 	session.SetIDToken(newToken.IDToken)
 	session.SetAccessToken(newToken.AccessToken)
+	session.SetAccessTokenExpiresAt(newToken.AccessToken, accessTokenExpiry(newToken, time.Now()))
 
 	if newToken.RefreshToken != "" {
 		t.logger.Debug("Received new refresh token from provider")

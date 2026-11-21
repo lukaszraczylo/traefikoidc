@@ -126,7 +126,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `refreshGracePeriodSeconds` | `60` | Proactively refresh tokens this many seconds before expiry. |
 | `maxRefreshTokenAgeSeconds` | `21600` | Heuristic max stored refresh-token lifetime (6h). Past this, the plugin treats the RT as expired without contacting the IdP — returns 401 to AJAX, full re-auth on navigations. Set `0` to disable. Tune to match your IdP's RT TTL. |
 | `rateLimit` | `100` | Requests/sec. Min `10`. |
-| `perSourceLoginRateLimit` | `0` (off) | Throttle OIDC auth events (authorization-code callback + login initiation) per external client source, auth events per minute. Keys and classifies the source by RemoteAddr only, never `X-Forwarded-For`, so a client cannot spoof it. Internal/loopback sources (proxies, in-cluster) are never throttled. `0` disables. RemoteAddr is the TCP peer. Behind a load balancer or CDN, the limiter keys on the proxy address: a private address is never throttled, and a public address puts every client in one shared bucket. |
+| `perSourceLoginRateLimit` | `0` (off) | Throttle OIDC auth events (authorization-code callback, login initiation and forced refreshes at the `tmbSessionURL` endpoint) per external client source, auth events per minute. Keys and classifies the source by RemoteAddr only, never `X-Forwarded-For`, so a client cannot spoof it. Internal/loopback sources (proxies, in-cluster) are never throttled. `0` disables. RemoteAddr is the TCP peer. Behind a load balancer or CDN, the limiter keys on the proxy address: a private address is never throttled, and a public address puts every client in one shared bucket. |
 | `logLevel` | `info` | `debug`, `info`, `error`. |
 | `audience` | `clientID`, or `resource` if set | Custom access-token audience (Auth0 custom APIs). |
 | `resource` | none | RFC 8707 resource indicator, alternative to `audience` for supporting IdPs (see [docs/RFC8707.md](docs/RFC8707.md)). |
@@ -151,6 +151,7 @@ Full reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `clientAssertionAlg` | `RS256` | JWS alg for `private_key_jwt`. Supported: `RS256/384/512`, `PS256/384/512`, `ES256/384/512`. |
 | `enableBackchannelLogout` / `backchannelLogoutURL` | `false` / none | OIDC Back-Channel Logout (server-to-server). |
 | `enableFrontchannelLogout` / `frontchannelLogoutURL` | `false` / none | OIDC Front-Channel Logout (iframe). |
+| `tmbSessionURL` | none | Path (e.g. `/auth/session`) of an endpoint for SPAs, authenticated by the session cookie: `GET` returns session info and the access token, `POST` forces a refresh. Setting it enables the endpoint; `tmbClaims` lists extra ID-token claims to return. See [docs/TMB.md](docs/TMB.md). |
 | `redis` | disabled | See [docs/REDIS.md](docs/REDIS.md). |
 | `dynamicClientRegistration` | disabled | See [docs/DCR.md](docs/DCR.md). |
 

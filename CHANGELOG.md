@@ -8,6 +8,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`tmbSessionURL` (default unset).** Token-mediating backend endpoint for
+  single-page apps (draft-ietf-oauth-browser-based-apps). Setting a path
+  enables it, authenticated by the session cookie: `GET` returns the user,
+  groups, roles, the claims named in `tmbClaims` (default none) and the
+  access token; `POST` forces a refresh first. See [TMB.md](docs/TMB.md).
+
 - **`allowUnauthenticatedPreflight` (default `false`).** Every `OPTIONS`
   request needs authentication by default, as in the last release. Set the
   option to `true` to let a genuine CORS preflight reach the backend

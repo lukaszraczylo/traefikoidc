@@ -2,8 +2,6 @@ package traefikoidc
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
@@ -12,17 +10,6 @@ import (
 )
 
 // R154 review-round regressions.
-
-// incompressibleToken returns a base64 blob too large to fit a single
-// cookie after compression, so Set*Token takes the chunked path. Random
-// bytes are (nearly) incompressible, unlike repeated chars.
-func incompressibleToken(size int) string {
-	buf := make([]byte, size)
-	if _, err := rand.Read(buf); err != nil {
-		panic(err)
-	}
-	return base64.RawStdEncoding.EncodeToString(buf)
-}
 
 // TestSetRefreshToken_AbortPreservesPrevious covers the commit-on-success
 // rewrite of SetRefreshToken (session.go). Setting a new chunked refresh

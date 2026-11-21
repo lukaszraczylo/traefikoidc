@@ -204,6 +204,12 @@ func isWebSocketUpgrade(req *http.Request) bool {
 // This must be called BEFORE waiting on t.initComplete so excluded, SSE and
 // WebSocket traffic is never blocked by a slow/broken provider.
 func (t *TraefikOidc) shouldBypassAuth(req *http.Request) (bool, string) {
+	// The token-mediating endpoint authenticates itself, so no bypass (excluded
+	// URL, SSE, WebSocket, preflight) may forward a request to the backend
+	// instead of answering it.
+	if t.isTMBPath(req.URL.Path) {
+		return false, ""
+	}
 	if t.determineExcludedURL(req.URL.Path) {
 		return true, bypassReasonExcluded
 	}
@@ -774,6 +780,14 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// Bypass checks already ran before the init wait; no need to repeat them.
 	t.sessionManager.CleanupOldCookies(rw, req)
+
+	// Token-mediating endpoints (opt-in by path): session-cookie only, so
+	// they are handled before the bearer branch and never fall into the
+	// redirect flow below.
+	if t.isTMBPath(req.URL.Path) {
+		t.handleTMB(rw, req)
+		return
+	}
 
 	// Bearer-token auth (opt-in). Runs after init (we need issuer+JWKs+aud
 	// available) and after bypass (excluded URLs always win). Cookie-vs-
