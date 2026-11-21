@@ -61,6 +61,20 @@ not send the cookie to it.
   and `Cross-Origin-Resource-Policy: same-origin`.
 - No custom request header is required.
 
+The plugin removes only the CORS headers that it adds itself. It cannot remove
+headers that another middleware adds to its responses, for example CORS headers
+from a Traefik `headers` middleware. Do not add such a middleware to the router
+that serves `tmbSessionURL`.
+
+## What scripts on the origin can read
+
+The endpoint gives the access token to every script that runs on the same
+origin. Thus a cross-site scripting flaw or a compromised third-party script on
+that origin can read the access token. Without this endpoint, the access token
+stays on the server. Before you enable the endpoint, set a strict
+`Content-Security-Policy` on the pages of that origin. Keep the access token
+lifetime at the IdP short.
+
 ## `GET`: read the session
 
 ```json
