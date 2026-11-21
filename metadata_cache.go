@@ -138,7 +138,8 @@ func (mc *MetadataCache) GetProviderMetadata(ctx context.Context, providerURL st
 	defer func() { _ = resp.Body.Close() }() // Safe to ignore: closing body on defer
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("metadata fetch returned status %d", resp.StatusCode)
+		// Typed so the retry classification can read the status.
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Message: "metadata fetch failed"}
 	}
 
 	var metadata ProviderMetadata
@@ -212,10 +213,11 @@ func (mc *MetadataCache) GetMetadata(providerURL string, httpClient *http.Client
 // GetMetadataWithRecovery fetches metadata with retry support for startup scenarios.
 // This handles the race condition where Traefik initializes the plugin before the
 // OIDC provider routes are fully established, or before TLS certificates are loaded.
-// Uses aggressive retry settings (10 attempts, 1s intervals) to give the infrastructure
-// time to stabilize during cold starts.
+// It makes up to 10 attempts with backoff from 1s, x1.5, capped at 10s (about 51s
+// of delay), so the infrastructure has time to stabilize during cold starts.
+// The retries stop when ctx ends.
 // See: https://github.com/lukaszraczylo/traefikoidc/issues/90
-func (mc *MetadataCache) GetMetadataWithRecovery(providerURL string, httpClient *http.Client, logger *Logger, errorRecoveryManager *ErrorRecoveryManager) (*ProviderMetadata, error) {
+func (mc *MetadataCache) GetMetadataWithRecovery(ctx context.Context, providerURL string, httpClient *http.Client, logger *Logger, errorRecoveryManager *ErrorRecoveryManager) (*ProviderMetadata, error) {
 	// Check cache first - if we have valid cached metadata, use it
 	if metadata, exists := mc.Get(providerURL); exists {
 		return metadata, nil
@@ -229,13 +231,13 @@ func (mc *MetadataCache) GetMetadataWithRecovery(providerURL string, httpClient 
 	var lastErr error
 
 	// Use context with overall timeout for the entire retry sequence
-	// 10 attempts * ~10s max delay = ~100s worst case, so use 2 minute timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// About 51s of delay plus up to 15s per attempt, so use a 2 minute timeout
+	retryCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	err := retryExecutor.ExecuteWithContext(ctx, func() error {
+	err := retryExecutor.ExecuteWithContext(retryCtx, func() error {
 		// Create per-attempt context with shorter timeout
-		attemptCtx, attemptCancel := context.WithTimeout(ctx, 15*time.Second)
+		attemptCtx, attemptCancel := context.WithTimeout(retryCtx, 15*time.Second)
 		defer attemptCancel()
 
 		var fetchErr error

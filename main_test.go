@@ -2647,7 +2647,10 @@ func TestMetadataRecoveryOnProviderFailure(t *testing.T) {
 		mu.Unlock()
 
 		if !available {
-			w.WriteHeader(http.StatusServiceUnavailable)
+			// A status startup discovery does not retry, so init fails at
+			// once and the test can drive request-path recovery (#147
+			// retries 404, 429 and 5xx at startup).
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 

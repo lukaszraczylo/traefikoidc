@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -476,6 +477,9 @@ func (cb *CircuitBreaker) GetMetrics() map[string]interface{} {
 type RetryConfig struct {
 	// RetryableErrors defines error patterns that should trigger retries
 	RetryableErrors []string `json:"retryable_errors"`
+	// RetryableStatusCodes lists HTTP statuses retried even though they are
+	// below 500 and not 429
+	RetryableStatusCodes []int `json:"retryable_status_codes"`
 	// MaxAttempts is the maximum number of retry attempts
 	MaxAttempts int `json:"max_attempts"`
 	// InitialDelay is the delay before the first retry
@@ -528,6 +532,9 @@ func MetadataFetchRetryConfig() RetryConfig {
 			"x509",
 			"tls",
 		},
+		// Traefik answers 404 for a provider router that is not loaded yet
+		// (IdP behind the same Traefik, #147).
+		RetryableStatusCodes: []int{http.StatusNotFound},
 	}
 }
 
@@ -766,8 +773,15 @@ func (re *RetryExecutor) isRetryableError(err error) bool {
 	// "EOF" (isEOFError), or a generic "timeout" — would be reclassified
 	// retryable and retried to MaxAttempts on a permanent error, repeating
 	// the failing request (R123, R157).
-	if statusHTTP, ok := asHTTPError(err); ok && statusHTTP.StatusCode != 0 && statusHTTP.StatusCode < 500 && statusHTTP.StatusCode != 429 {
-		return false
+	if statusHTTP, ok := asHTTPError(err); ok && statusHTTP.StatusCode != 0 {
+		for _, code := range re.config.RetryableStatusCodes {
+			if statusHTTP.StatusCode == code {
+				return true
+			}
+		}
+		if statusHTTP.StatusCode < 500 && statusHTTP.StatusCode != 429 {
+			return false
+		}
 	}
 
 	// Check for Traefik default certificate error (startup race condition)

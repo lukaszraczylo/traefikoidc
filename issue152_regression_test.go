@@ -336,7 +336,9 @@ func TestIssue152NewWithContextWiring(t *testing.T) {
 
 	t.Run("discovery fails outright, cold-start seed holds", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
+			// A status startup discovery does not retry (#147 retries 404,
+			// 429 and 5xx), so discovery fails at once.
+			w.WriteHeader(http.StatusBadRequest)
 		}))
 		defer srv.Close()
 

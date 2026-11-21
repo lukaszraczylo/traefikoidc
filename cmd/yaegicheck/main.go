@@ -130,6 +130,7 @@ func main() {
 	// reachable errors.As-replacement site directly under the interpreter.
 	runCheck("new01-retryexecutor-500-retried", checkNew01RetryExecutorHTTPError500Retried)
 	runCheck("new01-retryexecutor-400-not-retried", checkNew01RetryExecutorHTTPError400NotRetried)
+	runCheck("issue147-discovery-status-retried", checkIssue147DiscoveryStatusRetried)
 	runCheck("new01-retryexecutor-plain-error-no-panic", checkNew01RetryExecutorPlainErrorNoPanic)
 	runCheck("new01-internal-recovery-httperror-classification", checkNew01InternalRecoveryHTTPErrorClassification)
 	runCheck("new01-internal-recovery-oidcerror-classification", checkNew01InternalRecoveryOIDCErrorClassification)
@@ -392,6 +393,60 @@ func checkNew01RetryExecutorHTTPError400NotRetried() (string, error) {
 		return "", fmt.Errorf("fn called %d times, want 1 (a terminal 400 must not be retried)", calls)
 	}
 	return fmt.Sprintf(" calls=%d", calls), nil
+}
+
+// checkIssue147DiscoveryStatusRetried pins #147 under the interpreter: a
+// discovery 404 and 502 come back from GetProviderMetadata as *HTTPError, and
+// MetadataFetchRetryConfig retries both (RetryableStatusCodes for the 404,
+// the 5xx rule for the 502) until the document is served.
+func checkIssue147DiscoveryStatusRetried() (string, error) {
+	var hits int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch atomic.AddInt32(&hits, 1) {
+		case 1:
+			w.WriteHeader(http.StatusNotFound)
+			return
+		case 2:
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(oidc.ProviderMetadata{
+			Issuer:   srv.URL,
+			AuthURL:  srv.URL + "/auth",
+			TokenURL: srv.URL + "/token",
+			JWKSURL:  srv.URL + "/jwks",
+		})
+	}))
+	defer srv.Close()
+
+	cfg := oidc.MetadataFetchRetryConfig()
+	cfg.MaxAttempts = 4
+	cfg.InitialDelay = time.Millisecond
+	cfg.MaxDelay = time.Millisecond
+	re := oidc.NewRetryExecutor(cfg, oidc.NewLogger("error"))
+	mc := oidc.NewMetadataCacheWithLogger(nil, oidc.NewLogger("error"))
+
+	var issuer string
+	err := re.ExecuteWithContext(context.Background(), func() error {
+		metadata, fetchErr := mc.GetProviderMetadata(context.Background(), srv.URL, srv.Client())
+		if fetchErr != nil {
+			return fetchErr
+		}
+		issuer = metadata.Issuer
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("discovery 404/502 were not retried to success: %v (requests=%d)", err, atomic.LoadInt32(&hits))
+	}
+	if issuer != srv.URL {
+		return "", fmt.Errorf("issuer = %q, want %q", issuer, srv.URL)
+	}
+	if got := atomic.LoadInt32(&hits); got != 3 {
+		return "", fmt.Errorf("requests = %d, want 3 (404, 502, 200)", got)
+	}
+	return " requests=3", nil
 }
 
 // checkNew01RetryExecutorPlainErrorNoPanic pins that a plain (non-HTTPError)

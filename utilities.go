@@ -3,6 +3,7 @@
 package traefikoidc
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +27,26 @@ func (t *TraefikOidc) metadataSnap() *MetadataSnapshot {
 	}
 	s, _ := v.(*MetadataSnapshot)
 	return s
+}
+
+// metadataReady reports whether provider metadata has been adopted, read the
+// same way ServeHTTP reads it: the snapshot, else issuerURL under metadataMu.
+func (t *TraefikOidc) metadataReady() bool {
+	if snap := t.metadataSnap(); snap != nil {
+		return snap.IssuerURL != ""
+	}
+	t.metadataMu.RLock()
+	defer t.metadataMu.RUnlock()
+	return t.issuerURL != ""
+}
+
+// lifecycleCtx returns the instance context, which Close cancels, or
+// context.Background for instances built without New.
+func (t *TraefikOidc) lifecycleCtx() context.Context {
+	if t.ctx != nil {
+		return t.ctx
+	}
+	return context.Background()
 }
 
 // safeLogDebug provides nil-safe logging for debug messages

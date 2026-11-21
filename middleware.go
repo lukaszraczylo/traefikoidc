@@ -466,6 +466,11 @@ func (t *TraefikOidc) bypassSessionClaims(session *SessionData) (map[string]inte
 	return claims, err
 }
 
+// metadataUnavailableRetryAfter is the Retry-After value (seconds) of the 503
+// served while provider metadata is unavailable or initialization times out.
+// Background recovery retries every 5 to 60 seconds.
+const metadataUnavailableRetryAfter = "10"
+
 // ServeHTTP implements the main middleware logic for processing HTTP requests.
 // It handles the complete OIDC authentication flow including:
 //   - Excluded URL bypass
@@ -763,6 +768,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			}
 
 			t.logger.Error("OIDC provider metadata initialization failed or incomplete")
+			rw.Header().Set("Retry-After", metadataUnavailableRetryAfter)
 			t.sendErrorResponse(rw, req, "OIDC provider metadata initialization failed - please check provider availability and configuration", http.StatusServiceUnavailable)
 			return
 		}
@@ -774,6 +780,7 @@ func (t *TraefikOidc) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	case <-initTimer.C:
 		atomic.AddInt32(&t.initWaiters, -1)
 		t.logger.Error("Timeout waiting for OIDC initialization")
+		rw.Header().Set("Retry-After", metadataUnavailableRetryAfter)
 		t.sendErrorResponse(rw, req, "Timeout waiting for OIDC provider initialization - please try again later", http.StatusServiceUnavailable)
 		return
 	}
