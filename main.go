@@ -574,7 +574,7 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 				t.safeLogErrorf("Initialize metadata goroutine panic recovered: %v", r)
 			}
 		}()
-		t.initializeMetadata(config.ProviderURL)
+		t.runMetadataInit(config.ProviderURL, metadataRecoveryBackoff())
 	}()
 
 	// Setup cleanup hook for when context is canceled
@@ -589,12 +589,97 @@ func NewWithContext(ctx context.Context, config *Config, next http.Handler, name
 	return t, nil
 }
 
+// metadataRecoveryFetchTimeout bounds one background discovery request.
+const metadataRecoveryFetchTimeout = 15 * time.Second
+
+// metadataRecoveryBackoff paces background discovery after startup discovery
+// fails: 5s, doubling up to 60s, with jitter.
+func metadataRecoveryBackoff() RetryConfig {
+	return RetryConfig{
+		InitialDelay:  5 * time.Second,
+		MaxDelay:      60 * time.Second,
+		BackoffFactor: 2,
+		EnableJitter:  true,
+	}
+}
+
+// runMetadataInit runs startup discovery and, if it fails, keeps retrying in
+// the background, so an instance recovers once the provider answers without
+// waiting for a request to trigger recovery (#147).
+func (t *TraefikOidc) runMetadataInit(providerURL string, backoff RetryConfig) {
+	if t.initializeMetadata(providerURL) || providerURL == "" {
+		return
+	}
+	t.recoverMetadataInBackground(providerURL, backoff)
+}
+
+// recoverMetadataInBackground retries discovery with backoff until it
+// succeeds, another path has adopted metadata, or the instance closes.
+// Instances that share providerURL also share the metadata cache, so after the
+// first success the others adopt the cached document without a fetch.
+func (t *TraefikOidc) recoverMetadataInBackground(providerURL string, backoff RetryConfig) {
+	if t.metadataCache == nil || t.httpClient == nil {
+		return
+	}
+	ctx := t.lifecycleCtx()
+	pacer := NewRetryExecutor(backoff, t.logger)
+	for attempt := 1; ; attempt++ {
+		timer := time.NewTimer(pacer.calculateDelay(attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if t.metadataReady() {
+			return
+		}
+
+		fetchCtx, cancel := context.WithTimeout(ctx, metadataRecoveryFetchTimeout)
+		metadata, err := t.metadataCache.GetProviderMetadata(fetchCtx, providerURL, t.httpClient)
+		cancel()
+		if err != nil || metadata == nil {
+			t.logMetadataRecoveryFailure(attempt, err)
+			continue
+		}
+		t.updateMetadataEndpoints(metadata)
+		if !t.metadataReady() {
+			t.logMetadataRecoveryFailure(attempt, fmt.Errorf("discovery document has no usable issuer"))
+			continue
+		}
+		t.safeLogInfo(fmt.Sprintf("Recovered OIDC provider metadata for middleware %q in the background", t.name))
+		return
+	}
+}
+
+// Background recovery logs the first metadataRecoveryLoudAttempts failures and
+// then every metadataRecoveryLogEvery-th at ERROR, the rest at DEBUG, so a
+// permanently wrong providerURL does not flood the log.
+const (
+	metadataRecoveryLoudAttempts = 3
+	metadataRecoveryLogEvery     = 10
+)
+
+// metadataRecoveryLogLoud reports whether a failed background attempt logs at ERROR.
+func metadataRecoveryLogLoud(attempt int) bool {
+	return attempt <= metadataRecoveryLoudAttempts || attempt%metadataRecoveryLogEvery == 0
+}
+
+func (t *TraefikOidc) logMetadataRecoveryFailure(attempt int, err error) {
+	if metadataRecoveryLogLoud(attempt) {
+		t.safeLogErrorf("Provider metadata for middleware %q still unavailable (background attempt %d): %v", t.name, attempt, err)
+		return
+	}
+	t.safeLogDebugf("Provider metadata for middleware %q still unavailable (background attempt %d): %v", t.name, attempt, err)
+}
+
 // initializeMetadata initializes OIDC provider metadata by fetching configuration.
 // It retrieves the provider's .well-known/openid-configuration and updates
 // internal endpoint URLs. Uses error recovery if available for resilient fetching.
+// It reports whether metadata was adopted.
 // Parameters:
 //   - providerURL: The base URL of the OIDC provider.
-func (t *TraefikOidc) initializeMetadata(providerURL string) {
+func (t *TraefikOidc) initializeMetadata(providerURL string) bool {
 	t.safeLogDebug("Starting provider metadata discovery")
 
 	// Ensure initComplete is always closed, even on failure
@@ -611,22 +696,27 @@ func (t *TraefikOidc) initializeMetadata(providerURL string) {
 	var metadata *ProviderMetadata
 	var err error
 	if t.errorRecoveryManager != nil {
-		metadata, err = t.metadataCache.GetMetadataWithRecovery(providerURL, t.httpClient, t.logger, t.errorRecoveryManager)
+		metadata, err = t.metadataCache.GetMetadataWithRecovery(t.lifecycleCtx(), providerURL, t.httpClient, t.logger, t.errorRecoveryManager)
 	} else {
 		metadata, err = t.metadataCache.GetMetadata(providerURL, t.httpClient, t.logger)
 	}
 	if err != nil {
-		t.safeLogErrorf("Failed to get provider metadata: %v", err)
-		return
+		if t.lifecycleCtx().Err() != nil {
+			t.safeLogDebugf("Provider metadata discovery for middleware %q stopped: instance closed", t.name)
+			return false
+		}
+		t.safeLogErrorf("Failed to get provider metadata for middleware %q: %v", t.name, err)
+		return false
 	}
 
 	if metadata != nil {
 		t.safeLogDebug("Successfully initialized provider metadata")
 		t.updateMetadataEndpoints(metadata)
-		return
+		return true
 	}
 
 	t.safeLogError("Received nil metadata during initialization")
+	return false
 }
 
 // Discovered-endpoint names. jwks_uri, authorization and token have no

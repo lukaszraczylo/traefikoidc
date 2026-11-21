@@ -127,6 +127,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Provider metadata now recovers without a request (#147).** A discovery
+  response of `404`, `429` or `5xx` is now retried during startup. Traefik
+  answers `404` while the router of an IdP behind the same Traefik is not
+  loaded yet. During these retries, requests wait up to 30 s for
+  initialization, as they already do when the provider cannot be reached.
+  If startup discovery still fails, each middleware instance
+  retries in the background (5 s, doubling up to 60 s) until the provider
+  answers or the instance closes. Before this change, an instance stayed
+  broken until a request reached it. Background attempts log at ERROR for
+  the first three and then for every tenth, and at DEBUG otherwise. The
+  `503` served while metadata is unavailable or initialization times out
+  now carries `Retry-After: 10`. The startup error log names the
+  middleware.
 - SSE and WebSocket requests now get the configured `headers`, as normal
   requests do. The last release sent only `X-Forwarded-User` on these
   requests, so a backend that checks a shared-secret header answered `401`
