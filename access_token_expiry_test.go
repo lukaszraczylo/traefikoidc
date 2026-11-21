@@ -66,7 +66,7 @@ func TestSessionAccessTokenExpiresAt(t *testing.T) {
 			require.NoError(t, err)
 			sd.useCombinedStorage = storage.combined
 			sd.SetAccessToken(tokenA)
-			sd.SetAccessTokenExpiresAt(exp)
+			sd.SetAccessTokenExpiresAt(tokenA, exp)
 
 			loaded := saveAndReload(t, sm, sd)
 			assert.Equal(t, tokenA, loaded.GetAccessToken())
@@ -88,14 +88,14 @@ func TestSessionAccessTokenExpiresAt(t *testing.T) {
 		require.NoError(t, err)
 
 		sd.SetAccessToken(tokenA)
-		sd.SetAccessTokenExpiresAt(exp)
+		sd.SetAccessTokenExpiresAt(tokenA, exp)
 		sd.SetAccessToken(tokenA) // unchanged token keeps its expiry
 		assert.Equal(t, exp, sd.GetAccessTokenExpiresAt())
 
 		sd.SetAccessToken(tokenB) // a different token drops it
 		assert.Zero(t, sd.GetAccessTokenExpiresAt())
 
-		sd.SetAccessTokenExpiresAt(exp)
+		sd.SetAccessTokenExpiresAt(tokenB, exp)
 		sd.SetAccessToken("") // clearing the token drops it
 		assert.Zero(t, sd.GetAccessTokenExpiresAt())
 	})
@@ -105,8 +105,8 @@ func TestSessionAccessTokenExpiresAt(t *testing.T) {
 		sd, err := sm.GetSession(httptest.NewRequest(http.MethodGet, "/", nil))
 		require.NoError(t, err)
 		sd.SetAccessToken(tokenA)
-		sd.SetAccessTokenExpiresAt(exp)
-		sd.SetAccessTokenExpiresAt(0)
+		sd.SetAccessTokenExpiresAt(tokenA, exp)
+		sd.SetAccessTokenExpiresAt(tokenA, 0)
 		assert.Zero(t, sd.GetAccessTokenExpiresAt())
 	})
 
@@ -115,8 +115,39 @@ func TestSessionAccessTokenExpiresAt(t *testing.T) {
 		sd, err := sm.GetSession(httptest.NewRequest(http.MethodGet, "/", nil))
 		require.NoError(t, err)
 		sd.SetAccessToken(tokenA)
-		sd.SetAccessTokenExpiresAt(exp)
+		sd.SetAccessTokenExpiresAt(tokenA, exp)
 		sd.Reset()
 		assert.Zero(t, sd.GetAccessTokenExpiresAt())
+	})
+
+	t.Run("a failed store keeps the previous token and its expiry", func(t *testing.T) {
+		sm := createTestSessionManager(t)
+		sd, err := sm.GetSession(httptest.NewRequest(http.MethodGet, "/", nil))
+		require.NoError(t, err)
+		sd.SetAccessToken(tokenA)
+		sd.SetAccessTokenExpiresAt(tokenA, exp)
+
+		oversized := incompressibleToken(200 * 1024)
+		sd.SetAccessToken(oversized) // too large even after compression: not stored
+		sd.SetAccessTokenExpiresAt(oversized, exp+3600)
+
+		assert.Equal(t, tokenA, sd.GetAccessToken())
+		assert.Equal(t, exp, sd.GetAccessTokenExpiresAt())
+	})
+
+	t.Run("an expiry for a token that is not stored is ignored", func(t *testing.T) {
+		sm := createTestSessionManager(t)
+		sd, err := sm.GetSession(httptest.NewRequest(http.MethodGet, "/", nil))
+		require.NoError(t, err)
+		sd.SetAccessToken(tokenA)
+
+		sd.SetAccessTokenExpiresAt(tokenB, exp)
+		assert.Zero(t, sd.GetAccessTokenExpiresAt())
+		sd.SetAccessTokenExpiresAt("", exp)
+		assert.Zero(t, sd.GetAccessTokenExpiresAt())
+
+		sd.SetAccessTokenExpiresAt(tokenA, exp)
+		sd.SetAccessTokenExpiresAt(tokenB, 0) // cannot clear another token's expiry
+		assert.Equal(t, exp, sd.GetAccessTokenExpiresAt())
 	})
 }

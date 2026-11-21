@@ -444,7 +444,7 @@ func (t *TraefikOidc) handleCallback(rw http.ResponseWriter, req *http.Request, 
 	session.SetUserIdentifier(userIdentifier)
 	session.SetIDToken(tokenResponse.IDToken)
 	session.SetAccessToken(tokenResponse.AccessToken)
-	session.SetAccessTokenExpiresAt(accessTokenExpiry(tokenResponse, time.Now()))
+	session.SetAccessTokenExpiresAt(tokenResponse.AccessToken, accessTokenExpiry(tokenResponse, time.Now()))
 	session.SetRefreshToken(tokenResponse.RefreshToken)
 
 	session.SetCSRF("")

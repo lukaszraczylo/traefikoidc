@@ -2224,10 +2224,6 @@ func (sd *SessionData) SetAccessToken(token string) {
 		return
 	}
 	sd.dirty = true
-	// The recorded expiry belongs to the token being replaced.
-	if sd.mainSession != nil {
-		delete(sd.mainSession.Values, accessTokenExpiresAtKey)
-	}
 
 	// Debug: Check if accessSession is properly initialized
 	if sd.accessSession == nil {
@@ -2250,6 +2246,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 			sd.accessSession.Values["compressed"] = false
 		}
 		sd.clearAccessTokenChunks()
+		sd.clearAccessTokenExpiryUnsafe()
 		return
 	}
 
@@ -2279,6 +2276,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 
 	if len(compressed) <= maxCookieSize {
 		sd.clearAccessTokenChunks()
+		sd.clearAccessTokenExpiryUnsafe()
 		if sd.accessSession != nil {
 			sd.accessSession.Values["token"] = compressed
 			sd.accessSession.Values["compressed"] = (compressed != token)
@@ -2328,6 +2326,7 @@ func (sd *SessionData) SetAccessToken(token string) {
 		// Validation passed: now it is safe to clear the existing token
 		// before storing the new chunked one.
 		sd.clearAccessTokenChunks()
+		sd.clearAccessTokenExpiryUnsafe()
 		if sd.accessSession != nil {
 			sd.accessSession.Values["token"] = ""
 			sd.accessSession.Values["compressed"] = (compressed != token)
@@ -3182,14 +3181,17 @@ func (sd *SessionData) GetAccessTokenExpiresAt() int64 {
 	return sd.getAccessTokenExpiresAtUnsafe()
 }
 
-// SetAccessTokenExpiresAt records when the current access token expires (unix
-// seconds). Call it after SetAccessToken: storing a different access token
-// drops the previous expiry. A value <= 0 clears it.
-func (sd *SessionData) SetAccessTokenExpiresAt(expiresAt int64) {
+// SetAccessTokenExpiresAt records when token expires (unix seconds), but only
+// if token is the stored access token: when SetAccessToken could not store it,
+// the previous token keeps its own expiry. A value <= 0 clears it.
+func (sd *SessionData) SetAccessTokenExpiresAt(token string, expiresAt int64) {
 	sd.sessionMutex.Lock()
 	defer sd.sessionMutex.Unlock()
 
-	if sd.mainSession == nil {
+	if sd.mainSession == nil || sd.accessSession == nil || token == "" {
+		return
+	}
+	if !constantTimeStringCompare(sd.getAccessTokenUnsafe(), token) {
 		return
 	}
 	if sd.getAccessTokenExpiresAtUnsafe() == expiresAt {
@@ -3197,10 +3199,18 @@ func (sd *SessionData) SetAccessTokenExpiresAt(expiresAt int64) {
 	}
 	sd.dirty = true
 	if expiresAt <= 0 {
-		delete(sd.mainSession.Values, accessTokenExpiresAtKey)
+		sd.clearAccessTokenExpiryUnsafe()
 		return
 	}
 	sd.mainSession.Values[accessTokenExpiresAtKey] = expiresAt
+}
+
+// clearAccessTokenExpiryUnsafe drops the recorded expiry, without acquiring
+// locks. Call it whenever the stored access token is replaced or cleared.
+func (sd *SessionData) clearAccessTokenExpiryUnsafe() {
+	if sd.mainSession != nil {
+		delete(sd.mainSession.Values, accessTokenExpiresAtKey)
+	}
 }
 
 // getRedirectCountUnsafe retrieves the redirect count without acquiring locks.

@@ -222,7 +222,7 @@ func TestTMB_ReportsTheAccessTokenExpiry(t *testing.T) {
 		want := time.Now().Add(2 * time.Minute).Unix()
 		session, err := e.oidc.sessionManager.GetSession(requestWithCookies(e.cookies))
 		require.NoError(t, err)
-		session.SetAccessTokenExpiresAt(want)
+		session.SetAccessTokenExpiresAt(session.GetAccessToken(), want)
 		saved := httptest.NewRecorder()
 		require.NoError(t, session.Save(requestWithCookies(e.cookies), saved))
 		e.cookies = saved.Result().Cookies()
@@ -282,7 +282,7 @@ func TestTMB_RefreshesAnAccessTokenThatIsDue(t *testing.T) {
 		e := newTMBEnv(t)
 		e.mutateSession(t, func(sd *SessionData) {
 			sd.SetAccessToken(opaque)
-			sd.SetAccessTokenExpiresAt(time.Now().Add(remaining).Unix())
+			sd.SetAccessTokenExpiresAt(opaque, time.Now().Add(remaining).Unix())
 			for _, opt := range opts {
 				opt(sd)
 			}
